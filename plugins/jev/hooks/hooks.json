@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" session-start", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" post-model-switch", "timeout": 5 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" user-prompt-submit", "timeout": 5 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" pre-tool-use", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

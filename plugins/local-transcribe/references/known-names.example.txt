@@ -1,0 +1,16 @@
+# Example --names-file for the known-names spelling pass (see README.md
+# "Known-names spelling pass" and lt/spelling.py).
+#
+# One correction per line: `Correct Spelling: misheard one, misheard two`.
+# Blank lines and lines starting with `#` are ignored. Matching is whole-word
+# and case-insensitive, and a "misheard" entry may be several words.
+#
+# This file is fictional on purpose. A real list of your own colleagues'
+# names and how the recogniser mangles them is personal data about your
+# workplace, and must never be committed here — this plugin is public and
+# other people install it. Keep your real file outside this repository (next
+# to your notes, or wherever `--names-file` points), the same rule
+# `LOCAL_TRANSCRIBE_VOICES_DIR` follows for voice prints in lt/voices.py.
+
+Kubernetes: Cooper Netease, Cooper Net Es
+GitLab: Get Lab, Get Lap

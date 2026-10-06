@@ -1,0 +1,21 @@
+{
+  "name": "local-transcribe",
+  "version": "0.11.1",
+  "description": "Transcribe any audio or video file entirely on your own machine — no cloud speech API, no upload, nothing leaves the laptop. Speech recognition runs on locally cached weights, and speaker separation on two small ONNX models needing no account or licence acceptance. Speakers are labelled either by stream, from a two-track recording where each source has its own track and the streams are sampled and checked to actually differ before the label is trusted, or by clustering, with the speaker count given as a hint when it is known. A file with a picture also gets its screen read: the frames where the picture changed go to a local vision model, so the number on the slide and the error in the terminal land in the transcript alongside what was said, and --no-ocr turns that off. It can also record the call first: OBS Studio over its WebSocket API, or the macOS built-in screen recorder. All three halves refuse, with an explanation, to produce output they cannot make honest — a transcript whose speaker count was never established, per-track labels on a container whose tracks turn out to carry the same mix, or a recording of a call that would capture only your own microphone. Needs only uv installed; ffmpeg comes from a wheel. SETUP.md is the per-OS guide for macOS, Windows and Linux.",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "transcription",
+    "whisper",
+    "dictation",
+    "diarization",
+    "speakers",
+    "recording",
+    "obs",
+    "local-first",
+    "ollama",
+    "ocr"
+  ]
+}

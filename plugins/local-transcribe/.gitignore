@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+# never commit a voice print or a test recording
+enrolment/
+*.wav
+*.m4a
+*.mkv

@@ -1,0 +1,19 @@
+{
+  "name": "merlin-bridge",
+  "version": "1.0.0",
+  "description": "In-browser Chrome DevTools Protocol (CDP) bridge and MCP server for Merlin AI (getmerlin.in)",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "keywords": [
+    "merlin",
+    "cdp",
+    "chrome",
+    "mcp",
+    "ai",
+    "bridge",
+    "streaming",
+    "opencode",
+    "antigravity"
+  ]
+}

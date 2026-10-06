@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+@page {
+    size: A4;
+    margin: 18mm 18mm 18mm 18mm;
+    @bottom-right {
+        content: counter(page) " / " counter(pages);
+        font-size: 8pt;
+        color: #6b7280;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    color: #1f2937;
+    background: #ffffff;
+    margin: 0;
+    padding: 0;
+}
+
+/* Headings */
+h1, h2, h3, h4 {
+    color: #111827;
+    margin-top: 14pt;
+    margin-bottom: 6pt;
+    page-break-after: avoid;
+}
+
+h1 {
+    font-size: 20pt;
+    font-weight: 700;
+    margin-top: 0;
+    letter-spacing: -0.02em;
+    border-bottom: 1.5pt solid #111827;
+    padding-bottom: 4pt;
+}
+
+h2 {
+    font-size: 13pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #1e3a8a;
+    border-bottom: 1pt solid #cbd5e1;
+    padding-bottom: 3pt;
+}
+
+h3 {
+    font-size: 11pt;
+    font-weight: 600;
+    color: #111827;
+}
+
+h4 {
+    font-size: 10pt;
+    font-weight: 600;
+    color: #374151;
+}
+
+p {
+    margin: 0 0 6pt 0;
+}
+
+/* Lists */
+ul, ol {
+    margin: 0 0 8pt 0;
+    padding-left: 18pt;
+}
+
+li {
+    margin-bottom: 3pt;
+    page-break-inside: avoid;
+}
+
+/* Links */
+a {
+    color: #2563eb;
+    text-decoration: none;
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8pt 0;
+    page-break-inside: avoid;
+}
+
+th, td {
+    padding: 4pt 6pt;
+    text-align: left;
+    vertical-align: top;
+}
+
+/* Code & pre */
+code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 9pt;
+    background-color: #f3f4f6;
+    padding: 1pt 3pt;
+    border-radius: 3pt;
+}
+
+pre {
+    background-color: #f3f4f6;
+    padding: 8pt;
+    border-radius: 4pt;
+    font-size: 8.5pt;
+    overflow-x: auto;
+    page-break-inside: avoid;
+}
+
+blockquote {
+    margin: 8pt 0;
+    padding: 4pt 12pt;
+    border-left: 3pt solid #93c5fd;
+    color: #4b5563;
+    background-color: #f8fafc;
+}
+
+hr {
+    border: none;
+    border-top: 1pt solid #e5e7eb;
+    margin: 12pt 0;
+}
+
+/* Avoid page breaks inside experience blocks if grouped */
+.item, .experience-entry, .project-entry {
+    page-break-inside: avoid;
+}
+
+{{ extra_css }}
+</style>
+</head>
+<body>
+{{ content | safe }}
+</body>
+</html>

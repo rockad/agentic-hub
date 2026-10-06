@@ -1,0 +1,8 @@
+{
+  "name": "jev-opencode-plugin",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode V2 plugin entrypoint for the jev package (Jev-driven model selection & subagent delegation)",
+  "exports": "./index.ts"
+}

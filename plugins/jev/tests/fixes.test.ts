@@ -1,0 +1,145 @@
+import { describe, it, expect } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  defaultEffortForSubagent,
+  isFreeModel,
+  assertFreeModel,
+  buildRouterCompletionMessages
+} from '../src/shared.ts';
+
+const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
+
+/**
+ * QUOTA_STATE_FILE is resolved from the home directory at import time, so the
+ * quota view is exercised in a child process with its own HOME.
+ */
+function quotaViewUnderHome(home: string): { ok: boolean; strategy?: string; fiveHour?: number | null; error?: string } {
+  const script =
+    "const m = await import('./src/shared.ts');" +
+    'try { const v = await m.readQuotaView();' +
+    ' console.log(JSON.stringify({ ok: true, strategy: v.strategy, fiveHour: v.gemini.five_hour })); }' +
+    ' catch (e) { console.log(JSON.stringify({ ok: false, error: String(e) })); }';
+  const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: { ...process.env, HOME: home } });
+  return JSON.parse(proc.stdout.toString().trim());
+}
+
+function writeQuotaState(home: string, buckets: Record<string, unknown>): void {
+  const dir = path.join(home, '.gemini', 'antigravity-cli');
+  fs.mkdirSync(dir, { recursive: true });
+  const now = Math.floor(Date.now() / 1000);
+  fs.writeFileSync(path.join(dir, 'quota-state.json'), JSON.stringify({ schema: 2, updated_at: now, buckets }));
+}
+
+describe('readQuotaView', () => {
+  it('does not throw when no quota state exists', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.ok).toBe(true);
+  });
+
+  it('reports the gemini five-hour bucket from schema v2 state', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.2, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.5, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.fiveHour).toBe(0.2);
+  });
+
+  it('derives the conserve strategy from a tight gemini bucket', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.2, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.5, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('conserve');
+  });
+});
+
+describe('defaultEffortForSubagent keyword matching', () => {
+  it('does not treat "information" as a formatting task', () => {
+    const task = 'Investigate why the user information endpoint leaks data';
+
+    const effort = defaultEffortForSubagent('code_engineer', task);
+
+    expect(effort).toBe('medium');
+  });
+
+  it('still treats an explicit formatting request as low effort', () => {
+    const task = 'Please format this table';
+
+    const effort = defaultEffortForSubagent('code_engineer', task);
+
+    expect(effort).toBe('low');
+  });
+});
+
+describe('free-tier guard', () => {
+  it('accepts a model id with the :free suffix', () => {
+    const model = 'google/gemma-4-31b-it:free';
+
+    const free = isFreeModel(model);
+
+    expect(free).toBe(true);
+  });
+
+  it('rejects a paid model', () => {
+    const model = 'anthropic/claude-opus-5';
+
+    const run = () => assertFreeModel(model);
+
+    expect(run).toThrow('is not a free model');
+  });
+});
+
+describe('escalation request', () => {
+  it('sends the original prompt as the user message', () => {
+    const prompt = 'Summarise the release notes';
+
+    const messages = buildRouterCompletionMessages(prompt, 'Be brief');
+
+    expect(messages.at(-1)).toEqual({ role: 'user', content: prompt });
+  });
+
+  it('does not wrap the prompt in a JSON classification instruction', () => {
+    const prompt = 'Summarise the release notes';
+
+    const messages = buildRouterCompletionMessages(prompt);
+
+    expect(JSON.stringify(messages)).not.toContain('Respond ONLY with valid JSON');
+  });
+});
+
+describe('callOpenCodeAgent timeout', () => {
+  it('kills a hung opencode process after timeoutMs', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-oc-'));
+    const fakeBin = path.join(dir, 'opencode');
+    fs.writeFileSync(fakeBin, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+    const script =
+      "const m = await import('./src/index.ts');" +
+      "try { await m.callOpenCodeAgent({ prompt: 'x', timeoutMs: 300 }); console.log('no-timeout'); }" +
+      ' catch (e) { console.log(String(e.message)); }' +
+      ' process.exit(0);';
+
+    const proc = Bun.spawnSync(['bun', '-e', script], {
+      cwd: PLUGIN_ROOT,
+      env: { ...process.env, OPENCODE_BIN: fakeBin },
+      stdin: 'ignore',
+      timeout: 10_000
+    });
+
+    expect(proc.stdout.toString()).toContain('timed out after 300ms');
+  });
+});

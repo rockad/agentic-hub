@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# jev-mode: Switch and inspect TypeSafe Jev operating modes
+# Modes:
+#   - off:       MCP disabled, zero overhead, zero external calls
+#   - on-demand: MCP enabled, passive pre-flight routing for complex multi-role tasks
+#   - on:        MCP enabled, aggressive System 1 co-processor (pre-flight everything, free tier offload, quality gates)
+
+CONFIG_DIR="${HOME}/.config/jev"
+STATE_FILE="${CONFIG_DIR}/mode.json"
+TELEMETRY_FILE="${HOME}/.gemini/antigravity-cli/jev_telemetry.jsonl"
+
+mkdir -p "$CONFIG_DIR"
+
+# Ensure state file exists with default
+if [ ! -f "$STATE_FILE" ]; then
+  echo '{"mode":"on","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+fi
+
+CURRENT_MODE=$(jq -r '.mode // "on"' "$STATE_FILE" 2>/dev/null || echo "on")
+
+function check_agy() {
+  if ! command -v agy >/dev/null 2>&1; then
+    echo -e "\033[1;31mError: 'agy' CLI binary not found on PATH.\033[0m" >&2
+    exit 1
+  fi
+}
+
+function run_agy_mcp() {
+  check_agy
+  local action="$1"
+  if ! agy mcp "$action" jev; then
+    echo -e "\033[1;31mError: Failed to $action Jev MCP server via 'agy mcp $action jev'\033[0m" >&2
+    exit 1
+  fi
+}
+
+function show_status() {
+  check_agy
+  local mcp_output
+  if ! mcp_output=$(agy mcp list 2>&1); then
+    echo -e "\033[1;31mError: Failed to list MCP status via 'agy mcp list': ${mcp_output}\033[0m" >&2
+    exit 1
+  fi
+  local mcp_line
+  mcp_line=$(echo "$mcp_output" | grep -E '^jev[[:space:]]' || true)
+  local mcp_status="unknown"
+  if echo "$mcp_line" | grep -q "enabled"; then
+    mcp_status="enabled"
+  elif echo "$mcp_line" | grep -q "disabled"; then
+    mcp_status="disabled"
+  fi
+
+  echo -e "\033[1;36m=== TypeSafe Jev Operating Status ===\033[0m"
+  echo -e "  Active Mode:  \033[1;32m${CURRENT_MODE}\033[0m"
+  echo -e "  MCP Status:   \033[1;34m${mcp_status}\033[0m"
+  echo -e "  State File:   \033[90m${STATE_FILE}\033[0m"
+
+  echo -e "\n\033[1mMode Characteristics:\033[0m"
+  case "$CURRENT_MODE" in
+    off)
+      echo -e "  \033[33m[OFF]\033[0m MCP server disabled. Zero token overhead. Zero OpenRouter calls."
+      echo -e "  Antigravity operates strictly with built-in native tools."
+      ;;
+    on-demand)
+      echo -e "  \033[34m[ON-DEMAND]\033[0m MCP server enabled. Passive System 1 coprocessor."
+      echo -e "  Invoked selectively for complex multi-role workflows and ad-hoc free tier generation."
+      ;;
+    on)
+      echo -e "  \033[32m[ON - AGGRESSIVE]\033[0m Mandatory System 1 enforcement active:"
+      echo -e "  1. \033[1mPre-Flight Everything\033[0m: Non-trivial tasks dispatched via jev_dispatch to calibrate subagent role & tier."
+      echo -e "  2. \033[1mFree-Tier Offloading\033[0m: Boilerplate, text formatting, summaries, and commits offloaded to openrouter/free (\$0.00 cost, 0 quota)."
+      echo -e "  3. \033[1mAutomated Quality Gates\033[0m: Diff evaluations and pre-commit checks evaluated with jev_judge."
+      echo -e "  4. \033[1mSubagent Tier Guard\033[0m: Pro tier models strictly gated behind manual user approval."
+      ;;
+  esac
+
+  if [ -f "$TELEMETRY_FILE" ]; then
+    local count
+    count=$(wc -l < "$TELEMETRY_FILE" 2>/dev/null || echo "0")
+    echo -e "\n\033[1mLocal Telemetry:\033[0m ${count} total logged events"
+    if [ "$count" -gt 0 ]; then
+      echo -e "\033[90mRecent calls:\033[0m"
+      tail -n 3 "$TELEMETRY_FILE" | jq -r '"  - " + (.timestamp // "") + " [" + (.tool // "unknown") + "] " + (.status // "ok")' 2>/dev/null || true
+    fi
+  fi
+
+  echo -e "\n\033[90mUsage: jev <on|on-demand|off|status>\033[0m"
+}
+
+TARGET="${1:-status}"
+
+case "$TARGET" in
+  status|info)
+    show_status
+    ;;
+  off|disable)
+    echo '{"mode":"off","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    run_agy_mcp disable
+    echo -e "\033[33m✔ Jev mode set to OFF\033[0m (MCP disabled, zero token overhead)"
+    ;;
+  on-demand|ondemand)
+    echo '{"mode":"on-demand","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    run_agy_mcp enable
+    echo -e "\033[34m✔ Jev mode set to ON-DEMAND\033[0m (MCP enabled, passive routing for multi-role workflows)"
+    ;;
+  on|aggressive|enable)
+    echo '{"mode":"on","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    run_agy_mcp enable
+    echo -e "\033[32m✔ Jev mode set to ON\033[0m (Aggressive System 1 enforcement: pre-flight dispatch, free-tier offloading, strict quality gates)"
+    ;;
+  *)
+    echo "Usage: jev <on|on-demand|off|status>"
+    exit 1
+    ;;
+esac

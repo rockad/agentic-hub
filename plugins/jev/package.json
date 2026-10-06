@@ -1,0 +1,27 @@
+{
+  "name": "jev",
+  "version": "2.0.0",
+  "description": "TypeSafe Jev System 1 coprocessor, OpenRouter Decisions API gateway, and free-tier execution",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./opencode": "./opencode/plugin.ts"
+  },
+  "bin": {
+    "jev": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2"
+  }
+}

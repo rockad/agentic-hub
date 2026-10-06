@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run Test Suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Test Jev Plugin
+        run: |
+          cd plugins/jev
+          bun install --frozen-lockfile || bun install
+          bun test
+
+      - name: Test Merlin Bridge Plugin
+        run: |
+          cd plugins/merlin-bridge
+          bun install
+          bun test
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Test Local Transcribe Plugin
+        run: |
+          uv run --with numpy python3 -m unittest discover -s plugins/local-transcribe/evals -p "*test*.py"

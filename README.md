@@ -11,14 +11,15 @@ agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
 │   ├── chrome-browser/   # Persistent Windows Chrome browser automation via CDP & DevTools MCP
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration
-│   └── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
+│   ├── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
+│   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Diagnostic and repair tool for npx skills installs
-│   └── mcp-*/            # MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev)
+│   └── mcp-*/            # MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev, lookup, recall)
 ├── marketplace.json      # Google Antigravity plugin and skill marketplace manifest
 ├── AGENTS.md             # Canonical AI agent guidance
 └── LICENSE               # MIT Open Source License
@@ -53,12 +54,21 @@ agentic-hub/
 - **Skills included**:
   - `chrome-browser`: Navigation, tab management, web interaction, downscaled screenshots.
 
+### `plugins/memory`
+- **What it does**: Unified session memory umbrella wrapping Recall (knowledge graph @ `:8110`) and Lookup (FTS5 search @ `:8100`) for cross-harness state tracking and context retrieval.
+- **Key Features**:
+  - **Cross-Harness Coordination**: Bridges session goals, milestones, and next actions across Google Antigravity, OpenCode, and Claude Code.
+  - **Fail-Soft Local Cache**: Operates seamlessly even if daemons are offline by falling back to local `.agents/memory.json` / `.agents/MEMORY.md`.
+  - **CLI Tool**: Includes portable `scripts/memory.sh` managing state and transcript search.
+
 ### Standalone Skills
 - **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.
 - **`skills/markdown-convert`**: Convert PDFs, Office documents, and `.eml` emails to Markdown sidecar files with offline OCR fallback.
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.
 - **`skills/skills-doctor`**: Diagnose and repair `npx skills` installations across projects and global directories.
+- **`skills/mcp-lookup`**: Archive document search and retrieval wrapper over the `lookup` MCP server.
+- **`skills/mcp-recall`**: Knowledge graph and note retention wrapper over the `recall` MCP server.
 
 ---
 

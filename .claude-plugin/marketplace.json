@@ -23,6 +23,12 @@
       "source": "./plugins/chrome-browser",
       "description": "Chrome browser automation and DevTools Protocol bridge",
       "version": "1.0.0"
+    },
+    {
+      "name": "memory",
+      "source": "./plugins/memory",
+      "description": "Unified session memory umbrella wrapping Recall and Lookup with offline local caching",
+      "version": "1.0.0"
     }
   ]
 }

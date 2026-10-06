@@ -1,0 +1,18 @@
+{
+  "name": "memory",
+  "version": "1.0.0",
+  "description": "Unified Memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100)",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "keywords": [
+    "memory",
+    "recall",
+    "lookup",
+    "session-memory",
+    "session-handoff",
+    "antigravity",
+    "opencode",
+    "cross-harness"
+  ]
+}

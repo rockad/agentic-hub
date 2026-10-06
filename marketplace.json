@@ -30,6 +30,14 @@
       "description": "DevTools MCP browser automation, Lighthouse audits, and a11y/performance debugging.",
       "version": "1.0.0",
       "path": "plugins/chrome-browser"
+    },
+    {
+      "id": "memory",
+      "name": "Unified Session Memory & Context Bridge",
+      "description": "Unified session memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100).",
+      "version": "1.0.0",
+      "path": "plugins/memory",
+      "skills": ["plugins/memory/skills/memory"]
     }
   ],
   "standalone_skills": [
@@ -68,6 +76,14 @@
     {
       "id": "mcp-jev",
       "path": "skills/mcp-jev"
+    },
+    {
+      "id": "mcp-lookup",
+      "path": "skills/mcp-lookup"
+    },
+    {
+      "id": "mcp-recall",
+      "path": "skills/mcp-recall"
     }
   ]
 }

@@ -98,9 +98,8 @@ If that says *command not found*, open a new terminal — the installer adds
 That gives you two skills — `transcribe` and `record` — that you can ask for in
 plain language ("transcribe this recording, there were three of us").
 
-> [!note] The marketplace is **public** and the clone is anonymous — no
-> account, no token, nothing to sign up for. It is not on GitHub; the host is a
-> small self-hosted Gitea, which is why the URL looks unfamiliar. If it is
+> [!note] The marketplace is **public** and hosted on GitHub (`rockad/agentic-hub`).
+> The clone is anonymous — no account, no token, nothing to sign up for. If it is
 > unreachable from where you are, the plain-copy route below is the same
 > scripts, not a lesser version.
 

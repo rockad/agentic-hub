@@ -87,7 +87,11 @@ Install plugins directly from the Claude Code marketplace:
 ### OpenCode & Standalone Skills
 Install standalone skills via `npx skills`:
 ```bash
-npx skills add rockad/agentic-hub/skills/md-to-pdf
+# List available skills
+npx skills add rockad/agentic-hub -l
+
+# Install a specific skill
+npx skills add rockad/agentic-hub --skill md-to-pdf
 ```
 
 ## License

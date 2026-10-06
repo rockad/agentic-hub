@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.1.0-brightgreen)](https://github.com/agentic-hub/plugins/jev)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.0-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.1.0  
+**Version:** 2.3.0  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 

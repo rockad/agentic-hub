@@ -40,4 +40,4 @@ jobs:
 
       - name: Test Local Transcribe Plugin
         run: |
-          uv run --with numpy python3 -m unittest discover -s plugins/local-transcribe/evals -p "*test*.py"
+          uv run --with numpy --with imageio-ffmpeg python3 -m unittest discover -s plugins/local-transcribe/evals -p "*test*.py"

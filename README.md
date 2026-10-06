@@ -11,8 +11,7 @@ agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
 │   ├── chrome-browser/   # Persistent Windows Chrome browser automation via CDP & DevTools MCP
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration
-│   ├── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
-│   └── merlin-bridge/    # In-browser Chrome DevTools Protocol bridge & MCP server for Merlin AI
+│   └── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR
@@ -53,12 +52,6 @@ agentic-hub/
   - Automatically attaches via `--browserUrl=http://127.0.0.1:9222`.
 - **Skills included**:
   - `chrome-browser`: Navigation, tab management, web interaction, downscaled screenshots.
-
-### `plugins/merlin-bridge`
-- **What it does**: In-browser Chrome DevTools Protocol (CDP) bridge and MCP server for Merlin AI (`getmerlin.in`) utilizing an active Pro browser session.
-- **Key Features**:
-  - Exposes `merlin_complete` and `merlin_health` MCP tools.
-  - Manages background bridge daemon (`scripts/merlin-bridge-daemon.sh`).
 
 ### Standalone Skills
 - **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.

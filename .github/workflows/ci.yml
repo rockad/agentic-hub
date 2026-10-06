@@ -25,14 +25,6 @@ jobs:
           bun install --frozen-lockfile || bun install
           bun test
 
-      - name: Test Merlin Bridge Plugin
-        run: |
-          cd plugins/merlin-bridge
-          bun install --frozen-lockfile || bun install
-          bun run src/server.ts &
-          sleep 2
-          bun test
-
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
         with:

@@ -14,8 +14,7 @@ agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
 │   ├── chrome-browser/   # Persistent Windows Chrome browser automation via CDP / chrome-devtools-mcp
 │   ├── jev/              # Jev routing, scoring, model ceiling guard, and automated task execution
-│   ├── local-transcribe/ # Local Russian/English speech transcription and call recording
-│   └── merlin-bridge/    # In-browser Chrome DevTools Protocol bridge for Merlin AI
+│   └── local-transcribe/ # Local Russian/English speech transcription and call recording
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # Document to Markdown converter

@@ -30,14 +30,6 @@
       "description": "DevTools MCP browser automation, Lighthouse audits, and a11y/performance debugging.",
       "version": "1.0.0",
       "path": "plugins/chrome-browser"
-    },
-    {
-      "id": "merlin-bridge",
-      "name": "Merlin AI In-Browser CDP Bridge",
-      "description": "In-browser Chrome DevTools Protocol (CDP) bridge and MCP server for Merlin AI (getmerlin.in) using active Pro session.",
-      "version": "1.0.0",
-      "path": "plugins/merlin-bridge",
-      "skills": ["plugins/merlin-bridge/skills/merlin"]
     }
   ],
   "standalone_skills": [

@@ -306,30 +306,7 @@ async function setupInner(ctx: any, rawOptions?: any): Promise<() => void> {
   let pendingTarget: { ref: string; at: number } | null = null;
   let lastProbeAt = 0;
 
-  // Cached health check for Merlin CDP bridge (127.0.0.1:4340)
-  let lastMerlinHealthCheck = 0;
-  let isMerlinHealthy = false;
-  const checkMerlinAvailable = async (): Promise<boolean> => {
-    const now = Date.now();
-    if (now - lastMerlinHealthCheck < 15_000) return isMerlinHealthy;
-    try {
-      const res = await withTimeout(fetch('http://127.0.0.1:4340/health'), 150);
-      isMerlinHealthy = res.ok;
-    } catch {
-      isMerlinHealthy = false;
-    }
-    lastMerlinHealthCheck = now;
-    return isMerlinHealthy;
-  };
-
   const getAvailableCandidates = async (candidates: ModelCandidate[]): Promise<ModelCandidate[]> => {
-    if (!candidates.length) return [];
-    if (candidates.some((c) => c.providerModel.startsWith('merlin/'))) {
-      const merlinOk = await checkMerlinAvailable();
-      if (!merlinOk) {
-        return candidates.filter((c) => !c.providerModel.startsWith('merlin/'));
-      }
-    }
     return candidates;
   };
 

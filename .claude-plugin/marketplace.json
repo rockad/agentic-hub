@@ -23,12 +23,6 @@
       "source": "./plugins/chrome-browser",
       "description": "Chrome browser automation and DevTools Protocol bridge",
       "version": "1.0.0"
-    },
-    {
-      "name": "merlin-bridge",
-      "source": "./plugins/merlin-bridge",
-      "description": "In-browser Chrome DevTools Protocol bridge and MCP server for Merlin AI",
-      "version": "1.0.0"
     }
   ]
 }

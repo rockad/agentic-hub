@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lookup"
+version = "0.7.0"
+description = "Search over user corpora: an FTS5 index plus the extractors that feed it"
+requires-python = ">=3.14"   # dev box and image both 3.14; nothing below is tested
+dependencies = []          # stdlib only, deliberately -- see README
+
+[project.scripts]
+lookup = "lookup.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lookup = ["schema.sql"]

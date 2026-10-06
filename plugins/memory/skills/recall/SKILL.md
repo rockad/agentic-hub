@@ -1,5 +1,5 @@
 ---
-name: mcp-recall
+name: recall
 description: >
   Personal knowledge / memory management. Create, read, update, delete,
   and search notes and projects; build contextual bundles; inspect
@@ -18,10 +18,10 @@ metadata:
 
 # recall (MCP bridge)
 
-Personal memory / knowledge base, exposed to OpenCode.
+Personal memory / knowledge base, exposed to AI agents via MCP.
 
 ## Server
-- Registered natively in OpenCode global config (`mcp.servers`) via the antigravity bridge
+- Endpoint: `http://127.0.0.1:8110/mcp`
 - Tools: `write_note`, `read_note`, `search_notes`, `edit_note`,
   `delete_note`, `move_note`, `view_note`, `list_directory`,
   `create_memory_project`, `delete_project`, `list_memory_projects`,
@@ -58,6 +58,6 @@ mcp(recall/list_workspaces) {}
 ```
 
 ## Tips
-- Notes live under a `project`; use `default` if unsure.
+- Notes live under a `project`; use `corpus` or `default` if unsure.
 - `build_context` is the primary way to assemble task-relevant memory.
 - `schema_infer` / `schema_validate` help when migrating note formats.

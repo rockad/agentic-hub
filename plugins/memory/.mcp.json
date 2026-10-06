@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "recall": {
+      "url": "http://127.0.0.1:8110/mcp"
+    },
+    "lookup": {
+      "url": "http://127.0.0.1:8100/mcp"
+    }
+  }
+}

@@ -13,13 +13,16 @@ agentic-hub/
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration
 │   ├── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
 │   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
+│       ├── servers/lookup/ # Resident SQLite FTS5 search engine & extractors
+│       ├── skills/       # memory, lookup, recall
+│       └── docker-compose.yml # Dual-service daemon stack for recall & lookup
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Diagnostic and repair tool for npx skills installs
-│   └── mcp-*/            # MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev, lookup, recall)
+│   └── mcp-*/            # MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev)
 ├── marketplace.json      # Google Antigravity plugin and skill marketplace manifest
 ├── AGENTS.md             # Canonical AI agent guidance
 └── LICENSE               # MIT Open Source License
@@ -57,9 +60,12 @@ agentic-hub/
 ### `plugins/memory`
 - **What it does**: Unified session memory umbrella wrapping Recall (knowledge graph @ `:8110`) and Lookup (FTS5 search @ `:8100`) for cross-harness state tracking and context retrieval.
 - **Key Features**:
+  - **Relocated Lookup Engine**: Houses the complete, pure Python SQLite FTS5 search engine (`plugins/memory/servers/lookup/`) with robust extractors and MCP server.
+  - **Dual-Daemon Stack**: Supplies `docker-compose.yml` for running both `recall` (`basic-memory:0.23.2`) and `lookup`.
+  - **Three Bundled Skills**: `skills/memory` (cross-harness coordination), `skills/lookup` (archive/transcript search), and `skills/recall` (durable note/entity storage).
   - **Cross-Harness Coordination**: Bridges session goals, milestones, and next actions across Google Antigravity, OpenCode, and Claude Code.
   - **Fail-Soft Local Cache**: Operates seamlessly even if daemons are offline by falling back to local `.agents/memory.json` / `.agents/MEMORY.md`.
-  - **CLI Tool**: Includes portable `scripts/memory.sh` managing state and transcript search.
+  - **CLI Tool**: Portable `scripts/memory.sh` supporting `status`, `get`, `set`, `mark-done`, `search`, `up`, and `down`.
 
 ### Standalone Skills
 - **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.
@@ -67,8 +73,6 @@ agentic-hub/
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.
 - **`skills/skills-doctor`**: Diagnose and repair `npx skills` installations across projects and global directories.
-- **`skills/mcp-lookup`**: Archive document search and retrieval wrapper over the `lookup` MCP server.
-- **`skills/mcp-recall`**: Knowledge graph and note retention wrapper over the `recall` MCP server.
 
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: mcp-lookup
+name: lookup
 description: >
   Archive document lookup and search. Use when the user asks to find a
   specific document, check archive statistics, or refresh the index.
@@ -16,10 +16,10 @@ metadata:
 
 # lookup (MCP bridge)
 
-Archive search service, exposed to OpenCode.
+Archive search service, exposed to AI agents via MCP.
 
 ## Server
-- Registered natively in OpenCode global config (`mcp.servers`) via the antigravity bridge
+- Endpoint: `http://127.0.0.1:8100/mcp`
 - Tools: `search_archive`, `get_document`, `refresh_index`, `archive_stats`
 
 ## How to use
@@ -31,7 +31,7 @@ mcp(lookup/search_archive) { "query": "quarterly report 2025", "limit": 10 }
 
 ### Get a specific document
 ```
-mcp(lookup/get_document) { "id": "doc-12345" }
+mcp(lookup/get_document) { "doc_key": "doc-12345" }
 ```
 
 ### Refresh the index
@@ -45,6 +45,6 @@ mcp(lookup/archive_stats) {}
 ```
 
 ## Tips
-- Search returns ranked results; `limit` caps the number returned.
-- After `refresh_index`, existing cached results may be stale.
+- Search returns ranked results grouped by source; `limit` caps the number returned per source.
+- After `refresh_index`, existing cached results may be updated.
 - Use `archive_stats` to confirm the index is populated before searching.

@@ -37,7 +37,11 @@
       "description": "Unified session memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100).",
       "version": "1.0.0",
       "path": "plugins/memory",
-      "skills": ["plugins/memory/skills/memory"]
+      "skills": [
+        "plugins/memory/skills/memory",
+        "plugins/memory/skills/lookup",
+        "plugins/memory/skills/recall"
+      ]
     }
   ],
   "standalone_skills": [
@@ -76,14 +80,6 @@
     {
       "id": "mcp-jev",
       "path": "skills/mcp-jev"
-    },
-    {
-      "id": "mcp-lookup",
-      "path": "skills/mcp-lookup"
-    },
-    {
-      "id": "mcp-recall",
-      "path": "skills/mcp-recall"
     }
   ]
 }

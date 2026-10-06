@@ -8,6 +8,8 @@ yarn-error.log*
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+sources.toml
 .venv/
 env/
 venv/

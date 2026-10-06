@@ -9,6 +9,8 @@
 #   ./scripts/memory.sh mark-done <milestone>
 #   ./scripts/memory.sh search <query>
 #   ./scripts/memory.sh dump-markdown
+#   ./scripts/memory.sh up [-d]
+#   ./scripts/memory.sh down
 
 set -euo pipefail
 
@@ -406,8 +408,48 @@ case "${cmd}" in
     echo "Generated ${MEMORY_MD} and ${HANDOFF_MD}"
     ;;
 
+  up)
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "Error: docker is not installed or not available in PATH" >&2
+      exit 1
+    fi
+    compose_file=""
+    if [[ -f "${SCRIPT_DIR}/../docker-compose.yml" ]]; then
+      compose_file="${SCRIPT_DIR}/../docker-compose.yml"
+    elif [[ -f "${REPO_ROOT}/plugins/memory/docker-compose.yml" ]]; then
+      compose_file="${REPO_ROOT}/plugins/memory/docker-compose.yml"
+    fi
+
+    if [[ -z "${compose_file}" || ! -f "${compose_file}" ]]; then
+      echo "Error: docker-compose.yml not found for memory plugin" >&2
+      exit 1
+    fi
+    echo "Starting memory stack using ${compose_file}..."
+    docker compose -f "${compose_file}" up -d "$@"
+    ;;
+
+  down)
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "Error: docker is not installed or not available in PATH" >&2
+      exit 1
+    fi
+    compose_file=""
+    if [[ -f "${SCRIPT_DIR}/../docker-compose.yml" ]]; then
+      compose_file="${SCRIPT_DIR}/../docker-compose.yml"
+    elif [[ -f "${REPO_ROOT}/plugins/memory/docker-compose.yml" ]]; then
+      compose_file="${REPO_ROOT}/plugins/memory/docker-compose.yml"
+    fi
+
+    if [[ -z "${compose_file}" || ! -f "${compose_file}" ]]; then
+      echo "Error: docker-compose.yml not found for memory plugin" >&2
+      exit 1
+    fi
+    echo "Stopping memory stack using ${compose_file}..."
+    docker compose -f "${compose_file}" down "$@"
+    ;;
+
   *)
-    echo "Usage: $0 {status|get|set|mark-done|search|dump-markdown}" >&2
+    echo "Usage: $0 {status|get|set|mark-done|search|dump-markdown|up|down}" >&2
     exit 1
     ;;
 esac

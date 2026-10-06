@@ -1,0 +1,69 @@
+name: memory
+
+services:
+  recall:
+    image: ghcr.io/basicmachines-co/basic-memory:0.23.2
+    command:
+      - basic-memory
+      - mcp
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --path
+      - /mcp
+    ports:
+      - "${RECALL_PORT:-8110}:8000"
+    environment:
+      BASIC_MEMORY_PROJECT_ROOT: /app/data
+      BASIC_MEMORY_DEFAULT_PROJECT: ${RECALL_PROJECT:-corpus}
+      BASIC_MEMORY_HOME: /app/data/basic-memory
+      BASIC_MEMORY_SEMANTIC_SEARCH_ENABLED: "true"
+      BASIC_MEMORY_RERANKER_ENABLED: "true"
+      BASIC_MEMORY_RERANKER_PROVIDER: fastembed
+      BASIC_MEMORY_RERANKER_MODEL: jinaai/jina-reranker-v1-tiny-en
+      BASIC_MEMORY_RERANKER_MAX_DOCUMENT_CHARS: "1000"
+      BASIC_MEMORY_RERANKER_CANDIDATES: "10"
+      BASIC_MEMORY_SEMANTIC_EMBEDDING_PROVIDER: fastembed
+      BASIC_MEMORY_SEMANTIC_EMBEDDING_MODEL: bge-small-en-v1.5
+      BASIC_MEMORY_SEMANTIC_EMBEDDING_DIMENSIONS: "384"
+      BASIC_MEMORY_NO_PROMOS: "1"
+      FASTMCP_STATELESS_HTTP: "true"
+    volumes:
+      - recall_state:/home/appuser/.basic-memory
+      - recall_default:/app/data/basic-memory
+      - ${RECALL_CORPUS:-~/.local/share/recall/corpus}:/app/data/corpus
+    restart: unless-stopped
+
+  lookup:
+    build:
+      context: ./servers/lookup
+      dockerfile: Dockerfile
+    image: lookup:local
+    ports:
+      - "${LOOKUP_PORT:-8100}:8100"
+    command:
+      - mcp
+      - --http
+      - --port=8100
+      - --reingest-interval=300
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    environment:
+      LOOKUP_MANIFEST: /app/manifest/${LOOKUP_MANIFEST_FILE:-sources.toml}
+      LOOKUP_DB: /data/index.db
+      LOOKUP_HOME: ${LOOKUP_HOME:-/home}
+      SHARE_USER: ${SHARE_USER:-}
+      SHARE_PASS: ${SHARE_PASS:-}
+    volumes:
+      - ${LOOKUP_MANIFEST_DIR:-./servers/lookup}:/app/manifest:ro
+      - ${LOOKUP_DATA:-lookup_data}:/data
+    restart: unless-stopped
+
+volumes:
+  recall_state:
+  recall_default:
+  lookup_data:

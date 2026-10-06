@@ -5,6 +5,11 @@
   "author": {
     "name": "Aleksandr Korolev"
   },
+  "skills": [
+    "skills/memory",
+    "skills/lookup",
+    "skills/recall"
+  ],
   "keywords": [
     "memory",
     "recall",

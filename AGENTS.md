@@ -16,15 +16,16 @@ agentic-hub/
 │   ├── jev/              # Jev routing, scoring, model ceiling guard, and automated task execution
 │   ├── local-transcribe/ # Local Russian/English speech transcription and call recording
 │   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
+│       ├── servers/lookup/ # Relocated FTS5 search engine & extractors
+│       ├── skills/       # memory, lookup, recall
+│       └── docker-compose.yml # Resident daemon compose stack
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # Document to Markdown converter
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Skills installation repair utility
-│   ├── mcp-lookup/       # Document archive search wrapper over lookup MCP server
-│   ├── mcp-recall/       # Knowledge graph and note retention wrapper over recall MCP server
-│   └── mcp-*/            # Other MCP documentation wrappers
+│   └── mcp-*/            # Other MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev)
 └── marketplace.json      # Public marketplace manifest
 ```
 
@@ -54,4 +55,22 @@ agentic-hub/
   - Free Execution: `openrouter/free` pool (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`, `nvidia/nemotron-3.5-lightning:free`).
 - **Quality Gate Scripts**:
   - `commit.ts` (`dg-commit`): Semantic commit generator using free models and `jev_judge` validation. Enforces strict quality gate blocking (`noul >= 0.35` required, exits code 1 if rejected unless overridden with `--force` or `--no-verify`).
+
+## `plugins/memory` — Unified Session Memory Umbrella
+
+`plugins/memory` coordinates durable memory state, cross-harness handoffs, and full-text transcript search.
+
+- **Architecture**:
+  - **Recall (`http://127.0.0.1:8110/mcp`)**: Structured entities, semantic search, and `session-memory:<workspace>` notes.
+  - **Lookup (`http://127.0.0.1:8100/mcp`)**: Fast SQLite FTS5 search engine over session transcripts, docs, and archives.
+  - **Local Disk Fallback**: Automatic fail-soft persistence in `.agents/memory.json` / `.agents/MEMORY.md`.
+- **Bundled Skills**:
+  - `memory`: Cross-harness session goal and milestone coordination.
+  - `lookup`: Full-text document and transcript archive search.
+  - `recall`: Durable note creation, semantic search, and project entities.
+- **CLI (`scripts/memory.sh`)**:
+  - `memory.sh status` / `get` / `set` / `mark-done` / `search` / `up` / `down`.
+- **Daemon Stack (`docker-compose.yml`)**:
+  - Brings up `recall` (`basic-memory:0.23.2`) and builds `lookup` (`servers/lookup/Dockerfile`).
+
 

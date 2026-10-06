@@ -28,7 +28,9 @@ jobs:
       - name: Test Merlin Bridge Plugin
         run: |
           cd plugins/merlin-bridge
-          bun install
+          bun install --frozen-lockfile || bun install
+          bun run src/server.ts &
+          sleep 2
           bun test
 
       - name: Setup uv

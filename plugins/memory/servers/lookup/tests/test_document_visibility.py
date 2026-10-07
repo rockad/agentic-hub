@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from lookup import config, db, manifest, pipeline
 from lookup.extract.common import front_matter_visibility

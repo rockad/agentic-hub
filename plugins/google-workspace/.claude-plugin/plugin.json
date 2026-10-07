@@ -1,0 +1,16 @@
+{
+  "name": "google-workspace",
+  "displayName": "Google Workspace",
+  "description": "Google Workspace integration: Gmail (search, read, draft) and Calendar (events, freebusy).",
+  "version": "1.0.0",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "keywords": [
+    "google",
+    "workspace",
+    "gmail",
+    "calendar",
+    "mcp"
+  ]
+}

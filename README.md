@@ -9,7 +9,9 @@ agentic-hub/
 ├── .claude-plugin/       # Claude Code plugin registry manifest
 │   └── marketplace.json
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
-│   ├── chrome-browser/   # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
+│   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration
 │   ├── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
 │   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
@@ -21,8 +23,7 @@ agentic-hub/
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
-│   ├── skills-doctor/    # Diagnostic and repair tool for npx skills installs
-│   └── mcp-*/            # MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev)
+│   └── skills-doctor/    # Diagnostic and repair tool for npx skills installs
 ├── marketplace.json      # Google Antigravity plugin and skill marketplace manifest
 ├── AGENTS.md             # Canonical AI agent guidance
 └── LICENSE               # MIT Open Source License
@@ -49,13 +50,23 @@ agentic-hub/
   - **Speaker Separation & Naming**: Heuristic and diarization-based speaker labelling with vocabulary spelling correction.
   - **Zero-Cloud Privacy**: Processes audio strictly on local GPU/CPU hardware.
 
-### `plugins/chrome-browser`
+### `plugins/chrome-devtools`
 - **What it does**: Controls a native Google Chrome browser instance from Linux/WSL or desktop using the Chrome DevTools Protocol (`chrome-devtools-mcp`).
 - **Resilience**:
   - Automatically launches Chrome with `--remote-debugging-port=9222`, `--remote-allow-origins=*`, and an isolated persistent profile directory if not already running.
   - Automatically attaches via `--browserUrl=http://127.0.0.1:9222`.
 - **Skills included**:
-  - `chrome-browser`: Navigation, tab management, web interaction, downscaled screenshots.
+  - `chrome-devtools`: Navigation, tab management, web interaction, accessibility snapshots, downscaled screenshots, and Lighthouse audits.
+
+### `plugins/gitea`
+- **What it does**: Gitea repository inspection, issue reading, commit history inspection, and tree exploration via `gitea-mcp`.
+- **Skills included**:
+  - `gitea`: Repository search, file reading/writing, commit and issue inspection.
+
+### `plugins/google-workspace`
+- **What it does**: Google Workspace integration covering Gmail (search, read, draft) and Calendar (events, freebusy) via `workspace-mcp`.
+- **Skills included**:
+  - `google-workspace`: Mail triage, draft creation, and calendar scheduling.
 
 ### `plugins/memory`
 - **What it does**: Unified session memory umbrella wrapping Recall (knowledge graph @ `:8110`) and Lookup (FTS5 search @ `:8100`) for cross-harness state tracking and context retrieval.

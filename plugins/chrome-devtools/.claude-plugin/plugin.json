@@ -1,0 +1,22 @@
+{
+  "name": "chrome-devtools",
+  "displayName": "Chrome DevTools Browser Automation",
+  "description": "Browser automation via Chrome DevTools Protocol.",
+  "version": "1.0.0",
+  "disabled": true,
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "skills": [
+    "skills/chrome-devtools"
+  ],
+  "keywords": [
+    "chrome",
+    "browser",
+    "devtools",
+    "mcp",
+    "automation",
+    "wsl",
+    "windows"
+  ]
+}

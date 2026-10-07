@@ -12,7 +12,9 @@ This file provides guidance to Google Antigravity (CLI and IDE), Claude Code, an
 ```
 agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
-│   ├── chrome-browser/   # Persistent Windows Chrome browser automation via CDP / chrome-devtools-mcp
+│   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
+│   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # Jev routing, scoring, model ceiling guard, and automated task execution
 │   ├── local-transcribe/ # Local Russian/English speech transcription and call recording
 │   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
@@ -24,8 +26,7 @@ agentic-hub/
 │   ├── markdown-convert/ # Document to Markdown converter
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
-│   ├── skills-doctor/    # Skills installation repair utility
-│   └── mcp-*/            # Other MCP documentation wrappers (chrome-devtools, gitea, google-workspace, jev)
+│   └── skills-doctor/    # Skills installation repair utility
 └── marketplace.json      # Public marketplace manifest
 ```
 

@@ -1,5 +1,5 @@
 ---
-name: mcp-gitea
+name: gitea
 description: >
   Gitea repository operations: list/search repos, read issues and commits,
   get file contents and repository trees, create or update files. Use when
@@ -14,12 +14,11 @@ metadata:
   mcp: gitea
 ---
 
-# gitea (MCP bridge)
+# Gitea Repositories Skill
 
-Gitea repository interface, exposed to OpenCode.
+Gitea repository interface for AI agents, exposed via the `gitea` MCP server.
 
 ## Server
-- Registered natively in OpenCode global config (`mcp.servers`) via the antigravity bridge
 - Tools: `list_my_repos`, `search_repos`, `list_issues`, `issue_read`,
   `list_commits`, `get_commit`, `get_file_contents`, `get_repository_tree`,
   `create_or_update_file`, `actions_run_read`

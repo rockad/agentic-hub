@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "google-workspace": {
+      "command": "uvx",
+      "args": [
+        "workspace-mcp",
+        "--tools",
+        "gmail",
+        "calendar",
+        "--single-user"
+      ]
+    }
+  }
+}

@@ -1,5 +1,5 @@
 ---
-name: mcp-google-workspace
+name: google-workspace
 description: >
   Google Workspace operations: Gmail (search, read, send, draft, labels),
   Calendar (events, focus time, out of office, free/busy), Drive
@@ -16,12 +16,11 @@ metadata:
   mcp: google-workspace
 ---
 
-# google-workspace (MCP bridge)
+# Google Workspace Skill
 
-Google Workspace (Gmail, Calendar, Drive) operations, exposed to OpenCode.
+Google Workspace (Gmail, Calendar, Drive) operations for AI agents, exposed via the `google-workspace` MCP server.
 
 ## Server
-- Registered natively in OpenCode global config (`mcp.servers`) via the antigravity bridge
 - Tools: 32 tools covering Gmail, Calendar, and Drive integration.
 
 ## How to use (common patterns)
@@ -83,7 +82,7 @@ mcp(google-workspace/manage_event) {
   "calendar_id": "primary",
   "summary": "Team sync",
   "start_time": "2026-09-30T10:00:00Z",
-  "end_time": "2026-09-30T11:00:00Z"
+  "end_time": "2026-10-01T11:00:00Z"
 }
 ```
 
@@ -105,9 +104,7 @@ mcp(google-workspace/query_freebusy) {
 
 ## Tips
 - Every tool requires `user_google_email` (your personal account).
-- `search_gmail_messages` with `include_headers: true` returns
-  Subject/From/Date inline — useful for quick triage.
-- For large messages, use `get_gmail_message_content` with `full: true`
-  and `body_format: "raw"` to get a downloadable .eml.
-- `batch_modify_gmail_message_labels` is more efficient than calling
-  `modify_gmail_message_labels` in a loop.
+- Always default to creating drafts (`draft_gmail_message`) rather than directly sending messages (`send_gmail_message`).
+- `search_gmail_messages` with `include_headers: true` returns Subject/From/Date inline — useful for quick triage.
+- For large messages, use `get_gmail_message_content` with `full: true` and `body_format: "raw"` to get a downloadable .eml.
+- `batch_modify_gmail_message_labels` is more efficient than calling `modify_gmail_message_labels` in a loop.

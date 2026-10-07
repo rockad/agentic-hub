@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gitea": {
+      "command": "gitea-mcp",
+      "env": {
+        "GITEA_HOST": "${GITEA_HOST:-git.bigrockad.com}",
+        "GITEA_ACCESS_TOKEN": "${GITEA_ACCESS_TOKEN}"
+      }
+    }
+  }
+}

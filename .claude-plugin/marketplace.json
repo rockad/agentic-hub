@@ -19,8 +19,8 @@
       "version": "1.1.0"
     },
     {
-      "name": "chrome-browser",
-      "source": "./plugins/chrome-browser",
+      "name": "chrome-devtools",
+      "source": "./plugins/chrome-devtools",
       "description": "Chrome browser automation and DevTools Protocol bridge",
       "version": "1.0.0"
     },
@@ -28,6 +28,18 @@
       "name": "memory",
       "source": "./plugins/memory",
       "description": "Unified session memory umbrella wrapping Recall and Lookup with offline local caching",
+      "version": "1.0.0"
+    },
+    {
+      "name": "gitea",
+      "source": "./plugins/gitea",
+      "description": "Gitea repository inspection, issue reading, and commit inspection",
+      "version": "1.0.0"
+    },
+    {
+      "name": "google-workspace",
+      "source": "./plugins/google-workspace",
+      "description": "Google Workspace integration: Gmail and Google Calendar",
       "version": "1.0.0"
     }
   ]

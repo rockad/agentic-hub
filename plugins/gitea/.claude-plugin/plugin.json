@@ -1,0 +1,17 @@
+{
+  "name": "gitea",
+  "displayName": "Gitea Repositories",
+  "description": "Gitea repository inspection, issue reading, and commit inspection.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "keywords": [
+    "gitea",
+    "git",
+    "mcp",
+    "repositories",
+    "issues",
+    "commits"
+  ]
+}

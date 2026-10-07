@@ -3,7 +3,7 @@
   "name": "Rockad Agentic Hub Marketplace",
   "description": "Public Antigravity Plugin & Skill Marketplace for provider-agnostic agent capabilities",
   "repository": "https://github.com/rockad/agentic-hub.git",
-  "updated_at": "2026-10-06T15:47:00Z",
+  "updated_at": "2026-10-07T07:00:00Z",
   "plugins": [
     {
       "id": "jev",
@@ -25,11 +25,12 @@
       ]
     },
     {
-      "id": "chrome-devtools-plugin",
+      "id": "chrome-devtools",
       "name": "Chrome DevTools Browser Automation",
       "description": "DevTools MCP browser automation, Lighthouse audits, and a11y/performance debugging.",
       "version": "1.0.0",
-      "path": "plugins/chrome-browser"
+      "path": "plugins/chrome-devtools",
+      "skills": ["plugins/chrome-devtools/skills/chrome-devtools"]
     },
     {
       "id": "memory",
@@ -42,6 +43,22 @@
         "plugins/memory/skills/lookup",
         "plugins/memory/skills/recall"
       ]
+    },
+    {
+      "id": "gitea",
+      "name": "Gitea Repositories",
+      "description": "Gitea repository inspection, issue reading, and commit inspection.",
+      "version": "1.0.0",
+      "path": "plugins/gitea",
+      "skills": ["plugins/gitea/skills/gitea"]
+    },
+    {
+      "id": "google-workspace",
+      "name": "Google Workspace",
+      "description": "Google Workspace integration: Gmail (search, read, draft) and Calendar (events, freebusy).",
+      "version": "1.0.0",
+      "path": "plugins/google-workspace",
+      "skills": ["plugins/google-workspace/skills/google-workspace"]
     }
   ],
   "standalone_skills": [
@@ -64,22 +81,6 @@
     {
       "id": "skills-doctor",
       "path": "skills/skills-doctor"
-    },
-    {
-      "id": "mcp-chrome-devtools",
-      "path": "skills/mcp-chrome-devtools"
-    },
-    {
-      "id": "mcp-gitea",
-      "path": "skills/mcp-gitea"
-    },
-    {
-      "id": "mcp-google-workspace",
-      "path": "skills/mcp-google-workspace"
-    },
-    {
-      "id": "mcp-jev",
-      "path": "skills/mcp-jev"
     }
   ]
 }

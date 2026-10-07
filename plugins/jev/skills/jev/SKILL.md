@@ -29,7 +29,7 @@ Use this skill when the user or agent needs to inspect or switch TypeSafe Jev op
 To inspect the active operating mode, configuration state, and mode characteristics:
 
 - **Via MCP Tool (Chat Interface)**:
-  Call `jev_get_mode` (or `call_mcp_tool` with `ServerName: "jev"`, `ToolName: "jev_get_mode"`, `Arguments: {}`).
+  Call `jev_get_mode` (or `call_mcp_tool` with `ServerName: "jev_jev"` or `"jev"`, `ToolName: "jev_get_mode"`, `Arguments: {}`).
 - **Via Terminal**:
   Run `jev status` or `jev` (or `~/.local/bin/jev-mode status`).
 

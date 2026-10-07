@@ -29,35 +29,61 @@ export const FALLBACK_TIMEOUT_MS = Number(process.env.JEV_FALLBACK_TIMEOUT_MS ||
 export const JEV_INPUT_COST_PER_MILLION = 0.042; // $0.042 per 1M input tokens
 export const FALLBACK_INPUT_COST_PER_MILLION = 0.15; // $0.15 per 1M tokens
 
-function openRouterKey(): string {
-  // Jev runs on its own dedicated OpenRouter key so this session's general
-  // OPENROUTER_API_KEY (used for chat/models) is never billed for Jev traffic.
-  const key = process.env.JEV_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
-  if (!key) throw new Error('JEV_OPENROUTER_API_KEY (or OPENROUTER_API_KEY) is not set');
-  return key;
-}
-
 /**
  * Load simple KEY=VALUE pairs from a .env file into process.env (without
- * overwriting existing values). Shared so the OpenCode plugin can pick up the
+ * overwriting existing non-empty values). Shared so the OpenCode plugin can pick up the
  * key the same way the MCP server does.
  */
+function isPlaceholder(val?: string): boolean {
+  return !val || val === '' || val.startsWith('${') || val.startsWith('$');
+}
+
 export function loadEnvFile(filePath: string): void {
   try {
     if (!fsSync.existsSync(filePath)) return;
     const raw = fsSync.readFileSync(filePath, 'utf8');
     for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
+      let trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
+      if (trimmed.startsWith('export ')) trimmed = trimmed.slice(7).trim();
       const eq = trimmed.indexOf('=');
       if (eq === -1) continue;
       const k = trimmed.slice(0, eq).trim();
-      const v = trimmed.slice(eq + 1).trim();
-      if (k && !process.env[k]) process.env[k] = v;
+      let v = trimmed.slice(eq + 1).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1);
+      }
+      if (k && (!process.env[k] || isPlaceholder(process.env[k]))) {
+        process.env[k] = v;
+      }
     }
   } catch {
     // ignore
   }
+}
+
+function ensureSecretsLoaded(): void {
+  if (isPlaceholder(process.env.JEV_OPENROUTER_API_KEY) && isPlaceholder(process.env.OPENROUTER_API_KEY)) {
+    loadEnvFile(path.join(os.homedir(), '.config', 'zsh', 'secrets.env'));
+    loadEnvFile(path.join(os.homedir(), '.config', 'jev', 'env'));
+    loadEnvFile(path.join(os.homedir(), '.gemini', 'config', 'plugins', 'jev', '.env'));
+  }
+}
+
+ensureSecretsLoaded();
+
+function openRouterKey(): string {
+  // Jev runs on its own dedicated OpenRouter key so this session's general
+  // OPENROUTER_API_KEY (used for chat/models) is never billed for Jev traffic.
+  ensureSecretsLoaded();
+  let key = process.env.JEV_OPENROUTER_API_KEY;
+  if (isPlaceholder(key)) {
+    key = process.env.OPENROUTER_API_KEY;
+  }
+  if (!key || isPlaceholder(key)) {
+    throw new Error('JEV_OPENROUTER_API_KEY (or OPENROUTER_API_KEY) is not set');
+  }
+  return key;
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {

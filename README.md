@@ -84,6 +84,7 @@ agentic-hub/
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.
 - **`skills/skills-doctor`**: Diagnose and repair `npx skills` installations across projects and global directories.
+- **`skills/mcp-toggle`**: Context window optimizer; inspect and toggle on-demand MCP plugins (`chrome-devtools`, `google-workspace`, `jev`) saving ~22,000–24,000 tokens per turn.
 
 ---
 

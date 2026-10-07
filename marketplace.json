@@ -81,6 +81,10 @@
     {
       "id": "skills-doctor",
       "path": "skills/skills-doctor"
+    },
+    {
+      "id": "mcp-toggle",
+      "path": "skills/mcp-toggle"
     }
   ]
 }

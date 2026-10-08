@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   modelRank,
@@ -178,5 +179,17 @@ describe('hook process', () => {
     const proc = Bun.spawnSync(['bun', path.join(PLUGIN_ROOT, 'claude/hook.ts'), 'user-prompt-submit'], { stdin });
 
     expect([proc.exitCode, proc.stdout.toString()]).toEqual([0, '']);
+  });
+});
+
+describe('plugin manifest', () => {
+  it('points Claude Code at the hooks file', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, '.claude-plugin/plugin.json'), 'utf8'));
+    // Claude Code reads hooks/hooks.json by default, or the path in the manifest's "hooks" field.
+    const hooksFile = path.join(PLUGIN_ROOT, manifest.hooks ?? 'hooks/hooks.json');
+
+    const events = fs.existsSync(hooksFile) ? Object.keys(JSON.parse(fs.readFileSync(hooksFile, 'utf8')).hooks) : [];
+
+    expect(events).toContain('SessionStart');
   });
 });

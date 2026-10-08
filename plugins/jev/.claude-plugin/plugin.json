@@ -13,5 +13,6 @@
     "system-1",
     "mcp",
     "reasoning"
-  ]
+  ],
+  "hooks": "./claude/hooks.json"
 }

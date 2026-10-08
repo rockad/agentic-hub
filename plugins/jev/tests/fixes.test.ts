@@ -15,13 +15,13 @@ const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
  * QUOTA_STATE_FILE is resolved from the home directory at import time, so the
  * quota view is exercised in a child process with its own HOME.
  */
-function quotaViewUnderHome(home: string): { ok: boolean; strategy?: string; fiveHour?: number | null; error?: string } {
+function quotaViewUnderHome(home: string, extraEnv: Record<string, string> = {}): { ok: boolean; strategy?: string; fiveHour?: number | null; error?: string } {
   const script =
     "const m = await import('./src/shared.ts');" +
     'try { const v = await m.readQuotaView();' +
     ' console.log(JSON.stringify({ ok: true, strategy: v.strategy, fiveHour: v.gemini.five_hour })); }' +
     ' catch (e) { console.log(JSON.stringify({ ok: false, error: String(e) })); }';
-  const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: { ...process.env, HOME: home } });
+  const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: { ...process.env, ...extraEnv, HOME: home } });
   return JSON.parse(proc.stdout.toString().trim());
 }
 
@@ -54,12 +54,100 @@ describe('readQuotaView', () => {
     expect(view.fiveHour).toBe(0.2);
   });
 
-  it('derives the conserve strategy from a tight gemini bucket', () => {
+  it('derives the conserve strategy when 5h quota is <= 30%', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
     const resetAt = Math.floor(Date.now() / 1000) + 3600;
     writeQuotaState(home, {
-      'gemini-5h': { remaining_fraction: 0.2, reset_at: resetAt },
-      'gemini-weekly': { remaining_fraction: 0.5, reset_at: resetAt }
+      'gemini-5h': { remaining_fraction: 0.28, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.50, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('conserve');
+  });
+
+  it('derives the conserve strategy when weekly (7d) quota is <= 20%', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.60, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.18, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('conserve');
+  });
+
+  it('derives normal strategy when both 5h > 30% and weekly > 20%', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.35, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.25, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('normal');
+  });
+
+  it('derives free_only when quota is critically exhausted (5h <= 10% or weekly <= 10%)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.08, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.50, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('free_only');
+  });
+
+  it('derives free_only when weekly quota is critically exhausted (<= 10%)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.50, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.09, reset_at: resetAt }
+    });
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.strategy).toBe('free_only');
+  });
+
+  it('honours environment variable threshold overrides', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.45, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.50, reset_at: resetAt }
+    });
+
+    // Default 5h threshold is 0.30 (so 0.45 is normal). Override to 0.50 -> should conserve.
+    const view = quotaViewUnderHome(home, { JEV_QUOTA_5H_NORMAL_MIN: '0.50' });
+
+    expect(view.strategy).toBe('conserve');
+  });
+
+  it('honours config file threshold overrides (~/.config/jev/config.json)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const configDir = path.join(home, '.config', 'jev');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+      thresholds: {
+        five_hour_normal_min: 0.60,
+        weekly_normal_min: 0.40
+      }
+    }));
+
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.50, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.50, reset_at: resetAt }
     });
 
     const view = quotaViewUnderHome(home);

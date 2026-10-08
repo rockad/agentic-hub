@@ -508,9 +508,109 @@ export async function readJevMode(): Promise<JevMode> {
 export const QUOTA_STATE_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'quota-state.json');
 export const QUOTA_LEGACY_FILE = '/tmp/antigravity-quota.json';
 
-export const QUOTA_NORMAL_MIN = Number(process.env.JEV_QUOTA_NORMAL_MIN || 0.3);
-export const QUOTA_CONSERVE_MIN = Number(process.env.JEV_QUOTA_CONSERVE_MIN || 0.15);
+export const DEFAULT_5H_NORMAL_MIN = 0.30;
+export const DEFAULT_5H_CONSERVE_MIN = 0.10;
+export const DEFAULT_WEEKLY_NORMAL_MIN = 0.20;
+export const DEFAULT_WEEKLY_CONSERVE_MIN = 0.10;
+
+export const QUOTA_NORMAL_MIN = DEFAULT_5H_NORMAL_MIN;
+export const QUOTA_CONSERVE_MIN = DEFAULT_5H_CONSERVE_MIN;
+export const QUOTA_5H_NORMAL_MIN = DEFAULT_5H_NORMAL_MIN;
+export const QUOTA_5H_CONSERVE_MIN = DEFAULT_5H_CONSERVE_MIN;
+export const QUOTA_WEEKLY_NORMAL_MIN = DEFAULT_WEEKLY_NORMAL_MIN;
+export const QUOTA_WEEKLY_CONSERVE_MIN = DEFAULT_WEEKLY_CONSERVE_MIN;
 const QUOTA_STALE_SECONDS = Number(process.env.JEV_QUOTA_STALE_SECONDS || 15 * 60);
+
+export const JEV_CONFIG_FILE = path.join(os.homedir(), '.config', 'jev', 'config.json');
+
+export interface QuotaThresholds {
+  normal_min: number;
+  conserve_min: number;
+  five_hour_normal_min: number;
+  five_hour_conserve_min: number;
+  weekly_normal_min: number;
+  weekly_conserve_min: number;
+}
+
+export function getQuotaThresholds(): QuotaThresholds {
+  ensureSecretsLoaded();
+
+  let fileConfig: any = {};
+  try {
+    if (fsSync.existsSync(JEV_CONFIG_FILE)) {
+      fileConfig = JSON.parse(fsSync.readFileSync(JEV_CONFIG_FILE, 'utf8'));
+    }
+  } catch {
+    // ignore
+  }
+
+  const fileThresholds = fileConfig.thresholds || fileConfig.quota || {};
+
+  const parseNum = (val: any): number | undefined => {
+    if (typeof val === 'number' && !Number.isNaN(val)) return val;
+    if (typeof val === 'string' && val.trim() !== '') {
+      const n = Number(val);
+      if (!Number.isNaN(n)) return n;
+    }
+    return undefined;
+  };
+
+  const fiveHourNormalMin =
+    parseNum(process.env.JEV_QUOTA_5H_NORMAL_MIN) ??
+    parseNum(process.env.JEV_QUOTA_5H_THRESHOLD) ??
+    parseNum(fileThresholds.five_hour_normal_min) ??
+    parseNum(fileThresholds.quota_5h_threshold) ??
+    parseNum(fileThresholds['5h_normal_min']) ??
+    parseNum(fileThresholds['5h']) ??
+    parseNum(process.env.JEV_QUOTA_NORMAL_MIN) ??
+    DEFAULT_5H_NORMAL_MIN;
+
+  const fiveHourConserveMin =
+    parseNum(process.env.JEV_QUOTA_5H_CONSERVE_MIN) ??
+    parseNum(process.env.JEV_QUOTA_5H_CRITICAL) ??
+    parseNum(fileThresholds.five_hour_conserve_min) ??
+    parseNum(fileThresholds.quota_5h_critical) ??
+    parseNum(fileThresholds['5h_conserve_min']) ??
+    parseNum(process.env.JEV_QUOTA_CONSERVE_MIN) ??
+    DEFAULT_5H_CONSERVE_MIN;
+
+  const weeklyNormalMin =
+    parseNum(process.env.JEV_QUOTA_WEEKLY_NORMAL_MIN) ??
+    parseNum(process.env.JEV_QUOTA_WEEKLY_THRESHOLD) ??
+    parseNum(process.env.JEV_QUOTA_7D_NORMAL_MIN) ??
+    parseNum(process.env.JEV_QUOTA_7D_THRESHOLD) ??
+    parseNum(fileThresholds.weekly_normal_min) ??
+    parseNum(fileThresholds.seven_day_normal_min) ??
+    parseNum(fileThresholds['7d_normal_min']) ??
+    parseNum(fileThresholds.quota_weekly_threshold) ??
+    parseNum(fileThresholds.quota_7d_threshold) ??
+    parseNum(fileThresholds['weekly_normal_min']) ??
+    parseNum(fileThresholds['weekly']) ??
+    parseNum(fileThresholds['7d']) ??
+    DEFAULT_WEEKLY_NORMAL_MIN;
+
+  const weeklyConserveMin =
+    parseNum(process.env.JEV_QUOTA_WEEKLY_CONSERVE_MIN) ??
+    parseNum(process.env.JEV_QUOTA_WEEKLY_CRITICAL) ??
+    parseNum(process.env.JEV_QUOTA_7D_CONSERVE_MIN) ??
+    parseNum(process.env.JEV_QUOTA_7D_CRITICAL) ??
+    parseNum(fileThresholds.weekly_conserve_min) ??
+    parseNum(fileThresholds.seven_day_conserve_min) ??
+    parseNum(fileThresholds['7d_conserve_min']) ??
+    parseNum(fileThresholds.quota_weekly_critical) ??
+    parseNum(fileThresholds.quota_7d_critical) ??
+    parseNum(fileThresholds['weekly_conserve_min']) ??
+    DEFAULT_WEEKLY_CONSERVE_MIN;
+
+  return {
+    normal_min: fiveHourNormalMin,
+    conserve_min: fiveHourConserveMin,
+    five_hour_normal_min: fiveHourNormalMin,
+    five_hour_conserve_min: fiveHourConserveMin,
+    weekly_normal_min: weeklyNormalMin,
+    weekly_conserve_min: weeklyConserveMin
+  };
+}
 
 export interface QuotaBucket {
   remaining_fraction: number;
@@ -535,7 +635,33 @@ export interface QuotaView {
   buckets: Record<string, QuotaBucket>;
   gemini: { five_hour: number | null; weekly: number | null; min_remaining: number | null };
   strategy: QuotaStrategy;
-  thresholds: { normal_min: number; conserve_min: number };
+  thresholds: QuotaThresholds;
+  geminiRemainingFraction: number | null;
+}
+
+export function evaluatePoolStrategy(
+  fiveHour: number | null,
+  weekly: number | null,
+  t: QuotaThresholds
+): QuotaStrategy {
+  if (fiveHour === null && weekly === null) return 'unknown';
+
+  // 1. Critical check (free_only):
+  const is5hCritical = fiveHour !== null && fiveHour <= t.five_hour_conserve_min;
+  const isWeeklyCritical = weekly !== null && weekly <= t.weekly_conserve_min;
+  if (is5hCritical || isWeeklyCritical) {
+    return 'free_only';
+  }
+
+  // 2. Conserve check (start trying to offload work to free models):
+  // 5h <= 25% or weekly <= 10%
+  const is5hConserve = fiveHour !== null && fiveHour <= t.five_hour_normal_min;
+  const isWeeklyConserve = weekly !== null && weekly <= t.weekly_normal_min;
+  if (is5hConserve || isWeeklyConserve) {
+    return 'conserve';
+  }
+
+  return 'normal';
 }
 
 export function normaliseBucket(nowSec: number, raw: any): QuotaBucket | null {
@@ -620,9 +746,18 @@ export async function readQuotaView(): Promise<QuotaView> {
   const availablePools = [geminiMin, p3Min].filter((x): x is number => typeof x === 'number');
   const minRemaining = availablePools.length ? Math.max(...availablePools) : null;
 
+  const thresholds = getQuotaThresholds();
+  const geminiStrategy = evaluatePoolStrategy(geminiFive, geminiWeekly, thresholds);
+  const p3Strategy = evaluatePoolStrategy(p3Five, p3Weekly, thresholds);
+
   let strategy: QuotaStrategy = 'unknown';
-  if (minRemaining !== null) {
-    strategy = minRemaining < QUOTA_CONSERVE_MIN ? 'free_only' : minRemaining < QUOTA_NORMAL_MIN ? 'conserve' : 'normal';
+  if (geminiStrategy !== 'unknown' && p3Strategy !== 'unknown') {
+    const rank = (s: QuotaStrategy) => s === 'normal' ? 3 : s === 'conserve' ? 2 : s === 'free_only' ? 1 : 0;
+    strategy = rank(geminiStrategy) >= rank(p3Strategy) ? geminiStrategy : p3Strategy;
+  } else if (geminiStrategy !== 'unknown') {
+    strategy = geminiStrategy;
+  } else if (p3Strategy !== 'unknown') {
+    strategy = p3Strategy;
   }
 
   const stale = updatedAt === null || nowSec - updatedAt > QUOTA_STALE_SECONDS;
@@ -635,8 +770,9 @@ export async function readQuotaView(): Promise<QuotaView> {
     plan_tier: planTier,
     active_model: activeModel,
     buckets,
-    gemini: { five_hour: geminiFive, weekly: geminiWeekly, min_remaining: minRemaining },
+    gemini: { five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining },
     strategy,
-    thresholds: { normal_min: QUOTA_NORMAL_MIN, conserve_min: QUOTA_CONSERVE_MIN }
+    thresholds,
+    geminiRemainingFraction: geminiMin ?? minRemaining
   };
 }

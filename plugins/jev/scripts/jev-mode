@@ -57,6 +57,33 @@ function show_status() {
   echo -e "  MCP Status:   \033[1;34m${mcp_status}\033[0m"
   echo -e "  State File:   \033[90m${STATE_FILE}\033[0m"
 
+  local quota_json
+  quota_json=$(bun -e "import { readQuotaView } from '/home/rockad/projects/agentic-hub/plugins/jev/src/shared.ts'; const q = await readQuotaView(); console.log(JSON.stringify(q));" 2>/dev/null || true)
+  if [ -n "$quota_json" ]; then
+    local strat
+    strat=$(echo "$quota_json" | jq -r '.strategy // "unknown"')
+    local f5
+    f5=$(echo "$quota_json" | jq -r '(.gemini.five_hour // empty)')
+    local f5_pct="n/a"
+    [ -n "$f5" ] && f5_pct=$(awk -v v="$f5" 'BEGIN { printf "%.1f%%", v * 100 }')
+    local fw
+    fw=$(echo "$quota_json" | jq -r '(.gemini.weekly // empty)')
+    local fw_pct="n/a"
+    [ -n "$fw" ] && fw_pct=$(awk -v v="$fw" 'BEGIN { printf "%.1f%%", v * 100 }')
+
+    local t5_norm
+    t5_norm=$(echo "$quota_json" | jq -r '(.thresholds.five_hour_normal_min // 0.25)')
+    local t5_norm_pct=$(awk -v v="$t5_norm" 'BEGIN { printf "%.0f%%", v * 100 }')
+    local tw_norm
+    tw_norm=$(echo "$quota_json" | jq -r '(.thresholds.weekly_normal_min // 0.10)')
+    local tw_norm_pct=$(awk -v v="$tw_norm" 'BEGIN { printf "%.0f%%", v * 100 }')
+
+    echo -e "\n\033[1mQuota & Free Offloading Status:\033[0m"
+    echo -e "  Strategy:     \033[1;33m${strat}\033[0m"
+    echo -e "  Gemini 5h:    ${f5_pct} remaining (offloads to free models at <= ${t5_norm_pct})"
+    echo -e "  Gemini Weekly:${fw_pct} remaining (offloads to free models at <= ${tw_norm_pct})"
+  fi
+
   echo -e "\n\033[1mMode Characteristics:\033[0m"
   case "$CURRENT_MODE" in
     off)

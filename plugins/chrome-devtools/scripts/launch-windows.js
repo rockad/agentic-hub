@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const http = require('http');
+const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 
 const DEBUG_PORT = process.env.CHROME_DEBUG_PORT || '9222';
@@ -66,11 +67,12 @@ function isChromeReady() {
   });
 }
 
-// Only Chrome started against our dedicated profile or debugging port.
-// Normal user browsing Chrome does NOT have either flag.
+// Only Chrome started against our dedicated profile directory.
+// Normal user browsing Chrome uses the default profile and must never be killed.
 function profileChromePids() {
+  const escapedProfile = PROFILE_DIR.replace(/['"]/g, '');
   const script = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | " +
-    "Where-Object { $_.CommandLine -like '*chrome-devtools-mcp*profile*' -or $_.CommandLine -like '*--remote-debugging-port=" + DEBUG_PORT + "*' } | " +
+    "Where-Object { ($_.CommandLine -like '*--user-data-dir=*' -and $_.CommandLine -like '*" + escapedProfile + "*') -or $_.CommandLine -like '*chrome-devtools-mcp*profile*' } | " +
     "Select-Object -ExpandProperty ProcessId";
   const r = ps(script);
   if (r.status !== 0 || !r.stdout) return [];
@@ -135,7 +137,12 @@ async function main() {
     process.exit(1);
   }
 
-  const child = spawn('npx', [
+  const nodeDir = path.dirname(process.execPath);
+  const npxCandidate = path.join(nodeDir, 'npx');
+  const npxCmd = fs.existsSync(npxCandidate) ? npxCandidate : 'npx';
+  const resolvedPath = [nodeDir, '/home/rockad/.local/bin', process.env.PATH || ''].filter(Boolean).join(':');
+
+  const child = spawn(npxCmd, [
     '-y',
     'chrome-devtools-mcp@latest',
     `--browserUrl=http://127.0.0.1:${DEBUG_PORT}`,
@@ -144,6 +151,7 @@ async function main() {
     stdio: 'inherit',
     env: {
       ...process.env,
+      PATH: resolvedPath,
       NO_PROXY: '127.0.0.1,localhost',
       no_proxy: '127.0.0.1,localhost',
     },

@@ -97,10 +97,150 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   }
 }
 
+// ── Filesystem Decision Cache & Local Heuristics ──────────────────────────────
+export const JEV_CACHE_FILE = path.join(os.homedir(), '.config', 'jev', 'decision-cache.json');
+const DECISION_CACHE_TTL_MS = 30_000;
+
+export interface DecisionCacheEntry {
+  at: number;
+  data: any;
+}
+
+export function getCachedDecision(hash: string): any | null {
+  try {
+    if (fsSync.existsSync(JEV_CACHE_FILE)) {
+      const cache: Record<string, DecisionCacheEntry> = JSON.parse(fsSync.readFileSync(JEV_CACHE_FILE, 'utf8'));
+      const hit = cache[hash];
+      if (hit && Date.now() - hit.at < DECISION_CACHE_TTL_MS) {
+        return hit.data;
+      }
+    }
+  } catch {
+    // Cache miss or read error
+  }
+  return null;
+}
+
+export function setCachedDecision(hash: string, data: any): void {
+  try {
+    const dir = path.dirname(JEV_CACHE_FILE);
+    if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+    let cache: Record<string, DecisionCacheEntry> = {};
+    if (fsSync.existsSync(JEV_CACHE_FILE)) {
+      try {
+        cache = JSON.parse(fsSync.readFileSync(JEV_CACHE_FILE, 'utf8'));
+      } catch {
+        cache = {};
+      }
+    }
+    // Prune stale entries
+    const now = Date.now();
+    for (const [k, v] of Object.entries(cache)) {
+      if (now - v.at > DECISION_CACHE_TTL_MS * 2) {
+        delete cache[k];
+      }
+    }
+    cache[hash] = { at: now, data };
+    fsSync.writeFileSync(JEV_CACHE_FILE, JSON.stringify(cache));
+  } catch {
+    // Cache write is best-effort
+  }
+}
+
+/**
+ * Zero-Network Local Complexity Heuristic Pre-Filter
+ * Evaluated before remote decision calls to instantly resolve trivial mechanical tasks (<40 tokens)
+ * or establish code density floors.
+ */
+export function evaluateLocalHeuristic(text: string): { route?: string; tier?: string; effort?: string } | null {
+  const trimmed = text.trim();
+  const tokenEst = Math.ceil(trimmed.length / 4);
+
+  // Very short mechanical tasks (<40 tokens) matching routine transformation patterns
+  if (tokenEst < 40) {
+    const isFormatting = /\b(format|indent|organize imports|sort|prettier|clean whitespace|tabs to spaces)\b/i.test(trimmed);
+    const isBoilerplate = /\b(scaffold boilerplate|empty template|stub function|skeleton)\b/i.test(trimmed);
+    if (isFormatting || isBoilerplate) {
+      return {
+        route: 'openrouter_free',
+        tier: 'openrouter_free',
+        effort: 'low'
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Shared Recall / durable session memory reader across harnesses.
+ */
+export async function fetchRecallMemory(workspace = path.basename(process.cwd()) || 'default'): Promise<any> {
+  const tryReadRecall = async (identifier: string) => {
+    try {
+      const res = await fetchWithTimeout('http://127.0.0.1:8110/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream'
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'read_note',
+            arguments: {
+              identifier,
+              output_format: 'json',
+              include_frontmatter: true
+            }
+          }
+        })
+      }, 800);
+      if (res.ok) {
+        const text = await res.text();
+        for (const line of text.split('\n')) {
+          if (line.startsWith('data: ')) {
+            const parsed = JSON.parse(line.slice(6));
+            const fm = parsed?.result?.structuredContent?.result?.frontmatter;
+            if (fm && fm.activeGoal) {
+              return fm;
+            }
+          }
+        }
+      }
+    } catch {
+      // fallback
+    }
+    return null;
+  };
+
+  const remote = (await tryReadRecall(`session-memory:${workspace}`)) || (await tryReadRecall(`session-handoff:${workspace}`));
+  if (remote) return remote;
+
+  for (const file of ['memory.json', 'handoff.json']) {
+    try {
+      const filePath = path.join(os.homedir(), 'projects', workspace, '.agents', file);
+      if (fsSync.existsSync(filePath)) {
+        const raw = fsSync.readFileSync(filePath, 'utf8');
+        return JSON.parse(raw);
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  return null;
+}
+
 /**
  * Tier 1: TypeSafe Jev Decisions API on OpenRouter (~800ms, calibrated).
  */
 export async function callJevDecision(state: string, questions: Record<string, unknown>): Promise<any> {
+  const hash = `${state.length}:${state.slice(0, 64)}:${state.slice(-64)}:${JSON.stringify(Object.keys(questions).sort())}`;
+  const cached = getCachedDecision(hash);
+  if (cached) return cached;
+
   const res = await fetchWithTimeout(JEV_DECISIONS_URL, {
     method: 'POST',
     headers: {
@@ -116,7 +256,9 @@ export async function callJevDecision(state: string, questions: Record<string, u
     const errText = await res.text().catch(() => '');
     throw new Error(`Jev Decisions API Error ${res.status}: ${errText}`);
   }
-  return await res.json();
+  const result = await res.json();
+  setCachedDecision(hash, result);
+  return result;
 }
 
 /** Strip ```json ... ``` fences so lenient JSON parsing works. */
@@ -125,12 +267,7 @@ function stripJsonFences(raw: string): string {
 }
 
 /**
- * Tier 2: `typesafe/jev-router` via OpenRouter Chat Completions.
- *
- * Same contract as `callJevDecision` (returns `{ answers, model, usage }`) but
- * routed through the OpenRouter-native router model instead of the Decisions
- * API. Used as the fallback so Jev survives when the Decisions API or the
- * Google route is unavailable. Never touches the Antigravity subscription.
+ * Tier 2: `typesafe/jev-router` via OpenRouter Chat Completions with strict structured JSON schema.
  */
 export async function callJevRouter(state: string, questions: Record<string, unknown>): Promise<any> {
   const prompt =
@@ -152,7 +289,21 @@ export async function callJevRouter(state: string, questions: Record<string, unk
     },
     body: JSON.stringify({
       model: JEV_ROUTER_MODEL,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [{ role: 'user', content: prompt }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'jev_router_answers',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              answers: { type: 'object', additionalProperties: true }
+            },
+            required: ['answers']
+          }
+        }
+      }
     })
   }, FALLBACK_TIMEOUT_MS);
 
@@ -487,21 +638,130 @@ export async function selectModel(
   }
 }
 
-// ── Jev operating mode ───────────────────────────────────────────────────────
+// ── Jev configuration & operating mode ───────────────────────────────────────
 export type JevMode = 'off' | 'on-demand' | 'on';
 export const JEV_STATE_FILE = path.join(os.homedir(), '.config', 'jev', 'mode.json');
+export const JEV_CONFIG_FILE = path.join(os.homedir(), '.config', 'jev', 'config.json');
 
-export async function readJevMode(): Promise<JevMode> {
+export type JevHarness = 'antigravity' | 'opencode' | 'claude-code' | 'cli';
+
+export interface HarnessRoutingConfig {
+  swap?: boolean;
+  models?: Record<string, string>;
+}
+
+export interface HarnessConfig {
+  mode: JevMode;
+  routing?: HarnessRoutingConfig;
+  requireUpgradeApproval?: boolean;
+  availableSubagents?: string[];
+}
+
+export interface JevConfigDefaults {
+  mode: JevMode;
+  requireUpgradeApproval?: boolean;
+  swap?: boolean;
+  availableSubagents?: string[];
+}
+
+export interface JevConfig {
+  version: number;
+  defaults: JevConfigDefaults;
+  thresholds?: Record<string, number>;
+  harnesses?: Partial<Record<JevHarness, Partial<HarnessConfig>>>;
+}
+
+export const DEFAULT_JEV_CONFIG: JevConfig = {
+  version: 1,
+  defaults: {
+    mode: 'on',
+    requireUpgradeApproval: true,
+    swap: true,
+    availableSubagents: ['explore', 'general', 'code_engineer', 'research', 'vault_librarian', 'ghostwriter', 'inbox_processor', 'self']
+  },
+  thresholds: {
+    five_hour_normal_min: 0.30,
+    five_hour_conserve_min: 0.10,
+    weekly_normal_min: 0.20,
+    weekly_conserve_min: 0.10
+  },
+  harnesses: {
+    opencode: { mode: 'off' },
+    antigravity: { mode: 'on' },
+    'claude-code': { mode: 'on' }
+  }
+};
+
+let cachedConfig: { at: number; data: JevConfig } | null = null;
+const CONFIG_CACHE_TTL_MS = 2000;
+
+export function loadJevConfigSync(): JevConfig {
+  const now = Date.now();
+  if (cachedConfig && now - cachedConfig.at < CONFIG_CACHE_TTL_MS) {
+    return cachedConfig.data;
+  }
+
+  let config: JevConfig = JSON.parse(JSON.stringify(DEFAULT_JEV_CONFIG));
+  try {
+    if (fsSync.existsSync(JEV_CONFIG_FILE)) {
+      const parsed = JSON.parse(fsSync.readFileSync(JEV_CONFIG_FILE, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        config = {
+          version: typeof parsed.version === 'number' ? parsed.version : config.version,
+          defaults: { ...config.defaults, ...(parsed.defaults || {}) },
+          thresholds: { ...config.thresholds, ...(parsed.thresholds || parsed.quota || {}) },
+          harnesses: { ...config.harnesses, ...(parsed.harnesses || {}) }
+        };
+      }
+    }
+  } catch {
+    // Return default on error
+  }
+
+  cachedConfig = { at: now, data: config };
+  return config;
+}
+
+export async function loadJevConfig(): Promise<JevConfig> {
+  return loadJevConfigSync();
+}
+
+export function getHarnessConfig(harness: JevHarness): HarnessConfig {
+  const cfg = loadJevConfigSync();
+  const overrides = cfg.harnesses?.[harness] || {};
+  const mode = (overrides.mode || cfg.defaults.mode || 'on') as JevMode;
+  const requireUpgradeApproval =
+    typeof overrides.requireUpgradeApproval === 'boolean'
+      ? overrides.requireUpgradeApproval
+      : cfg.defaults.requireUpgradeApproval ?? true;
+  const availableSubagents =
+    Array.isArray(overrides.availableSubagents) && overrides.availableSubagents.length
+      ? overrides.availableSubagents
+      : cfg.defaults.availableSubagents;
+
+  return {
+    mode,
+    routing: overrides.routing,
+    requireUpgradeApproval,
+    availableSubagents
+  };
+}
+
+export async function readJevMode(harness?: JevHarness): Promise<JevMode> {
+  if (harness) {
+    return getHarnessConfig(harness).mode;
+  }
+  // If no harness is specified, check mode.json legacy fallback, then default to antigravity/defaults
   try {
     if (fsSync.existsSync(JEV_STATE_FILE)) {
       const parsed = JSON.parse(await fs.readFile(JEV_STATE_FILE, 'utf8'));
-      const m = String(parsed.mode || 'on').toLowerCase();
-      if (m === 'off' || m === 'on-demand' || m === 'on') return m;
+      const m = String(parsed.mode || '').toLowerCase();
+      if (m === 'off' || m === 'on-demand' || m === 'on') return m as JevMode;
     }
   } catch {
     // fall through
   }
-  return 'on';
+  return loadJevConfigSync().defaults.mode || 'on';
 }
 
 // ── Antigravity quota view (schema v2, written by .agents/statusline-command.sh) ─
@@ -519,9 +779,7 @@ export const QUOTA_5H_NORMAL_MIN = DEFAULT_5H_NORMAL_MIN;
 export const QUOTA_5H_CONSERVE_MIN = DEFAULT_5H_CONSERVE_MIN;
 export const QUOTA_WEEKLY_NORMAL_MIN = DEFAULT_WEEKLY_NORMAL_MIN;
 export const QUOTA_WEEKLY_CONSERVE_MIN = DEFAULT_WEEKLY_CONSERVE_MIN;
-const QUOTA_STALE_SECONDS = Number(process.env.JEV_QUOTA_STALE_SECONDS || 15 * 60);
-
-export const JEV_CONFIG_FILE = path.join(os.homedir(), '.config', 'jev', 'config.json');
+export const QUOTA_STALE_SECONDS = Number(process.env.JEV_QUOTA_STALE_SECONDS || 15 * 60);
 
 export interface QuotaThresholds {
   normal_min: number;
@@ -776,3 +1034,36 @@ export async function readQuotaView(): Promise<QuotaView> {
     geminiRemainingFraction: geminiMin ?? minRemaining
   };
 }
+
+// ── Unified Telemetry Logging ────────────────────────────────────────────────
+export const JEV_TELEMETRY_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl');
+
+export interface JevTelemetryEvent {
+  timestamp?: string;
+  harness: 'antigravity' | 'opencode' | 'claude' | 'cli';
+  toolOrHook: string;
+  sessionId?: string | null;
+  taskSummary?: string;
+  tierRecommended?: string;
+  modelUsed?: string;
+  latencyMs?: number;
+  costUsd?: number;
+  tokensSaved?: number;
+  quotaStrategy?: string;
+  [key: string]: unknown;
+}
+
+export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
+  try {
+    const dir = path.dirname(JEV_TELEMETRY_FILE);
+    if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+    const payload = {
+      timestamp: entry.timestamp || new Date().toISOString(),
+      ...entry
+    };
+    await fs.appendFile(JEV_TELEMETRY_FILE, JSON.stringify(payload) + '\n', 'utf8');
+  } catch {
+    // telemetry is best-effort
+  }
+}
+

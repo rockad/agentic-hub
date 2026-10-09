@@ -115,11 +115,33 @@ async function readCurrentMode(): Promise<{ mode: JevMode; updatedAt?: string; r
   return { mode: 'on' };
 }
 
-async function writeModeState(mode: JevMode): Promise<string> {
+async function writeModeState(mode: JevMode, harness?: string): Promise<string> {
   await fs.mkdir(JEV_CONFIG_DIR, { recursive: true });
   const updatedAt = new Date().toISOString();
   const payload = JSON.stringify({ mode, updated_at: updatedAt });
   await fs.writeFile(JEV_STATE_FILE, payload + '\n', 'utf8');
+
+  // Also update canonical config.json
+  try {
+    let cfg: any = {};
+    if (fsSync.existsSync(JEV_CONFIG_FILE)) {
+      cfg = JSON.parse(await fs.readFile(JEV_CONFIG_FILE, 'utf8'));
+    }
+    if (!cfg.harnesses) cfg.harnesses = {};
+    if (harness) {
+      if (!cfg.harnesses[harness]) cfg.harnesses[harness] = {};
+      cfg.harnesses[harness].mode = mode;
+    } else {
+      if (!cfg.defaults) cfg.defaults = {};
+      cfg.defaults.mode = mode;
+      if (!cfg.harnesses.antigravity) cfg.harnesses.antigravity = {};
+      cfg.harnesses.antigravity.mode = mode;
+    }
+    await fs.writeFile(JEV_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  } catch {
+    // best-effort
+  }
+
   return updatedAt;
 }
 
@@ -150,7 +172,12 @@ const DEFAULT_MODEL_CANDIDATES: ModelCandidate[] = [
 async function logTelemetry(entry: Record<string, unknown>): Promise<void> {
   try {
     await fs.mkdir(TELEMETRY_DIR, { recursive: true });
-    const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n';
+    const payload = {
+      timestamp: new Date().toISOString(),
+      harness: 'antigravity',
+      ...entry
+    };
+    const line = JSON.stringify(payload) + '\n';
     await fs.appendFile(TELEMETRY_FILE, line, 'utf8');
   } catch {
     // Non-blocking telemetry

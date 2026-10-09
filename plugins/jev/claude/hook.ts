@@ -13,7 +13,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { callJev, readJevMode, readQuotaView, loadEnvFile, type JevMode } from '../src/shared.js';
+import { callJev, readJevMode, readQuotaView, loadEnvFile, fetchRecallMemory, logJevTelemetry, type JevMode } from '../src/shared.js';
 import {
   buildDirective,
   decideAgentCall,
@@ -65,10 +65,21 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   if (!rec) return null;
   const sessionModel = deps.readSessionModel(sessionId);
   deps.log({ hook: 'UserPromptSubmit', session: sessionId, ...rec, quota: quotaStrategy, sessionModel });
+
+  let additionalContext = buildDirective(rec, sessionModel, quotaStrategy);
+  try {
+    const memory = await withTimeout(fetchRecallMemory(), 600);
+    if (memory && memory.activeGoal) {
+      additionalContext += `\n\n[CROSS-HARNESS MEMORY]\nActive Goal: ${memory.activeGoal}\nCurrent Milestone: ${memory.currentMilestone || 'none'}\nNext Action: ${memory.nextAction || 'none'}`;
+    }
+  } catch {
+    // best-effort
+  }
+
   return {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: buildDirective(rec, sessionModel, quotaStrategy)
+      additionalContext
     }
   };
 }
@@ -144,13 +155,22 @@ function appendLog(entry: Record<string, unknown>): void {
   try {
     fs.mkdirSync(JEV_DIR, { recursive: true });
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n');
+    void logJevTelemetry({
+      harness: 'claude',
+      toolOrHook: String(entry.hook || 'hook'),
+      sessionId: typeof entry.session === 'string' ? entry.session : null,
+      taskSummary: typeof entry.subagent === 'string' ? `subagent: ${entry.subagent}` : undefined,
+      tierRecommended: typeof entry.tier === 'string' ? entry.tier : undefined,
+      modelUsed: typeof entry.model === 'string' ? entry.model : undefined,
+      quotaStrategy: typeof entry.quota === 'string' ? entry.quota : undefined
+    });
   } catch {
     // logging is best-effort
   }
 }
 
 const liveDeps: HookDeps = {
-  readMode: readJevMode,
+  readMode: () => readJevMode('claude-code'),
   readSessionModel,
   readQuotaStrategy: async () => {
     try {

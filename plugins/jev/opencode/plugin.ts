@@ -25,7 +25,19 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { callJev, readJevMode, readQuotaView, selectModel, loadEnvFile, defaultEffortForSubagent, applyEffortGovernance, type ModelCandidate, type ModelSelection } from '../src/shared.js';
+import {
+  callJev,
+  readJevMode,
+  readQuotaView,
+  selectModel,
+  loadEnvFile,
+  defaultEffortForSubagent,
+  applyEffortGovernance,
+  getHarnessConfig,
+  logJevTelemetry,
+  type ModelCandidate,
+  type ModelSelection
+} from '../src/shared.js';
 import { applyModelSwap, describeLanguageEvent } from './swap.js';
 
 export type JevPluginMode = 'off' | 'advisory' | 'enforce';
@@ -90,22 +102,45 @@ interface Dispatch {
 
 function resolveOptions(raw: any): ResolvedOptions {
   const o = raw && typeof raw === 'object' ? raw : {};
-  const candidates = Array.isArray(o.candidates)
-    ? (o.candidates as ModelCandidate[]).filter(
-        (c) => c && typeof c.id === 'string' && typeof c.providerModel === 'string'
-      )
-    : [];
+  const harnessCfg = getHarnessConfig('opencode');
+
+  let candidates: ModelCandidate[] = [];
+  if (Array.isArray(o.candidates) && o.candidates.length) {
+    candidates = (o.candidates as ModelCandidate[]).filter(
+      (c) => c && typeof c.id === 'string' && typeof c.providerModel === 'string'
+    );
+  } else if (harnessCfg.routing?.models) {
+    const models = harnessCfg.routing.models;
+    candidates = Object.entries(models).map(([tierKey, modelRef]) => ({
+      id: tierKey,
+      tier: tierKey,
+      providerModel: modelRef,
+      costInPerMTok: tierKey === 'free' ? 0 : tierKey === 'cheap' ? 0.075 : tierKey === 'standard' ? 1.25 : 15,
+      costOutPerMTok: tierKey === 'free' ? 0 : tierKey === 'cheap' ? 0.3 : tierKey === 'standard' ? 5 : 75,
+      label: `${tierKey} tier model (${modelRef})`
+    }));
+  }
+
+  const rawMode = o.mode !== undefined ? o.mode : harnessCfg.mode;
+  const mode = rawMode === 'off' || rawMode === 'enforce' ? rawMode : 'advisory';
+
+  const swap = o.swap !== undefined ? o.swap === true : (harnessCfg.routing?.swap ?? false);
+  const allowPro = o.allowPro !== undefined ? o.allowPro === true : (harnessCfg.requireUpgradeApproval === false);
+  const availableSubagents = Array.isArray(o.availableSubagents) && o.availableSubagents.length
+    ? o.availableSubagents
+    : (harnessCfg.availableSubagents && harnessCfg.availableSubagents.length ? harnessCfg.availableSubagents : DEFAULT_SUBAGENTS);
+
   return {
-    mode: o.mode === 'off' || o.mode === 'enforce' ? o.mode : 'advisory',
+    mode,
     timeoutMs: Number.isFinite(o.timeoutMs) ? o.timeoutMs : 4000,
     delegationTool: typeof o.delegationTool === 'string' ? o.delegationTool : 'task',
-    availableSubagents: Array.isArray(o.availableSubagents) && o.availableSubagents.length ? o.availableSubagents : DEFAULT_SUBAGENTS,
+    availableSubagents,
     decisionsLogPath: typeof o.decisionsLogPath === 'string'
       ? o.decisionsLogPath
       : path.join(os.homedir(), '.gemini', 'antigravity-cli', 'jev_opencode_decisions.jsonl'),
-    allowPro: o.allowPro === true,
+    allowPro,
     candidates,
-    swap: o.swap === true
+    swap
   };
 }
 
@@ -412,6 +447,16 @@ async function setupInner(ctx: any, rawOptions?: any): Promise<() => void> {
         cheapestSufficient: sel?.cheapestSufficient ?? null,
         quota: quota.strategy,
         mode: opts.mode
+      });
+
+      await logJevTelemetry({
+        harness: 'opencode',
+        toolOrHook: `session.${hookName}`,
+        sessionId: event?.sessionID ?? null,
+        taskSummary: text.slice(0, 100),
+        tierRecommended: sel?.recommendedOptionId || rec?.recommendedTier || 'unknown',
+        quotaStrategy: quota.strategy,
+        tokensSaved: 0
       });
     } catch {
       // never fail a turn on Jev

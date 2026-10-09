@@ -68,8 +68,16 @@ export function modelIdFromRef(ref: string): string {
  * across providers will need the target provider's sdk (open question P2).
  */
 export function applyModelSwap(event: any, targetRef: string): { ok: boolean; reason: string } {
-  const modelId = modelIdFromRef(targetRef);
+  let modelId = modelIdFromRef(targetRef);
   const sdk = event?.sdk;
+  const currentProvider = event?.model?.providerID || event?.model?.provider;
+
+  // Provider normalization: if target is openrouter and sdk is openrouter or generic,
+  // ensure format matches gateway
+  if (currentProvider && currentProvider !== 'openrouter' && targetRef.startsWith('openrouter/')) {
+    modelId = `openrouter/${modelId}`;
+  }
+
   try {
     if (sdk && typeof sdk.languageModel === 'function') {
       event.language = sdk.languageModel(modelId);

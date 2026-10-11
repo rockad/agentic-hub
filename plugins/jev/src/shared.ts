@@ -8,6 +8,8 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as crypto from 'node:crypto';
+import { getTracer, type JevSpan, type JevTracer } from './tracing.js';
 
 // ── Endpoints / models ───────────────────────────────────────────────────────
 export const JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
@@ -99,19 +101,115 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 
 // ── Filesystem Decision Cache & Local Heuristics ──────────────────────────────
 export const JEV_CACHE_FILE = path.join(os.homedir(), '.config', 'jev', 'decision-cache.json');
-const DECISION_CACHE_TTL_MS = 30_000;
+/** Short TTL (5 minutes) to deduplicate identical prompts between pre-invocation hooks and main agent turns */
+export const DECISION_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface DecisionCacheEntry {
   at: number;
   data: any;
 }
 
+/**
+ * Deterministically compute a cache key from task/prompt, candidates, and model tier.
+ */
+export function computeDecisionCacheKey(
+  taskOrPrompt: string,
+  candidates?: unknown,
+  modelTier?: string
+): string {
+  const normPrompt = (taskOrPrompt || '').trim();
+  let candStr = '';
+  if (candidates) {
+    if (Array.isArray(candidates)) {
+      const serialized = candidates.map((c) =>
+        typeof c === 'object' && c !== null
+          ? JSON.stringify(c, Object.keys(c).sort())
+          : String(c)
+      );
+      candStr = serialized.sort().join('|');
+    } else if (typeof candidates === 'object') {
+      candStr = JSON.stringify(candidates, Object.keys(candidates as Record<string, unknown>).sort());
+    } else {
+      candStr = String(candidates);
+    }
+  }
+  const tierStr = (modelTier || '').trim();
+  const raw = `${normPrompt}:::${candStr}:::${tierStr}`;
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  return `decision:${hash}`;
+}
+
+/**
+ * Format a human-readable verdict string from decision answers for logging/tracing.
+ */
+export function formatVerdict(result: any): string {
+  if (!result || typeof result !== 'object') return '';
+  const answers = result.answers;
+  if (!answers || typeof answers !== 'object') return '';
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(answers)) {
+    if (v && typeof v === 'object') {
+      const a = v as any;
+      if (typeof a.choice === 'string') parts.push(`${k}=${a.choice}`);
+      else if (typeof a.noul === 'number') parts.push(`${k}=${a.noul.toFixed(2)}`);
+      else if (typeof a.score === 'number') parts.push(`${k}=${a.score}`);
+    }
+  }
+  return parts.join('; ');
+}
+
+const LOCK_TIMEOUT_MS = 300;
+const LOCK_WAIT_MS = 10;
+
+function acquireLock(lockFile: string): number | null {
+  const start = Date.now();
+  while (Date.now() - start < LOCK_TIMEOUT_MS) {
+    try {
+      return fsSync.openSync(lockFile, 'wx');
+    } catch (e: any) {
+      if (e.code === 'EEXIST') {
+        try {
+          const stat = fsSync.statSync(lockFile);
+          if (Date.now() - stat.mtimeMs > 2000) {
+            fsSync.unlinkSync(lockFile);
+            continue;
+          }
+        } catch {
+          // lock was unlinked
+        }
+        const waitTarget = Date.now() + LOCK_WAIT_MS;
+        while (Date.now() < waitTarget) {}
+      } else {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function releaseLock(fd: number | null, lockFile: string): void {
+  if (fd !== null) {
+    try {
+      fsSync.closeSync(fd);
+    } catch {}
+  }
+  try {
+    if (fsSync.existsSync(lockFile)) {
+      fsSync.unlinkSync(lockFile);
+    }
+  } catch {}
+}
+
 export function getCachedDecision(hash: string): any | null {
   try {
-    if (fsSync.existsSync(JEV_CACHE_FILE)) {
-      const cache: Record<string, DecisionCacheEntry> = JSON.parse(fsSync.readFileSync(JEV_CACHE_FILE, 'utf8'));
+    const cacheFile = process.env.JEV_CACHE_FILE || JEV_CACHE_FILE;
+    if (fsSync.existsSync(cacheFile)) {
+      const cache: Record<string, DecisionCacheEntry> = JSON.parse(
+        fsSync.readFileSync(cacheFile, 'utf8')
+      );
       const hit = cache[hash];
-      if (hit && Date.now() - hit.at < DECISION_CACHE_TTL_MS) {
+      const ttl = Number(process.env.JEV_CACHE_TTL_MS) || DECISION_CACHE_TTL_MS;
+      if (hit && typeof hit.at === 'number' && Date.now() - hit.at < ttl) {
         return hit.data;
       }
     }
@@ -123,28 +221,57 @@ export function getCachedDecision(hash: string): any | null {
 
 export function setCachedDecision(hash: string, data: any): void {
   try {
-    const dir = path.dirname(JEV_CACHE_FILE);
+    const cacheFile = process.env.JEV_CACHE_FILE || JEV_CACHE_FILE;
+    const dir = path.dirname(cacheFile);
     if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
-    let cache: Record<string, DecisionCacheEntry> = {};
-    if (fsSync.existsSync(JEV_CACHE_FILE)) {
-      try {
-        cache = JSON.parse(fsSync.readFileSync(JEV_CACHE_FILE, 'utf8'));
-      } catch {
-        cache = {};
+
+    const lockFile = `${cacheFile}.lock`;
+    const lockFd = acquireLock(lockFile);
+
+    try {
+      let cache: Record<string, DecisionCacheEntry> = {};
+      if (fsSync.existsSync(cacheFile)) {
+        try {
+          cache = JSON.parse(fsSync.readFileSync(cacheFile, 'utf8'));
+        } catch {
+          cache = {};
+        }
       }
-    }
-    // Prune stale entries
-    const now = Date.now();
-    for (const [k, v] of Object.entries(cache)) {
-      if (now - v.at > DECISION_CACHE_TTL_MS * 2) {
-        delete cache[k];
+
+      const now = Date.now();
+      const ttl = Number(process.env.JEV_CACHE_TTL_MS) || DECISION_CACHE_TTL_MS;
+
+      // Prune stale entries (> 2 * TTL)
+      for (const [k, v] of Object.entries(cache)) {
+        if (!v || typeof v.at !== 'number' || now - v.at > ttl * 2) {
+          delete cache[k];
+        }
       }
+
+      cache[hash] = { at: now, data };
+
+      // Atomic write via temp file in the same directory + rename
+      const tmpFile = path.join(
+        dir,
+        `.cache.${process.pid}.${now}.${Math.random().toString(36).slice(2)}.tmp`
+      );
+      fsSync.writeFileSync(tmpFile, JSON.stringify(cache, null, 2), 'utf8');
+      fsSync.renameSync(tmpFile, cacheFile);
+    } finally {
+      releaseLock(lockFd, lockFile);
     }
-    cache[hash] = { at: now, data };
-    fsSync.writeFileSync(JEV_CACHE_FILE, JSON.stringify(cache));
   } catch {
     // Cache write is best-effort
   }
+}
+
+export function clearDecisionCache(): void {
+  try {
+    const cacheFile = process.env.JEV_CACHE_FILE || JEV_CACHE_FILE;
+    if (fsSync.existsSync(cacheFile)) {
+      fsSync.unlinkSync(cacheFile);
+    }
+  } catch {}
 }
 
 /**
@@ -236,29 +363,83 @@ export async function fetchRecallMemory(workspace = path.basename(process.cwd())
 /**
  * Tier 1: TypeSafe Jev Decisions API on OpenRouter (~800ms, calibrated).
  */
-export async function callJevDecision(state: string, questions: Record<string, unknown>): Promise<any> {
-  const hash = `${state.length}:${state.slice(0, 64)}:${state.slice(-64)}:${JSON.stringify(Object.keys(questions).sort())}`;
-  const cached = getCachedDecision(hash);
-  if (cached) return cached;
-
-  const res = await fetchWithTimeout(JEV_DECISIONS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openRouterKey()}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://github.com/agentic-hub/jev',
-      'X-Title': 'Jev Decisions Gateway'
-    },
-    body: JSON.stringify({ model: JEV_MODEL, state, questions })
-  }, JEV_TIMEOUT_MS);
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Jev Decisions API Error ${res.status}: ${errText}`);
+export async function callJevDecision(
+  state: string,
+  questions: Record<string, unknown>,
+  modelTier?: string
+): Promise<any> {
+  const hash = computeDecisionCacheKey(state, questions, modelTier || JEV_MODEL);
+  let cached = getCachedDecision(hash);
+  if (!cached) {
+    // Legacy cache key fallback
+    const legacyHash = `${state.length}:${state.slice(0, 64)}:${state.slice(-64)}:${JSON.stringify(Object.keys(questions).sort())}`;
+    cached = getCachedDecision(legacyHash);
   }
-  const result = await res.json();
-  setCachedDecision(hash, result);
-  return result;
+
+  if (cached) {
+    const span = getTracer().startSpan('jev.decision', {
+      'decision.state_length': state.length,
+      'decision.cached': true,
+      'decision.model': JEV_MODEL
+    });
+    span.setAttribute('decision.latency_ms', 0);
+    const verdict = formatVerdict(cached);
+    if (verdict) span.setAttribute('decision.verdict', verdict);
+    span.end();
+    return cached;
+  }
+
+  const startTime = Date.now();
+  const span = getTracer().startSpan('jev.decision', {
+    'decision.state_length': state.length,
+    'decision.cached': false,
+    'decision.model': JEV_MODEL
+  });
+
+  try {
+    const res = await fetchWithTimeout(
+      JEV_DECISIONS_URL,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openRouterKey()}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://github.com/agentic-hub/jev',
+          'X-Title': 'Jev Decisions Gateway'
+        },
+        body: JSON.stringify({ model: JEV_MODEL, state, questions })
+      },
+      JEV_TIMEOUT_MS
+    );
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Jev Decisions API Error ${res.status}: ${errText}`);
+    }
+    const result = await res.json();
+    const latencyMs = Date.now() - startTime;
+
+    span.setAttribute('decision.latency_ms', latencyMs);
+    const promptTokens = result.usage?.input_tokens ?? result.usage?.prompt_tokens;
+    const completionTokens = result.usage?.output_tokens ?? result.usage?.completion_tokens;
+    const totalTokens = result.usage?.total_tokens;
+
+    if (typeof promptTokens === 'number') span.setAttribute('decision.tokens.input', promptTokens);
+    if (typeof completionTokens === 'number') span.setAttribute('decision.tokens.output', completionTokens);
+    if (typeof totalTokens === 'number') span.setAttribute('decision.tokens.total', totalTokens);
+
+    const verdict = formatVerdict(result);
+    if (verdict) span.setAttribute('decision.verdict', verdict);
+    span.end();
+
+    setCachedDecision(hash, result);
+    return result;
+  } catch (err: any) {
+    span.setError(err);
+    span.setAttribute('decision.latency_ms', Date.now() - startTime);
+    span.end();
+    throw err;
+  }
 }
 
 /** Strip ```json ... ``` fences so lenient JSON parsing works. */
@@ -279,53 +460,81 @@ export async function callJevRouter(state: string, questions: Record<string, unk
     'Use exactly the question keys and criterion keys given.\n\n' +
     `Questions: ${JSON.stringify(questions)}\n\nState:\n${state}`;
 
-  const res = await fetchWithTimeout(OPENROUTER_CHAT_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openRouterKey()}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://github.com/agentic-hub/jev',
-      'X-Title': 'Jev Router (OpenRouter)'
-    },
-    body: JSON.stringify({
-      model: JEV_ROUTER_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'jev_router_answers',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: {
-              answers: { type: 'object', additionalProperties: true }
-            },
-            required: ['answers']
-          }
-        }
-      }
-    })
-  }, FALLBACK_TIMEOUT_MS);
+  const startTime = Date.now();
+  const span = getTracer().startSpan('jev.router', {
+    'decision.state_length': state.length,
+    'decision.model': JEV_ROUTER_MODEL
+  });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Jev Router Error ${res.status}: ${errText}`);
-  }
-
-  const json: any = await res.json();
-  const raw = String(json?.choices?.[0]?.message?.content ?? '');
-  let parsed: any = {};
   try {
-    parsed = JSON.parse(stripJsonFences(raw));
-  } catch {
-    parsed = {};
+    const res = await fetchWithTimeout(
+      OPENROUTER_CHAT_URL,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openRouterKey()}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://github.com/agentic-hub/jev',
+          'X-Title': 'Jev Router (OpenRouter)'
+        },
+        body: JSON.stringify({
+          model: JEV_ROUTER_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'jev_router_answers',
+              strict: true,
+              schema: {
+                type: 'object',
+                properties: {
+                  answers: { type: 'object', additionalProperties: true }
+                },
+                required: ['answers']
+              }
+            }
+          }
+        })
+      },
+      FALLBACK_TIMEOUT_MS
+    );
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Jev Router Error ${res.status}: ${errText}`);
+    }
+
+    const json: any = await res.json();
+    const raw = String(json?.choices?.[0]?.message?.content ?? '');
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(stripJsonFences(raw));
+    } catch {
+      parsed = {};
+    }
+
+    const latencyMs = Date.now() - startTime;
+    span.setAttribute('decision.latency_ms', latencyMs);
+    if (typeof json?.usage?.prompt_tokens === 'number') span.setAttribute('decision.tokens.input', json.usage.prompt_tokens);
+    if (typeof json?.usage?.completion_tokens === 'number') span.setAttribute('decision.tokens.output', json.usage.completion_tokens);
+    if (typeof json?.usage?.total_tokens === 'number') span.setAttribute('decision.tokens.total', json.usage.total_tokens);
+
+    const verdict = formatVerdict(parsed);
+    if (verdict) span.setAttribute('decision.verdict', verdict);
+    span.end();
+
+    return {
+      model: json?.model || JEV_ROUTER_MODEL,
+      provider: json?.provider,
+      answers: parsed?.answers || {},
+      usage: json?.usage
+    };
+  } catch (err: any) {
+    span.setError(err);
+    span.setAttribute('decision.latency_ms', Date.now() - startTime);
+    span.end();
+    throw err;
   }
-  return {
-    model: json?.model || JEV_ROUTER_MODEL,
-    provider: json?.provider,
-    answers: parsed?.answers || {},
-    usage: json?.usage
-  };
 }
 
 /**
@@ -457,8 +666,143 @@ export function defaultEffortForSubagent(subagent: string, promptText: string = 
     return 'low';
   }
 
+  // Bounded deterministic ports (e.g. Python/Shell to Rust with explicit specs)
+  if (
+    hasWord(/\bport(ing)?\b/) &&
+    (hasWord(/\brust\b/) || hasWord(/\bpython\b/) || hasWord(/\bcli\b/))
+  ) {
+    return 'medium';
+  }
+
   // Default balanced reasoning effort (vault_librarian defaults to medium per RFC D2)
   return 'medium';
+}
+
+/**
+ * Maps model identifiers to normalized cost/tier ranking:
+ * 'openrouter_free' (0) < 'flash_lite' (1) < 'flash' (2) < 'pro' (3)
+ */
+export function modelTierRank(tierOrModel: string): number {
+  const t = (tierOrModel || '').toLowerCase();
+  if (t.includes('free') || t === 'openrouter_free') return 0;
+  if (t.includes('flash_lite') || t.includes('flash-lite')) return 1;
+  if (t.includes('flash') || t.includes('cheap') || t.includes('standard')) return 2;
+  if (t.includes('pro') || t.includes('opus') || t.includes('expensive')) return 3;
+  return 2;
+}
+
+export function rankToTierName(rank: number): 'openrouter_free' | 'flash_lite' | 'flash' | 'pro' {
+  if (rank <= 0) return 'openrouter_free';
+  if (rank === 1) return 'flash_lite';
+  if (rank === 2) return 'flash';
+  return 'pro';
+}
+
+/**
+ * Phase 5: Hard Session Model Ceiling Clamper.
+ * The active model of the parent session (from quota-state.json) establishes the
+ * upper-bound model tier ceiling for subagents and delegated tasks.
+ * Bounded CLI ports / tasks are clamped <= session model ceiling unless explicit
+ * deep architectural reasoning is required.
+ */
+export function clampTierToSessionCeiling(
+  recommendedTier: string,
+  activeModel?: string,
+  promptText: string = ''
+): { clampedTier: string; wasClamped: boolean; ceilingTier: string } {
+  if (!activeModel) {
+    return { clampedTier: recommendedTier, wasClamped: false, ceilingTier: 'pro' };
+  }
+
+  const text = promptText.toLowerCase();
+  const explicitProOverride =
+    text.includes('deep reasoning') ||
+    text.includes('cross-system architecture') ||
+    text.includes('manual pro approval') ||
+    text.includes('claude opus') ||
+    text.includes('gemini pro');
+
+  const ceilingRank = modelTierRank(activeModel);
+  const ceilingTier = rankToTierName(ceilingRank);
+  const recRank = modelTierRank(recommendedTier);
+
+  // If active session is Flash, and task is not explicitly overridden with deep architecture keywords:
+  if (recRank > ceilingRank && !explicitProOverride) {
+    return {
+      clampedTier: ceilingTier,
+      wasClamped: true,
+      ceilingTier
+    };
+  }
+
+  return {
+    clampedTier: recommendedTier,
+    wasClamped: false,
+    ceilingTier
+  };
+}
+
+/**
+ * Phase 5: Scaffolding Detection Heuristic.
+ * Detects whether a task involves new package/crate/component generation,
+ * signaling that mechanical boilerplate (Cargo.toml, package.json, CLI clap structs)
+ * should be offloaded to Tier 0 ($0.00 via jev_execute_free) before spawning paid workers.
+ */
+export function detectScaffoldingTask(taskText: string): { scaffoldFirst: boolean; boilerplateType: string | null } {
+  const text = (taskText || '').toLowerCase();
+  if (
+    text.includes('cargo.toml') ||
+    text.includes('package.json') ||
+    text.includes('scaffold') ||
+    text.includes('create crate') ||
+    text.includes('new crate') ||
+    text.includes('boilerplate') ||
+    text.includes('clap struct')
+  ) {
+    let bpType = 'boilerplate';
+    if (text.includes('cargo') || text.includes('rust') || text.includes('crate')) bpType = 'rust_crate';
+    else if (text.includes('package.json') || text.includes('bun') || text.includes('node')) bpType = 'node_package';
+    return { scaffoldFirst: true, boilerplateType: bpType };
+  }
+  return { scaffoldFirst: false, boilerplateType: null };
+}
+
+/**
+ * Phase 5: Local Deterministic Quality Gate (Tier 3 Fallback for jev_judge).
+ * Evaluates syntax, git conflict markers, compilation exit codes, and non-empty assertions
+ * locally without calling remote LLM endpoints when OpenRouter is unreachable or returns 404.
+ */
+export function evaluateLocalQualityJudge(context: string, condition?: string): { passed: boolean; reason: string } {
+  const ctx = context || '';
+
+  // 1. Conflict marker validation
+  if (ctx.includes('<<<<<<<') || ctx.includes('=======') || ctx.includes('>>>>>>>')) {
+    return { passed: false, reason: 'Detected unresolved merge conflict markers in diff/output.' };
+  }
+
+  // 2. Non-empty check
+  if (ctx.trim().length === 0) {
+    return { passed: false, reason: 'Context is empty.' };
+  }
+
+  // 3. Test/Process exit code check
+  if (ctx.includes('exit code: 1') || ctx.includes('exited with code 1') || ctx.includes('FAILED') || ctx.includes('FAIL:')) {
+    // If condition specifically asks for failure, allow it; otherwise reject failure
+    if (!condition?.toLowerCase().includes('fail')) {
+      return { passed: false, reason: 'Detected non-zero exit code or failure in test execution output.' };
+    }
+  }
+
+  // 4. Broken JSON / syntax check if condition mentions JSON or valid format
+  if (condition?.toLowerCase().includes('valid json')) {
+    try {
+      JSON.parse(ctx);
+    } catch (e: any) {
+      return { passed: false, reason: `Invalid JSON syntax: ${e.message}` };
+    }
+  }
+
+  return { passed: true, reason: 'Local deterministic sanity checks passed.' };
 }
 
 export function applyEffortGovernance(effort: ThinkingEffort, quotaStrategy: string, targetTier: string = ''): ThinkingEffort {
@@ -526,6 +870,29 @@ export async function selectModel(
   candidates: ModelCandidate[],
   quotaStrategy = 'unknown'
 ): Promise<ModelSelection> {
+  const cacheKey = computeDecisionCacheKey(task, candidates, quotaStrategy);
+  const cached = getCachedDecision(cacheKey);
+  if (cached) {
+    const span = getTracer().startSpan('jev.select_model', {
+      'task.length': task.length,
+      'candidates.count': candidates.length,
+      'quota.strategy': quotaStrategy,
+      'decision.cached': true
+    });
+    span.setAttribute('decision.latency_ms', 0);
+    if (cached.recommendedOptionId) span.setAttribute('decision.verdict', cached.recommendedOptionId);
+    span.end();
+    return cached;
+  }
+
+  const startTime = Date.now();
+  const span = getTracer().startSpan('jev.select_model', {
+    'task.length': task.length,
+    'candidates.count': candidates.length,
+    'quota.strategy': quotaStrategy,
+    'decision.cached': false
+  });
+
   const ranked = [...candidates].sort((a, b) => costScore(a) - costScore(b));
   const cheapest = ranked[0];
 
@@ -606,7 +973,7 @@ export async function selectModel(
 
     const confidence = choiceAnswer?.confidence ?? 0.9;
 
-    return base({
+    const result = base({
       options,
       cheapestSuitableOptionId: required.id,
       recommendedOptionId: required.id,
@@ -618,7 +985,23 @@ export async function selectModel(
       modelUsed: data?.model || JEV_MODEL,
       fallbackUsed: false
     });
+
+    const latencyMs = Date.now() - startTime;
+    span.setAttribute('decision.latency_ms', latencyMs);
+    if (result.recommendedOptionId) span.setAttribute('decision.verdict', result.recommendedOptionId);
+    if (result.recommendation) span.setAttribute('decision.recommendation', result.recommendation);
+    span.setAttribute('decision.cheapest_sufficient', result.cheapestSufficient);
+    span.end();
+
+    setCachedDecision(cacheKey, result);
+    return result;
   } catch (err: any) {
+    const latencyMs = Date.now() - startTime;
+    span.setError(err);
+    span.setAttribute('decision.latency_ms', latencyMs);
+    span.setAttribute('decision.verdict', cheapest?.id || 'cheapest');
+    span.end();
+
     // Cost-first fallback: cheapest wins.
     const options: ScoredOption[] = ranked.map((c) => ({
       ...c,

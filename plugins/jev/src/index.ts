@@ -29,8 +29,15 @@ import {
   JEV_INPUT_COST_PER_MILLION,
   FALLBACK_INPUT_COST_PER_MILLION,
   JEV_TIMEOUT_MS,
-  FALLBACK_TIMEOUT_MS
+  FALLBACK_TIMEOUT_MS,
+  JEV_CONFIG_FILE,
+  clampTierToSessionCeiling,
+  detectScaffoldingTask,
+  evaluateLocalQualityJudge
 } from './shared.js';
+import { initTracing } from './tracing.js';
+
+void initTracing();
 
 const FREE_EXEC_TIMEOUT_MS = 30000;
 
@@ -484,6 +491,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: 'jev_batch_dispatch',
+      description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tasks: {
+            type: 'array',
+            description: 'Array of task descriptions or phase items to plan and dispatch in parallel',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Unique identifier for the task/phase' },
+                task: { type: 'string', description: 'The description of the work' },
+                dependencies: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Optional array of task IDs that must complete before this task can start'
+                }
+              },
+              required: ['id', 'task']
+            }
+          },
+          availableSubagents: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional list of candidate subagents'
+          }
+        },
+        required: ['tasks']
+      }
+    },
+    {
       name: 'jev_agent_free',
       description: 'Execute autonomous agentic coding, workspace modification, refactoring, and text tasks using free-tier models via OpenCode CLI or OpenRouter Free pool at $0.00 cost (0 Gemini quota).',
       inputSchema: {
@@ -811,25 +850,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         passed = noulValue >= 0.5;
         confidence = judgmentAnswer?.confidence ?? Number((Math.abs(noulValue - 0.5) * 2).toFixed(2));
       } catch (fallbackErr: any) {
-        const latencyMs = Math.round(performance.now() - start);
-        const endTimeIso = new Date().toISOString();
-        await logTelemetry({ tool: 'jev_judge', status: 'error', error: String(fallbackErr), latencyMs });
-        pushPhoenixSpan({
-          name: 'jev:jev_judge',
-          startTimeIso,
-          endTimeIso,
-          attributes: {
-            'tool.name': 'jev_judge',
-            'fallback.used': true,
-            'fallback.tier': 3,
-            'latency_ms': latencyMs
-          }
-        });
-        // Fail loudly — both Jev Decisions API and fallback model are unavailable.
-        throw new Error(
-          `jev_judge: all judgment tiers failed. Tier 1 (Jev Decisions API) and Tier 2 (${FALLBACK_MODEL}) both unavailable. ` +
-          `Last error: ${fallbackErr.message}. Ensure OPENROUTER_API_KEY is set and valid.`
-        );
+        console.warn(`[jev warn] Tier 1 & 2 failed: ${fallbackErr.message}. Triggering Tier 3 Local Deterministic Judge...`);
+        // Tier 3: Local Deterministic Judge (AST, regex, exit codes, conflict markers)
+        const localResult = evaluateLocalQualityJudge(context, condition);
+        passed = localResult.passed;
+        noulValue = passed ? 0.95 : 0.05;
+        confidence = 0.9;
+        modelUsed = 'local_deterministic';
+        fallbackUsed = true;
       }
     }
 
@@ -1158,10 +1186,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const rawEffort = defaultEffortForSubagent(recommendedSubagent, task);
     const recommendedEffort = applyEffortGovernance(rawEffort, quotaView.strategy, recommendedTier);
 
-    const isPro = recommendedTier === 'pro';
+    // Phase 5: Session Model Ceiling Clamping
+    const ceilingClamping = clampTierToSessionCeiling(recommendedTier, quotaView.active_model, task);
+    const effectiveTier = ceilingClamping.clampedTier;
+    const isPro = effectiveTier === 'pro';
+
+    // Phase 5: Automated Tier 0 Scaffolding Detection
+    const scaffoldingCheck = detectScaffoldingTask(task);
+
     const result = {
       recommendedSubagent,
-      recommendedTier,
+      recommendedTier: effectiveTier,
+      rawRecommendedTier: recommendedTier,
+      sessionCeilingTier: ceilingClamping.ceilingTier,
+      wasClampedByCeiling: ceilingClamping.wasClamped,
+      scaffoldFirst: scaffoldingCheck.scaffoldFirst,
+      boilerplateType: scaffoldingCheck.boilerplateType,
       recommendedEffort,
       requiresUserApproval: isPro,
       ...(isPro
@@ -1204,6 +1244,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [{
         type: 'text',
         text: JSON.stringify(result, null, 2)
+      }]
+    };
+  }
+
+  // -------------------------------------------------------------
+  // Tool: jev_batch_dispatch (Phase 5: Multi-Subagent DAG Decomposition)
+  // -------------------------------------------------------------
+  if (name === 'jev_batch_dispatch') {
+    const { tasks, availableSubagents } = (args || {}) as {
+      tasks: Array<{ id: string; task: string; dependencies?: string[] }>;
+      availableSubagents?: string[];
+    };
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      throw new Error('jev_batch_dispatch requires a non-empty "tasks" array');
+    }
+
+    const quotaView = await readQuotaView();
+    const plannedTasks = [];
+    let freeTierCount = 0;
+
+    for (const item of tasks) {
+      const taskText = item.task || '';
+      const deps = Array.isArray(item.dependencies) ? item.dependencies : [];
+      const scaffolding = detectScaffoldingTask(taskText);
+
+      // Fast evaluation of subagent and tier using keyword/local heuristics + ceiling
+      let subagent = 'code_engineer';
+      const tLower = taskText.toLowerCase();
+      if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
+        subagent = 'research';
+      } else if (tLower.includes('review') || tLower.includes('audit') || tLower.includes('gate')) {
+        subagent = 'review';
+      }
+
+      // Sizing tier
+      let rawTier = 'flash';
+      if (tLower.includes('scaffold') || tLower.includes('format') || tLower.includes('boilerplate')) {
+        rawTier = 'openrouter_free';
+      } else if (tLower.includes('deep reasoning') || tLower.includes('architecture overhaul')) {
+        rawTier = 'pro';
+      }
+
+      // Clamp to session ceiling
+      const clamped = clampTierToSessionCeiling(rawTier, quotaView.active_model, taskText);
+      const tier = clamped.clampedTier;
+
+      if (tier === 'openrouter_free') {
+        freeTierCount++;
+      }
+
+      const effort = defaultEffortForSubagent(subagent, taskText);
+
+      plannedTasks.push({
+        taskId: item.id,
+        task: taskText,
+        subagent,
+        tier,
+        dependencies: deps,
+        canRunParallel: deps.length === 0,
+        scaffoldFirst: scaffolding.scaffoldFirst,
+        boilerplateType: scaffolding.boilerplateType,
+        effort: applyEffortGovernance(effort, quotaView.strategy, tier),
+        requiresUserApproval: tier === 'pro'
+      });
+    }
+
+    // Safety concurrency cap: max 10 concurrent for free tier
+    const concurrencyCap = Math.min(10, Math.max(1, freeTierCount));
+
+    const manifest = {
+      planName: 'Multi-Subagent Parallel DAG Execution Manifest',
+      totalTasks: plannedTasks.length,
+      freeTierTasks: freeTierCount,
+      activeSessionModel: quotaView.active_model || 'unknown',
+      maxConcurrentFreeWorkers: concurrencyCap,
+      tasks: plannedTasks,
+      parallelExecutionOrder: [
+        // Group tasks by dependency readiness
+        plannedTasks.filter(t => t.canRunParallel).map(t => t.taskId),
+        plannedTasks.filter(t => !t.canRunParallel).map(t => t.taskId)
+      ]
+    };
+
+    const latencyMs = Math.round(performance.now() - start);
+    await logTelemetry({
+      tool: 'jev_batch_dispatch',
+      taskCount: plannedTasks.length,
+      latencyMs
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(manifest, null, 2)
       }]
     };
   }

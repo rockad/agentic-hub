@@ -38,19 +38,22 @@ Control the coprocessor's behavior via a toggleable state machine, persisted acr
 
 > Toggle anytime using the CLI (`jev on`) or the in-chat slash command (`/jev`).
 
-### 🚀 Pre-flight Dispatch (`jev_dispatch`)
+### 🚀 Pre-flight Dispatch (`jev_dispatch` & `jev_batch_dispatch`)
 Before a task hits the primary model, `jev_dispatch` runs a calibrated inference on the task metadata. It produces a **probability distribution** over:
 - **Subagents:** Which specialized helper should handle the task?
 - **Execution Tiers:** `openrouter_free`, `flash_lite`, `flash`, or `pro`.
+- **Session Model Ceiling Clamping:** Dynamically clamps subagent recommendations $\le$ active session model tier (`Gemini 3.8 Flash`), preventing over-eager `pro` recommendations for routine CLI porting.
+- **Scaffolding Detection:** Automatically detects package/crate creation tasks and flags `scaffoldFirst: true` to trigger Tier 0 `$0.00` mechanical boilerplate generation.
+- **DAG Batch Dispatch (`jev_batch_dispatch`):** Decomposes multi-task roadmaps or phases into parallel and sequential execution waves, enforces dependency order, and applies safety concurrency caps ($\le 10$ simultaneous free workers).
 
-This prevents expensive models from processing routine formatting or simple search requests.
+This prevents expensive models from processing routine formatting, simple search requests, or bounded ports.
 
 ### 🆓 Free-Tier Offloading
 Jev intercepts specific workload patterns and reroutes them to `openrouter/free` endpoints. This guarantees **$0.00 spend** and **0 quota usage** for:
 - File/Code **Summaries**
 - **Markdown** formatting and refactoring
 - Standard **Git Commits** (`dg-commit`)
-- Boilerplate scaffolding
+- Boilerplate scaffolding (`Cargo.toml`, `package.json`, CLI `clap` structs)
 - Unit test generation
 
 **Implementation:**
@@ -66,11 +69,11 @@ Integrates directly with the commit pipeline via `dg-commit` (script alias) and 
 4. `jev_judge` validates the message against the diff semantically.
 5. Commit is finalized.
 
-### 🛡️ Quality Gates (`jev_judge`)
-A micro-evaluation engine designed for speed. `jev_judge` runs in **~350ms** and evaluates:
-- **Code Diff Integrity:** Does the change match the intent?
-- **Safety Checks:** Are there exposed secrets or unsafe patterns?
-- **Pre-Commit Validity:** Does the commit message accurately describe the changes?
+### 🛡️ Three-Tier Resilient Quality Gates (`jev_judge`)
+A micro-evaluation engine designed for speed and bulletproof fault tolerance:
+- **Tier 1 (Fast Bernoulli Decision):** OpenRouter Decisions API (`~typesafe/jev-latest` on `/api/alpha/decisions`, ~350ms).
+- **Tier 2 (Chat Router Fallback):** OpenRouter chat completions with strict JSON Schema (`typesafe/jev-router`).
+- **Tier 3 (Local Deterministic Judge):** If OpenRouter returns `404` (*"No models satisfy the decisions policy"*), network timeout, or connection failure, Jev automatically evaluates diff syntax, git merge conflict markers (`<<<<<<<`), compilation exit codes (`exit code: 1`), and non-empty assertions locally without throwing unhandled exceptions.
 
 ### 📊 Quota & Model Selection (`jev_quota`, `jev_select_model`)
 Real-time telemetry tracks your subscription limits to prevent hard `429` errors:

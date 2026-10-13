@@ -33,6 +33,17 @@ This document governs System 1 decision-making, model tier governance, thinking 
   - The model running in the main agent session defines the absolute upper-bound model tier and version ceiling for all delegated subagents and tasks.
 - **Subagent Tier Clamping**:
   - Subagents default to `Model: "inherit"` or lower (`flash`, `flash_lite`, `openrouter_free`).
+- **Low-Quota Protocol (<20% Remaining)**:
+  - When `gemini-weekly` or `gemini-5h` is under 20% remaining (as reported in `quota-state.json` or `jev_quota`):
+    - All new subagents MUST be clamped strictly to `Model: "flash_lite"` (the lowest token-weight model available in Antigravity).
+    - Pro tier is strictly prohibited.
+    - All non-essential text formatting, markdown transformations, and scaffolding boilerplate must be offloaded to `jev_execute_free` or `jev_agent_free` ($0.00 cost, 0 Gemini quota).
+- **Subagent Lifecycle & Pro Reuse Prohibition**:
+  - Before invoking any new subagent, inspect active and idle workers with `manage_subagents(Action: "list")` and reuse idle workers via `send_message`.
+  - **Never reuse an idle subagent originally spawned on `Model: "pro"`** during quota-conservation or routine tasks, as messaging it continues consuming Pro quota. Only reuse workers originally spawned on `flash` or `flash_lite`.
+- **Execution Parameters vs. Dispatch Recommendations**:
+  - Distinguish pre-flight `jev_dispatch` recommendations from actual execution parameters.
+  - Native `invoke_subagent` runs exclusively on Gemini (`inherit`, `flash_lite`, `flash`, `pro`). Autonomous free-tier workspace tasks execute via `jev_agent_free` or `jev_execute_free` (`openrouter/free`).
 - **Pro Tier Manual Approval Workflow**:
   - Pro tier models (`pro`, `opus`) must NEVER be used automatically.
   - If `jev_dispatch` recommends `pro`, prompt the user for explicit approval. If declined, execute on `flash` or cheaper.

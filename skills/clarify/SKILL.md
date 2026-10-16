@@ -124,7 +124,9 @@ If the forks concerned a schema, an API, or a flow, assemble the **final picture
 
 ### 3. A proposed next step
 
-End by proposing an action: writing the PRD or ADR, or starting implementation, or documenting first and coding second.
+When the design leads to a multi-file or multi-component implementation, include a **Proposed Parallel Workstream Breakdown** table mapping independent workstreams (`WS1`, `WS2`, ...) to their file scopes and target subagent roles/tiers (ready for `jev_batch_dispatch` and parallel `invoke_subagent` delegation).
+
+End by proposing an action: writing the PRD or ADR, or starting parallel implementation via `jev_batch_dispatch`, or documenting first and coding second.
 
 **Do not write code without an explicit go from the user.**
 

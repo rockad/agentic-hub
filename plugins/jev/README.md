@@ -36,7 +36,7 @@ Control the coprocessor's behavior via a toggleable state machine, persisted acr
 | `ON-DEMAND` | **Manual Trigger.** Jev only engages when explicitly requested (via slash command). | Auditing, debugging, or when you want full manual control over costs. |
 | `OFF` | **Disabled.** No offloading, no dispatching. Direct pass-through to primary model. | Emergency high-complexity tasks where free models might hallucinate. |
 
-> Toggle anytime using the CLI (`jev on`) or the in-chat slash command (`/jev`).
+> Toggle anytime using the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` (the primary switch mechanism to prevent tool lockouts when switching back from `off` where MCP is disabled) or the in-chat slash command (`/jev`). `mode.json` auto-heals `agy mcp` state on status/pre-flight.
 
 ### 🚀 Pre-flight Dispatch (`jev_dispatch` & `jev_batch_dispatch`)
 Before a task hits the primary model, `jev_dispatch` runs a calibrated inference on the task metadata. It produces a **probability distribution** over:

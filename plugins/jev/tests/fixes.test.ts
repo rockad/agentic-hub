@@ -231,3 +231,25 @@ describe('callOpenCodeAgent timeout', () => {
     expect(proc.stdout.toString()).toContain('timed out after 300ms');
   });
 });
+
+describe('WS2 Jev Plugin Core & CLI Fixes', () => {
+  it('scripts/jev-mode uses dynamic PLUGIN_ROOT resolution and contains auto-heal logic', () => {
+    const jevModePath = path.join(PLUGIN_ROOT, 'scripts', 'jev-mode');
+    const content = fs.readFileSync(jevModePath, 'utf-8');
+    expect(content).toContain('SCRIPT_PATH=');
+    expect(content).toContain('PLUGIN_ROOT=');
+    expect(content).not.toContain("import { readQuotaView } from '/home/rockad/projects/agentic-hub/plugins/jev/src/shared.ts'");
+    expect(content).toContain('${PLUGIN_ROOT}/src/shared.ts');
+    expect(content).toContain('auto-healed');
+  });
+
+  it('jev_set_mode with "off" schedules a detached timeout rather than blocking synchronously', async () => {
+    const indexPath = path.join(PLUGIN_ROOT, 'src', 'index.ts');
+    const content = fs.readFileSync(indexPath, 'utf-8');
+    expect(content).toContain("targetMode === 'off'");
+    expect(content).toContain('setTimeout(');
+    expect(content).toContain('timer.unref?.()');
+    expect(content).toContain('Jev mode set to OFF (MCP server disable scheduled in 150ms after response flush)');
+  });
+});
+

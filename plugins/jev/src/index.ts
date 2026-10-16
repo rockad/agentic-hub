@@ -1700,17 +1700,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     let cliOutput = '';
-    if (fsSync.existsSync(JEV_MODE_BIN)) {
-      try {
-        const { stdout, stderr } = await execFileAsync(JEV_MODE_BIN, [targetMode]);
-        cliOutput = (stdout + (stderr ? `\n${stderr}` : '')).trim();
-      } catch (execErr: any) {
-        await writeModeState(targetMode);
-        cliOutput = `Direct state update fallback (binary exec error: ${execErr.message})`;
+    if (targetMode === 'off') {
+      await writeModeState('off');
+      if (fsSync.existsSync(JEV_MODE_BIN)) {
+        const timer = setTimeout(() => {
+          execFile(JEV_MODE_BIN, ['off'], () => {});
+        }, 150);
+        timer.unref?.();
       }
+      cliOutput = 'Jev mode set to OFF (MCP server disable scheduled in 150ms after response flush)';
     } else {
-      await writeModeState(targetMode);
-      cliOutput = 'Direct state update fallback (jev-mode binary not found)';
+      if (fsSync.existsSync(JEV_MODE_BIN)) {
+        try {
+          const { stdout, stderr } = await execFileAsync(JEV_MODE_BIN, [targetMode]);
+          cliOutput = (stdout + (stderr ? `\n${stderr}` : '')).trim();
+        } catch (execErr: any) {
+          await writeModeState(targetMode);
+          cliOutput = `Direct state update fallback (binary exec error: ${execErr.message})`;
+        }
+      } else {
+        await writeModeState(targetMode);
+        cliOutput = 'Direct state update fallback (jev-mode binary not found)';
+      }
     }
 
     const currentState = await readCurrentMode();
@@ -1749,10 +1760,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const details = getModeDetails(currentState.mode);
 
     let cliStatusOutput: string | undefined = undefined;
+    let extractedMcpStatus: string | undefined = undefined;
     if (fsSync.existsSync(JEV_MODE_BIN)) {
       try {
         const { stdout } = await execFileAsync(JEV_MODE_BIN, ['status']);
         cliStatusOutput = stdout.trim();
+        const match = cliStatusOutput.match(/MCP Status:\s+\x1b\[[0-9;]*m([^\x1b]+)\x1b/);
+        if (match && match[1]) {
+          extractedMcpStatus = match[1].trim();
+        } else {
+          const lines = cliStatusOutput.split('\n');
+          for (const line of lines) {
+            if (line.includes('MCP Status:')) {
+              extractedMcpStatus = line.replace(/.*MCP Status:\s*/, '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+            }
+          }
+        }
       } catch {
         // Non-fatal status script error
       }
@@ -1766,7 +1789,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       characteristics: details.characteristics,
       stateFile: JEV_STATE_FILE,
       updatedAt: currentState.updatedAt,
-      cliStatus: cliStatusOutput
+      cliStatus: cliStatusOutput,
+      mcpStatus: extractedMcpStatus
     };
 
     await logTelemetry({

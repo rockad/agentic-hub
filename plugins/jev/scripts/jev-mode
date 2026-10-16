@@ -7,6 +7,10 @@ set -euo pipefail
 #   - on-demand: MCP enabled, passive pre-flight routing for complex multi-role tasks
 #   - on:        MCP enabled, aggressive System 1 co-processor (pre-flight everything, free tier offload, quality gates)
 
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+PLUGIN_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
 CONFIG_DIR="${HOME}/.config/jev"
 STATE_FILE="${CONFIG_DIR}/mode.json"
 TELEMETRY_FILE="${HOME}/.gemini/antigravity-cli/jev_telemetry.jsonl"
@@ -52,13 +56,31 @@ function show_status() {
     mcp_status="disabled"
   fi
 
+  local expected_status="enabled"
+  if [ "$CURRENT_MODE" = "off" ]; then
+    expected_status="disabled"
+  fi
+
+  if [ "$mcp_status" = "enabled" ] || [ "$mcp_status" = "disabled" ]; then
+    if [ "$mcp_status" != "$expected_status" ]; then
+      local old_status="$mcp_status"
+      if [ "$CURRENT_MODE" = "off" ]; then
+        agy mcp disable jev >/dev/null 2>&1 || true
+        mcp_status="disabled (auto-healed from ${old_status})"
+      else
+        agy mcp enable jev >/dev/null 2>&1 || true
+        mcp_status="enabled (auto-healed from ${old_status})"
+      fi
+    fi
+  fi
+
   echo -e "\033[1;36m=== TypeSafe Jev Operating Status ===\033[0m"
   echo -e "  Active Mode:  \033[1;32m${CURRENT_MODE}\033[0m"
   echo -e "  MCP Status:   \033[1;34m${mcp_status}\033[0m"
   echo -e "  State File:   \033[90m${STATE_FILE}\033[0m"
 
   local quota_json
-  quota_json=$(bun -e "import { readQuotaView } from '/home/rockad/projects/agentic-hub/plugins/jev/src/shared.ts'; const q = await readQuotaView(); console.log(JSON.stringify(q));" 2>/dev/null || true)
+  quota_json=$(bun -e "import { readQuotaView } from '${PLUGIN_ROOT}/src/shared.ts'; const q = await readQuotaView(); console.log(JSON.stringify(q));" 2>/dev/null || true)
   if [ -n "$quota_json" ]; then
     local strat
     strat=$(echo "$quota_json" | jq -r '.strategy // "unknown"')

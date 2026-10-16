@@ -4,9 +4,10 @@ This document governs System 1 decision-making, model tier governance, thinking 
 
 ## 1. Operating Modes
 
-- **`off`**: MCP disabled, zero token overhead, zero OpenRouter calls.
+- **`off`**: MCP disabled (`agy mcp disable jev`), zero token overhead, zero OpenRouter calls.
 - **`on-demand`**: MCP enabled. Passive System 1 coprocessor for multi-role workflows and ad-hoc routing.
 - **`on`**: Aggressive System 1 enforcement: mandatory pre-flight dispatch, free-tier offloading, thinking effort governance, and automated quality gates.
+- **Primary Switch Mechanism**: Always use the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` to switch modes or check status (`jev status`). When `jev off`, MCP server is disabled so MCP tools (`jev_set_mode`, `jev_get_mode`) are unavailable; using the CLI prevents lockout. `mode.json` acts as the single master switch and automatically auto-heals any drift in `agy mcp` state during status checks or pre-flight.
 
 ## 2. Pre-Flight Dispatch & Routing
 
@@ -14,6 +15,9 @@ This document governs System 1 decision-making, model tier governance, thinking 
   - Run before executing non-trivial tasks, refactors, or spawning subagents.
   - Evaluates calibrated probability distributions over candidate subagents and execution tiers (`openrouter_free`, `flash_lite`, `flash`, `pro`).
   - If `recommendedTier` is `openrouter_free`, execute immediately via `jev_execute_free` rather than spawning a paid subagent.
+- **Post-Approval Execution Transition Gate (`jev_batch_dispatch`)**:
+  - Upon plan approval or completion of `/grill-me` (`clarify`), the main orchestrator MUST immediately call `jev_batch_dispatch` and `manage_subagents(Action: "list")` to decompose and delegate independent workstreams in parallel rather than editing multiple files sequentially in the main context.
+  - Enforced by `PreToolUse` (`jev-pre-tool.sh`), which checks `jev_telemetry.jsonl` and blocks consecutive direct edits (`>=2` files) in the session window if no recent dispatch (`jev_dispatch` / `jev_batch_dispatch`) occurred.
 - **Fast Option Routing (`jev_route`)**:
   - Use when a discrete choice between 2–8 options needs a fast calibrated probabilistic verdict (~800ms) via OpenRouter Decisions API.
 
@@ -38,6 +42,7 @@ This document governs System 1 decision-making, model tier governance, thinking 
     - All new subagents MUST be clamped strictly to `Model: "flash_lite"` (the lowest token-weight model available in Antigravity).
     - Pro tier is strictly prohibited.
     - All non-essential text formatting, markdown transformations, and scaffolding boilerplate must be offloaded to `jev_execute_free` or `jev_agent_free` ($0.00 cost, 0 Gemini quota).
+    - When `jev off` and quota is `<20%`, pre-flight and pre-invocation hooks inject a native-only warning clamping subagents to `Model: "flash_lite"` without referencing disabled `jev_*` MCP tools, and advise running `jev on` to re-enable free-tier offloading.
 - **Subagent Lifecycle & Pro Reuse Prohibition**:
   - Before invoking any new subagent, inspect active and idle workers with `manage_subagents(Action: "list")` and reuse idle workers via `send_message`.
   - **Never reuse an idle subagent originally spawned on `Model: "pro"`** during quota-conservation or routine tasks, as messaging it continues consuming Pro quota. Only reuse workers originally spawned on `flash` or `flash_lite`.

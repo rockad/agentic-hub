@@ -37,23 +37,25 @@ To inspect the active operating mode, configuration state, and mode characterist
 
 To switch modes directly:
 
+**Important Note on Lockout Recovery**: When Jev is `off`, the `jev` MCP server is disabled (`agy mcp disable jev`), meaning MCP tools (`jev_set_mode`, `jev_get_mode`) are unavailable. Therefore, always use the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` to switch modes or check status (`jev status`). When Jev is enabled (`on` or `on-demand`), MCP tools are also available (`jev_set_mode("off")` automatically schedules disabling the server after flushing its response).
+
 #### Switching to `on` (Aggressive System 1):
-- **Via MCP Tool**:
-  Call `jev_set_mode` with argument `{"mode": "on"}`.
-- **Via Terminal**:
+- **Via Terminal (Primary & Required when `off`)**:
   Run `jev on` (or `~/.local/bin/jev-mode on`).
+- **Via MCP Tool (When enabled)**:
+  Call `jev_set_mode` with argument `{"mode": "on"}`.
 
 #### Switching to `on-demand` (Passive Coprocessor):
-- **Via MCP Tool**:
-  Call `jev_set_mode` with argument `{"mode": "on-demand"}`.
 - **Via Terminal**:
   Run `jev on-demand` (or `~/.local/bin/jev-mode on-demand`).
+- **Via MCP Tool**:
+  Call `jev_set_mode` with argument `{"mode": "on-demand"}`.
 
 #### Switching to `off` (Zero Overhead):
-- **Via MCP Tool**:
-  Call `jev_set_mode` with argument `{"mode": "off"}`.
 - **Via Terminal**:
   Run `jev off` (or `~/.local/bin/jev-mode off`).
+- **Via MCP Tool**:
+  Call `jev_set_mode` with argument `{"mode": "off"}`.
 
 ### 3. Model Tier Selection & Pro Tier User Approval Guardrail
 
@@ -68,17 +70,17 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
 - The session model is the ceiling. In mode `on`, a `PreToolUse` hook asks the user before an `Agent` call runs on a stronger model, and before a delegation Jev rates `pro`. Treat a denial as "run it on the session model or cheaper", not as "do it yourself".
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
-- Switch modes with the `jev_set_mode` MCP tool. The `jev` terminal helper reads MCP status through Antigravity's `agy` and reports `unknown` here.
+- Switch modes with the `jev` CLI (`jev-mode <mode>`).
 
 ---
 
 ## Slash Command Usage
 
 When invoked via `/jev` or `/jev <mode>`:
-- `/jev` or `/jev status`: Query current status using `jev_get_mode` and display formatted report.
-- `/jev on`: Set mode to aggressive System 1 using `jev_set_mode(mode="on")`.
-- `/jev on-demand`: Set mode to passive coprocessor using `jev_set_mode(mode="on-demand")`.
-- `/jev off`: Disable Jev MCP server and set mode to `off` using `jev_set_mode(mode="off")`.
+- `/jev` or `/jev status`: Run `jev status` via terminal (`run_command`) to inspect current mode and auto-heal MCP sync drift with `mode.json`.
+- `/jev on`: Run `jev on` via terminal to enable Jev and the MCP server.
+- `/jev on-demand`: Run `jev on-demand` via terminal.
+- `/jev off`: Run `jev off` via terminal to disable Jev MCP server and achieve zero overhead.
 
 ## Underlying State & Files
 
@@ -97,6 +99,10 @@ The following rules apply when `mode == "on"` (Aggressive System 1). They are en
 - Jev returns probability distributions over candidate subagents and model tiers (`openrouter_free`, `flash_lite`, `flash`, `pro`).
 - If `recommendedTier` is `openrouter_free`, execute immediately via `jev_execute_free` — do not spawn a paid subagent.
 - If a Gemini tier is recommended, spawn the subagent with the designated tier (subject to the Pro Tier rule in the main Skill section above).
+
+### 1b. Post-Approval Execution Transition Gate (`jev_batch_dispatch`)
+- Upon plan approval or completion of `/grill-me` (`clarify`), the main orchestrator MUST immediately call `jev_batch_dispatch` and `manage_subagents(Action: "list")` to decompose and delegate independent workstreams in parallel rather than editing multiple files sequentially in the main context.
+- `PreToolUse` (`jev-pre-tool.sh`) checks `jev_telemetry.jsonl` and blocks consecutive direct edits (`>=2` files) in the session window if no recent `jev_dispatch`, `jev_batch_dispatch`, or subagent delegation occurred.
 
 ### 2. Free-Tier Offloading (`jev_execute_free`)
 - **Main agent**: Offload boilerplate scaffolding, markdown formatting, log distillations, and draft summaries to `openrouter/free` at **$0.00** cost and **zero Gemini quota**.

@@ -36,6 +36,7 @@ import {
   evaluateLocalQualityJudge,
   topologicalSortStages,
   estimateTierCost,
+  discoverWorkspaceAgents,
   type SubTask,
   type BatchDispatchPlan
 } from './shared.js';
@@ -930,7 +931,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         subagentCriteria[sa] = defaultSubagentCriteria[sa] || sa;
       }
     } else {
-      subagentCriteria = defaultSubagentCriteria;
+      subagentCriteria = await discoverWorkspaceAgents();
     }
 
     const tierCriteria: Record<string, string> = {
@@ -1061,6 +1062,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ? 'CRITICAL QUOTA RULE: Jev evaluated this task as free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
       : `Delegate to subagent via invoke_subagent(Role: "${recommendedSubagent}", Model: "${effectiveTier}").`;
 
+    const scaffoldingCheck = detectScaffoldingTask(task);
     const result = {
       recommendedSubagent,
       recommendedTier: effectiveTier,
@@ -1131,6 +1133,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const quotaView = await readQuotaView();
+    const workspaceAgents = await discoverWorkspaceAgents();
+    const availableKeys = Object.keys(workspaceAgents);
     const plannedTasks: SubTask[] = [];
     let freeTierCount = 0;
     let totalEstimatedCost = 0;
@@ -1142,12 +1146,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const scaffolding = detectScaffoldingTask(taskText);
 
       // Fast evaluation of subagent and tier using keyword/local heuristics + ceiling
-      let subagent = 'code_engineer';
+      let subagent = availableKeys.includes('code_engineer') ? 'code_engineer' : 'self';
       const tLower = taskText.toLowerCase();
-      if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
-        subagent = 'research';
+      if (tLower.includes('career') || tLower.includes('job') || tLower.includes('cv') || tLower.includes('resume')) {
+        subagent = availableKeys.includes('career_advisor') ? 'career_advisor' : subagent;
+      } else if (tLower.includes('vault') || tLower.includes('obsidian') || tLower.includes('note')) {
+        subagent = availableKeys.includes('vault_librarian') ? 'vault_librarian' : subagent;
+      } else if (tLower.includes('writing') || tLower.includes('cover letter') || tLower.includes('ghost') || tLower.includes('article')) {
+        subagent = availableKeys.includes('ghostwriter') ? 'ghostwriter' : subagent;
+      } else if (tLower.includes('qa') || tLower.includes('test') || tLower.includes('fuzz') || tLower.includes('suite')) {
+        subagent = availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent;
+      } else if (tLower.includes('inbox') || tLower.includes('triage') || tLower.includes('staging')) {
+        subagent = availableKeys.includes('inbox_processor') ? 'inbox_processor' : subagent;
+      } else if (tLower.includes('system') || tLower.includes('infra') || tLower.includes('daemon') || tLower.includes('docker') || tLower.includes('operator')) {
+        subagent = availableKeys.includes('system_operator') ? 'system_operator' : subagent;
+      } else if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
+        subagent = availableKeys.includes('knowledge_researcher') ? 'knowledge_researcher' : (availableKeys.includes('research') ? 'research' : subagent);
       } else if (tLower.includes('review') || tLower.includes('audit') || tLower.includes('gate')) {
-        subagent = 'review';
+        subagent = availableKeys.includes('review') ? 'review' : (availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent);
       }
 
       // Sizing tier
@@ -1180,6 +1196,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? 'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
         : `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${tier}").`;
 
+      const rawEffort = defaultEffortForSubagent(subagent, taskText);
+      const taskEffort = applyEffortGovernance(rawEffort, quotaView.strategy, tier);
+
       plannedTasks.push({
         taskId: item.id,
         task: taskText,
@@ -1191,7 +1210,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         canRunParallel: deps.length === 0,
         scaffoldFirst: scaffolding.scaffoldFirst,
         boilerplateType: scaffolding.boilerplateType,
-        effort: applyEffortGovernance(effort, quotaView.strategy, tier),
+        effort: taskEffort,
         requiresUserApproval: requiresApproval,
         estimatedCostUsd: taskCost
       });

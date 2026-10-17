@@ -6,7 +6,7 @@
  * and effort before each turn, and ask the user before a delegation would run on
  * a stronger model than the session's own. A Jev failure never fails a turn.
  */
-import { defaultEffortForSubagent, applyEffortGovernance, type ThinkingEffort } from '../src/shared.js';
+import { defaultEffortForSubagent, applyEffortGovernance, discoverWorkspaceAgents, type ThinkingEffort } from '../src/shared.js';
 
 export type JevTier = 'openrouter_free' | 'flash_lite' | 'flash' | 'pro';
 export type ClaudeModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
@@ -18,6 +18,24 @@ export const CLAUDE_SUBAGENT_CRITERIA: Readonly<Record<string, string>> = {
   Plan: 'Designing an implementation plan before writing code',
   self: 'Direct answer or edit in the main session without delegation'
 };
+
+/**
+ * Resolve Claude subagent criteria dynamically by discovering custom workspace agents
+ * and merging them with the Claude built-ins.
+ */
+export async function resolveClaudeSubagentCriteria(workspaceDir?: string): Promise<Record<string, string>> {
+  const discovered = await discoverWorkspaceAgents(workspaceDir);
+  const criteria: Record<string, string> = { ...CLAUDE_SUBAGENT_CRITERIA };
+  for (const [name, desc] of Object.entries(discovered)) {
+    if (name === 'none') continue;
+    criteria[name] = desc;
+  }
+  criteria.Explore = CLAUDE_SUBAGENT_CRITERIA.Explore;
+  criteria['general-purpose'] = CLAUDE_SUBAGENT_CRITERIA['general-purpose'];
+  criteria.Plan = CLAUDE_SUBAGENT_CRITERIA.Plan;
+  criteria.self = CLAUDE_SUBAGENT_CRITERIA.self;
+  return criteria;
+}
 
 export const TIER_CRITERIA: Readonly<Record<JevTier, string>> = {
   openrouter_free: 'Lightweight summaries, drafts, syntax transforms, formatting, boilerplate ($0 cost)',
@@ -57,7 +75,12 @@ export type Dispatch = {
 };
 
 /** Turn a Jev decision response into a dispatch, validating every choice against the offered keys. */
-export function parseDispatch(data: unknown, task: string, quotaStrategy: string): Dispatch | null {
+export function parseDispatch(
+  data: unknown,
+  task: string,
+  quotaStrategy: string,
+  criteria: Record<string, string> = CLAUDE_SUBAGENT_CRITERIA
+): Dispatch | null {
   const answers = (data as { answers?: Record<string, { choice?: unknown; confidence?: unknown }> } | null)?.answers;
   if (!answers) return null;
   const sa = answers.recommendedSubagent;
@@ -67,7 +90,7 @@ export function parseDispatch(data: unknown, task: string, quotaStrategy: string
   const tier: JevTier =
     typeof tierChoice === 'string' && tierChoice in TIER_CRITERIA ? (tierChoice as JevTier) : 'flash';
   const subagent =
-    typeof saChoice === 'string' && saChoice in CLAUDE_SUBAGENT_CRITERIA ? saChoice : 'self';
+    typeof saChoice === 'string' && saChoice in criteria ? saChoice : 'self';
   const confidence = Math.min(
     typeof sa?.confidence === 'number' ? sa.confidence : 0.9,
     typeof tierAnswer?.confidence === 'number' ? tierAnswer.confidence : 0.9
@@ -77,12 +100,12 @@ export function parseDispatch(data: unknown, task: string, quotaStrategy: string
 }
 
 /** The questions sent to Jev for one turn. */
-export function dispatchQuestions(): Record<string, unknown> {
+export function dispatchQuestions(criteria: Record<string, string> = CLAUDE_SUBAGENT_CRITERIA): Record<string, unknown> {
   return {
     recommendedSubagent: {
       type: 'choice',
       instructions: 'Select the best Claude Code subagent for this task (or self for direct work)',
-      criteria: CLAUDE_SUBAGENT_CRITERIA
+      criteria
     },
     recommendedTier: {
       type: 'choice',
@@ -97,6 +120,7 @@ export function buildDirective(rec: Dispatch, sessionModel: string | null, quota
   const ceiling = sessionModel
     ? `The session model "${sessionModel}" is the hard ceiling: never delegate to a stronger model without explicit user approval.`
     : 'Never delegate to a stronger model than the current session without explicit user approval.';
+  const isCustom = !['Explore', 'Plan', 'general-purpose', 'self'].includes(rec.subagent);
   const action =
     rec.tier === 'pro'
       ? 'This task may need the strongest tier: present the cheaper and the stronger option and let the user choose before delegating on opus.'
@@ -104,7 +128,9 @@ export function buildDirective(rec: Dispatch, sessionModel: string | null, quota
         ? 'Consider offloading it to the jev MCP tool jev_execute_free ($0) instead of a paid subagent.'
         : rec.subagent === 'self'
           ? 'Handle it directly.'
-          : `Delegate to the ${rec.subagent} subagent with model "${rec.model}".`;
+          : isCustom
+            ? `Action: Delegate to custom persona via Agent(subagent_type: "${rec.subagent}", model: "${rec.model}").`
+            : `Delegate to the ${rec.subagent} subagent with model "${rec.model}".`;
   return (
     `[JEV] cost-tiered recommendation (quota=${quotaStrategy}): subagent="${rec.subagent}", ` +
     `tier="${rec.tier}", model="${rec.model}", effort="${rec.effort}". ${ceiling} ${action}`

@@ -19,6 +19,9 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Validate Manifests
+        run: bun run scripts/validate-manifests.ts
+
       - name: Test Jev Plugin
         run: |
           cd plugins/jev

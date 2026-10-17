@@ -1,25 +1,77 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { evaluateDrift, type DriftEvent } from '../src/audit/drift-detector.js';
 import { readQuotaView, discoverWorkspaceAgents } from '../src/shared.js';
 
 describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
+  let fixtureDir: string;
+  let emptyTempDir: string;
+
+  beforeAll(async () => {
+    fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-agents-fixture-'));
+    const agentsDir = path.join(fixtureDir, '.agents', 'agents');
+    await fs.mkdir(agentsDir, { recursive: true });
+
+    await fs.writeFile(
+      path.join(agentsDir, 'alpha_agent.md'),
+      '---\nname: alpha_agent\ndescription: "Alpha specialist for testing"\n---\n# Alpha Agent'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'beta_agent.md'),
+      '---\nname: beta_agent\ndescription: "Beta specialist for testing"\n---\n# Beta Agent'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'gamma_agent.md'),
+      '---\nname: gamma_agent\ndescription: "Gamma specialist for testing"\n---\n# Gamma Agent'
+    );
+
+    emptyTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-'));
+  });
+
+  afterAll(async () => {
+    if (fixtureDir) await fs.rm(fixtureDir, { recursive: true, force: true });
+    if (emptyTempDir) await fs.rm(emptyTempDir, { recursive: true, force: true });
+  });
+
   test('discovers all workspace agents dynamically from .agents/agents or .agents/subagents', async () => {
-    const agents = await discoverWorkspaceAgents();
+    const agents = await discoverWorkspaceAgents(fixtureDir);
     expect(agents).toBeDefined();
     expect(typeof agents).toBe('object');
     expect(agents.self).toBeDefined();
     expect(agents.none).toBeDefined();
+    expect(agents.alpha_agent).toBeDefined();
+    expect(agents.beta_agent).toBeDefined();
+    expect(agents.gamma_agent).toBeDefined();
 
-    // In doppelganger, should find the core agents
     const keys = Object.keys(agents);
-    expect(keys.length).toBeGreaterThanOrEqual(4);
+    expect(keys.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test('falls back cleanly to at least self and none when workspace has no agents directory', async () => {
+    const prevDoppel = process.env.DOPPELGANGER_HOME;
+    try {
+      process.env.DOPPELGANGER_HOME = path.join(emptyTempDir, 'nonexistent');
+      const emptyAgents = await discoverWorkspaceAgents(emptyTempDir);
+      expect(emptyAgents).toBeDefined();
+      expect(emptyAgents.self).toBeDefined();
+      expect(emptyAgents.none).toBeDefined();
+      expect(Object.keys(emptyAgents).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (prevDoppel !== undefined) {
+        process.env.DOPPELGANGER_HOME = prevDoppel;
+      } else {
+        delete process.env.DOPPELGANGER_HOME;
+      }
+    }
   });
 
   test('returns cached agents map within 15s TTL', async () => {
     const t0 = performance.now();
-    const agents1 = await discoverWorkspaceAgents();
+    const agents1 = await discoverWorkspaceAgents(fixtureDir);
     const t1 = performance.now();
-    const agents2 = await discoverWorkspaceAgents();
+    const agents2 = await discoverWorkspaceAgents(fixtureDir);
     const t2 = performance.now();
 
     expect(agents1).toEqual(agents2);

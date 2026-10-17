@@ -1562,6 +1562,7 @@ export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
 
 interface AgentCacheEntry {
   timestamp: number;
+  dirPath?: string;
   dirMtime: number;
   agents: Record<string, string>;
 }
@@ -1606,7 +1607,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
   try {
     const dirStat = await fs.stat(targetDir);
     const now = Date.now();
-    if (agentCache && now - agentCache.timestamp < 15000 && agentCache.dirMtime === dirStat.mtimeMs) {
+    if (agentCache && now - agentCache.timestamp < 15000 && agentCache.dirPath === targetDir && agentCache.dirMtime === dirStat.mtimeMs) {
       return { ...agentCache.agents };
     }
 
@@ -1652,6 +1653,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
 
     agentCache = {
       timestamp: now,
+      dirPath: targetDir,
       dirMtime: dirStat.mtimeMs,
       agents: result
     };

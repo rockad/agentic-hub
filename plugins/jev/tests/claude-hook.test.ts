@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import {
   modelRank,
   parseDispatch,
@@ -8,6 +9,8 @@ import {
   decideAgentCall,
   decideByTier,
   safeSessionId,
+  resolveClaudeSubagentCriteria,
+  CLAUDE_SUBAGENT_CRITERIA,
   type Dispatch
 } from '../claude/logic.ts';
 import { onUserPromptSubmit, onPreToolUse, type HookDeps } from '../claude/hook.ts';
@@ -191,5 +194,68 @@ describe('plugin manifest', () => {
     const events = fs.existsSync(hooksFile) ? Object.keys(JSON.parse(fs.readFileSync(hooksFile, 'utf8')).hooks) : [];
 
     expect(events).toContain('SessionStart');
+  });
+});
+
+describe('custom agent discovery and dispatch in Claude Code', () => {
+  it('discovers custom workspace agents and merges with Claude built-ins', async () => {
+    const fixtureDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'jev-claude-agents-'));
+    try {
+      const agentsDir = path.join(fixtureDir, '.agents', 'agents');
+      await fs.promises.mkdir(agentsDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(agentsDir, 'code_engineer.md'),
+        '---\nname: code_engineer\ndescription: "Software engineering and automation specialist"\n---\n# Code Engineer'
+      );
+      await fs.promises.writeFile(
+        path.join(agentsDir, 'career_advisor.md'),
+        '---\nname: career_advisor\ndescription: "Executive career partner"\n---\n# Career Advisor'
+      );
+
+      const criteria = await resolveClaudeSubagentCriteria(fixtureDir);
+      expect(criteria.Explore).toBeDefined();
+      expect(criteria.Plan).toBeDefined();
+      expect(criteria['general-purpose']).toBeDefined();
+      expect(criteria.self).toBeDefined();
+      expect(criteria.code_engineer).toBe('Software engineering and automation specialist');
+      expect(criteria.career_advisor).toBe('Executive career partner');
+    } finally {
+      await fs.promises.rm(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses custom personas in dispatch when criteria includes them', () => {
+    const data = {
+      answers: {
+        recommendedSubagent: { choice: 'code_engineer' },
+        recommendedTier: { choice: 'flash' }
+      }
+    };
+    const criteria = {
+      ...CLAUDE_SUBAGENT_CRITERIA,
+      code_engineer: 'Software engineering specialist'
+    };
+
+    const rec = parseDispatch(data, 'Refactor the data pipeline', 'normal', criteria);
+
+    expect(rec?.subagent).toBe('code_engineer');
+    expect(rec?.model).toBe('sonnet');
+    expect(rec?.tier).toBe('flash');
+  });
+
+  it('formats custom agent action directive with Agent(subagent_type, model)', () => {
+    const customRec: Dispatch = {
+      subagent: 'code_engineer',
+      tier: 'flash',
+      model: 'sonnet',
+      effort: 'medium',
+      confidence: 0.95
+    };
+
+    const directive = buildDirective(customRec, 'claude-sonnet-5', 'normal');
+
+    expect(directive).toContain(
+      'Action: Delegate to custom persona via Agent(subagent_type: "code_engineer", model: "sonnet").'
+    );
   });
 });

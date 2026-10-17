@@ -20,6 +20,7 @@ import {
   decideByTier,
   dispatchQuestions,
   parseDispatch,
+  resolveClaudeSubagentCriteria,
   safeSessionId,
   type AgentCall,
   type Dispatch
@@ -47,7 +48,7 @@ export type HookDeps = {
   readMode: () => Promise<JevMode>;
   readSessionModel: (sessionId: string | null) => string | null;
   readQuotaStrategy: () => Promise<string>;
-  dispatch: (task: string, quotaStrategy: string) => Promise<Dispatch | null>;
+  dispatch: (task: string, quotaStrategy: string, criteria?: Record<string, string>) => Promise<Dispatch | null>;
   log: (entry: Record<string, unknown>) => void;
 };
 
@@ -61,7 +62,8 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   if (task.length < 8) return null;
   const sessionId = safeSessionId(input.session_id);
   const quotaStrategy = await deps.readQuotaStrategy();
-  const rec = await deps.dispatch(task, quotaStrategy);
+  const criteria = await resolveClaudeSubagentCriteria();
+  const rec = await deps.dispatch(task, quotaStrategy, criteria);
   if (!rec) return null;
   const sessionModel = deps.readSessionModel(sessionId);
   deps.log({ hook: 'UserPromptSubmit', session: sessionId, ...rec, quota: quotaStrategy, sessionModel });
@@ -94,11 +96,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let verdict = decideAgentCall(call, sessionModel);
   if (!verdict) {
     const task = (call.prompt || call.description || '').trim();
-    const rec = task.length >= 8 ? await deps.dispatch(task, await deps.readQuotaStrategy()) : null;
+    const criteria = await resolveClaudeSubagentCriteria();
+    const rec = task.length >= 8 ? await deps.dispatch(task, await deps.readQuotaStrategy(), criteria) : null;
     verdict = decideByTier(call, rec);
   }
   if (!verdict) return null;
-  deps.log({ hook: 'PreToolUse', session: sessionId, model: call.model ?? null, sessionModel, reason: verdict.reason });
+  deps.log({ hook: 'PreToolUse', session: sessionId, subagent_type: call.subagent_type, model: call.model ?? null, sessionModel, reason: verdict.reason });
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -139,13 +142,13 @@ function readSessionModel(sessionId: string | null): string | null {
   }
 }
 
-async function liveDispatch(task: string, quotaStrategy: string): Promise<Dispatch | null> {
+async function liveDispatch(task: string, quotaStrategy: string, criteria?: Record<string, string>): Promise<Dispatch | null> {
   try {
     const data = await withTimeout(
-      callJev(`Task: ${task}\n\nQuota strategy for this machine: ${quotaStrategy}.`, dispatchQuestions()),
+      callJev(`Task: ${task}\n\nQuota strategy for this machine: ${quotaStrategy}.`, dispatchQuestions(criteria)),
       JEV_HOOK_TIMEOUT_MS
     );
-    return data ? parseDispatch(data, task, quotaStrategy) : null;
+    return data ? parseDispatch(data, task, quotaStrategy, criteria) : null;
   } catch {
     return null;
   }

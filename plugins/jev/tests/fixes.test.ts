@@ -210,27 +210,6 @@ describe('escalation request', () => {
   });
 });
 
-describe('callOpenCodeAgent timeout', () => {
-  it('kills a hung opencode process after timeoutMs', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-oc-'));
-    const fakeBin = path.join(dir, 'opencode');
-    fs.writeFileSync(fakeBin, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
-    const script =
-      "const m = await import('./src/index.ts');" +
-      "try { await m.callOpenCodeAgent({ prompt: 'x', timeoutMs: 300 }); console.log('no-timeout'); }" +
-      ' catch (e) { console.log(String(e.message)); }' +
-      ' process.exit(0);';
-
-    const proc = Bun.spawnSync(['bun', '-e', script], {
-      cwd: PLUGIN_ROOT,
-      env: { ...process.env, OPENCODE_BIN: fakeBin },
-      stdin: 'ignore',
-      timeout: 10_000
-    });
-
-    expect(proc.stdout.toString()).toContain('timed out after 300ms');
-  });
-});
 
 describe('WS2 Jev Plugin Core & CLI Fixes', () => {
   it('scripts/jev-mode uses dynamic PLUGIN_ROOT resolution and contains auto-heal logic', () => {

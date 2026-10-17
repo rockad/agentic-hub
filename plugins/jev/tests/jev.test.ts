@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as fsSync from 'node:fs';
-import { getModeDetails, callOpenCodeAgent } from '../src/index.ts';
+import { getModeDetails } from '../src/index.ts';
 import {
   defaultEffortForSubagent,
   applyEffortGovernance,
@@ -9,7 +9,6 @@ import {
   selectModel,
   type ModelCandidate
 } from '../src/shared.ts';
-import { modelIdFromRef } from '../opencode/swap.ts';
 
 describe('Jev Plugin Unit & Integration Tests', () => {
   const isLiveTest = process.env.JEV_LIVE_TEST === '1';
@@ -83,37 +82,6 @@ describe('Jev Plugin Unit & Integration Tests', () => {
     expect(res.options.length).toBe(2);
   });
 
-  it('modelIdFromRef strips provider prefix from model ref', () => {
-    expect(modelIdFromRef('openrouter/openai/gpt-4o')).toBe('openai/gpt-4o');
-    expect(modelIdFromRef('anthropic/claude-3-5-sonnet')).toBe('claude-3-5-sonnet');
-    expect(modelIdFromRef('gpt-4o')).toBe('gpt-4o');
-  });
-
-  it('verifies opencode binary presence', async () => {
-    if (!isLiveTest) return;
-    const homeOpencode = `${process.env.HOME || ''}/.opencode/bin/opencode`;
-    const opencodeBin = process.env.OPENCODE_BIN || (fsSync.existsSync(homeOpencode) ? homeOpencode : 'opencode');
-    const proc = Bun.spawn([opencodeBin, '--version'], {
-      stdout: 'pipe',
-      stderr: 'pipe'
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
-    expect(stdout).toBeTruthy();
-  });
-
-  it('runs callOpenCodeAgent with openrouter/free model', async () => {
-    if (!isLiveTest) return;
-    const res = await callOpenCodeAgent({
-      prompt: 'Respond with exactly: PONG',
-      model: 'openrouter/free',
-      timeoutMs: 90000
-    });
-    expect(res.backend).toBe('opencode');
-    expect(res.content.toUpperCase()).toContain('PONG');
-    expect(res.costUsd).toBe(0);
-  }, 120000);
 
   it('validates free model offloading quality gate contract', () => {
     expect(typeof getModeDetails).toBe('function');

@@ -19,6 +19,9 @@ else
   ACTION=""
 fi
 
+MCP_CFG="$HOME/.gemini/config/mcp_config.json"
+[ ! -f "$MCP_CFG" ] && [ -f "$HOME/.gemini/antigravity-cli/mcp_config.json" ] && MCP_CFG="$HOME/.gemini/antigravity-cli/mcp_config.json"
+
 function show_status() {
   echo -e "\033[1;36m=== Antigravity MCP Plugin & Server Status ===\033[0m"
   local cfg="$HOME/.gemini/config/config.json"
@@ -46,6 +49,31 @@ function show_status() {
     fi
   }
 
+  # Helper to get standalone MCP server state from mcp_config.json
+  get_mcp_server_state() {
+    local s="$1"
+    local def="${2:-false}"
+    if [ -f "$MCP_CFG" ]; then
+      local exists disabled
+      exists=$(jq -r --arg s "$s" 'has("mcpServers") and (.mcpServers | has($s))' "$MCP_CFG" 2>/dev/null || echo "false")
+      if [ "$exists" = "true" ]; then
+        disabled=$(jq -r --arg s "$s" 'if .mcpServers[$s].disabled == true then "true" else "false" end' "$MCP_CFG" 2>/dev/null || echo "false")
+        if [ "$disabled" = "true" ]; then
+          echo -e "\033[33mOFF (disabled)\033[0m"
+          return
+        else
+          echo -e "\033[32mON (enabled)\033[0m"
+          return
+        fi
+      fi
+    fi
+    if [ "$def" = "false" ]; then
+      echo -e "\033[33mOFF (disabled)\033[0m"
+    else
+      echo -e "\033[32mON (enabled)\033[0m"
+    fi
+  }
+
   local jmode="on"
   if [ -f "$HOME/.config/jev/mode.json" ]; then
     jmode=$(jq -r '.mode // "on"' "$HOME/.config/jev/mode.json" 2>/dev/null || echo "on")
@@ -58,11 +86,12 @@ function show_status() {
 
   echo -e "  - chrome-devtools:  $(get_plugin_state chrome-devtools false) (30 tools, ~12,000–14,000 tokens/turn)"
   echo -e "  - google-workspace: $(get_plugin_state google-workspace false) (21 tools, ~8,000–10,000 tokens/turn)"
+  echo -e "  - deepl:            $(get_mcp_server_state deepl false) (on-demand NMT: translate-text, rephrase-text)"
   echo -e "  - jev:              $(get_plugin_state jev true) (mode: $jmode)"
   echo -e "  - memory:           $(get_plugin_state memory true) (recall :8110, lookup :8100)"
   echo -e "  - gitea:            $(get_plugin_state gitea true) (repositories & issues)"
   echo -e "  - obsidian:         $(get_plugin_state obsidian true) (local REST API :27123)"
-  echo -e "\n\033[90mUsage: mcp-toggle <browser|google|jev> <on|off>\033[0m"
+  echo -e "\n\033[90mUsage: mcp-toggle <browser|google|deepl|jev> <on|off>\033[0m"
 }
 
 if [ "$TARGET" = "status" ] || [ "$TARGET" = "list" ] || [ -z "$TARGET" ]; then
@@ -78,15 +107,79 @@ case "$TARGET" in
   google|workspace)
     SERVER="google-workspace"
     ;;
+  deepl|deepl-mcp|deepl-mcp-server)
+    SERVER="deepl"
+    ;;
   *)
     SERVER="$TARGET"
     ;;
 esac
 
+load_deepl_key() {
+  if [ -n "${DEEPL_API_KEY:-}" ]; then
+    printf '%s' "$DEEPL_API_KEY"
+    return 0
+  fi
+  if [ -f "$HOME/.config/zsh/secrets.env" ]; then
+    local key
+    key=$(
+      # shellcheck disable=SC1090
+      set +u
+      source "$HOME/.config/zsh/secrets.env" >/dev/null 2>&1 || true
+      printf '%s' "${DEEPL_API_KEY:-}"
+    )
+    if [ -n "$key" ]; then
+      printf '%s' "$key"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+toggle_deepl() {
+  local act="$1"
+  local cfg_files=("$HOME/.gemini/config/mcp_config.json" "$HOME/.gemini/antigravity-cli/mcp_config.json")
+  if [ "$act" = "on" ]; then
+    local key
+    if ! key=$(load_deepl_key) || [ -z "$key" ]; then
+      echo -e "\033[31m✖ DEEPL_API_KEY not found in environment or ~/.config/zsh/secrets.env\033[0m" >&2
+      exit 1
+    fi
+    for f in "${cfg_files[@]}"; do
+      if [ -f "$f" ]; then
+        local tmp="${f}.tmp.$$"
+        jq --arg key "$key" '
+          .mcpServers.deepl = {
+            "command": "npx",
+            "args": ["-y", "deepl-mcp-server"],
+            "disabled": false,
+            "env": {
+              "DEEPL_API_KEY": $key
+            }
+          }
+        ' "$f" > "$tmp" && mv "$tmp" "$f"
+      fi
+    done
+    agy mcp enable deepl >/dev/null 2>&1 || true
+    echo -e "\033[32m✔ deepl (deepl-mcp-server) enabled\033[0m"
+  else
+    for f in "${cfg_files[@]}"; do
+      if [ -f "$f" ]; then
+        local tmp="${f}.tmp.$$"
+        jq 'del(.mcpServers.deepl)' "$f" > "$tmp" && mv "$tmp" "$f"
+      fi
+    done
+    agy mcp disable deepl >/dev/null 2>&1 || agy mcp remove deepl >/dev/null 2>&1 || true
+    echo -e "\033[33m✔ deepl disabled (context window preserved)\033[0m"
+  fi
+}
+
 case "$ACTION" in
   on|enable)
     if [ "$SERVER" = "jev" ]; then
       command -v jev-mode >/dev/null 2>&1 && jev-mode on || agy plugin enable jev
+    elif [ "$SERVER" = "deepl" ]; then
+      toggle_deepl on
     else
       agy plugin enable "$SERVER" 2>/dev/null || agy mcp enable "$SERVER" 2>/dev/null || true
       echo -e "\033[32m✔ $SERVER enabled\033[0m"
@@ -95,6 +188,8 @@ case "$ACTION" in
   off|disable)
     if [ "$SERVER" = "jev" ]; then
       command -v jev-mode >/dev/null 2>&1 && jev-mode off || agy plugin disable jev
+    elif [ "$SERVER" = "deepl" ]; then
+      toggle_deepl off
     else
       agy plugin disable "$SERVER" 2>/dev/null || agy mcp disable "$SERVER" 2>/dev/null || true
       echo -e "\033[33m✔ $SERVER disabled (context window preserved)\033[0m"

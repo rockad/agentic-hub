@@ -33,7 +33,11 @@ import {
   JEV_CONFIG_FILE,
   clampTierToSessionCeiling,
   detectScaffoldingTask,
-  evaluateLocalQualityJudge
+  evaluateLocalQualityJudge,
+  topologicalSortStages,
+  estimateTierCost,
+  type SubTask,
+  type BatchDispatchPlan
 } from './shared.js';
 import { initTracing } from './tracing.js';
 
@@ -216,163 +220,20 @@ const FREE_MODELS_POOL = [
   'nvidia/nemotron-3.5-lightning:free'
 ];
 
-const OPENCODE_BIN = process.env.OPENCODE_BIN || path.join(os.homedir(), '.opencode', 'bin', 'opencode');
 
-export interface OpenCodeAgentOptions {
-  prompt: string;
-  cwd?: string;
-  model?: string;
-  timeoutMs?: number;
-}
-
-export interface OpenCodeAgentResult {
-  content: string;
-  modelUsed: string;
-  durationMs?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  tokensSaved?: number;
-  costUsd: number;
-  rawStdout: string;
-  backend: 'opencode';
-}
-
-export async function callOpenCodeAgent(options: OpenCodeAgentOptions): Promise<OpenCodeAgentResult> {
-  const opencodebin = fsSync.existsSync(OPENCODE_BIN) ? OPENCODE_BIN : 'opencode';
-  const rawModel = options.model || 'openrouter/free';
-  // OpenCode expects provider-prefixed model: openrouter/<model_id>
-  // For openrouter/free, the provider is openrouter and model ID is openrouter/free -> openrouter/openrouter/free
-  let openCodeModel = rawModel;
-  if (openCodeModel === 'openrouter/free') {
-    openCodeModel = 'openrouter/openrouter/free';
-  } else if (!openCodeModel.startsWith('openrouter/')) {
-    openCodeModel = `openrouter/${openCodeModel}`;
-  }
-  const targetCwd = options.cwd || process.cwd();
-  const timeoutMs = options.timeoutMs || 120000;
-  const startTs = Date.now();
-
-  // Inject OpenRouter key via OPENCODE_CONFIG_CONTENT
-  const apiKey = getOpenRouterApiKey();
-  const providerConfig = JSON.stringify({
-    provider: {
-      openrouter: {
-        options: {
-          apiKey
-        }
-      }
-    }
-  });
-
-  const env = {
-    ...process.env,
-    OPENCODE_CONFIG_CONTENT: providerConfig
-  };
-
-  const args = ['run', '--standalone', '--auto', '--format', 'json', '-m', openCodeModel, options.prompt];
-
-  let stdout = '';
-  if (typeof Bun !== 'undefined' && typeof (Bun as any).spawn === 'function') {
-    const proc = (Bun as any).spawn([opencodebin, ...args], {
-      cwd: targetCwd,
-      env,
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe'
-    });
-    // Bun.spawn has no timeout of its own here, so enforce timeoutMs explicitly.
-    // Race rather than wait: a grandchild can keep the pipes open after kill().
-    // stderr is drained alongside stdout so a chatty process cannot fill the pipe and stall.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        proc.kill();
-        reject(new Error(`OpenCode execution timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-    });
-    try {
-      const [out, stderr, exitCode] = await Promise.race([
-        Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited
-        ]),
-        timeout
-      ]);
-      stdout = out;
-      if (exitCode !== 0 && !stdout.trim()) {
-        throw new Error(`OpenCode execution failed with exit code ${exitCode}: ${stderr}`);
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } else {
-    const { stdout: out } = await execFileAsync(opencodebin, args, {
-      cwd: targetCwd,
-      timeout: timeoutMs,
-      env,
-      maxBuffer: 10 * 1024 * 1024
-    });
-    stdout = out;
-  }
-
-  // Parse NDJSON stream: collect all type:"text" part.text values
-  const textParts: string[] = [];
-  let modelUsed = rawModel;
-  let inputTokens: number | undefined;
-  let outputTokens: number | undefined;
-  let firstTs: number | undefined;
-  let lastTs: number | undefined;
-
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const event = JSON.parse(trimmed);
-      if (event.type === 'text' && event.part?.text) {
-        textParts.push(event.part.text);
-        if (!firstTs && event.part.time?.start) firstTs = event.part.time.start;
-        if (event.part.time?.end) lastTs = event.part.time.end;
-      }
-      if (event.type === 'error') {
-        throw new Error(`OpenCode agent error: ${event.error?.message || JSON.stringify(event.error)}`);
-      }
-      // Extract usage if present in any event
-      if (event.part?.usage) {
-        inputTokens = event.part.usage.input ?? inputTokens;
-        outputTokens = event.part.usage.output ?? outputTokens;
-        if (event.part.usage.model) modelUsed = event.part.usage.model;
-      }
-    } catch (parseErr: any) {
-      if (parseErr.message?.startsWith('OpenCode agent error:')) throw parseErr;
-      // skip unparseable lines
-    }
-  }
-
-  const content = textParts.join('').trim();
-  const durationMs = firstTs && lastTs ? lastTs - firstTs : Date.now() - startTs;
-  const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
-
-  return {
-    content: content || stdout.trim(),
-    modelUsed,
-    durationMs,
-    inputTokens,
-    outputTokens,
-    tokensSaved: totalTokens,
-    costUsd: 0,
-    rawStdout: stdout,
-    backend: 'opencode'
-  };
-}
 
 /**
  * Call OpenRouter Free Model (resilient pool across top coding & text free models)
  */
 async function callOpenRouterFree(prompt: string, systemInstruction?: string, requestedModel?: string): Promise<any> {
-  const apiKey = getOpenRouterApiKey();
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is not set');
+  const keysToTry = Array.from(new Set([
+    process.env.OPENROUTER_API_KEY,
+    process.env.JEV_OPENROUTER_API_KEY,
+    getOpenRouterApiKey()
+  ])).filter((k): k is string => Boolean(k && k.trim() !== ''));
+
+  if (keysToTry.length === 0) {
+    throw new Error('Neither OPENROUTER_API_KEY nor JEV_OPENROUTER_API_KEY is set');
   }
 
   const messages: Array<{ role: string; content: string }> = [];
@@ -384,37 +245,39 @@ async function callOpenRouterFree(prompt: string, systemInstruction?: string, re
   const modelsToTry = Array.from(new Set(requestedModel ? [requestedModel, ...FREE_MODELS_POOL] : FREE_MODELS_POOL));
   let lastError: any = null;
 
-  for (const m of modelsToTry) {
-    try {
-      const res = await fetchWithTimeout(OPENROUTER_CHAT_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://github.com/agentic-hub/jev',
-          'X-Title': 'Antigravity Free Execution Offloader'
-        },
-        body: JSON.stringify({
-          model: m,
-          messages
-        })
-      }, FREE_EXEC_TIMEOUT_MS);
+  for (const apiKey of keysToTry) {
+    for (const m of modelsToTry) {
+      try {
+        const res = await fetchWithTimeout(OPENROUTER_CHAT_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/agentic-hub/jev',
+            'X-Title': 'Antigravity Free Execution Offloader'
+          },
+          body: JSON.stringify({
+            model: m,
+            messages
+          })
+        }, FREE_EXEC_TIMEOUT_MS);
 
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        lastError = new Error(`OpenRouter Free Error (${m}) ${res.status}: ${errText}`);
-        continue;
-      }
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          lastError = new Error(`OpenRouter Free Error (${m}) ${res.status}: ${errText}`);
+          continue;
+        }
 
-      const json = await res.json();
-      const content = json.choices?.[0]?.message?.content || '';
-      // Avoid content-safety false positives
-      if (content.trim().toLowerCase().startsWith('user safety:')) {
-        continue;
+        const json = await res.json();
+        const content = json.choices?.[0]?.message?.content || '';
+        // Avoid content-safety false positives
+        if (content.trim().toLowerCase().startsWith('user safety:')) {
+          continue;
+        }
+        return json;
+      } catch (err: any) {
+        lastError = err;
       }
-      return json;
-    } catch (err: any) {
-      lastError = err;
     }
   }
   throw lastError || new Error('All free model candidates failed');
@@ -524,17 +387,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jev_agent_free',
-      description: 'Execute autonomous agentic coding, workspace modification, refactoring, and text tasks using free-tier models via OpenCode CLI or OpenRouter Free pool at $0.00 cost (0 Gemini quota).',
+      description: 'Execute autonomous agentic coding, workspace modification, refactoring, and text tasks using free-tier models via OpenRouter Free pool at $0.00 cost (0 Gemini quota).',
       inputSchema: {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'The coding task, refactoring request, or prompt for the autonomous agent' },
-          cwd: { type: 'string', description: 'Optional working directory for agent workspace execution (defaults to current working directory)' },
-          backend: {
-            type: 'string',
-            enum: ['auto', 'opencode', 'openrouter'],
-            description: 'Execution backend: "opencode" for full workspace agent CLI (multi-step), "openrouter" for direct model inference (single-turn), "auto" for opencode with fallback to openrouter'
-          },
+          cwd: { type: 'string', description: 'Optional working directory for context (defaults to current working directory)' },
           model: {
             type: 'string',
             description: 'Free model to use (defaults to "openrouter/free" [200k ctx, official router], also supports "google/gemma-4-31b-it:free", "cohere/north-mini-code:free", "nvidia/nemotron-3.5-lightning:free")'
@@ -555,12 +413,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           prompt: { type: 'string', description: 'The prompt or instructions to execute' },
           systemInstruction: { type: 'string', description: 'Optional system instructions' },
-          model: { type: 'string', description: 'Optional OpenRouter free model (defaults to openrouter/free)' },
-          backend: {
-            type: 'string',
-            enum: ['openrouter', 'opencode', 'auto'],
-            description: 'Optional backend: "openrouter" (default, direct HTTP inference) or "opencode" (OpenCode CLI agent)'
-          }
+          model: { type: 'string', description: 'Optional OpenRouter free model (defaults to openrouter/free)' }
         },
         required: ['prompt']
       }
@@ -861,6 +714,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
+    // Calculate confidence and check ambiguity gate:
+    // confidence = |noul - 0.50| * 2. When 0.45 <= noul <= 0.55 (confidence <= 0.10), flag ambiguous & requiresManualVerification
+    confidence = Number((Math.abs(noulValue - 0.50) * 2).toFixed(4));
+    const isAmbiguous = noulValue >= 0.45 && noulValue <= 0.55;
+
     const latencyMs = Math.round(performance.now() - start);
     const endTimeIso = new Date().toISOString();
 
@@ -878,6 +736,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       passed,
       noul: noulValue,
       confidence,
+      ambiguous: isAmbiguous,
+      requiresManualVerification: isAmbiguous,
       ...telemetry
     });
 
@@ -890,6 +750,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         'decision.passed': passed,
         'decision.noul': noulValue,
         'decision.confidence': confidence,
+        'decision.ambiguous': isAmbiguous,
+        'decision.requires_manual_verification': isAmbiguous,
         'model.used': modelUsed,
         'cost_usd': telemetry.costUsd,
         'latency_ms': latencyMs
@@ -903,6 +765,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           passed,
           noul: noulValue,
           confidence,
+          ambiguous: isAmbiguous,
+          requiresManualVerification: isAmbiguous,
           telemetry
         }, null, 2)
       }]
@@ -1070,7 +934,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const tierCriteria: Record<string, string> = {
-      openrouter_free: 'Lightweight summaries, drafts, syntax transformations, autonomous free agent tasks via opencode/jev_agent_free, and boilerplate ($0 cost, 0 Gemini quota)',
+      openrouter_free: 'Lightweight summaries, drafts, syntax transformations, autonomous free agent tasks via jev_agent_free, and boilerplate ($0 cost, 0 Gemini quota)',
       flash_lite: 'Trivial triage, fast simple lookups, file moves, quick formatting',
       flash: 'Standard agentic steps, routine edits, content synthesis, local commands',
       pro: 'Deep reasoning, architectural planning, complex multi-file refactoring, high-stakes writing'
@@ -1191,13 +1055,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const effectiveTier = ceilingClamping.clampedTier;
     const isPro = effectiveTier === 'pro';
 
-    // Phase 5: Automated Tier 0 Scaffolding Detection
-    const scaffoldingCheck = detectScaffoldingTask(task);
+    const isFree = effectiveTier === 'openrouter_free';
+    const executionTool = isFree ? 'jev_execute_free' : 'invoke_subagent';
+    const executionGuidance = isFree
+      ? 'CRITICAL QUOTA RULE: Jev evaluated this task as free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
+      : `Delegate to subagent via invoke_subagent(Role: "${recommendedSubagent}", Model: "${effectiveTier}").`;
 
     const result = {
       recommendedSubagent,
       recommendedTier: effectiveTier,
       rawRecommendedTier: recommendedTier,
+      executionTool,
+      executionGuidance,
       sessionCeilingTier: ceilingClamping.ceilingTier,
       wasClampedByCeiling: ceilingClamping.wasClamped,
       scaffoldFirst: scaffoldingCheck.scaffoldFirst,
@@ -1262,8 +1131,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const quotaView = await readQuotaView();
-    const plannedTasks = [];
+    const plannedTasks: SubTask[] = [];
     let freeTierCount = 0;
+    let totalEstimatedCost = 0;
+    let anyProRequested = false;
 
     for (const item of tasks) {
       const taskText = item.task || '';
@@ -1295,43 +1166,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         freeTierCount++;
       }
 
-      const effort = defaultEffortForSubagent(subagent, taskText);
+      const taskCost = estimateTierCost(tier);
+      totalEstimatedCost += taskCost;
+
+      const requiresApproval = (tier === 'pro');
+      if (requiresApproval) {
+        anyProRequested = true;
+      }
+
+      const isTaskFree = tier === 'openrouter_free';
+      const executionTool = isTaskFree ? 'jev_execute_free' : 'invoke_subagent';
+      const executionGuidance = isTaskFree
+        ? 'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
+        : `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${tier}").`;
 
       plannedTasks.push({
         taskId: item.id,
         task: taskText,
         subagent,
         tier,
+        executionTool,
+        executionGuidance,
         dependencies: deps,
         canRunParallel: deps.length === 0,
         scaffoldFirst: scaffolding.scaffoldFirst,
         boilerplateType: scaffolding.boilerplateType,
         effort: applyEffortGovernance(effort, quotaView.strategy, tier),
-        requiresUserApproval: tier === 'pro'
+        requiresUserApproval: requiresApproval,
+        estimatedCostUsd: taskCost
       });
     }
 
     // Safety concurrency cap: max 10 concurrent for free tier
     const concurrencyCap = Math.min(10, Math.max(1, freeTierCount));
 
-    const manifest = {
+    // Kahn's topological wave staging
+    const stages = topologicalSortStages(plannedTasks);
+
+    const manifest: BatchDispatchPlan = {
       planName: 'Multi-Subagent Parallel DAG Execution Manifest',
       totalTasks: plannedTasks.length,
       freeTierTasks: freeTierCount,
       activeSessionModel: quotaView.active_model || 'unknown',
       maxConcurrentFreeWorkers: concurrencyCap,
       tasks: plannedTasks,
-      parallelExecutionOrder: [
-        // Group tasks by dependency readiness
-        plannedTasks.filter(t => t.canRunParallel).map(t => t.taskId),
-        plannedTasks.filter(t => !t.canRunParallel).map(t => t.taskId)
-      ]
+      stages,
+      parallelExecutionOrder: stages.map(stage => stage.map(t => t.taskId)),
+      estimatedCostUsd: Number(totalEstimatedCost.toFixed(6)),
+      requiresUserApproval: anyProRequested
     };
 
     const latencyMs = Math.round(performance.now() - start);
     await logTelemetry({
       tool: 'jev_batch_dispatch',
       taskCount: plannedTasks.length,
+      estimatedCostUsd: manifest.estimatedCostUsd,
+      requiresUserApproval: anyProRequested,
       latencyMs
     });
 
@@ -1347,10 +1237,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // Tool: jev_agent_free
   // -------------------------------------------------------------
   if (name === 'jev_agent_free') {
-    const { prompt, cwd, backend = 'auto', model, timeoutMs } = (args || {}) as {
+    const { prompt, cwd, model, timeoutMs } = (args || {}) as {
       prompt: string;
       cwd?: string;
-      backend?: 'auto' | 'opencode' | 'openrouter';
       model?: string;
       timeoutMs?: number;
     };
@@ -1360,61 +1249,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const freeModel = assertFreeModel(model || FREE_MODEL);
-    const targetCwd = cwd || process.cwd();
     let content = '';
     let actualModel = freeModel;
-    let actualBackend: 'opencode' | 'openrouter' = 'opencode';
     let tokensSaved = 0;
     let costUsd = 0;
     let latencyMs = 0;
-    let fallbackTriggered = false;
 
-    if (backend === 'opencode' || backend === 'auto') {
-      try {
-        const ocRes = await callOpenCodeAgent({
-          prompt,
-          cwd: targetCwd,
-          model: freeModel,
-          timeoutMs: timeoutMs || 120000
-        });
-        content = ocRes.content;
-        actualModel = ocRes.modelUsed;
-        actualBackend = 'opencode';
-        tokensSaved = ocRes.tokensSaved || 0;
-        costUsd = ocRes.costUsd || 0;
-        latencyMs = ocRes.durationMs || Math.round(performance.now() - start);
-      } catch (ocErr: any) {
-        if (backend === 'opencode') {
-          console.error(`[jev error] jev_agent_free (opencode backend) failed: ${ocErr.message}`);
-          throw new Error(`OpenCode Agent execution failed: ${ocErr.message}`);
-        }
-        console.warn(`[jev warn] jev_agent_free OpenCode failed: ${ocErr.message}. Falling back to OpenRouter direct...`);
-        fallbackTriggered = true;
-      }
-    }
-
-    if (backend === 'openrouter' || fallbackTriggered) {
-      actualBackend = 'openrouter';
-      try {
-        const data = await callOpenRouterFree(prompt, undefined, freeModel);
-        content = data.choices?.[0]?.message?.content || '';
-        actualModel = data.model || freeModel;
-        const promptTokens = data.usage?.prompt_tokens ?? 0;
-        const completionTokens = data.usage?.completion_tokens ?? 0;
-        tokensSaved = (data.usage?.total_tokens ?? 0) || (promptTokens + completionTokens);
-        costUsd = 0;
-        latencyMs = Math.round(performance.now() - start);
-      } catch (err: any) {
-        console.error(`[jev error] jev_agent_free failed: ${err.message}`);
-        throw new Error(`Free Agent execution failed: ${err.message}`);
-      }
+    try {
+      const data = await callOpenRouterFree(prompt, undefined, freeModel);
+      content = data.choices?.[0]?.message?.content || '';
+      actualModel = data.model || freeModel;
+      const promptTokens = data.usage?.prompt_tokens ?? 0;
+      const completionTokens = data.usage?.completion_tokens ?? 0;
+      tokensSaved = (data.usage?.total_tokens ?? 0) || (promptTokens + completionTokens);
+      costUsd = 0;
+      latencyMs = Math.round(performance.now() - start);
+    } catch (err: any) {
+      console.error(`[jev error] jev_agent_free failed: ${err.message}`);
+      throw new Error(`Free Agent execution failed: ${err.message}`);
     }
 
     const endTimeIso = new Date().toISOString();
     const telemetry = {
       modelUsed: actualModel,
-      backend: actualBackend,
-      fallbackTriggered,
+      backend: 'openrouter' as const,
+      fallbackTriggered: false,
       latencyMs,
       tokensSaved,
       costUsd,
@@ -1432,7 +1291,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       endTimeIso,
       attributes: {
         'tool.name': 'jev_agent_free',
-        'backend': actualBackend,
+        'backend': 'openrouter',
         'model.used': actualModel,
         'quota_tokens_saved': tokensSaved,
         'latency_ms': latencyMs
@@ -1444,7 +1303,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         type: 'text',
         text: JSON.stringify({
           content,
-          backend: actualBackend,
+          backend: 'openrouter',
           modelUsed: actualModel,
           tokensSaved,
           costUsd: 0,
@@ -1459,11 +1318,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // Tool: jev_execute_free
   // -------------------------------------------------------------
   if (name === 'jev_execute_free') {
-    const { prompt, systemInstruction, model, backend = 'openrouter' } = (args || {}) as {
+    const { prompt, systemInstruction, model } = (args || {}) as {
       prompt: string;
       systemInstruction?: string;
       model?: string;
-      backend?: 'openrouter' | 'opencode' | 'auto';
     };
 
     if (!prompt) {
@@ -1471,51 +1329,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const freeModel = assertFreeModel(model || FREE_MODEL);
-    let content = '';
-    let actualModel = freeModel;
-    let actualBackend: 'openrouter' | 'opencode' = 'openrouter';
-    let tokensSaved = 0;
-    let costUsd = 0;
-    let latencyMs = 0;
-
-    if (backend === 'opencode') {
-      try {
-        const ocRes = await callOpenCodeAgent({
-          prompt: systemInstruction ? `${systemInstruction}\n\n${prompt}` : prompt,
-          model: freeModel
-        });
-        content = ocRes.content;
-        actualModel = ocRes.modelUsed;
-        actualBackend = 'opencode';
-        tokensSaved = ocRes.tokensSaved || 0;
-        costUsd = ocRes.costUsd || 0;
-        latencyMs = ocRes.durationMs || Math.round(performance.now() - start);
-      } catch (err: any) {
-        console.error(`[jev error] jev_execute_free (opencode) failed: ${err.message}`);
-        throw new Error(`OpenCode execution failed: ${err.message}`);
-      }
-    } else {
-      let data: any;
-      try {
-        data = await callOpenRouterFree(prompt, systemInstruction, freeModel);
-      } catch (err: any) {
-        console.error(`[jev error] jev_execute_free failed: ${err.message}`);
-        throw new Error(`OpenRouter Free execution failed: ${err.message}`);
-      }
-
-      content = data.choices?.[0]?.message?.content || '';
-      actualModel = data.model || freeModel;
-      const promptTokens = data.usage?.prompt_tokens ?? 0;
-      const completionTokens = data.usage?.completion_tokens ?? 0;
-      tokensSaved = (data.usage?.total_tokens ?? 0) || (promptTokens + completionTokens);
-      costUsd = 0;
-      latencyMs = Math.round(performance.now() - start);
+    let data: any;
+    try {
+      data = await callOpenRouterFree(prompt, systemInstruction, freeModel);
+    } catch (err: any) {
+      console.error(`[jev error] jev_execute_free failed: ${err.message}`);
+      throw new Error(`OpenRouter Free execution failed: ${err.message}`);
     }
+
+    const content = data.choices?.[0]?.message?.content || '';
+    const actualModel = data.model || freeModel;
+    const promptTokens = data.usage?.prompt_tokens ?? 0;
+    const completionTokens = data.usage?.completion_tokens ?? 0;
+    const tokensSaved = (data.usage?.total_tokens ?? 0) || (promptTokens + completionTokens);
+    const costUsd = 0;
+    const latencyMs = Math.round(performance.now() - start);
 
     const endTimeIso = new Date().toISOString();
     const telemetry = {
       modelUsed: actualModel,
-      backend: actualBackend,
+      backend: 'openrouter' as const,
+      fallbackUsed: false,
       latencyMs,
       tokensSaved,
       costUsd: 0.00,
@@ -1533,7 +1367,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       endTimeIso,
       attributes: {
         'tool.name': 'jev_execute_free',
-        'backend': actualBackend,
+        'backend': 'openrouter',
         'model.used': actualModel,
         'quota_tokens_saved': tokensSaved,
         'cost_usd': 0.0,
@@ -1546,7 +1380,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         type: 'text',
         text: JSON.stringify({
           content,
-          backend: actualBackend,
+          backend: 'openrouter',
           modelUsed: actualModel,
           tokensSaved,
           costUsd: 0,

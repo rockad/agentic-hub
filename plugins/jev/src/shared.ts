@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Shared Jev primitives used by both the MCP server (src/index.ts) and the
- * OpenCode V2 plugin (opencode/plugin.ts). Keep this module free of side
- * effects: it must never start a server or block on import.
+ * Shared Jev primitives used by the MCP server (src/index.ts) and Antigravity hooks.
+ * Keep this module free of side effects: it must never start a server or block on import.
  */
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -33,8 +32,7 @@ export const FALLBACK_INPUT_COST_PER_MILLION = 0.15; // $0.15 per 1M tokens
 
 /**
  * Load simple KEY=VALUE pairs from a .env file into process.env (without
- * overwriting existing non-empty values). Shared so the OpenCode plugin can pick up the
- * key the same way the MCP server does.
+ * overwriting existing non-empty values).
  */
 function isPlaceholder(val?: string): boolean {
   return !val || val === '' || val.startsWith('${') || val.startsWith('$');
@@ -1026,7 +1024,7 @@ export type JevMode = 'off' | 'on-demand' | 'on';
 export const JEV_STATE_FILE = path.join(os.homedir(), '.config', 'jev', 'mode.json');
 export const JEV_CONFIG_FILE = path.join(os.homedir(), '.config', 'jev', 'config.json');
 
-export type JevHarness = 'antigravity' | 'opencode' | 'claude-code' | 'cli';
+export type JevHarness = 'antigravity' | 'claude-code' | 'cli';
 
 export interface HarnessRoutingConfig {
   swap?: boolean;
@@ -1069,9 +1067,9 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
     weekly_conserve_min: 0.10
   },
   harnesses: {
-    opencode: { mode: 'off' },
     antigravity: { mode: 'on' },
-    'claude-code': { mode: 'on' }
+    'claude-code': { mode: 'on' },
+    cli: { mode: 'on' }
   }
 };
 
@@ -1423,7 +1421,7 @@ export const JEV_TELEMETRY_FILE = path.join(os.homedir(), '.gemini', 'antigravit
 
 export interface JevTelemetryEvent {
   timestamp?: string;
-  harness: 'antigravity' | 'opencode' | 'claude' | 'cli';
+  harness: 'antigravity' | 'claude' | 'cli';
   toolOrHook: string;
   sessionId?: string | null;
   taskSummary?: string;
@@ -1434,6 +1432,118 @@ export interface JevTelemetryEvent {
   tokensSaved?: number;
   quotaStrategy?: string;
   [key: string]: unknown;
+}
+
+// ── Topological Wave Staging & Batch Dispatch ───────────────────────────────
+export interface SubTask {
+  taskId: string;
+  task: string;
+  subagent: string;
+  tier: string;
+  executionTool?: 'jev_execute_free' | 'jev_agent_free' | 'invoke_subagent';
+  executionGuidance?: string;
+  dependencies: string[];
+  canRunParallel: boolean;
+  scaffoldFirst?: boolean;
+  boilerplateType?: string | null;
+  effort?: string;
+  requiresUserApproval: boolean;
+  estimatedCostUsd: number;
+}
+
+export interface BatchDispatchPlan {
+  planName: string;
+  totalTasks: number;
+  freeTierTasks: number;
+  activeSessionModel: string;
+  maxConcurrentFreeWorkers: number;
+  tasks: SubTask[];
+  stages: SubTask[][];
+  parallelExecutionOrder?: string[][];
+  estimatedCostUsd: number;
+  requiresUserApproval: boolean;
+}
+
+export function estimateTierCost(tier: string): number {
+  const t = (tier || '').toLowerCase();
+  if (t === 'pro' || t === 'tier_3_deep' || t === 'expensive') {
+    return 0.015;
+  }
+  if (t === 'flash' || t === 'tier_2_standard' || t === 'standard') {
+    return 0.001;
+  }
+  if (t === 'flash_lite' || t === 'tier_1_cheap' || t === 'cheap') {
+    return 0.0001;
+  }
+  return 0.0;
+}
+
+/**
+ * Kahn's topological sort over task dependencies, outputting stages: SubTask[][]
+ * where each stage represents an execution wave of independent tasks that can run in parallel.
+ */
+export function topologicalSortStages(tasks: SubTask[]): SubTask[][] {
+  const taskMap = new Map<string, SubTask>();
+  const inDegree = new Map<string, number>();
+  const graph = new Map<string, string[]>();
+
+  for (const t of tasks) {
+    taskMap.set(t.taskId, t);
+    inDegree.set(t.taskId, 0);
+    graph.set(t.taskId, []);
+  }
+
+  for (const t of tasks) {
+    for (const dep of t.dependencies || []) {
+      if (taskMap.has(dep)) {
+        inDegree.set(t.taskId, (inDegree.get(t.taskId) || 0) + 1);
+        graph.get(dep)!.push(t.taskId);
+      }
+    }
+  }
+
+  const stages: SubTask[][] = [];
+  let currentStage: SubTask[] = [];
+
+  for (const [id, deg] of inDegree.entries()) {
+    if (deg === 0) {
+      currentStage.push(taskMap.get(id)!);
+    }
+  }
+
+  const processed = new Set<string>();
+
+  while (currentStage.length > 0) {
+    stages.push(currentStage);
+    const nextStage: SubTask[] = [];
+
+    for (const task of currentStage) {
+      processed.add(task.taskId);
+      for (const neighborId of graph.get(task.taskId) || []) {
+        const newDeg = (inDegree.get(neighborId) || 1) - 1;
+        inDegree.set(neighborId, newDeg);
+        if (newDeg === 0) {
+          nextStage.push(taskMap.get(neighborId)!);
+        }
+      }
+    }
+
+    currentStage = nextStage;
+  }
+
+  if (processed.size < tasks.length) {
+    const remaining: SubTask[] = [];
+    for (const t of tasks) {
+      if (!processed.has(t.taskId)) {
+        remaining.push(t);
+      }
+    }
+    if (remaining.length > 0) {
+      stages.push(remaining);
+    }
+  }
+
+  return stages;
 }
 
 export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {

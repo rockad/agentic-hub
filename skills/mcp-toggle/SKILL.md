@@ -1,33 +1,34 @@
 ---
 name: mcp-toggle
 description: >-
-  Inspect and toggle Model Context Protocol (MCP) server plugins (Chrome DevTools, Google Workspace, TypeSafe Jev)
+  Inspect and toggle Model Context Protocol (MCP) server plugins (Chrome DevTools, Google Workspace, DeepL, TypeSafe Jev)
   on and off to preserve context window tokens (~22,000–24,000 tokens/turn) and manage tool availability.
 when_to_use: >-
-  The user asks to enable or disable browser automation, Google Workspace (Gmail/Calendar), or Jev;
-  when inspecting active MCP server status and context overhead; or when performing temporary tasks
-  that require activating heavyweight tools followed by clean teardown.
-argument-hint: "[status | browser on|off | google on|off | jev on|off]"
+  The user asks to enable or disable browser automation, Google Workspace (Gmail/Calendar), DeepL translation/rephrasing,
+  or Jev; when inspecting active MCP server status and context overhead; or when performing temporary tasks
+  that require activating heavyweight or on-demand tools followed by clean teardown.
+argument-hint: "[status | browser on|off | google on|off | deepl on|off | jev on|off]"
 allowed-tools: Bash(mcp-toggle *), Bash(agy plugin *)
 ---
 
 # `mcp-toggle` — MCP Plugin & Context Token Switcher
 
-The `mcp-toggle` CLI tool manages on-demand Model Context Protocol (MCP) plugins to enforce **default-lean context hygiene** across Google Antigravity and AI coding agents.
+The `mcp-toggle` CLI tool manages on-demand Model Context Protocol (MCP) plugins and servers to enforce **default-lean context hygiene** across Google Antigravity and AI coding agents.
 
 ---
 
 ## 1. Context Window Impact & Why We Toggle
 
-In Google Antigravity, MCP tool definitions are injected into the agent's prompt on **every single turn**. Heavyweight tools consume large portions of the context window:
+In Google Antigravity, MCP tool definitions are injected into the agent's prompt on **every single turn**. Heavyweight and specialized on-demand tools consume context window tokens when left active:
 
 | Target | Tools | Token Cost / Turn | Default State | Rationale |
 | :--- | :---: | :---: | :---: | :--- |
 | **`chrome-devtools`** | 30 | ~12,000–14,000 | **Disabled** | Needed only for active web browsing, DOM inspection, or Lighthouse audits. |
 | **`google-workspace`** | 21 | ~8,000–10,000 | **Disabled** | Needed only when explicitly reading Gmail or managing Google Calendar. |
+| **`deepl`** (`deepl-mcp-server`) | 4 | ~1,200–1,500 | **Disabled** | Needed only for ad-hoc interactive DeepL NMT calls (`translate-text`, `rephrase-text`). Batch CV back-translation runs deterministically via `job-app backtranslate`. |
 | **Core Servers** (`jev`, `gitea`, `obsidian`, `memory`) | ~35 | ~8,000 | **Enabled** | Always active core developer capabilities (decision coprocessor, repos, vault, memory). |
 
-Keeping heavyweight plugins disabled when not in use **saves ~22,000–24,000 tokens on every prompt turn**, accelerating inference and preventing context exhaustion.
+Keeping heavyweight and on-demand plugins disabled when not in use **saves ~22,000–25,000 tokens on every prompt turn**, accelerating inference and preventing context exhaustion.
 
 ---
 
@@ -48,6 +49,8 @@ Both argument orders are supported: `mcp-toggle <target> <on|off>` or `mcp-toggl
 | `mcp-toggle browser off` | Disable Chrome DevTools plugin to reclaim ~14k tokens. | `mcp-toggle chrome off` |
 | `mcp-toggle google on` | Enable Google Workspace (Gmail/Calendar) plugin. | `mcp-toggle workspace on`, `mcp-toggle google-workspace on` |
 | `mcp-toggle google off` | Disable Google Workspace plugin to reclaim ~10k tokens. | `mcp-toggle workspace off` |
+| `mcp-toggle deepl on` | Enable DeepL MCP server (`npx -y deepl-mcp-server` using `DEEPL_API_KEY` from `~/.config/zsh/secrets.env`). | `mcp-toggle deepl-mcp on` |
+| `mcp-toggle deepl off` | Disable/remove DeepL MCP server from active MCP config. | `mcp-toggle deepl-mcp off` |
 | `mcp-toggle jev on` | Enable aggressive TypeSafe Jev System 1 pre-flight enforcement. | `jev on`, `jev-mode on` |
 | `mcp-toggle jev off` | Disable Jev System 1 coprocessor. | `jev off`, `jev-mode off` |
 
@@ -56,15 +59,19 @@ Both argument orders are supported: `mcp-toggle <target> <on|off>` or `mcp-toggl
 ## 3. Best Practices for AI Agents
 
 1. **Check Status Before Improvising**:
-   When a user asks for browser automation or Google Workspace actions, run `mcp-toggle status` to check if the corresponding plugin is currently disabled.
+   When a user asks for browser automation, Google Workspace actions, or interactive DeepL translation, run `mcp-toggle status` to check if the corresponding plugin/server is currently disabled.
 2. **Just-in-Time Activation**:
-   If a task requires browser tools (`mcp(chrome-devtools/*)`) or Gmail/Calendar tools (`mcp(google-workspace/*)`), activate the plugin immediately:
+   If a task requires browser tools (`mcp(chrome-devtools/*)`), Gmail/Calendar tools (`mcp(google-workspace/*)`), or interactive DeepL tools (`mcp(deepl/*)`), activate the server immediately:
    ```bash
    mcp-toggle browser on
+   # or
+   mcp-toggle deepl on
    ```
 3. **Clean Teardown Hygiene**:
-   Once the browser navigation, scraping, or email drafting task is finished, disable the plugin:
+   Once the task is finished, disable the server:
    ```bash
    mcp-toggle browser off
+   # or
+   mcp-toggle deepl off
    ```
-   This ensures subsequent turns (e.g. coding, file edits, git commits) do not carry the unnecessary 14,000–24,000 token burden.
+   This ensures subsequent turns (e.g. coding, file edits, git commits) do not carry unnecessary token overhead.

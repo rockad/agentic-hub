@@ -24,8 +24,6 @@ import {
   resetTracerForTesting,
   type JevTracer
 } from '../src/tracing.ts';
-import { applyModelSwap, describeLanguageEvent } from '../opencode/swap.ts';
-
 describe('Consolidated Master Plan: Phase 1 (Unified Config & Harness Scoping)', () => {
   it('loads default configuration when config file is minimal', () => {
     const cfg = loadJevConfigSync();
@@ -36,17 +34,17 @@ describe('Consolidated Master Plan: Phase 1 (Unified Config & Harness Scoping)',
 
   it('provides independent per-harness configurations', () => {
     const agyCfg = getHarnessConfig('antigravity');
-    const ocCfg = getHarnessConfig('opencode');
+    const cliCfg = getHarnessConfig('cli');
     const ccCfg = getHarnessConfig('claude-code');
 
     expect(agyCfg.mode).toBeDefined();
-    expect(ocCfg.mode).toBeDefined();
+    expect(cliCfg.mode).toBeDefined();
     expect(ccCfg.mode).toBeDefined();
   });
 
   it('reads harness mode accurately', async () => {
-    const ocMode = await readJevMode('opencode');
-    expect(['off', 'on-demand', 'on']).toContain(ocMode);
+    const cliMode = await readJevMode('cli');
+    expect(['off', 'on-demand', 'on']).toContain(cliMode);
   });
 });
 
@@ -276,22 +274,6 @@ describe('Consolidated Master Plan: Phase 4 (OpenTelemetry Tracing Pipeline)', (
   });
 });
 
-describe('Consolidated Master Plan: OpenCode Cross-Provider Normalization', () => {
-  it('normalizes target provider to openrouter format when swapping across providers', () => {
-    const mockSdk = {
-      languageModel: (id: string) => ({ id })
-    };
-    const mockEvent: any = {
-      sdk: mockSdk,
-      model: { providerID: 'anthropic', id: 'claude-3-5-sonnet' },
-      language: null
-    };
-
-    const res = applyModelSwap(mockEvent, 'openrouter/google/gemini-flash');
-    expect(res.ok).toBe(true);
-    expect(mockEvent.language.id).toBe('openrouter/google/gemini-flash');
-  });
-});
 
 describe('Consolidated Master Plan: Unified Telemetry Logging', () => {
   it('logs telemetry events conforming to JevTelemetryEvent', async () => {

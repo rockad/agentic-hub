@@ -236,6 +236,28 @@ Create a `.env` file in the plugin root (`.env` is ignored by git via `.gitignor
 | :--- | :--- | :--- |
 | `JEV_OPENROUTER_API_KEY` | **Required.** API key for OpenRouter to access free-tier endpoints. | *(None)* |
 | `JEV_MODE` | Initial operating mode (`ON`, `ON-DEMAND`, `OFF`). | `ON` |
+| `JEV_EGRESS_DENY` | Optional. Extra directories (separated by `:`) from which nothing may be sent. It can only add restrictions. | *(None)* |
+
+### Outbound Data Control (optional)
+
+By default jev sends requests exactly as before. To keep some of your work away from OpenRouter, create `~/.config/jev/egress.json`. jev reads this file but never writes it:
+
+```json
+{
+  "allowPaths": ["~/Work/public-repo", "~/Work/agentic-hub"],
+  "denyPaths": ["~/Work/public-repo/private-notes"]
+}
+```
+
+- With `allowPaths`, every outbound request is blocked unless the session directory lies under one of the listed paths. Without it, only `denyPaths` applies.
+- The session directory is checked three ways: the hook's `cwd`, `CLAUDE_PROJECT_DIR`, and the process working directory. All three must pass.
+- Paths are compared after resolving `~`, symlinks, and (on macOS) letter case.
+- If `egress.json` is not valid JSON or has the wrong shape, everything is blocked. A broken policy never fails open.
+- Blocked requests fail before any data leaves the machine. Hooks stay silent; MCP tools return an error.
+- Requests to `localhost` / `127.0.0.1` (the local memory server) are not affected.
+- While a policy is active, each sent and blocked request is logged to `~/.config/jev/egress-log.jsonl` with host, model, and byte count. Request bodies are never logged.
+
+**Limits.** The policy looks at *where the session runs*, not at *what the data is*. Text from a blocked directory that you paste into a prompt, or a file read by absolute path from an allowed session, is not detected. `scripts/commit.ts` (`dg-commit`) calls OpenRouter directly and is not covered.
 
 ---
 

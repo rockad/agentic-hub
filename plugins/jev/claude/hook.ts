@@ -13,7 +13,17 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { callJev, readJevMode, readQuotaView, loadEnvFile, fetchRecallMemory, logJevTelemetry, type JevMode } from '../src/shared.js';
+import {
+  callJev,
+  readJevMode,
+  readQuotaView,
+  loadEnvFile,
+  fetchRecallMemory,
+  logJevTelemetry,
+  checkEgress,
+  egressContextDirs,
+  type JevMode
+} from '../src/shared.js';
 import {
   buildDirective,
   decideAgentCall,
@@ -35,6 +45,7 @@ const JEV_HOOK_TIMEOUT_MS = 1500;
 
 export type HookInput = {
   session_id?: string;
+  cwd?: string;
   prompt?: string;
   model?: string;
   to_model?: string;
@@ -50,6 +61,8 @@ export type HookDeps = {
   readQuotaStrategy: () => Promise<string>;
   dispatch: (task: string, quotaStrategy: string, criteria?: Record<string, string>) => Promise<Dispatch | null>;
   log: (entry: Record<string, unknown>) => void;
+  /** Egress policy for the hook's working directory; absent means no policy. */
+  egressAllowed?: (cwd: string | undefined) => boolean;
 };
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -61,6 +74,10 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   const task = (input.prompt || '').trim();
   if (task.length < 8) return null;
   const sessionId = safeSessionId(input.session_id);
+  if (deps.egressAllowed && !deps.egressAllowed(input.cwd)) {
+    deps.log({ hook: 'UserPromptSubmit', session: sessionId, egress: 'blocked' });
+    return null;
+  }
   const quotaStrategy = await deps.readQuotaStrategy();
   const criteria = await resolveClaudeSubagentCriteria();
   const rec = await deps.dispatch(task, quotaStrategy, criteria);
@@ -96,8 +113,13 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let verdict = decideAgentCall(call, sessionModel);
   if (!verdict) {
     const task = (call.prompt || call.description || '').trim();
-    const criteria = await resolveClaudeSubagentCriteria();
-    const rec = task.length >= 8 ? await deps.dispatch(task, await deps.readQuotaStrategy(), criteria) : null;
+    // The egress policy gates only the network advice; the ceiling check above always runs.
+    const egressOk = !deps.egressAllowed || deps.egressAllowed(input.cwd);
+    if (!egressOk) deps.log({ hook: 'PreToolUse', session: sessionId, egress: 'blocked' });
+    const rec =
+      task.length >= 8 && egressOk
+        ? await deps.dispatch(task, await deps.readQuotaStrategy(), await resolveClaudeSubagentCriteria())
+        : null;
     verdict = decideByTier(call, rec);
   }
   if (!verdict) return null;
@@ -183,7 +205,8 @@ const liveDeps: HookDeps = {
     }
   },
   dispatch: liveDispatch,
-  log: appendLog
+  log: appendLog,
+  egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd])).allowed
 };
 
 async function main(event: string | undefined): Promise<void> {

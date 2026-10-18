@@ -67,10 +67,11 @@ When invoked simply as `/clarify` or `/grill-me` without an explicit target or f
   - Target: The fresh proposal or pivoted concept stated in the user's latest prompt.
 
 - **Tier 2 — Active Plan File / Artifact**:
-  - If no explicit prompt-level pivot occurred, scan for active plan documents using the following precedence:
-    1. **Primary (Session Artifacts)**: Session artifacts in `<appDataDir>/brain/<conversation-id>/*.md` (sorted by descending modification time `mtime`).
-    2. **Secondary (Transcript File Links)**: Recent markdown document links (`file:///.../*.md`) mentioned in the immediate conversation transcript.
-    3. **Tertiary (Repository Plans)**: The most recently modified plan document under the workspace plans directory (e.g., `./plans/*.md` or `docs/plans/*.md`).
+  - If no explicit prompt-level pivot occurred, scan for active plan documents using the following multi-harness precedence:
+    1. **Session Artifacts (Antigravity)**: Session artifacts in `<appDataDir>/brain/<conversation-id>/*.md` (sorted by descending modification time `mtime`).
+    2. **Recently Touched Workspace Plans (Claude Code / OpenCode)**: Markdown plan documents recently created or edited in the active workspace (e.g. `./plans/*.md`, `./.claude/plans/*.md`, `docs/plans/*.md`, or root `*plan*.md`).
+    3. **Transcript File Links (Universal)**: Any local markdown file links (`file:///.../*.md` or workspace-relative links) explicitly referenced in recent conversation turns.
+    4. **Workspace Repository Plans (Universal)**: The most recently modified plan document under `./plans/` or `docs/plans/`.
   - Target: The highest-priority active plan file found.
 
 - **Tier 3 — Model-Suggested Plan**:

@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { evaluateDrift, type DriftEvent } from '../src/audit/drift-detector.js';
-import { readQuotaView, discoverWorkspaceAgents } from '../src/shared.js';
+import { readQuotaView, discoverWorkspaceAgents, findWorkspaceRoot, clearConfigCacheForTesting } from '../src/shared.js';
 
 describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
   let fixtureDir: string;
@@ -14,6 +14,7 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     const agentsDir = path.join(fixtureDir, '.agents', 'agents');
     await fs.mkdir(agentsDir, { recursive: true });
 
+    // Standalone .md files (legacy fallback)
     await fs.writeFile(
       path.join(agentsDir, 'alpha_agent.md'),
       '---\nname: alpha_agent\ndescription: "Alpha specialist for testing"\n---\n# Alpha Agent'
@@ -25,6 +26,58 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     await fs.writeFile(
       path.join(agentsDir, 'gamma_agent.md'),
       '---\nname: gamma_agent\ndescription: "Gamma specialist for testing"\n---\n# Gamma Agent'
+    );
+
+    // Directory-per-agent with kebab-case identifier
+    const deltaDir = path.join(agentsDir, 'delta-agent');
+    await fs.mkdir(deltaDir, { recursive: true });
+    await fs.writeFile(
+      path.join(deltaDir, 'agent.md'),
+      '---\nname: delta-agent\ndescription: "Delta specialist for testing directory-per-agent"\n---\n# Delta Agent'
+    );
+
+    // Directory-per-agent defaulting to directory name when name is omitted in frontmatter
+    const epsilonDir = path.join(agentsDir, 'epsilon-agent');
+    await fs.mkdir(epsilonDir, { recursive: true });
+    await fs.writeFile(
+      path.join(epsilonDir, 'agent.md'),
+      '---\ndescription: "Epsilon specialist with default directory name"\n---\n# Epsilon Agent'
+    );
+
+    // Precedence test: directory-per-agent takes precedence over standalone .md fallback file
+    const zetaDir = path.join(agentsDir, 'zeta_agent');
+    await fs.mkdir(zetaDir, { recursive: true });
+    await fs.writeFile(
+      path.join(zetaDir, 'agent.md'),
+      '---\nname: zeta_agent\ndescription: "Zeta directory implementation"\n---\n# Zeta Agent'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'zeta_agent.md'),
+      '---\nname: zeta_agent\ndescription: "Zeta file fallback implementation"\n---\n# Zeta Agent'
+    );
+
+    // Dual-indexing test: Title Case name in kebab-case directory
+    const careerDir = path.join(agentsDir, 'career-advisor');
+    await fs.mkdir(careerDir, { recursive: true });
+    await fs.writeFile(
+      path.join(careerDir, 'agent.md'),
+      '---\nname: Career Advisor\ndescription: "Executive career partner and JD auditor"\n---\n# Career Advisor'
+    );
+
+    // Non-agent files without frontmatter (must be ignored)
+    await fs.writeFile(
+      path.join(agentsDir, 'README.md'),
+      '# Agents Directory\nThis directory holds agent definitions.\n'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'scratchpad.md'),
+      'Just a regular markdown file with notes and no frontmatter.'
+    );
+    const nonAgentDir = path.join(agentsDir, 'plain-notes');
+    await fs.mkdir(nonAgentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(nonAgentDir, 'agent.md'),
+      '# Plain Notes\nNot an agent definition without YAML frontmatter.'
     );
 
     emptyTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-'));
@@ -44,26 +97,109 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     expect(agents.alpha_agent).toBeDefined();
     expect(agents.beta_agent).toBeDefined();
     expect(agents.gamma_agent).toBeDefined();
+    expect(agents['delta-agent']).toBe('Delta specialist for testing directory-per-agent');
+    expect(agents['epsilon-agent']).toBe('Epsilon specialist with default directory name');
+    expect(agents.zeta_agent).toBe('Zeta directory implementation');
+    expect(agents['Career Advisor']).toBe('Executive career partner and JD auditor');
+    expect(agents['career-advisor']).toBe('Executive career partner and JD auditor');
 
     const keys = Object.keys(agents);
-    expect(keys.length).toBeGreaterThanOrEqual(5);
+    expect(keys.length).toBeGreaterThanOrEqual(9);
+  });
+
+  test('dual-indexes human-readable Title Case names and normalized kebab-case aliases', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents['Career Advisor']).toBeDefined();
+    expect(agents['career-advisor']).toBeDefined();
+    expect(agents['Career Advisor']).toBe('Executive career partner and JD auditor');
+    expect(agents['career-advisor']).toBe('Executive career partner and JD auditor');
+  });
+
+  test('supports kebab-case identifiers and directory-per-agent precedence over file fallbacks', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents['delta-agent']).toBeDefined();
+    expect(agents['epsilon-agent']).toBeDefined();
+    // Precedence: directory description must win over file fallback description
+    expect(agents.zeta_agent).toBe('Zeta directory implementation');
+  });
+
+  test('ignores non-agent markdown files and notes that lack valid YAML frontmatter', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents.README).toBeUndefined();
+    expect(agents.readme).toBeUndefined();
+    expect(agents.scratchpad).toBeUndefined();
+    expect(agents['plain-notes']).toBeUndefined();
   });
 
   test('falls back cleanly to at least self and none when workspace has no agents directory', async () => {
-    const prevDoppel = process.env.DOPPELGANGER_HOME;
+    const emptyAgents = await discoverWorkspaceAgents(emptyTempDir);
+    expect(emptyAgents).toBeDefined();
+    expect(emptyAgents.self).toBeDefined();
+    expect(emptyAgents.none).toBeDefined();
+    expect(Object.keys(emptyAgents).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('findWorkspaceRoot walks up to locate project root', async () => {
+    const subSubDir = path.join(fixtureDir, 'deep', 'nested', 'subdir');
+    await fs.mkdir(subSubDir, { recursive: true });
+
+    const rootFromDeep = findWorkspaceRoot(subSubDir);
+    expect(rootFromDeep).toBe(path.resolve(fixtureDir));
+
+    const rootFromEmpty = findWorkspaceRoot(emptyTempDir);
+    expect(rootFromEmpty).toBe(path.resolve(emptyTempDir));
+  });
+
+  test('discovers subagents via JEV_AGENTS_DIR environment override', async () => {
+    const customDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-custom-agents-'));
     try {
-      process.env.DOPPELGANGER_HOME = path.join(emptyTempDir, 'nonexistent');
-      const emptyAgents = await discoverWorkspaceAgents(emptyTempDir);
-      expect(emptyAgents).toBeDefined();
-      expect(emptyAgents.self).toBeDefined();
-      expect(emptyAgents.none).toBeDefined();
-      expect(Object.keys(emptyAgents).length).toBeGreaterThanOrEqual(2);
+      await fs.writeFile(
+        path.join(customDir, 'custom_env_agent.md'),
+        '---\nname: custom_env_agent\ndescription: "Discovered via JEV_AGENTS_DIR"\n---\n# Custom Agent'
+      );
+      process.env.JEV_AGENTS_DIR = customDir;
+      const agents = await discoverWorkspaceAgents(emptyTempDir);
+      expect(agents.custom_env_agent).toBe('Discovered via JEV_AGENTS_DIR');
     } finally {
-      if (prevDoppel !== undefined) {
-        process.env.DOPPELGANGER_HOME = prevDoppel;
-      } else {
-        delete process.env.DOPPELGANGER_HOME;
+      delete process.env.JEV_AGENTS_DIR;
+      await fs.rm(customDir, { recursive: true, force: true });
+    }
+  });
+
+  test('discovers subagents via agentPaths in config', async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-config-agents-'));
+    const configFile = path.join(configDir, 'test-config.json');
+    const agentsPath = path.join(configDir, 'custom-agents');
+    await fs.mkdir(agentsPath, { recursive: true });
+
+    try {
+      await fs.writeFile(
+        path.join(agentsPath, 'custom_cfg_agent.md'),
+        '---\nname: custom_cfg_agent\ndescription: "Discovered via config agentPaths"\n---\n# Config Agent'
+      );
+      await fs.writeFile(
+        configFile,
+        JSON.stringify({
+          version: 2,
+          defaults: {
+            agentPaths: [agentsPath]
+          }
+        })
+      );
+      process.env.JEV_CONFIG_FILE = configFile;
+      clearConfigCacheForTesting();
+
+      const testWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-ws-'));
+      try {
+        const agents = await discoverWorkspaceAgents(testWorkspaceDir);
+        expect(agents.custom_cfg_agent).toBe('Discovered via config agentPaths');
+      } finally {
+        await fs.rm(testWorkspaceDir, { recursive: true, force: true });
       }
+    } finally {
+      delete process.env.JEV_CONFIG_FILE;
+      clearConfigCacheForTesting();
+      await fs.rm(configDir, { recursive: true, force: true });
     }
   });
 

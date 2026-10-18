@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { getTracer, type JevSpan, type JevTracer } from '../tracing.js';
+import { assertEgressAllowed } from './egress.js';
 import {
   getFreeModelsPool,
   getJevTimeouts,
@@ -103,6 +104,8 @@ export function getOpenRouterApiKey(): string {
 }
 
 export async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  // Single choke point for every outbound request: blocks before any byte leaves the machine.
+  assertEgressAllowed(url, options.body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

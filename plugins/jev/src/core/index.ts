@@ -9,3 +9,4 @@ export * from './discovery.js';
 export * from './heuristics.js';
 export * from './graph.js';
 export * from './cache.js';
+export * from './egress.js';

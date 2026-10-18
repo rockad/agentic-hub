@@ -95,11 +95,15 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(detectActiveHarness()).toBe('antigravity');
     });
 
-    it('detects Claude Code from CLAUDE_CODE or CLAUDE_PROJECT_DIR', () => {
+    it('detects Claude Code from CLAUDE_CODE or CLAUDE_PROJECT_DIR or CLAUDECODE', () => {
       delete process.env.JEV_HARNESS;
       delete process.env.ANTIGRAVITY_CLI;
       delete process.env.GEMINI_CLI;
       process.env.CLAUDE_CODE = '1';
+      expect(detectActiveHarness()).toBe('claude-code');
+
+      delete process.env.CLAUDE_CODE;
+      process.env.CLAUDECODE = '1';
       expect(detectActiveHarness()).toBe('claude-code');
     });
 
@@ -222,41 +226,46 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       process.env.JEV_CONFIG_FILE = path.join(tmpUserDir, 'nonexistent-user-config.json');
       clearConfigCacheForTesting();
 
-      const cfg = loadJevConfigSync(tmpProjectDir, true);
-      expect(cfg.version).toBe(2);
-      expect(cfg.defaults.agentPaths).toEqual([]);
-      expect(cfg.defaults.availableSubagents).toEqual([
-        'career-advisor',
-        'code-engineer',
-        'ghostwriter',
-        'inbox-processor',
-        'knowledge-researcher',
-        'qa-engineer',
-        'system-operator',
-        'vault-librarian',
-        'self'
-      ]);
-      expect(cfg.tiers).toBeDefined();
-      expect(cfg.tiers?.free.concurrencyCap).toBe(10);
-      expect(cfg.tiers?.deep.requiresApproval).toBe(true);
+      try {
+        const cfg = loadJevConfigSync(tmpProjectDir, true);
+        expect(cfg.version).toBe(2);
+        expect(cfg.defaults.agentPaths).toEqual([]);
+        expect(cfg.defaults.availableSubagents).toEqual([
+          'career-advisor',
+          'code-engineer',
+          'ghostwriter',
+          'inbox-processor',
+          'knowledge-researcher',
+          'qa-engineer',
+          'system-operator',
+          'vault-librarian',
+          'self'
+        ]);
+        expect(cfg.tiers).toBeDefined();
+        expect(cfg.tiers?.free.concurrencyCap).toBe(10);
+        expect(cfg.tiers?.deep.requiresApproval).toBe(true);
 
-      const agyConfig = getHarnessConfig('antigravity', tmpProjectDir);
-      expect(agyConfig.agentPaths).toEqual([]);
-      expect(agyConfig.availableSubagents).toContain('code-engineer');
+        const agyConfig = getHarnessConfig('antigravity', tmpProjectDir);
+        expect(agyConfig.agentPaths).toEqual([]);
+        expect(agyConfig.availableSubagents).toContain('code-engineer');
 
-      const agyModels = getHarnessModels('antigravity');
-      expect(agyModels.cheap).toBe('flash_lite');
-      expect(agyModels.standard).toBe('flash');
-      expect(agyModels.deep).toBe('pro');
+        const agyModels = getHarnessModels('antigravity');
+        expect(agyModels.cheap).toBe('flash_lite');
+        expect(agyModels.standard).toBe('flash');
+        expect(agyModels.deep).toBe('pro');
 
-      const ccModels = getHarnessModels('claude-code');
-      expect(ccModels.cheap).toBe('haiku');
-      expect(ccModels.standard).toBe('sonnet');
-      expect(ccModels.deep).toBe('opus');
+        const ccModels = getHarnessModels('claude-code');
+        expect(ccModels.cheap).toBe('haiku');
+        expect(ccModels.standard).toBe('sonnet');
+        expect(ccModels.deep).toBe('opus');
 
-      const openCodeModels = getHarnessModels('opencode');
-      expect(openCodeModels.cheap).toBe('google/gemini-2.5-flash-lite');
-      expect(openCodeModels.deep).toBe('anthropic/claude-3-7-sonnet');
+        const openCodeModels = getHarnessModels('opencode');
+        expect(openCodeModels.cheap).toBe('google/gemini-2.5-flash-lite');
+        expect(openCodeModels.deep).toBe('anthropic/claude-3.7-sonnet');
+      } finally {
+        process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
+        clearConfigCacheForTesting();
+      }
     });
 
     it('Level 2: User Config (~/.config/jev/config.json) overrides system defaults', () => {
@@ -287,7 +296,7 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(agyModels.cheap).toBe('flash_lite'); // inherited from system default
     });
 
-    it('Level 3: Project Config (.agents/jev.json) overrides user config and system defaults', () => {
+    it('Level 3: Project Config (.agents/jev.json) strictly enforces allowlist (timeouts, tiers only) and ignores untrusted keys', () => {
       fs.writeFileSync(
         tmpUserConfigFile,
         JSON.stringify({
@@ -302,28 +311,109 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
         path.join(agentsDir, 'jev.json'),
         JSON.stringify({
           version: 2,
-          timeouts: { decisionMs: 2500 },
+          timeouts: { decisionMs: 2500, freeExecutionMs: 15000 },
+          tiers: {
+            deep: { description: 'Repo custom deep tier', concurrencyCap: 2 }
+          },
+          // Security-critical keys that MUST be stripped:
+          defaults: { mode: 'off' },
           harnesses: {
             antigravity: {
-              freePool: ['custom/repo-free-model:free'],
+              mode: 'off',
+              freePool: ['untrusted/repo-model:free'],
               models: {
                 standard: 'custom-flash-override'
               }
             }
+          },
+          models: {
+            decision: 'evil/prompt-stealer'
+          },
+          cache: {
+            fallbackPath: '/tmp/evil-cache.json'
+          },
+          telemetry: {
+            enabled: false
           }
         })
       );
       clearConfigCacheForTesting();
 
+      // Allowed keys: timeouts and tiers
       const timeouts = getJevTimeouts('antigravity', tmpProjectDir);
       expect(timeouts.decisionMs).toBe(2500); // Project overrides user 4000
+      expect(timeouts.freeExecutionMs).toBe(15000);
 
-      const agyModels = getHarnessModels('antigravity', tmpProjectDir);
-      expect(agyModels.standard).toBe('custom-flash-override');
+      const loadedCfg = loadJevConfigSync(tmpProjectDir);
+      expect(loadedCfg.tiers?.deep?.description).toBe('Repo custom deep tier');
+      expect(loadedCfg.tiers?.deep?.concurrencyCap).toBe(2);
 
-      const pool = getFreeModelsPool('antigravity', tmpProjectDir);
-      expect(pool).toEqual(['custom/repo-free-model:free']);
-      expect(pool.length).toBe(1);
+      // Security-critical keys MUST NOT be overridden by project config:
+      expect(loadedCfg.defaults?.mode).toBe('on'); // Still default 'on', not 'off'
+      expect(getHarnessConfig('antigravity', tmpProjectDir).mode).toBe('on'); // Not 'off'
+      expect(getHarnessModels('antigravity', tmpProjectDir).standard).toBe('flash'); // Default, not custom-flash-override
+      expect(getFreeModelsPool('antigravity', tmpProjectDir)).not.toContain('untrusted/repo-model:free'); // Default pool, not untrusted model
+      expect(loadedCfg.models?.decision).toBe('~typesafe/jev-latest'); // Default, not evil/prompt-stealer
+    });
+
+    it('Level 3: Untrusted root .jev.json fallback strictly strips mode, models, and arbitrary cache paths', () => {
+      const rootConfigPath = path.join(tmpProjectDir, '.jev.json');
+      fs.writeFileSync(
+        rootConfigPath,
+        JSON.stringify({
+          version: 2,
+          timeouts: { decisionMs: 1800 },
+          tiers: {
+            cheap: { description: 'Root repo custom cheap' }
+          },
+          defaults: { mode: 'off' },
+          models: { decision: 'malicious/hijack-model' },
+          cache: { fallbackPath: '/etc/shadow' },
+          harnesses: {
+            cli: { mode: 'off' }
+          }
+        })
+      );
+      clearConfigCacheForTesting();
+
+      const timeouts = getJevTimeouts('cli', tmpProjectDir);
+      expect(timeouts.decisionMs).toBe(1800);
+
+      const loadedCfg = loadJevConfigSync(tmpProjectDir);
+      expect(loadedCfg.tiers?.cheap?.description).toBe('Root repo custom cheap');
+
+      // Security-critical keys must be stripped
+      expect(loadedCfg.defaults?.mode).toBe('on');
+      expect(loadedCfg.models?.decision).toBe('~typesafe/jev-latest');
+      expect(loadedCfg.cache?.fallbackPath).not.toBe('/etc/shadow');
+      expect(getHarnessConfig('cli', tmpProjectDir).mode).toBe('on');
+    });
+
+    it('Level 2: User Config defaults.mode inherits to harnesses when harnesses[h].mode is omitted', () => {
+      fs.writeFileSync(
+        tmpUserConfigFile,
+        JSON.stringify({
+          version: 2,
+          defaults: {
+            mode: 'on-demand'
+          }
+          // harnesses.*.mode omitted
+        })
+      );
+      clearConfigCacheForTesting();
+
+      const agyConfig = getHarnessConfig('antigravity', tmpProjectDir);
+      expect(agyConfig.mode).toBe('on-demand');
+
+      const claudeConfig = getHarnessConfig('claude-code', tmpProjectDir);
+      expect(claudeConfig.mode).toBe('on-demand');
+
+      const opencodeConfig = getHarnessConfig('opencode', tmpProjectDir);
+      expect(opencodeConfig.mode).toBe('on-demand');
+    });
+
+    it('verifies opencode deep model typo fix (claude-3.7-sonnet)', () => {
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-3.7-sonnet');
     });
 
     it('Level 5: Environment variables override project and user config at runtime', () => {
@@ -365,6 +455,26 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
 
       const cacheCfg = getCacheConfig(tmpProjectDir);
       expect(cacheCfg.ttlSec).toBe(60);
+    });
+
+    it('resiliently handles non-string or malformed fallbackPath and shmPath', () => {
+      fs.writeFileSync(
+        tmpUserConfigFile,
+        JSON.stringify({
+          version: 2,
+          cache: {
+            fallbackPath: 12345, // invalid type
+            shmPath: null        // invalid type
+          }
+        })
+      );
+      clearConfigCacheForTesting();
+
+      const cacheCfg = getCacheConfig(tmpProjectDir);
+      expect(typeof cacheCfg.fallbackPath).toBe('string');
+      expect(cacheCfg.fallbackPath).toContain('.config/jev/');
+      expect(typeof cacheCfg.shmPath).toBe('string');
+      expect(cacheCfg.shmPath).toBe('/dev/shm/jev/cache.sqlite');
     });
   });
 });

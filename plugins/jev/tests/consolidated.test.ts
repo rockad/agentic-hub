@@ -24,7 +24,29 @@ import {
   resetTracerForTesting,
   type JevTracer
 } from '../src/tracing.ts';
+import {
+  clearConfigCacheForTesting
+} from '../src/core/config.js';
+
 describe('Consolidated Master Plan: Phase 1 (Unified Config & Harness Scoping)', () => {
+  let tmpUserDir: string;
+  let tmpUserConfigFile: string;
+
+  beforeEach(() => {
+    tmpUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-consol-user-'));
+    tmpUserConfigFile = path.join(tmpUserDir, 'nonexistent-config.json');
+    process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
+    clearConfigCacheForTesting();
+  });
+
+  afterEach(() => {
+    delete process.env.JEV_CONFIG_FILE;
+    clearConfigCacheForTesting();
+    try {
+      fs.rmSync(tmpUserDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   it('loads default configuration when config file is minimal', () => {
     const cfg = loadJevConfigSync();
     expect(cfg.version).toBeNumber();
@@ -71,11 +93,15 @@ describe('Consolidated Master Plan: Phase 3 (File-Backed Decision Cache & Concur
     tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-cache-test-'));
     tmpCacheFile = path.join(tmpCacheDir, 'decision-cache.json');
     process.env.JEV_CACHE_FILE = tmpCacheFile;
+    process.env.JEV_CONFIG_FILE = path.join(tmpCacheDir, 'nonexistent-config.json');
+    clearConfigCacheForTesting();
   });
 
   afterEach(() => {
     delete process.env.JEV_CACHE_FILE;
+    delete process.env.JEV_CONFIG_FILE;
     delete process.env.JEV_CACHE_TTL_MS;
+    clearConfigCacheForTesting();
     try {
       fs.rmSync(tmpCacheDir, { recursive: true, force: true });
     } catch {}

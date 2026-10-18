@@ -56,6 +56,22 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
       '---\nname: zeta_agent\ndescription: "Zeta file fallback implementation"\n---\n# Zeta Agent'
     );
 
+    // Non-agent files without frontmatter (must be ignored)
+    await fs.writeFile(
+      path.join(agentsDir, 'README.md'),
+      '# Agents Directory\nThis directory holds agent definitions.\n'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'scratchpad.md'),
+      'Just a regular markdown file with notes and no frontmatter.'
+    );
+    const nonAgentDir = path.join(agentsDir, 'plain-notes');
+    await fs.mkdir(nonAgentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(nonAgentDir, 'agent.md'),
+      '# Plain Notes\nNot an agent definition without YAML frontmatter.'
+    );
+
     emptyTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-'));
   });
 
@@ -87,6 +103,14 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     expect(agents['epsilon-agent']).toBeDefined();
     // Precedence: directory description must win over file fallback description
     expect(agents.zeta_agent).toBe('Zeta directory implementation');
+  });
+
+  test('ignores non-agent markdown files and notes that lack valid YAML frontmatter', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents.README).toBeUndefined();
+    expect(agents.readme).toBeUndefined();
+    expect(agents.scratchpad).toBeUndefined();
+    expect(agents['plain-notes']).toBeUndefined();
   });
 
   test('falls back cleanly to at least self and none when workspace has no agents directory', async () => {

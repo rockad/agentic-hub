@@ -112,7 +112,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
     decisionMs: 3500,
     fallbackMs: 5000,
     freeModelMs: 8000,
-    freeExecutionMs: 30000
+    freeExecutionMs: 25000
   },
   cache: {
     ttlSec: 300,
@@ -156,7 +156,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
         free: 'openrouter/free',
         cheap: 'google/gemini-2.5-flash-lite',
         standard: 'google/gemini-2.5-flash',
-        deep: 'anthropic/claude-3-7-sonnet'
+        deep: 'anthropic/claude-3.7-sonnet'
       }
     },
     cli: {
@@ -209,7 +209,7 @@ export function detectActiveHarness(): JevHarness {
   if (process.env.ANTIGRAVITY_CLI || process.env.GEMINI_CLI || process.env.CORTEX_SESSION) {
     return 'antigravity';
   }
-  if (process.env.CLAUDE_CODE || process.env.CLAUDE_PROJECT_DIR) {
+  if (process.env.CLAUDE_CODE || process.env.CLAUDE_PROJECT_DIR || process.env.CLAUDECODE) {
     return 'claude-code';
   }
   if (process.env.OPENCODE_SESSION || process.env.OPENCODE_HOME) {
@@ -253,6 +253,64 @@ export function clearConfigCacheForTesting(): void {
   cachedConfig = null;
 }
 
+/**
+ * Strict allowlist for untrusted project configs (.agents/jev.json, .jev.json).
+ * May ONLY configure:
+ * - timeouts (number values)
+ * - tiers (tier hints: description, concurrencyCap, requiresApproval)
+ * Explicitly strips/ignores all security-critical keys:
+ * - defaults.mode, harnesses.*.mode (cannot turn mode on/off)
+ * - models (cannot redirect decision/router/fallback prompts)
+ * - freePool (cannot inject paid models into free pool)
+ * - cache.* (cannot redirect cache paths or overwrite files)
+ * - telemetry.*
+ */
+export function sanitizeProjectConfig(parsed: any): Partial<JevConfig> {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+
+  const sanitized: Partial<JevConfig> = {};
+
+  // 1. Timeouts (number values only)
+  if (parsed.timeouts && typeof parsed.timeouts === 'object' && !Array.isArray(parsed.timeouts)) {
+    const timeouts: Partial<JevTimeoutsConfig> = {};
+    for (const key of ['decisionMs', 'fallbackMs', 'freeModelMs', 'freeExecutionMs'] as const) {
+      if (typeof parsed.timeouts[key] === 'number' && Number.isFinite(parsed.timeouts[key]) && parsed.timeouts[key] > 0) {
+        timeouts[key] = parsed.timeouts[key];
+      }
+    }
+    if (Object.keys(timeouts).length > 0) {
+      sanitized.timeouts = timeouts;
+    }
+  }
+
+  // 2. Tiers (tier hints only: description, concurrencyCap, requiresApproval)
+  if (parsed.tiers && typeof parsed.tiers === 'object' && !Array.isArray(parsed.tiers)) {
+    const tiers: JevTiersConfig = {} as any;
+    for (const [tierName, tierVal] of Object.entries(parsed.tiers)) {
+      if (tierVal && typeof tierVal === 'object' && !Array.isArray(tierVal)) {
+        const tVal = tierVal as any;
+        const entry: { description: string; concurrencyCap?: number; requiresApproval?: boolean } = {
+          description: typeof tVal.description === 'string' ? tVal.description : ''
+        };
+        if (typeof tVal.concurrencyCap === 'number' && Number.isFinite(tVal.concurrencyCap) && tVal.concurrencyCap > 0) {
+          entry.concurrencyCap = tVal.concurrencyCap;
+        }
+        if (typeof tVal.requiresApproval === 'boolean') {
+          entry.requiresApproval = tVal.requiresApproval;
+        }
+        tiers[tierName] = entry;
+      }
+    }
+    if (Object.keys(tiers).length > 0) {
+      sanitized.tiers = tiers;
+    }
+  }
+
+  return sanitized;
+}
+
 export function loadJevConfigSync(startDir?: string, bypassCache = false): JevConfig {
   const now = Date.now();
   const dirKey = startDir ? path.resolve(startDir) : '';
@@ -273,23 +331,35 @@ export function loadJevConfigSync(startDir?: string, bypassCache = false): JevCo
         if (typeof parsed.version === 'number') {
           config.version = parsed.version;
         }
+
+        // Mode inheritance: if user config specifies defaults.mode, but omits harnesses[h].mode,
+        // the harness MUST inherit from defaults.mode.
+        if (parsed.defaults && parsed.defaults.mode) {
+          const userDefaultMode = parsed.defaults.mode as JevMode;
+          if (config.harnesses) {
+            for (const h of Object.keys(config.harnesses) as JevHarness[]) {
+              if (!parsed.harnesses?.[h]?.mode) {
+                if (!config.harnesses[h]) config.harnesses[h] = {} as any;
+                config.harnesses[h]!.mode = userDefaultMode;
+              }
+            }
+          }
+        }
       }
     }
   } catch {
     // Return default on error
   }
 
-  // Level 3: Project Config (.agents/jev.json primary, .jev.json fallback)
+  // Level 3: Project Config (.agents/jev.json primary, .jev.json fallback) - UNTRUSTED INPUT
   const projectConfigFile = findProjectConfigFile(startDir);
   if (projectConfigFile) {
     try {
       if (fsSync.existsSync(projectConfigFile)) {
         const parsed = JSON.parse(fsSync.readFileSync(projectConfigFile, 'utf8'));
         if (parsed && typeof parsed === 'object') {
-          config = deepMergeWithArrayReplacement(config, parsed);
-          if (typeof parsed.version === 'number') {
-            config.version = parsed.version;
-          }
+          const sanitized = sanitizeProjectConfig(parsed);
+          config = deepMergeWithArrayReplacement(config, sanitized);
         }
       }
     } catch {
@@ -395,10 +465,10 @@ export function getJevTimeouts(harness?: JevHarness, startDir?: string): JevTime
   const def = DEFAULT_JEV_CONFIG.timeouts!;
   const configured = cfg.timeouts || {};
 
-  const decisionMs = Number(process.env.JEV_TIMEOUT_MS) || configured.decisionMs || def.decisionMs;
-  const fallbackMs = Number(process.env.JEV_FALLBACK_TIMEOUT_MS) || configured.fallbackMs || def.fallbackMs;
-  const freeModelMs = Number(process.env.JEV_FREE_MODEL_TIMEOUT_MS) || configured.freeModelMs || def.freeModelMs;
-  const freeExecutionMs = Number(process.env.JEV_FREE_EXEC_TIMEOUT_MS) || configured.freeExecutionMs || def.freeExecutionMs;
+  const decisionMs = Number(process.env.JEV_TIMEOUT_MS) || configured.decisionMs || def.decisionMs || 3500;
+  const fallbackMs = Number(process.env.JEV_FALLBACK_TIMEOUT_MS) || configured.fallbackMs || def.fallbackMs || 5000;
+  const freeModelMs = Number(process.env.JEV_FREE_MODEL_TIMEOUT_MS) || configured.freeModelMs || def.freeModelMs || 8000;
+  const freeExecutionMs = Number(process.env.JEV_FREE_EXEC_TIMEOUT_MS) || configured.freeExecutionMs || def.freeExecutionMs || 25000;
 
   return {
     decisionMs,
@@ -410,19 +480,33 @@ export function getJevTimeouts(harness?: JevHarness, startDir?: string): JevTime
 
 export function getCacheConfig(startDir?: string): JevCacheConfig {
   const cfg = loadJevConfigSync(startDir);
-  const def = DEFAULT_JEV_CONFIG.cache!;
+  const def = DEFAULT_JEV_CONFIG.cache || {
+    ttlSec: 300,
+    shmPath: '/dev/shm/jev/cache.sqlite',
+    fallbackPath: path.join(os.homedir(), '.config', 'jev', 'decision-cache.json')
+  };
   const configured = cfg.cache || {};
 
   const ttlSec = process.env.JEV_CACHE_TTL_MS
     ? Math.max(1, Math.round(Number(process.env.JEV_CACHE_TTL_MS) / 1000))
-    : (configured.ttlSec || def.ttlSec);
+    : (typeof configured.ttlSec === 'number' ? configured.ttlSec : (def.ttlSec ?? 300));
 
-  const rawFallback = configured.fallbackPath || def.fallbackPath;
+  const defaultFallback = path.join(os.homedir(), '.config', 'jev', 'decision-cache.json');
+  let rawFallback = typeof configured.fallbackPath === 'string' && configured.fallbackPath.trim() !== ''
+    ? configured.fallbackPath
+    : (typeof def.fallbackPath === 'string' && def.fallbackPath.trim() !== '' ? def.fallbackPath : defaultFallback);
+
+  if (typeof rawFallback !== 'string') {
+    rawFallback = defaultFallback;
+  }
+
   const fallbackPath = rawFallback.startsWith('~/')
     ? path.join(os.homedir(), rawFallback.slice(2))
     : rawFallback;
 
-  const shmPath = configured.shmPath || def.shmPath;
+  const shmPath = typeof configured.shmPath === 'string' && configured.shmPath.trim() !== ''
+    ? configured.shmPath
+    : (typeof def.shmPath === 'string' ? def.shmPath : '/dev/shm/jev/cache.sqlite');
 
   return {
     ttlSec,

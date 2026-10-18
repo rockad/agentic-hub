@@ -52,22 +52,24 @@ export function findWorkspaceRoot(startDir: string = process.cwd()): string {
   return path.resolve(startDir);
 }
 
-function parseAgentContent(content: string, defaultName: string): { name: string; description: string } {
+function parseAgentContent(content: string, defaultName: string): { name: string; description: string } | null {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) {
+    return null;
+  }
+
   let name = defaultName;
   let description = '';
 
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (match) {
-    const yamlBlock = match[1];
-    for (const line of yamlBlock.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('name:')) {
-        const val = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, '');
-        if (val) name = val;
-      } else if (trimmed.startsWith('description:')) {
-        const val = trimmed.slice(12).trim().replace(/^['"]|['"]$/g, '');
-        if (val) description = val;
-      }
+  const yamlBlock = match[1];
+  for (const line of yamlBlock.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('name:')) {
+      const val = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, '');
+      if (val) name = val;
+    } else if (trimmed.startsWith('description:')) {
+      const val = trimmed.slice(12).trim().replace(/^['"]|['"]$/g, '');
+      if (val) description = val;
     }
   }
 
@@ -201,7 +203,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
               if (st.isFile()) {
                 const content = await fs.readFile(agentFile, 'utf8');
                 const parsed = parseAgentContent(content, entry.name);
-                if (parsed.name && !result[parsed.name]) {
+                if (parsed && parsed.name && !result[parsed.name]) {
                   result[parsed.name] = parsed.description;
                 }
               }
@@ -229,7 +231,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
             try {
               const content = await fs.readFile(filePath, 'utf8');
               const parsed = parseAgentContent(content, defaultName);
-              if (parsed.name && !result[parsed.name]) {
+              if (parsed && parsed.name && !result[parsed.name]) {
                 result[parsed.name] = parsed.description;
               }
             } catch {

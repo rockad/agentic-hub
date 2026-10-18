@@ -37,20 +37,33 @@ export function resolveDbPath(): string {
     const shmDir = path.dirname(shmPath);
     if (fs.existsSync(path.dirname(shmDir)) || fs.existsSync(shmDir)) {
       if (!fs.existsSync(shmDir)) {
-        fs.mkdirSync(shmDir, { recursive: true });
+        fs.mkdirSync(shmDir, { recursive: true, mode: 0o700 });
+      } else {
+        try {
+          fs.chmodSync(shmDir, 0o700);
+        } catch {}
       }
+
+      // Owner verification: ensure directory is owned by the current process user
+      if (typeof process.getuid === 'function') {
+        const stat = fs.statSync(shmDir);
+        if (stat.uid !== process.getuid()) {
+          throw new Error('shm directory is owned by another user');
+        }
+      }
+
       fs.accessSync(shmDir, fs.constants.W_OK | fs.constants.R_OK);
       return shmPath;
     }
   } catch {
-    // fall through
+    // fall through to fallbackPath
   }
 
   // 3) fallbackPath (disk fallback)
   try {
     const configDir = path.dirname(fallbackPath);
     if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
+      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     }
     fs.accessSync(configDir, fs.constants.W_OK | fs.constants.R_OK);
     return fallbackPath;
@@ -78,7 +91,8 @@ function isJsonPath(filePath: string): boolean {
 
 /**
  * Get or initialize the bun:sqlite Database instance.
- * Sets WAL mode, normal synchronous, in-memory temp store, and 250ms busy timeout.
+ * Sets busy timeout FIRST to prevent SQLITE_BUSY on first-open contention,
+ * then sets WAL mode, normal synchronous, and in-memory temp store.
  */
 function getDatabase(): Database {
   const dbPath = resolveDbPath();
@@ -96,16 +110,24 @@ function getDatabase(): Database {
   if (dbPath !== ':memory:') {
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
   }
 
   const db = new Database(dbPath, { create: true });
+
+  // SQLite DB file permissions: ensure the .sqlite file is mode 0o600
+  if (dbPath !== ':memory:') {
+    try {
+      if (fs.existsSync(dbPath)) fs.chmodSync(dbPath, 0o600);
+    } catch {}
+  }
+
   db.exec(`
+    PRAGMA busy_timeout = 2000;
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
     PRAGMA temp_store = MEMORY;
-    PRAGMA busy_timeout = 250;
     CREATE TABLE IF NOT EXISTS decision_cache (
       key TEXT PRIMARY KEY,
       data TEXT NOT NULL,
@@ -115,9 +137,21 @@ function getDatabase(): Database {
     CREATE INDEX IF NOT EXISTS idx_decision_cache_expires ON decision_cache(expires_at);
   `);
 
+  if (dbPath !== ':memory:') {
+    try {
+      if (fs.existsSync(dbPath)) fs.chmodSync(dbPath, 0o600);
+      if (fs.existsSync(`${dbPath}-wal`)) fs.chmodSync(`${dbPath}-wal`, 0o600);
+      if (fs.existsSync(`${dbPath}-shm`)) fs.chmodSync(`${dbPath}-shm`, 0o600);
+    } catch {}
+  }
+
   activeDb = db;
   activeDbPath = dbPath;
   return activeDb;
+}
+
+export function getDatabaseForTesting(): Database {
+  return getDatabase();
 }
 
 /**

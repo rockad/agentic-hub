@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fsSync from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { getModeDetails } from '../src/index.ts';
 import {
   defaultEffortForSubagent,
@@ -10,8 +12,40 @@ import {
   type ModelCandidate
 } from '../src/shared.ts';
 
+import {
+  isFreeModel,
+  assertFreeModel,
+  callOpenRouterFree
+} from '../src/core/client.js';
+
+import {
+  clearConfigCacheForTesting
+} from '../src/core/config.js';
+
 describe('Jev Plugin Unit & Integration Tests', () => {
   const isLiveTest = process.env.JEV_LIVE_TEST === '1';
+  let tmpUserDir: string;
+  let tmpCacheDir: string;
+
+  beforeEach(() => {
+    tmpUserDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'jev-unit-config-'));
+    tmpCacheDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'jev-unit-cache-'));
+    process.env.JEV_CONFIG_FILE = path.join(tmpUserDir, 'nonexistent-config.json');
+    process.env.JEV_CACHE_FILE = path.join(tmpCacheDir, 'cache.sqlite');
+    clearConfigCacheForTesting();
+  });
+
+  afterEach(() => {
+    delete process.env.JEV_CONFIG_FILE;
+    delete process.env.JEV_CACHE_FILE;
+    clearConfigCacheForTesting();
+    try {
+      fsSync.rmSync(tmpUserDir, { recursive: true, force: true });
+    } catch {}
+    try {
+      fsSync.rmSync(tmpCacheDir, { recursive: true, force: true });
+    } catch {}
+  });
 
   it('correctly provides mode details for off, on-demand, and on', () => {
     const off = getModeDetails('off');
@@ -85,5 +119,86 @@ describe('Jev Plugin Unit & Integration Tests', () => {
 
   it('validates free model offloading quality gate contract', () => {
     expect(typeof getModeDetails).toBe('function');
+  });
+
+  describe('Free Model Validation and Offloading Invariants', () => {
+    it('isFreeModel validates free models and rejects paid ones', () => {
+      expect(isFreeModel('openrouter/free')).toBe(true);
+      expect(isFreeModel('google/gemma-4-31b-it:free')).toBe(true);
+      expect(isFreeModel('meta-llama/llama-3.3-70b-instruct:free')).toBe(true);
+
+      expect(isFreeModel('anthropic/claude-3.7-sonnet')).toBe(false);
+      expect(isFreeModel('openai/gpt-4o')).toBe(false);
+      expect(isFreeModel('google/gemini-2.5-flash')).toBe(false);
+    });
+
+    it('assertFreeModel throws on paid models and passes free models', () => {
+      expect(assertFreeModel('openrouter/free')).toBe('openrouter/free');
+      expect(assertFreeModel('cohere/north-mini-code:free')).toBe('cohere/north-mini-code:free');
+
+      expect(() => assertFreeModel('anthropic/claude-3.7-sonnet')).toThrow(/not a free model/);
+      expect(() => assertFreeModel('google/gemini-2.5-pro')).toThrow(/not a free model/);
+    });
+
+    it('callOpenRouterFree strictly rejects requested non-free models immediately', async () => {
+      await expect(
+        callOpenRouterFree('Test prompt', undefined, 'anthropic/claude-3.7-sonnet')
+      ).rejects.toThrow(/not a free model/);
+    });
+
+    it('callOpenRouterFree strictly throws when all free candidates fail, and never calls paid models', async () => {
+      const originalFetch = globalThis.fetch;
+      const originalApiKey = process.env.OPENROUTER_API_KEY;
+      const originalJevKey = process.env.JEV_OPENROUTER_API_KEY;
+      const attemptedModels: string[] = [];
+
+      process.env.OPENROUTER_API_KEY = 'mock-key-for-free-failure-test';
+      delete process.env.JEV_OPENROUTER_API_KEY;
+
+      globalThis.fetch = (async (url: any, init: any) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.model) {
+              attemptedModels.push(body.model);
+            }
+          } catch {}
+        }
+        return new Response(JSON.stringify({ error: { message: 'All free capacity exhausted' } }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }) as any;
+
+      try {
+        await expect(
+          callOpenRouterFree('Test offload prompt when upstream free tier is down')
+        ).rejects.toThrow(/OpenRouter Free Error/);
+
+        expect(attemptedModels.length).toBeGreaterThan(0);
+        // Invariant: every single candidate tried MUST be a free model
+        for (const model of attemptedModels) {
+          expect(isFreeModel(model)).toBe(true);
+          expect(model).not.toContain('sonnet');
+          expect(model).not.toContain('opus');
+          expect(model).not.toContain('typesafe/jev-router');
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+        if (originalApiKey) process.env.OPENROUTER_API_KEY = originalApiKey;
+        else delete process.env.OPENROUTER_API_KEY;
+        if (originalJevKey) process.env.JEV_OPENROUTER_API_KEY = originalJevKey;
+        else delete process.env.JEV_OPENROUTER_API_KEY;
+      }
+    });
+
+    it('filters out non-free models from free pool candidates', async () => {
+      expect(isFreeModel('typesafe/jev-router')).toBe(false);
+      expect(isFreeModel('openrouter/auto')).toBe(false);
+
+      await expect(
+        callOpenRouterFree('Test prompt', undefined, 'typesafe/jev-router')
+      ).rejects.toThrow(/not a free model/);
+    });
   });
 });

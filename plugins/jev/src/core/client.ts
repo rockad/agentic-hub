@@ -37,7 +37,7 @@ export const FREE_MODELS_POOL = [
 
 export const JEV_TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS || 3500);
 export const FALLBACK_TIMEOUT_MS = Number(process.env.JEV_FALLBACK_TIMEOUT_MS || 5000);
-export const FREE_EXEC_TIMEOUT_MS = 30000;
+export const FREE_EXEC_TIMEOUT_MS = 25000;
 export const FREE_MODEL_TIMEOUT_MS = 8000;
 
 export const JEV_INPUT_COST_PER_MILLION = 0.042; // $0.042 per 1M input tokens
@@ -416,8 +416,8 @@ export interface FreeExecutionResult {
 
 /**
  * Call OpenRouter Free Model (resilient pool across top coding & text free models).
- * Cycles through FREE_MODELS_POOL with 8s timeout, strictly asserts content.trim().length >= 3
- * and non-refusal, and returns safety net if free models fail.
+ * Cycles through FREE_MODELS_POOL with 25s timeout, strictly asserts content.trim().length >= 3
+ * and non-refusal. Strictly fails if all free models fail (zero paid escalation invariant).
  */
 export async function callOpenRouterFree(
   prompt: string,
@@ -426,7 +426,6 @@ export async function callOpenRouterFree(
 ): Promise<FreeExecutionResult> {
   const timeouts = getJevTimeouts();
   const pool = getFreeModelsPool();
-  const models = getJevModels();
 
   const keysToTry = Array.from(new Set([
     process.env.OPENROUTER_API_KEY,
@@ -438,13 +437,25 @@ export async function callOpenRouterFree(
     throw new Error('Neither OPENROUTER_API_KEY nor JEV_OPENROUTER_API_KEY is set');
   }
 
+  if (requestedModel) {
+    assertFreeModel(requestedModel);
+  }
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemInstruction) {
     messages.push({ role: 'system', content: systemInstruction });
   }
   messages.push({ role: 'user', content: prompt });
 
-  const modelsToTry = Array.from(new Set(requestedModel ? [requestedModel, ...pool] : pool));
+  const rawCandidates = requestedModel ? [requestedModel, ...pool] : pool;
+  const modelsToTry = Array.from(new Set(rawCandidates)).filter((m) => isFreeModel(m));
+
+  if (modelsToTry.length === 0) {
+    throw new Error('No valid free model candidates available');
+  }
+
+  const timeoutMs = timeouts.freeExecutionMs || FREE_EXEC_TIMEOUT_MS || 25000;
+  let lastError: any = null;
 
   for (const apiKey of keysToTry) {
     for (const m of modelsToTry) {
@@ -461,9 +472,11 @@ export async function callOpenRouterFree(
             model: m,
             messages
           })
-        }, timeouts.freeModelMs);
+        }, timeoutMs);
 
         if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          lastError = new Error(`OpenRouter Free Error (${m}) ${res.status}: ${errText}`);
           continue;
         }
 
@@ -472,6 +485,7 @@ export async function callOpenRouterFree(
 
         // Strict content assertion: reject empty 200 OK responses (<3 chars) and refusals
         if (content.trim().length < 3 || isRefusalResponse(content, json.choices?.[0]?.message)) {
+          lastError = new Error(`OpenRouter Free model ${m} returned empty content or refusal`);
           continue;
         }
 
@@ -487,44 +501,12 @@ export async function callOpenRouterFree(
           tokensSaved,
           escalated: false
         };
-      } catch {
-        // Try next candidate model
+      } catch (err: any) {
+        lastError = err;
         continue;
       }
     }
   }
 
-  // Safety net if free models fail: escalate to router completion
-  try {
-    const escalatedText = await callRouterCompletion(prompt, systemInstruction);
-    if (escalatedText && escalatedText.trim().length >= 3) {
-      const pTokens = Math.ceil(prompt.length / 4);
-      const cTokens = Math.ceil(escalatedText.length / 4);
-      return {
-        content: escalatedText,
-        modelUsed: models.fallback,
-        model: models.fallback,
-        choices: [{ message: { role: 'assistant', content: escalatedText } }],
-        tokensSaved: 0,
-        escalated: true,
-        usage: {
-          prompt_tokens: pTokens,
-          completion_tokens: cTokens,
-          total_tokens: pTokens + cTokens
-        }
-      };
-    }
-  } catch {
-    // router completion fallback also failed
-  }
-
-  return {
-    content: '',
-    modelUsed: models.fallback,
-    model: models.fallback,
-    choices: [{ message: { role: 'assistant', content: '' } }],
-    tokensSaved: 0,
-    escalated: true,
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-  };
+  throw lastError || new Error('All free model candidates failed');
 }

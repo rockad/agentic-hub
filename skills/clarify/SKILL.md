@@ -2,7 +2,7 @@
 name: clarify
 description: >-
   Walk a non-trivial design through its forks one question at a time. Resolves
-  design targets without parameters via a 5-tier recency cascade, explores the
+  design targets without parameters via a multi-tier recency cascade, explores the
   codebase first, surfaces genuine architectural trade-offs with prose-first
   previews and explicit recommendations, and asks interactive single-choice
   questions across Antigravity, Claude Code, and OpenCode. Closes with a
@@ -30,7 +30,7 @@ The point is not to collect answers faster or run a superficial questionnaire. I
 
 ## Triggers & When to Enter
 
-- **Slash commands**: `/clarify`, `/grill-me`.
+- **Slash commands & phrase triggers**: `/clarify` (universal slash command), `/grill-me` (native slash command in Antigravity; prompt phrase trigger in Claude Code & OpenCode).
 - **User prompts**: "walk me through the options", "interview me", "one at a time", "clarify architecture before coding", "trade-offs", "let's clarify this first", "design decision", "discuss before coding", "architecture without code".
 - Three or more related design decisions are open, and each has at least two reasonable, defensible options.
 - The user explicitly asks for trade-off analysis without jumping into implementation.
@@ -53,9 +53,9 @@ Before formulating forks or prompting the user, **investigate the existing codeb
 
 ## Target Resolution When Invoked Without Parameters
 
-When invoked simply as `/clarify` or `/grill-me` without an explicit target or file argument, the skill must determine what architectural topic, plan, or artifact to interrogate. To ensure it focuses on what the user currently cares about without asking an unnecessary disambiguation question, evaluate the following 5-tier resolution cascade in order:
+When invoked simply as `/clarify` or `/grill-me` without an explicit target or file argument, the skill must determine what architectural topic, plan, or artifact to interrogate. To ensure it focuses on what the user currently cares about without asking an unnecessary disambiguation question, evaluate the following cascade in order:
 
-### 1. The 5-Tier Resolution Cascade
+### 1. The Resolution Cascade
 
 - **Tier 0 — Explicit Argument**:
   - The invocation contains an explicit path or topic string (e.g., `/clarify plans/auth-service.md`, `/clarify database migration`).
@@ -66,19 +66,22 @@ When invoked simply as `/clarify` or `/grill-me` without an explicit target or f
   - Detect pivot signals such as *"instead"*, *"forget that"*, *"new plan"*, *"different approach"*, or a fresh numbered/bulleted architecture proposal posted directly into chat.
   - Target: The fresh proposal or pivoted concept stated in the user's latest prompt.
 
-- **Tier 2 — Active Plan File / Artifact**:
-  - If no explicit prompt-level pivot occurred, scan for active plan documents using the following multi-harness precedence:
-    1. **Session Artifacts (Antigravity)**: Session artifacts in `<appDataDir>/brain/<conversation-id>/*.md` (sorted by descending modification time `mtime`).
-    2. **Recently Touched Workspace Plans (Claude Code / OpenCode)**: Markdown plan documents recently created or edited in the active workspace (e.g. `./plans/*.md`, `./.claude/plans/*.md`, `docs/plans/*.md`, or root `*plan*.md`).
-    3. **Transcript File Links (Universal)**: Any local markdown file links (`file:///.../*.md` or workspace-relative links) explicitly referenced in recent conversation turns.
-    4. **Workspace Repository Plans (Universal)**: The most recently modified plan document under `./plans/` or `docs/plans/`.
+- **Tier 2 — Active Session Plan Files / Artifacts**:
+  - If no prompt-level pivot occurred, scan for active plan documents created or touched in the current session:
+    1. **Session Artifacts in `<appDataDir>/brain/<conversation-id>/*.md`** (Antigravity): Sorted by descending modification time `mtime`.
+    2. **Recently Touched Workspace Plans in Active Session** (Claude Code / OpenCode): Files matching `plan*.md`, `*-plan.md`, or `./.claude/plans/*.md` in the active workspace (tightened globs to avoid false matches like `explanation.md`).
+    3. **Transcript File Links**: Any local markdown file links (`file:///.../*.md` or workspace-relative links) explicitly referenced in recent conversation turns.
   - Target: The highest-priority active plan file found.
 
 - **Tier 3 — Model-Suggested Plan**:
-  - The preceding model turn proposed an in-memory plan, architecture draft, or structural proposal that has not yet been saved to an artifact or plan file.
+  - In-memory proposal, architecture draft, or structural outline proposed by the model in the preceding 1–2 turns that has not yet been written to disk (promoted above historical archive sweeps so fresh conversation proposals take precedence).
   - Target: The model's proposed plan from the immediate context window.
 
-- **Tier 4 — Active Task Goal**:
+- **Tier 4 — Historical Repository Plan Sweep**:
+  - Fallback scan of existing repository plan documents under `./plans/*.md` or `docs/plans/*.md` when no active session artifact exists.
+  - Target: The most recently modified plan document in the repository.
+
+- **Tier 5 — Active Task Goal**:
   - Root `/grill-me` baseline: fallback to the overarching user request, task prompt, or active workspace goal from session memory.
   - Target: The core task objective currently active in the session.
 
@@ -157,7 +160,7 @@ ask_question({
 
 #### B. Claude Code (`AskUserQuestion`)
 
-Uses `AskUserQuestion` with concise `header`, `label`, and `description`:
+Uses `AskUserQuestion` with concise `header`, `label`, `description`, and `"multiSelect": false` (strictly required by Claude Code). Options can include the `"preview"` field to provide side-by-side terminal UI comparison boxes on single-select forks:
 
 ```json
 AskUserQuestion({
@@ -165,14 +168,17 @@ AskUserQuestion({
     {
       "header": "Tag Model",
       "question": "Which data model should we use for record tagging?",
+      "multiSelect": false,
       "options": [
         {
           "label": "M:N join table (Recommended)",
-          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt."
+          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt.",
+          "preview": "record_tags\n  record_id\n  tag_id\n  UNIQUE (record_id, tag_id)"
         },
         {
           "label": "Denormalized JSONB array",
-          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys."
+          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys.",
+          "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']"
         }
       ]
     }
@@ -271,7 +277,7 @@ Once the user approves:
 2. **Branch A — Jev Active (`jev on` or `jev on-demand`)**:
    - **Post-Approval Transition Gate**: Call `jev_batch_dispatch` with the workstream DAG to calibrate tier recommendations and subagent assignments.
    - Inspect active and idle subagents with `manage_subagents(Action: "list")`. Reuse idle workers via `send_message` or spawn parallel subagents with `invoke_subagent`.
-   - Offload boilerplate, formatting, and markdown summaries to `jev_execute_free` ($0.00 cost, 0 Gemini quota).
+   - Offload non-sensitive, public, or sanitized boilerplate, formatting, and markdown summaries to `jev_execute_free` ($0.00 cost, 0 Gemini quota).
    - **Strict Main Context Gate**: The main orchestrator **must not** edit multiple files (`>=2`) sequentially in the main turn. Work must be delegated to parallel subagents as mapped in the workstream breakdown.
 
 3. **Branch B — Jev Inactive / Standard Environment**:
@@ -297,10 +303,12 @@ Once the user approves:
 - **Silent revision of earlier decisions** — always name what changed and why out loud.
 - **Ending without the decision table** — by step seven the user no longer remembers what they chose at step three.
 - **Sliding into code without a go** — always require explicit user confirmation before modifying code.
-- **Bypassing subagents after approval** — sequentially modifying files in the orchestrator instead of dispatching workstreams.
+- **Bypassing subagents after approval (when subagents or Jev are available in multi-agent environments)** — sequentially modifying files in the orchestrator instead of dispatching workstreams.
 
 ## Gotchas
 
 - **Cross-Harness Tool Names**: Antigravity uses `ask_question`, Claude Code uses `AskUserQuestion`, OpenCode uses `question`. Adapt dynamically without crashing if a specific tool is absent.
 - **Single Question per Call**: One question per call is this skill's protocol, even if the underlying tool schema permits multi-question arrays. A batch turns the session back into an overwhelming questionnaire.
-- **Previews in Markdown Prose**: Do not rely on tool-specific preview properties (such as Claude Code's `preview` field), which silently drop on multi-select or fail on other harnesses. Markdown prose is the universal preview canvas.
+- **Previews in Markdown Prose**: Do not rely exclusively on tool-specific preview properties. Markdown prose is the universal preview canvas across all harnesses.
+- **Claude Code `preview` Rendering**: In Claude Code, the `preview` field renders only when `multiSelect: false`. On a multi-select fork the preview blocks silently do not appear in the terminal UI comparison box — keep the comparison in markdown prose.
+- **Option Count & Limits**: Four options per question is the harness limit. "Other" is automatically appended by the UI; never add a manual "Other" option.

@@ -17,7 +17,7 @@ This document governs System 1 decision-making, model tier governance, thinking 
   - If `recommendedTier` is `openrouter_free`, execute immediately via `jev_execute_free` rather than spawning a paid subagent.
 - **Post-Approval Execution Transition Gate (`jev_batch_dispatch`)**:
   - Upon plan approval or completion of `/grill-me` (`clarify`), the main orchestrator MUST immediately call `jev_batch_dispatch` and `manage_subagents(Action: "list")` to decompose and delegate independent workstreams in parallel rather than editing multiple files sequentially in the main context.
-  - Enforced by `PreToolUse` (`jev-pre-tool.sh`), which checks `jev_telemetry.jsonl` and blocks consecutive direct edits (`>=2` files) in the session window if no recent dispatch (`jev_dispatch` / `jev_batch_dispatch`) occurred.
+  - Enforced by `PreToolUse` (`jev-pre-tool.sh`), which checks `jev_telemetry.jsonl` and blocks consecutive direct edits (>3 files) in the session window if no recent dispatch (`jev_dispatch` / `jev_batch_dispatch`) or subagent delegation occurred.
 - **Fast Option Routing (`jev_route`)**:
   - Use when a discrete choice between 2–8 options needs a fast calibrated probabilistic verdict (~800ms) via OpenRouter Decisions API.
 

@@ -1,8 +1,9 @@
 ---
 name: clarify
 description: >-
-  Walk a non-trivial design through its forks one question at a time. Explores
-  the codebase first, surfaces genuine architectural trade-offs with prose-first
+  Walk a non-trivial design through its forks one question at a time. Resolves
+  design targets without parameters via a 5-tier recency cascade, explores the
+  codebase first, surfaces genuine architectural trade-offs with prose-first
   previews and explicit recommendations, and asks interactive single-choice
   questions across Antigravity, Claude Code, and OpenCode. Closes with a
   decision table, architecture artifact, and Jev-aware parallel workstream handoff.
@@ -49,6 +50,44 @@ Before formulating forks or prompting the user, **investigate the existing codeb
 1. **Discover prior art**: Use file search (`fd`, `find`), symbol search (`rg`, `grep`), and file inspection tools to check existing conventions, folder layouts, types, schemas, and dependencies.
 2. **Adopt existing patterns silently**: If a question can be answered by inspecting the codebase (e.g. "which ORM is used?", "what is the existing token structure?", "what database drivers are installed?"), inspect the code and adopt the established pattern silently.
 3. **Isolate genuine architectural forks**: Never interrogate the user about facts already present in the repository. Present only genuine architectural forks and intentional design trade-offs to the user.
+
+## Target Resolution When Invoked Without Parameters
+
+When invoked simply as `/clarify` or `/grill-me` without an explicit target or file argument, the skill must determine what architectural topic, plan, or artifact to interrogate. To ensure it focuses on what the user currently cares about without asking an unnecessary disambiguation question, evaluate the following 5-tier resolution cascade in order:
+
+### 1. The 5-Tier Resolution Cascade
+
+- **Tier 0 — Explicit Argument**:
+  - The invocation contains an explicit path or topic string (e.g., `/clarify plans/auth-service.md`, `/clarify database migration`).
+  - Target: The provided path or topic directly.
+
+- **Tier 1 — Recent User Chat Override**:
+  - The user's most recent chat message expresses an explicit pivot away from previous plans or introduces a fresh proposal.
+  - Detect pivot signals such as *"instead"*, *"forget that"*, *"new plan"*, *"different approach"*, or a fresh numbered/bulleted architecture proposal posted directly into chat.
+  - Target: The fresh proposal or pivoted concept stated in the user's latest prompt.
+
+- **Tier 2 — Active Plan File / Artifact**:
+  - If no explicit prompt-level pivot occurred, scan for active plan documents using the following precedence:
+    1. **Primary (Session Artifacts)**: Session artifacts in `<appDataDir>/brain/<conversation-id>/*.md` (sorted by descending modification time `mtime`).
+    2. **Secondary (Transcript File Links)**: Recent markdown document links (`file:///.../*.md`) mentioned in the immediate conversation transcript.
+    3. **Tertiary (Repository Plans)**: The most recently modified plan document under the workspace plans directory (e.g., `./plans/*.md` or `docs/plans/*.md`).
+  - Target: The highest-priority active plan file found.
+
+- **Tier 3 — Model-Suggested Plan**:
+  - The preceding model turn proposed an in-memory plan, architecture draft, or structural proposal that has not yet been saved to an artifact or plan file.
+  - Target: The model's proposed plan from the immediate context window.
+
+- **Tier 4 — Active Task Goal**:
+  - Root `/grill-me` baseline: fallback to the overarching user request, task prompt, or active workspace goal from session memory.
+  - Target: The core task objective currently active in the session.
+
+### 2. Target Announcement Protocol
+
+Always announce the resolved target in a single unambiguous declarative line before presenting the fork map:
+
+> Target resolved: **[<target name or path>]**. Decomposing into N orthogonal forks...
+
+This ensures total transparency: if the skill picked up an artifact the user did not intend to clarify, the user can immediately intervene or provide an explicit argument on the next turn.
 
 ## Before the First Question
 

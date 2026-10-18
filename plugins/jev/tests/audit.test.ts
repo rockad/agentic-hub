@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { evaluateDrift, type DriftEvent } from '../src/audit/drift-detector.js';
-import { readQuotaView, discoverWorkspaceAgents } from '../src/shared.js';
+import { readQuotaView, discoverWorkspaceAgents, findWorkspaceRoot, clearConfigCacheForTesting } from '../src/shared.js';
 
 describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
   let fixtureDir: string;
@@ -90,20 +90,74 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
   });
 
   test('falls back cleanly to at least self and none when workspace has no agents directory', async () => {
-    const prevDoppel = process.env.DOPPELGANGER_HOME;
+    const emptyAgents = await discoverWorkspaceAgents(emptyTempDir);
+    expect(emptyAgents).toBeDefined();
+    expect(emptyAgents.self).toBeDefined();
+    expect(emptyAgents.none).toBeDefined();
+    expect(Object.keys(emptyAgents).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('findWorkspaceRoot walks up to locate project root', async () => {
+    const subSubDir = path.join(fixtureDir, 'deep', 'nested', 'subdir');
+    await fs.mkdir(subSubDir, { recursive: true });
+
+    const rootFromDeep = findWorkspaceRoot(subSubDir);
+    expect(rootFromDeep).toBe(path.resolve(fixtureDir));
+
+    const rootFromEmpty = findWorkspaceRoot(emptyTempDir);
+    expect(rootFromEmpty).toBe(path.resolve(emptyTempDir));
+  });
+
+  test('discovers subagents via JEV_AGENTS_DIR environment override', async () => {
+    const customDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-custom-agents-'));
     try {
-      process.env.DOPPELGANGER_HOME = path.join(emptyTempDir, 'nonexistent');
-      const emptyAgents = await discoverWorkspaceAgents(emptyTempDir);
-      expect(emptyAgents).toBeDefined();
-      expect(emptyAgents.self).toBeDefined();
-      expect(emptyAgents.none).toBeDefined();
-      expect(Object.keys(emptyAgents).length).toBeGreaterThanOrEqual(2);
+      await fs.writeFile(
+        path.join(customDir, 'custom_env_agent.md'),
+        '---\nname: custom_env_agent\ndescription: "Discovered via JEV_AGENTS_DIR"\n---\n# Custom Agent'
+      );
+      process.env.JEV_AGENTS_DIR = customDir;
+      const agents = await discoverWorkspaceAgents(emptyTempDir);
+      expect(agents.custom_env_agent).toBe('Discovered via JEV_AGENTS_DIR');
     } finally {
-      if (prevDoppel !== undefined) {
-        process.env.DOPPELGANGER_HOME = prevDoppel;
-      } else {
-        delete process.env.DOPPELGANGER_HOME;
+      delete process.env.JEV_AGENTS_DIR;
+      await fs.rm(customDir, { recursive: true, force: true });
+    }
+  });
+
+  test('discovers subagents via agentPaths in config', async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-config-agents-'));
+    const configFile = path.join(configDir, 'test-config.json');
+    const agentsPath = path.join(configDir, 'custom-agents');
+    await fs.mkdir(agentsPath, { recursive: true });
+
+    try {
+      await fs.writeFile(
+        path.join(agentsPath, 'custom_cfg_agent.md'),
+        '---\nname: custom_cfg_agent\ndescription: "Discovered via config agentPaths"\n---\n# Config Agent'
+      );
+      await fs.writeFile(
+        configFile,
+        JSON.stringify({
+          version: 2,
+          defaults: {
+            agentPaths: [agentsPath]
+          }
+        })
+      );
+      process.env.JEV_CONFIG_FILE = configFile;
+      clearConfigCacheForTesting();
+
+      const testWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-ws-'));
+      try {
+        const agents = await discoverWorkspaceAgents(testWorkspaceDir);
+        expect(agents.custom_cfg_agent).toBe('Discovered via config agentPaths');
+      } finally {
+        await fs.rm(testWorkspaceDir, { recursive: true, force: true });
       }
+    } finally {
+      delete process.env.JEV_CONFIG_FILE;
+      clearConfigCacheForTesting();
+      await fs.rm(configDir, { recursive: true, force: true });
     }
   });
 

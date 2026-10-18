@@ -102,8 +102,13 @@ async function runLiveProbe(): Promise<void> {
   }
 
   // 3. Probe Local Hook Subprocess
-  const hookPath = path.join(os.homedir(), 'projects', 'doppelganger', '.agents', 'hooks', 'jev-pre-tool.sh');
-  if (fsSync.existsSync(hookPath)) {
+  const hookCandidates = [
+    path.join(process.cwd(), '.agents', 'hooks', 'jev-pre-tool.sh'),
+    path.join(os.homedir(), '.gemini', 'config', 'hooks', 'jev-pre-tool.sh'),
+    ...(process.env.JEV_PRE_TOOL_HOOK ? [process.env.JEV_PRE_TOOL_HOOK] : [])
+  ];
+  const hookPath = hookCandidates.find(p => fsSync.existsSync(p));
+  if (hookPath) {
     try {
       const proc = Bun.spawnSync([hookPath], {
         stdin: Buffer.from(
@@ -125,6 +130,8 @@ async function runLiveProbe(): Promise<void> {
     } catch (err: any) {
       console.log(`\x1b[31m✖ Hook Subprocess Execution Failed: ${err.message}\x1b[0m`);
     }
+  } else {
+    console.log('\x1b[33m- Pre-Tool Hook: Not installed in active workspace or global config (skipped)\x1b[0m');
   }
 
   console.log('\n\x1b[1;36m=== Probe Complete ===\x1b[0m\n');

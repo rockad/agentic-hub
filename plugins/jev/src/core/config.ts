@@ -33,6 +33,7 @@ export interface HarnessConfig {
   routing?: HarnessRoutingConfig;
   requireUpgradeApproval?: boolean;
   availableSubagents?: string[];
+  agentPaths?: string[];
 }
 
 export interface JevTimeoutsConfig {
@@ -53,6 +54,7 @@ export interface JevConfigDefaults {
   requireUpgradeApproval?: boolean;
   swap?: boolean;
   availableSubagents?: string[];
+  agentPaths?: string[];
 }
 
 export interface JevConfig {
@@ -72,13 +74,16 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
     mode: 'on',
     requireUpgradeApproval: true,
     swap: true,
+    agentPaths: [],
     availableSubagents: [
-      'code_engineer',
-      'research',
-      'vault_librarian',
+      'career-advisor',
+      'code-engineer',
       'ghostwriter',
-      'inbox_processor',
-      'system_operator',
+      'inbox-processor',
+      'knowledge-researcher',
+      'qa-engineer',
+      'system-operator',
+      'vault-librarian',
       'self'
     ]
   },
@@ -313,6 +318,10 @@ export function getHarnessConfig(harness?: JevHarness, startDir?: string): Harne
     Array.isArray(overrides.availableSubagents) && overrides.availableSubagents.length
       ? overrides.availableSubagents
       : cfg.defaults.availableSubagents;
+  const agentPaths =
+    Array.isArray(overrides.agentPaths) && overrides.agentPaths.length
+      ? overrides.agentPaths
+      : cfg.defaults.agentPaths;
 
   return {
     mode,
@@ -320,7 +329,8 @@ export function getHarnessConfig(harness?: JevHarness, startDir?: string): Harne
     freePool: overrides.freePool,
     routing: overrides.routing,
     requireUpgradeApproval,
-    availableSubagents
+    availableSubagents,
+    agentPaths
   };
 }
 

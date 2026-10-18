@@ -1,11 +1,13 @@
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { loadJevConfig, detectActiveHarness } from './config.js';
 
 interface AgentCacheEntry {
   timestamp: number;
-  dirPath?: string;
-  dirMtime: number;
+  key: string;
+  compositeMtime: string;
   agents: Record<string, string>;
 }
 
@@ -13,6 +15,41 @@ let agentCache: AgentCacheEntry | null = null;
 
 export function clearAgentCache(): void {
   agentCache = null;
+}
+
+function expandHome(p: string): string {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+/**
+ * Walks up from startDir to find project root:
+ * a directory containing .git, .agents, .claude, or opencode.json.
+ */
+export function findWorkspaceRoot(startDir: string = process.cwd()): string {
+  try {
+    let curr = path.resolve(startDir);
+    while (true) {
+      if (
+        fsSync.existsSync(path.join(curr, '.git')) ||
+        fsSync.existsSync(path.join(curr, '.agents')) ||
+        fsSync.existsSync(path.join(curr, '.claude')) ||
+        fsSync.existsSync(path.join(curr, 'opencode.json'))
+      ) {
+        return curr;
+      }
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+  } catch {
+    // fallback to startDir
+  }
+  return path.resolve(startDir);
 }
 
 function parseAgentContent(content: string, defaultName: string): { name: string; description: string } {
@@ -41,103 +78,167 @@ function parseAgentContent(content: string, defaultName: string): { name: string
 }
 
 /**
- * Pure Dynamic Subagent Discovery
- * Scans .agents/agents (or legacy .agents/subagents) in active workspace or $DOPPELGANGER_HOME.
- * Supports directory-per-agent (${dir}/agent.md) and fallback standalone .md files.
- * Uses filesystem mtime and 15s in-memory TTL cache to minimize I/O.
+ * Dynamic Subagent Discovery
+ * Discovers subagents in hierarchical order of precedence:
+ * 1. Workspace candidates (from findWorkspaceRoot(cwd)):
+ *    - .agents/agents
+ *    - .agents/subagents (backward compatibility)
+ *    - .claude/agents
+ *    - .opencode/agents
+ * 2. Harness-specific config paths (config.harnesses?.[activeHarness]?.agentPaths)
+ * 3. Global default config paths (config.defaults?.agentPaths)
+ * 4. Generic env override (process.env.JEV_AGENTS_DIR)
+ * 5. Standard global harness locations (~/.gemini/config/agents, ~/.claude/agents, ~/.config/opencode/agents)
+ *
+ * For each existing candidate directory, subdirectories with agent.md take precedence
+ * over standalone .md files. First encountered agent name takes precedence.
  */
 export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Promise<Record<string, string>> {
-  const doppelHome = process.env.DOPPELGANGER_HOME || path.join(os.homedir(), 'projects', 'doppelganger');
-  const candidates = [
-    path.join(cwd, '.agents', 'agents'),
-    path.join(cwd, '.agents', 'subagents'),
-    path.join(doppelHome, '.agents', 'agents'),
-    path.join(doppelHome, '.agents', 'subagents')
-  ];
-
-  let targetDir: string | null = null;
-  for (const dir of candidates) {
-    try {
-      const st = await fs.stat(dir);
-      if (st.isDirectory()) {
-        targetDir = dir;
-        break;
-      }
-    } catch {
-      // continue
-    }
-  }
-
-  if (!targetDir) {
-    return {
-      self: 'Direct execution in current context or clone of session',
-      none: 'Direct answer without subagent delegation'
-    };
-  }
-
   try {
-    const dirStat = await fs.stat(targetDir);
+    const config = await loadJevConfig(cwd);
+    const activeHarness = detectActiveHarness();
+    const root = findWorkspaceRoot(cwd);
+
+    const rawCandidates: string[] = [
+      // 1. Workspace candidates
+      path.join(root, '.agents', 'agents'),
+      path.join(root, '.agents', 'subagents'),
+      path.join(root, '.claude', 'agents'),
+      path.join(root, '.opencode', 'agents')
+    ];
+
+    // 2. Harness-specific config paths
+    const harnessAgentPaths = config.harnesses?.[activeHarness]?.agentPaths || [];
+    for (const p of harnessAgentPaths) {
+      if (typeof p === 'string' && p.trim()) {
+        rawCandidates.push(expandHome(p.trim()));
+      }
+    }
+
+    // 3. Global default config paths
+    const defaultAgentPaths = config.defaults?.agentPaths || [];
+    for (const p of defaultAgentPaths) {
+      if (typeof p === 'string' && p.trim()) {
+        rawCandidates.push(expandHome(p.trim()));
+      }
+    }
+
+    // 4. Generic env override
+    if (process.env.JEV_AGENTS_DIR) {
+      for (const p of process.env.JEV_AGENTS_DIR.split(path.delimiter)) {
+        if (p.trim()) {
+          rawCandidates.push(expandHome(p.trim()));
+        }
+      }
+    }
+
+    // 5. Standard global harness locations
+    rawCandidates.push(
+      path.join(os.homedir(), '.gemini', 'config', 'agents'),
+      path.join(os.homedir(), '.claude', 'agents'),
+      path.join(os.homedir(), '.config', 'opencode', 'agents')
+    );
+
+    // Deduplicate candidate directories
+    const seenPaths = new Set<string>();
+    const candidateDirs: string[] = [];
+    for (const raw of rawCandidates) {
+      const resolved = path.resolve(raw);
+      if (!seenPaths.has(resolved)) {
+        seenPaths.add(resolved);
+        candidateDirs.push(resolved);
+      }
+    }
+
+    // Filter to existing directories and compute composite mtime for cache
+    const existingDirs: string[] = [];
+    let compositeMtime = '';
+    for (const dir of candidateDirs) {
+      try {
+        const st = await fs.stat(dir);
+        if (st.isDirectory()) {
+          existingDirs.push(dir);
+          compositeMtime += `${dir}:${st.mtimeMs};`;
+        }
+      } catch {
+        // ignore missing directory
+      }
+    }
+
+    const cacheKey = `${path.resolve(cwd)}:${activeHarness}`;
     const now = Date.now();
-    if (agentCache && now - agentCache.timestamp < 15000 && agentCache.dirPath === targetDir && agentCache.dirMtime === dirStat.mtimeMs) {
+    if (
+      agentCache &&
+      agentCache.key === cacheKey &&
+      now - agentCache.timestamp < 15000 &&
+      agentCache.compositeMtime === compositeMtime
+    ) {
       return { ...agentCache.agents };
     }
 
-    const entries = await fs.readdir(targetDir, { withFileTypes: true });
     const result: Record<string, string> = {};
 
-    // 1. First pass: Directory-per-agent (${targetDir}/${item}/agent.md)
-    for (const entry of entries) {
-      let isDir = entry.isDirectory();
-      if (entry.isSymbolicLink()) {
-        try {
-          const st = await fs.stat(path.join(targetDir, entry.name));
-          isDir = st.isDirectory();
-        } catch {
-          // ignore broken link
-        }
-      }
+    for (const dir of existingDirs) {
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
 
-      if (isDir) {
-        const agentFile = path.join(targetDir, entry.name, 'agent.md');
-        try {
-          const st = await fs.stat(agentFile);
-          if (st.isFile()) {
-            const content = await fs.readFile(agentFile, 'utf8');
-            const parsed = parseAgentContent(content, entry.name);
-            if (parsed.name) {
-              result[parsed.name] = parsed.description;
+        // 1. Directory-per-agent pass: check subdirectories with agent.md first
+        for (const entry of entries) {
+          let isDir = entry.isDirectory();
+          if (entry.isSymbolicLink()) {
+            try {
+              const st = await fs.stat(path.join(dir, entry.name));
+              isDir = st.isDirectory();
+            } catch {
+              // ignore broken link
             }
           }
-        } catch {
-          // agent.md doesn't exist or is not readable
-        }
-      }
-    }
 
-    // 2. Second pass: Standalone .md files as fallback (backward compatibility)
-    for (const entry of entries) {
-      let isFile = entry.isFile();
-      if (entry.isSymbolicLink()) {
-        try {
-          const st = await fs.stat(path.join(targetDir, entry.name));
-          isFile = st.isFile();
-        } catch {
-          // ignore broken link
-        }
-      }
-
-      if (isFile && entry.name.endsWith('.md')) {
-        const defaultName = path.basename(entry.name, '.md');
-        const filePath = path.join(targetDir, entry.name);
-        try {
-          const content = await fs.readFile(filePath, 'utf8');
-          const parsed = parseAgentContent(content, defaultName);
-          if (parsed.name && !result[parsed.name]) {
-            result[parsed.name] = parsed.description;
+          if (isDir) {
+            const agentFile = path.join(dir, entry.name, 'agent.md');
+            try {
+              const st = await fs.stat(agentFile);
+              if (st.isFile()) {
+                const content = await fs.readFile(agentFile, 'utf8');
+                const parsed = parseAgentContent(content, entry.name);
+                if (parsed.name && !result[parsed.name]) {
+                  result[parsed.name] = parsed.description;
+                }
+              }
+            } catch {
+              // agent.md doesn't exist or is not readable
+            }
           }
-        } catch {
-          // ignore unreadable file
         }
+
+        // 2. Standalone .md files pass (fallback)
+        for (const entry of entries) {
+          let isFile = entry.isFile();
+          if (entry.isSymbolicLink()) {
+            try {
+              const st = await fs.stat(path.join(dir, entry.name));
+              isFile = st.isFile();
+            } catch {
+              // ignore broken link
+            }
+          }
+
+          if (isFile && entry.name.endsWith('.md')) {
+            const defaultName = path.basename(entry.name, '.md');
+            const filePath = path.join(dir, entry.name);
+            try {
+              const content = await fs.readFile(filePath, 'utf8');
+              const parsed = parseAgentContent(content, defaultName);
+              if (parsed.name && !result[parsed.name]) {
+                result[parsed.name] = parsed.description;
+              }
+            } catch {
+              // ignore unreadable file
+            }
+          }
+        }
+      } catch {
+        // ignore unreadable directory
       }
     }
 
@@ -151,8 +252,8 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
 
     agentCache = {
       timestamp: now,
-      dirPath: targetDir,
-      dirMtime: dirStat.mtimeMs,
+      key: cacheKey,
+      compositeMtime,
       agents: result
     };
 

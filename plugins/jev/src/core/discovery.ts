@@ -80,10 +80,14 @@ function parseAgentContent(content: string, defaultName: string): { name: string
 }
 
 /**
- * Registers an agent in the results map:
- * 1. Primary name (e.g. human-readable "Career Advisor" or exact frontmatter name)
- * 2. Normalized kebab-case alias (e.g. "career-advisor") if different
- * 3. Fallback directory or file name alias if different
+ * Registers an agent in the results map with bidirectional aliases for all formats:
+ * - name (as-is, e.g. "Career Advisor")
+ * - kebab-case: name.toLowerCase().replace(/[\s_]+/g, '-')
+ * - snake_case: name.toLowerCase().replace(/[\s-]+/g, '_')
+ * And if fallbackId is provided:
+ * - fallbackId (as-is)
+ * - kebab-case: fallbackId.toLowerCase().replace(/[\s_]+/g, '-')
+ * - snake_case: fallbackId.toLowerCase().replace(/[\s-]+/g, '_')
  */
 function registerAgent(
   result: Record<string, string>,
@@ -91,7 +95,7 @@ function registerAgent(
   description: string,
   fallbackId?: string
 ): void {
-  // 1. Primary name
+  // 1. Primary name as-is
   if (!result[name]) {
     result[name] = description;
   }
@@ -102,7 +106,13 @@ function registerAgent(
     result[kebab] = description;
   }
 
-  // 3. Fallback directory or filename identifier if different
+  // 3. Normalized snake_case alias
+  const snake = name.toLowerCase().replace(/[\s-]+/g, '_');
+  if (snake && !result[snake]) {
+    result[snake] = description;
+  }
+
+  // 4. Fallback directory or filename identifier and aliases if different
   if (fallbackId) {
     if (!result[fallbackId]) {
       result[fallbackId] = description;
@@ -110,6 +120,10 @@ function registerAgent(
     const fallbackKebab = fallbackId.toLowerCase().replace(/[\s_]+/g, '-');
     if (fallbackKebab && !result[fallbackKebab]) {
       result[fallbackKebab] = description;
+    }
+    const fallbackSnake = fallbackId.toLowerCase().replace(/[\s-]+/g, '_');
+    if (fallbackSnake && !result[fallbackSnake]) {
+      result[fallbackSnake] = description;
     }
   }
 }

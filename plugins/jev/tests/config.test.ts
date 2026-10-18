@@ -260,8 +260,9 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
         expect(ccModels.deep).toBe('opus');
 
         const openCodeModels = getHarnessModels('opencode');
-        expect(openCodeModels.cheap).toBe('google/gemini-2.5-flash-lite');
-        expect(openCodeModels.deep).toBe('anthropic/claude-3.7-sonnet');
+        expect(openCodeModels.cheap).toBe('~anthropic/claude-haiku-latest');
+        expect(openCodeModels.standard).toBe('~google/gemini-flash-latest');
+        expect(openCodeModels.deep).toBe('~anthropic/claude-opus-latest');
       } finally {
         process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
         clearConfigCacheForTesting();
@@ -412,8 +413,10 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(opencodeConfig.mode).toBe('on-demand');
     });
 
-    it('verifies opencode deep model typo fix (claude-3.7-sonnet)', () => {
-      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-3.7-sonnet');
+    it('verifies opencode dynamic latest aliases (opus, flash, haiku)', () => {
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('~anthropic/claude-opus-latest');
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.standard).toBe('~google/gemini-flash-latest');
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.cheap).toBe('~anthropic/claude-haiku-latest');
     });
 
     it('Level 5: Environment variables override project and user config at runtime', () => {

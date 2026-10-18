@@ -154,9 +154,9 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
       mode: 'off',
       models: {
         free: 'openrouter/free',
-        cheap: 'google/gemini-2.5-flash-lite',
-        standard: 'google/gemini-2.5-flash',
-        deep: 'anthropic/claude-3.7-sonnet'
+        cheap: '~anthropic/claude-haiku-latest',
+        standard: '~google/gemini-flash-latest',
+        deep: '~anthropic/claude-opus-latest'
       }
     },
     cli: {

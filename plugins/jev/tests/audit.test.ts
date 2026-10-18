@@ -3,7 +3,8 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { evaluateDrift, type DriftEvent } from '../src/audit/drift-detector.js';
-import { readQuotaView, discoverWorkspaceAgents, findWorkspaceRoot, clearConfigCacheForTesting } from '../src/shared.js';
+import { readQuotaView, discoverWorkspaceAgents, findWorkspaceRoot, clearConfigCacheForTesting, getQuotaThresholds } from '../src/shared.js';
+import { handleBatchDispatchTool } from '../src/tools/dispatch.js';
 
 describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
   let fixtureDir: string;
@@ -107,12 +108,14 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     expect(keys.length).toBeGreaterThanOrEqual(9);
   });
 
-  test('dual-indexes human-readable Title Case names and normalized kebab-case aliases', async () => {
+  test('dual-indexes human-readable Title Case names, kebab-case, and snake_case aliases', async () => {
     const agents = await discoverWorkspaceAgents(fixtureDir);
     expect(agents['Career Advisor']).toBeDefined();
     expect(agents['career-advisor']).toBeDefined();
+    expect(agents.career_advisor).toBeDefined();
     expect(agents['Career Advisor']).toBe('Executive career partner and JD auditor');
     expect(agents['career-advisor']).toBe('Executive career partner and JD auditor');
+    expect(agents.career_advisor).toBe('Executive career partner and JD auditor');
   });
 
   test('supports kebab-case identifiers and directory-per-agent precedence over file fallbacks', async () => {
@@ -310,5 +313,74 @@ describe('Stage 3: Drift Detection & Compliance Engine', () => {
     expect(report.totalDispatches).toBe(1);
     expect(report.totalViolations).toBe(0);
     expect(report.complianceRate).toBe(100.0);
+  });
+});
+
+describe('Stage 2 Regression Tests: Batch Dispatch & Quota Governance', () => {
+  test('handleBatchDispatchTool resolves kebab-case subagents from availableSubagents', async () => {
+    const res = await handleBatchDispatchTool({
+      tasks: [
+        { id: '1', task: 'Implement backend API controller in Rust' },
+        { id: '2', task: 'Run integration test suite and verify edge cases' }
+      ],
+      availableSubagents: ['code-engineer', 'qa-engineer']
+    });
+
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.tasks).toBeDefined();
+    expect(parsed.tasks.length).toBe(2);
+    expect(parsed.tasks[0].subagent).toBe('code-engineer');
+    expect(parsed.tasks[1].subagent).toBe('qa-engineer');
+  });
+
+  test('handleBatchDispatchTool resolves Title Case subagents from availableSubagents', async () => {
+    const res = await handleBatchDispatchTool({
+      tasks: [
+        { id: '1', task: 'Implement backend API controller in Rust' },
+        { id: '2', task: 'Run integration test suite and verify edge cases' }
+      ],
+      availableSubagents: ['Code Engineer', 'QA Engineer']
+    });
+
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.tasks).toBeDefined();
+    expect(parsed.tasks.length).toBe(2);
+    expect(parsed.tasks[0].subagent).toBe('Code Engineer');
+    expect(parsed.tasks[1].subagent).toBe('QA Engineer');
+  });
+
+  test('getQuotaThresholds returns configured thresholds from loadJevConfigSync', async () => {
+    const configDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-thresholds-test-'));
+    const configFile = path.join(configDir, 'test-config.json');
+
+    try {
+      await fs.writeFile(
+        configFile,
+        JSON.stringify({
+          version: 2,
+          thresholds: {
+            five_hour_normal_min: 0.35,
+            five_hour_conserve_min: 0.15,
+            weekly_normal_min: 0.25,
+            weekly_conserve_min: 0.12
+          }
+        })
+      );
+      process.env.JEV_CONFIG_FILE = configFile;
+      clearConfigCacheForTesting();
+
+      const thresholds = getQuotaThresholds();
+      expect(thresholds).toBeDefined();
+      expect(thresholds.five_hour_normal_min).toBe(0.35);
+      expect(thresholds.five_hour_conserve_min).toBe(0.15);
+      expect(thresholds.weekly_normal_min).toBe(0.25);
+      expect(thresholds.weekly_conserve_min).toBe(0.12);
+      expect(thresholds.normal_min).toBe(0.35);
+      expect(thresholds.conserve_min).toBe(0.15);
+    } finally {
+      delete process.env.JEV_CONFIG_FILE;
+      clearConfigCacheForTesting();
+      await fs.rm(configDir, { recursive: true, force: true });
+    }
   });
 });

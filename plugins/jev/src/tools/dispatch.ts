@@ -12,6 +12,7 @@ import {
   discoverWorkspaceAgents,
   normalizeTier,
   getHarnessModels,
+  loadJevConfig,
   type CognitiveTier,
   JEV_MODEL,
   FALLBACK_MODEL,
@@ -258,8 +259,18 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   };
 }
 
+function resolveAgentKey(availableKeys: string[], ...candidates: string[]): string | undefined {
+  for (const candidate of candidates) {
+    const norm = candidate.toLowerCase().replace(/[-_\s]+/g, '');
+    const match = availableKeys.find(k => k.toLowerCase().replace(/[-_\s]+/g, '') === norm);
+    if (match) return match;
+  }
+  return undefined;
+}
+
 export async function handleBatchDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
+  const config = await loadJevConfig();
   const { tasks, availableSubagents } = (args || {}) as {
     tasks: Array<{ id: string; task: string; dependencies?: string[] }>;
     availableSubagents?: string[];
@@ -271,7 +282,9 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   const quotaView = await readQuotaView();
   const workspaceAgents = await discoverWorkspaceAgents();
-  const availableKeys = Object.keys(workspaceAgents);
+  const availableKeys = Array.isArray(availableSubagents) && availableSubagents.length > 0
+    ? availableSubagents
+    : Object.keys(workspaceAgents);
   const plannedTasks: SubTask[] = [];
   let freeTierCount = 0;
   let totalEstimatedCost = 0;
@@ -282,24 +295,33 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const deps = Array.isArray(item.dependencies) ? item.dependencies : [];
     const scaffolding = detectScaffoldingTask(taskText);
 
-    let subagent = availableKeys.includes('code_engineer') ? 'code_engineer' : 'self';
+    const codeAgent = resolveAgentKey(availableKeys, 'code_engineer', 'code-engineer', 'Code Engineer');
+    let subagent = codeAgent ?? 'self';
     const tLower = taskText.toLowerCase();
     if (tLower.includes('career') || tLower.includes('job') || tLower.includes('cv') || tLower.includes('resume')) {
-      subagent = availableKeys.includes('career_advisor') ? 'career_advisor' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'career_advisor', 'career-advisor', 'Career Advisor');
+      if (agent) subagent = agent;
     } else if (tLower.includes('vault') || tLower.includes('obsidian') || tLower.includes('note')) {
-      subagent = availableKeys.includes('vault_librarian') ? 'vault_librarian' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'vault_librarian', 'vault-librarian', 'Vault Librarian');
+      if (agent) subagent = agent;
     } else if (tLower.includes('writing') || tLower.includes('cover letter') || tLower.includes('ghost') || tLower.includes('article')) {
-      subagent = availableKeys.includes('ghostwriter') ? 'ghostwriter' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'ghostwriter', 'ghost-writer', 'Ghostwriter');
+      if (agent) subagent = agent;
     } else if (tLower.includes('qa') || tLower.includes('test') || tLower.includes('fuzz') || tLower.includes('suite')) {
-      subagent = availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'qa_engineer', 'qa-engineer', 'QA Engineer');
+      if (agent) subagent = agent;
     } else if (tLower.includes('inbox') || tLower.includes('triage') || tLower.includes('staging')) {
-      subagent = availableKeys.includes('inbox_processor') ? 'inbox_processor' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'inbox_processor', 'inbox-processor', 'Inbox Processor');
+      if (agent) subagent = agent;
     } else if (tLower.includes('system') || tLower.includes('infra') || tLower.includes('daemon') || tLower.includes('docker') || tLower.includes('operator')) {
-      subagent = availableKeys.includes('system_operator') ? 'system_operator' : subagent;
+      const agent = resolveAgentKey(availableKeys, 'system_operator', 'system-operator', 'System Operator');
+      if (agent) subagent = agent;
     } else if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
-      subagent = availableKeys.includes('knowledge_researcher') ? 'knowledge_researcher' : (availableKeys.includes('research') ? 'research' : subagent);
+      const agent = resolveAgentKey(availableKeys, 'knowledge_researcher', 'knowledge-researcher', 'Knowledge Researcher', 'research', 'Research');
+      if (agent) subagent = agent;
     } else if (tLower.includes('review') || tLower.includes('audit') || tLower.includes('gate')) {
-      subagent = availableKeys.includes('review') ? 'review' : (availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent);
+      const agent = resolveAgentKey(availableKeys, 'review', 'Review', 'qa_engineer', 'qa-engineer', 'QA Engineer');
+      if (agent) subagent = agent;
     }
 
     let rawTier = 'flash';
@@ -322,7 +344,10 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const taskCost = estimateTierCost(tier);
     totalEstimatedCost += taskCost;
 
-    const requiresApproval = (tier === 'pro' || cognitiveTier === 'deep');
+    const requiresApproval =
+      config.tiers?.[cognitiveTier]?.requiresApproval ??
+      config.defaults?.requireUpgradeApproval ??
+      (tier === 'pro' || cognitiveTier === 'deep');
     if (requiresApproval) {
       anyProRequested = true;
     }
@@ -355,7 +380,8 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     });
   }
 
-  const concurrencyCap = Math.min(10, Math.max(1, freeTierCount));
+  const cap = config.tiers?.free?.concurrencyCap ?? 10;
+  const concurrencyCap = Math.min(cap, Math.max(1, freeTierCount));
   const stages = topologicalSortStages(plannedTasks);
 
   const manifest: BatchDispatchPlan = {

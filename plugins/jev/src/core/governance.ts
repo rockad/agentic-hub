@@ -11,7 +11,7 @@ import {
   getCachedDecision,
   setCachedDecision
 } from './cache.js';
-import { JEV_CONFIG_FILE } from './config.js';
+import { JEV_CONFIG_FILE, loadJevConfigSync } from './config.js';
 import { getTracer } from '../tracing.js';
 
 // ── Antigravity quota view ───────────────────────────────────────────────────
@@ -45,9 +45,7 @@ export function getQuotaThresholds(): QuotaThresholds {
 
   let fileConfig: any = {};
   try {
-    if (fsSync.existsSync(JEV_CONFIG_FILE)) {
-      fileConfig = JSON.parse(fsSync.readFileSync(JEV_CONFIG_FILE, 'utf8'));
-    }
+    fileConfig = loadJevConfigSync() || {};
   } catch {
     // ignore
   }
@@ -365,10 +363,11 @@ export function defaultEffortForSubagent(subagent: string, promptText: string = 
   }
 
   // Low effort mechanical roles / keywords
+  const normSa = (sa || '').toLowerCase().replace(/[-_\s]+/g, '_');
   if (
-    sa === 'inbox_processor' ||
-    sa === 'syntax_formatter' ||
-    sa === 'git_scribe' ||
+    normSa === 'inbox_processor' ||
+    normSa === 'syntax_formatter' ||
+    normSa === 'git_scribe' ||
     hasWord(/\b(re)?format(s|ted|ting|ter|ters)?\b/) ||
     hasWord(/\bfile into\b/) ||
     hasWord(/\bcommit message\b/)

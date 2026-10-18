@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { getCacheConfig } from './config.js';
 
 export const DEFAULT_SHM_CACHE_FILE = '/dev/shm/jev/cache.sqlite';
 export const DEFAULT_FALLBACK_CACHE_FILE = path.join(os.homedir(), '.config', 'jev', 'cache.sqlite');
@@ -18,8 +19,8 @@ export interface DecisionCacheEntry {
 /**
  * Dynamic Tiered Path Resolution:
  * 1) process.env.JEV_CACHE_FILE override.
- * 2) /dev/shm/jev/cache.sqlite (Linux/WSL RAM tmpfs). If /dev/shm/jev doesn't exist, create it. Verify write accessibility.
- * 3) ~/.config/jev/cache.sqlite (disk fallback).
+ * 2) shmPath from getCacheConfig() (Linux/WSL RAM tmpfs). If directory doesn't exist, create it. Verify write accessibility.
+ * 3) fallbackPath from getCacheConfig() (disk fallback).
  * 4) :memory: fail-safe.
  */
 export function resolveDbPath(): string {
@@ -27,28 +28,32 @@ export function resolveDbPath(): string {
     return process.env.JEV_CACHE_FILE;
   }
 
-  // 2) /dev/shm/jev/cache.sqlite (RAM tmpfs on Linux/WSL)
+  const cacheCfg = getCacheConfig();
+  const shmPath = cacheCfg.shmPath;
+  const fallbackPath = cacheCfg.fallbackPath;
+
+  // 2) shmPath (RAM tmpfs on Linux/WSL)
   try {
-    if (fs.existsSync('/dev/shm')) {
-      const shmDir = '/dev/shm/jev';
+    const shmDir = path.dirname(shmPath);
+    if (fs.existsSync(path.dirname(shmDir)) || fs.existsSync(shmDir)) {
       if (!fs.existsSync(shmDir)) {
         fs.mkdirSync(shmDir, { recursive: true });
       }
       fs.accessSync(shmDir, fs.constants.W_OK | fs.constants.R_OK);
-      return DEFAULT_SHM_CACHE_FILE;
+      return shmPath;
     }
   } catch {
     // fall through
   }
 
-  // 3) ~/.config/jev/cache.sqlite (disk fallback)
+  // 3) fallbackPath (disk fallback)
   try {
-    const configDir = path.join(os.homedir(), '.config', 'jev');
+    const configDir = path.dirname(fallbackPath);
     if (!fs.existsSync(configDir)) {
       fs.mkdirSync(configDir, { recursive: true });
     }
     fs.accessSync(configDir, fs.constants.W_OK | fs.constants.R_OK);
-    return DEFAULT_FALLBACK_CACHE_FILE;
+    return fallbackPath;
   } catch {
     // fall through
   }
@@ -233,9 +238,12 @@ export function setCachedDecision(key: string, data: any, ttlSec?: number): void
   try {
     const db = getDatabase();
     const now = Math.floor(Date.now() / 1000);
+    const cacheCfg = getCacheConfig();
     const ttl = ttlSec !== undefined
       ? ttlSec
-      : (process.env.JEV_CACHE_TTL_MS ? Math.max(1, Math.round(Number(process.env.JEV_CACHE_TTL_MS) / 1000)) : DECISION_CACHE_TTL_SEC);
+      : (process.env.JEV_CACHE_TTL_MS
+          ? Math.max(1, Math.round(Number(process.env.JEV_CACHE_TTL_MS) / 1000))
+          : (cacheCfg.ttlSec || DECISION_CACHE_TTL_SEC));
     const expiresAt = now + ttl;
     const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
 

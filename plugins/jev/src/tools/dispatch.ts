@@ -10,6 +10,9 @@ import {
   defaultEffortForSubagent,
   applyEffortGovernance,
   discoverWorkspaceAgents,
+  normalizeTier,
+  getHarnessModels,
+  type CognitiveTier,
   JEV_MODEL,
   FALLBACK_MODEL,
   JEV_INPUT_COST_PER_MILLION,
@@ -202,18 +205,23 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   // Phase 5: Session Model Ceiling Clamping
   const ceilingClamping = clampTierToSessionCeiling(recommendedTier, quotaView.active_model, task);
   const effectiveTier = ceilingClamping.clampedTier;
-  const isPro = effectiveTier === 'pro';
+  const cognitiveTier = normalizeTier(effectiveTier);
+  const harnessModels = getHarnessModels();
+  const concreteModel = harnessModels[cognitiveTier] || effectiveTier;
+  const isPro = effectiveTier === 'pro' || cognitiveTier === 'deep';
 
-  const isFree = effectiveTier === 'openrouter_free';
+  const isFree = cognitiveTier === 'free' || effectiveTier === 'openrouter_free';
   const executionTool = isFree ? 'jev_execute_free' : 'invoke_subagent';
   const executionGuidance = isFree
     ? 'CRITICAL QUOTA RULE: Jev evaluated this task as free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
-    : `Delegate to subagent via invoke_subagent(Role: "${recommendedSubagent}", Model: "${effectiveTier}").`;
+    : `Delegate to subagent via invoke_subagent(Role: "${recommendedSubagent}", Model: "${concreteModel}").`;
 
   const scaffoldingCheck = detectScaffoldingTask(task);
   const result = {
     recommendedSubagent,
     recommendedTier: effectiveTier,
+    cognitiveTier,
+    concreteModel,
     rawRecommendedTier: recommendedTier,
     executionTool,
     executionGuidance,
@@ -303,24 +311,27 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
     const clamped = clampTierToSessionCeiling(rawTier, quotaView.active_model, taskText);
     const tier = clamped.clampedTier;
+    const cognitiveTier = normalizeTier(tier);
+    const harnessModels = getHarnessModels();
+    const concreteModel = harnessModels[cognitiveTier] || tier;
 
-    if (tier === 'openrouter_free') {
+    if (tier === 'openrouter_free' || cognitiveTier === 'free') {
       freeTierCount++;
     }
 
     const taskCost = estimateTierCost(tier);
     totalEstimatedCost += taskCost;
 
-    const requiresApproval = (tier === 'pro');
+    const requiresApproval = (tier === 'pro' || cognitiveTier === 'deep');
     if (requiresApproval) {
       anyProRequested = true;
     }
 
-    const isTaskFree = tier === 'openrouter_free';
+    const isTaskFree = tier === 'openrouter_free' || cognitiveTier === 'free';
     const executionTool = isTaskFree ? 'jev_execute_free' : 'invoke_subagent';
     const executionGuidance = isTaskFree
       ? 'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
-      : `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${tier}").`;
+      : `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${concreteModel}").`;
 
     const rawEffort = defaultEffortForSubagent(subagent, taskText);
     const taskEffort = applyEffortGovernance(rawEffort, quotaView.strategy, tier);
@@ -330,6 +341,8 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
       task: taskText,
       subagent,
       tier,
+      cognitiveTier,
+      concreteModel,
       executionTool,
       executionGuidance,
       dependencies: deps,

@@ -1,8 +1,12 @@
+import type { CognitiveTier } from './config.js';
+
 export interface SubTask {
   taskId: string;
   task: string;
   subagent: string;
   tier: string;
+  cognitiveTier?: CognitiveTier;
+  concreteModel?: string;
   executionTool?: 'jev_execute_free' | 'jev_agent_free' | 'invoke_subagent';
   executionGuidance?: string;
   dependencies: string[];

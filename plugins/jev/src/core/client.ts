@@ -3,10 +3,26 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { getTracer, type JevSpan, type JevTracer } from '../tracing.js';
+import {
+  getFreeModelsPool,
+  getJevTimeouts,
+  loadJevConfigSync
+} from './config.js';
 
 // ── Endpoints / models ───────────────────────────────────────────────────────
 export const JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
 export const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+export function getJevModels() {
+  const cfg = loadJevConfigSync();
+  return {
+    decision: process.env.JEV_MODEL || cfg.models?.decision || '~typesafe/jev-latest',
+    router: process.env.JEV_ROUTER_MODEL || cfg.models?.router || 'typesafe/jev-router',
+    fallback: process.env.JEV_FALLBACK_MODEL || cfg.models?.fallback || 'typesafe/jev-router',
+    free: process.env.JEV_FREE_MODEL || 'openrouter/free'
+  };
+}
+
 export const JEV_MODEL = process.env.JEV_MODEL || '~typesafe/jev-latest';
 export const JEV_ROUTER_MODEL = process.env.JEV_ROUTER_MODEL || 'typesafe/jev-router';
 export const FALLBACK_MODEL = process.env.JEV_FALLBACK_MODEL || JEV_ROUTER_MODEL;
@@ -147,7 +163,11 @@ export async function callJevDecision(
   questions: Record<string, unknown>,
   modelTier?: string
 ): Promise<any> {
-  const hash = computeDecisionCacheKey(state, questions, modelTier || JEV_MODEL);
+  const models = getJevModels();
+  const timeouts = getJevTimeouts();
+  const targetModel = modelTier || models.decision;
+
+  const hash = computeDecisionCacheKey(state, questions, targetModel);
   let cached = getCachedDecision(hash);
   if (!cached) {
     const legacyHash = `${state.length}:${state.slice(0, 64)}:${state.slice(-64)}:${JSON.stringify(Object.keys(questions).sort())}`;
@@ -158,7 +178,7 @@ export async function callJevDecision(
     const span = getTracer().startSpan('jev.decision', {
       'decision.state_length': state.length,
       'decision.cached': true,
-      'decision.model': JEV_MODEL
+      'decision.model': targetModel
     });
     span.setAttribute('decision.latency_ms', 0);
     const verdict = formatVerdict(cached);
@@ -171,7 +191,7 @@ export async function callJevDecision(
   const span = getTracer().startSpan('jev.decision', {
     'decision.state_length': state.length,
     'decision.cached': false,
-    'decision.model': JEV_MODEL
+    'decision.model': targetModel
   });
 
   try {
@@ -185,9 +205,9 @@ export async function callJevDecision(
           'HTTP-Referer': 'https://github.com/agentic-hub/jev',
           'X-Title': 'Jev Decisions Gateway'
         },
-        body: JSON.stringify({ model: JEV_MODEL, state, questions })
+        body: JSON.stringify({ model: targetModel, state, questions })
       },
-      JEV_TIMEOUT_MS
+      timeouts.decisionMs
     );
 
     if (!res.ok) {
@@ -224,6 +244,10 @@ export async function callJevDecision(
  * Tier 2: `typesafe/jev-router` via OpenRouter Chat Completions with strict structured JSON schema.
  */
 export async function callJevRouter(state: string, questions: Record<string, unknown>): Promise<any> {
+  const models = getJevModels();
+  const timeouts = getJevTimeouts();
+  const targetModel = models.router;
+
   const prompt =
     'You are a fast routing and decision engine. Read the state and answer every question.\n' +
     'Return ONLY a JSON object of the form {"answers":{"<key>":<answer>}} where each answer is\n' +
@@ -236,7 +260,7 @@ export async function callJevRouter(state: string, questions: Record<string, unk
   const startTime = Date.now();
   const span = getTracer().startSpan('jev.router', {
     'decision.state_length': state.length,
-    'decision.model': JEV_ROUTER_MODEL
+    'decision.model': targetModel
   });
 
   try {
@@ -251,7 +275,7 @@ export async function callJevRouter(state: string, questions: Record<string, unk
           'X-Title': 'Jev Router (OpenRouter)'
         },
         body: JSON.stringify({
-          model: JEV_ROUTER_MODEL,
+          model: targetModel,
           messages: [{ role: 'user', content: prompt }],
           response_format: {
             type: 'json_schema',
@@ -269,7 +293,7 @@ export async function callJevRouter(state: string, questions: Record<string, unk
           }
         })
       },
-      FALLBACK_TIMEOUT_MS
+      timeouts.fallbackMs
     );
 
     if (!res.ok) {
@@ -297,7 +321,7 @@ export async function callJevRouter(state: string, questions: Record<string, unk
     span.end();
 
     return {
-      model: json?.model || JEV_ROUTER_MODEL,
+      model: json?.model || targetModel,
       provider: json?.provider,
       answers: parsed?.answers || {},
       usage: json?.usage
@@ -335,6 +359,10 @@ export function buildRouterCompletionMessages(
  * Plain generation on the fallback model. Used to escalate free-tier output.
  */
 export async function callRouterCompletion(prompt: string, systemInstruction?: string): Promise<string> {
+  const models = getJevModels();
+  const timeouts = getJevTimeouts();
+  const targetModel = models.fallback;
+
   const res = await fetchWithTimeout(OPENROUTER_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -344,10 +372,10 @@ export async function callRouterCompletion(prompt: string, systemInstruction?: s
       'X-Title': 'Jev Escalation (OpenRouter)'
     },
     body: JSON.stringify({
-      model: FALLBACK_MODEL,
+      model: targetModel,
       messages: buildRouterCompletionMessages(prompt, systemInstruction)
     })
-  }, FALLBACK_TIMEOUT_MS);
+  }, timeouts.fallbackMs);
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
@@ -396,6 +424,10 @@ export async function callOpenRouterFree(
   systemInstruction?: string,
   requestedModel?: string
 ): Promise<FreeExecutionResult> {
+  const timeouts = getJevTimeouts();
+  const pool = getFreeModelsPool();
+  const models = getJevModels();
+
   const keysToTry = Array.from(new Set([
     process.env.OPENROUTER_API_KEY,
     process.env.JEV_OPENROUTER_API_KEY,
@@ -412,7 +444,7 @@ export async function callOpenRouterFree(
   }
   messages.push({ role: 'user', content: prompt });
 
-  const modelsToTry = Array.from(new Set(requestedModel ? [requestedModel, ...FREE_MODELS_POOL] : FREE_MODELS_POOL));
+  const modelsToTry = Array.from(new Set(requestedModel ? [requestedModel, ...pool] : pool));
 
   for (const apiKey of keysToTry) {
     for (const m of modelsToTry) {
@@ -429,7 +461,7 @@ export async function callOpenRouterFree(
             model: m,
             messages
           })
-        }, FREE_MODEL_TIMEOUT_MS);
+        }, timeouts.freeModelMs);
 
         if (!res.ok) {
           continue;
@@ -470,8 +502,8 @@ export async function callOpenRouterFree(
       const cTokens = Math.ceil(escalatedText.length / 4);
       return {
         content: escalatedText,
-        modelUsed: FALLBACK_MODEL,
-        model: FALLBACK_MODEL,
+        modelUsed: models.fallback,
+        model: models.fallback,
         choices: [{ message: { role: 'assistant', content: escalatedText } }],
         tokensSaved: 0,
         escalated: true,
@@ -488,8 +520,8 @@ export async function callOpenRouterFree(
 
   return {
     content: '',
-    modelUsed: FALLBACK_MODEL,
-    model: FALLBACK_MODEL,
+    modelUsed: models.fallback,
+    model: models.fallback,
     choices: [{ message: { role: 'assistant', content: '' } }],
     tokensSaved: 0,
     escalated: true,

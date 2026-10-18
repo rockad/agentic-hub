@@ -14,6 +14,7 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     const agentsDir = path.join(fixtureDir, '.agents', 'agents');
     await fs.mkdir(agentsDir, { recursive: true });
 
+    // Standalone .md files (legacy fallback)
     await fs.writeFile(
       path.join(agentsDir, 'alpha_agent.md'),
       '---\nname: alpha_agent\ndescription: "Alpha specialist for testing"\n---\n# Alpha Agent'
@@ -25,6 +26,34 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     await fs.writeFile(
       path.join(agentsDir, 'gamma_agent.md'),
       '---\nname: gamma_agent\ndescription: "Gamma specialist for testing"\n---\n# Gamma Agent'
+    );
+
+    // Directory-per-agent with kebab-case identifier
+    const deltaDir = path.join(agentsDir, 'delta-agent');
+    await fs.mkdir(deltaDir, { recursive: true });
+    await fs.writeFile(
+      path.join(deltaDir, 'agent.md'),
+      '---\nname: delta-agent\ndescription: "Delta specialist for testing directory-per-agent"\n---\n# Delta Agent'
+    );
+
+    // Directory-per-agent defaulting to directory name when name is omitted in frontmatter
+    const epsilonDir = path.join(agentsDir, 'epsilon-agent');
+    await fs.mkdir(epsilonDir, { recursive: true });
+    await fs.writeFile(
+      path.join(epsilonDir, 'agent.md'),
+      '---\ndescription: "Epsilon specialist with default directory name"\n---\n# Epsilon Agent'
+    );
+
+    // Precedence test: directory-per-agent takes precedence over standalone .md fallback file
+    const zetaDir = path.join(agentsDir, 'zeta_agent');
+    await fs.mkdir(zetaDir, { recursive: true });
+    await fs.writeFile(
+      path.join(zetaDir, 'agent.md'),
+      '---\nname: zeta_agent\ndescription: "Zeta directory implementation"\n---\n# Zeta Agent'
+    );
+    await fs.writeFile(
+      path.join(agentsDir, 'zeta_agent.md'),
+      '---\nname: zeta_agent\ndescription: "Zeta file fallback implementation"\n---\n# Zeta Agent'
     );
 
     emptyTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jev-empty-'));
@@ -44,9 +73,20 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     expect(agents.alpha_agent).toBeDefined();
     expect(agents.beta_agent).toBeDefined();
     expect(agents.gamma_agent).toBeDefined();
+    expect(agents['delta-agent']).toBe('Delta specialist for testing directory-per-agent');
+    expect(agents['epsilon-agent']).toBe('Epsilon specialist with default directory name');
+    expect(agents.zeta_agent).toBe('Zeta directory implementation');
 
     const keys = Object.keys(agents);
-    expect(keys.length).toBeGreaterThanOrEqual(5);
+    expect(keys.length).toBeGreaterThanOrEqual(8);
+  });
+
+  test('supports kebab-case identifiers and directory-per-agent precedence over file fallbacks', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents['delta-agent']).toBeDefined();
+    expect(agents['epsilon-agent']).toBeDefined();
+    // Precedence: directory description must win over file fallback description
+    expect(agents.zeta_agent).toBe('Zeta directory implementation');
   });
 
   test('falls back cleanly to at least self and none when workspace has no agents directory', async () => {

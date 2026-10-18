@@ -11,9 +11,39 @@ interface AgentCacheEntry {
 
 let agentCache: AgentCacheEntry | null = null;
 
+export function clearAgentCache(): void {
+  agentCache = null;
+}
+
+function parseAgentContent(content: string, defaultName: string): { name: string; description: string } {
+  let name = defaultName;
+  let description = '';
+
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (match) {
+    const yamlBlock = match[1];
+    for (const line of yamlBlock.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('name:')) {
+        const val = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, '');
+        if (val) name = val;
+      } else if (trimmed.startsWith('description:')) {
+        const val = trimmed.slice(12).trim().replace(/^['"]|['"]$/g, '');
+        if (val) description = val;
+      }
+    }
+  }
+
+  return {
+    name,
+    description: description || `Agent specialized in ${name.replace(/[-_]/g, ' ')}`
+  };
+}
+
 /**
  * Pure Dynamic Subagent Discovery
- * Scans .agents/agents/*.md (or legacy .agents/subagents/*.md) in active workspace or $DOPPELGANGER_HOME.
+ * Scans .agents/agents (or legacy .agents/subagents) in active workspace or $DOPPELGANGER_HOME.
+ * Supports directory-per-agent (${dir}/agent.md) and fallback standalone .md files.
  * Uses filesystem mtime and 15s in-memory TTL cache to minimize I/O.
  */
 export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Promise<Record<string, string>> {
@@ -52,35 +82,62 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
       return { ...agentCache.agents };
     }
 
-    const files = await fs.readdir(targetDir);
+    const entries = await fs.readdir(targetDir, { withFileTypes: true });
     const result: Record<string, string> = {};
 
-    for (const file of files) {
-      if (!file.endsWith('.md')) continue;
-      const filePath = path.join(targetDir, file);
-      try {
-        const content = await fs.readFile(filePath, 'utf8');
-        const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-        if (match) {
-          const yamlBlock = match[1];
-          let name = path.basename(file, '.md');
-          let description = '';
+    // 1. First pass: Directory-per-agent (${targetDir}/${item}/agent.md)
+    for (const entry of entries) {
+      let isDir = entry.isDirectory();
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = await fs.stat(path.join(targetDir, entry.name));
+          isDir = st.isDirectory();
+        } catch {
+          // ignore broken link
+        }
+      }
 
-          for (const line of yamlBlock.split('\n')) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('name:')) {
-              name = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, '');
-            } else if (trimmed.startsWith('description:')) {
-              description = trimmed.slice(12).trim().replace(/^['"]|['"]$/g, '');
+      if (isDir) {
+        const agentFile = path.join(targetDir, entry.name, 'agent.md');
+        try {
+          const st = await fs.stat(agentFile);
+          if (st.isFile()) {
+            const content = await fs.readFile(agentFile, 'utf8');
+            const parsed = parseAgentContent(content, entry.name);
+            if (parsed.name) {
+              result[parsed.name] = parsed.description;
             }
           }
-
-          if (name) {
-            result[name] = description || `Agent specialized in ${name.replace(/_/g, ' ')}`;
-          }
+        } catch {
+          // agent.md doesn't exist or is not readable
         }
-      } catch {
-        // ignore unreadable file
+      }
+    }
+
+    // 2. Second pass: Standalone .md files as fallback (backward compatibility)
+    for (const entry of entries) {
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = await fs.stat(path.join(targetDir, entry.name));
+          isFile = st.isFile();
+        } catch {
+          // ignore broken link
+        }
+      }
+
+      if (isFile && entry.name.endsWith('.md')) {
+        const defaultName = path.basename(entry.name, '.md');
+        const filePath = path.join(targetDir, entry.name);
+        try {
+          const content = await fs.readFile(filePath, 'utf8');
+          const parsed = parseAgentContent(content, defaultName);
+          if (parsed.name && !result[parsed.name]) {
+            result[parsed.name] = parsed.description;
+          }
+        } catch {
+          // ignore unreadable file
+        }
       }
     }
 

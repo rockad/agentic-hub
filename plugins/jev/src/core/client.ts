@@ -424,6 +424,10 @@ export async function callOpenRouterFree(
   systemInstruction?: string,
   requestedModel?: string
 ): Promise<FreeExecutionResult> {
+  if (requestedModel) {
+    assertFreeModel(requestedModel);
+  }
+
   const timeouts = getJevTimeouts();
   const pool = getFreeModelsPool();
 
@@ -435,10 +439,6 @@ export async function callOpenRouterFree(
 
   if (keysToTry.length === 0) {
     throw new Error('Neither OPENROUTER_API_KEY nor JEV_OPENROUTER_API_KEY is set');
-  }
-
-  if (requestedModel) {
-    assertFreeModel(requestedModel);
   }
 
   const messages: Array<{ role: string; content: string }> = [];

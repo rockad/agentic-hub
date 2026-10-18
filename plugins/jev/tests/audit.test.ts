@@ -56,6 +56,14 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
       '---\nname: zeta_agent\ndescription: "Zeta file fallback implementation"\n---\n# Zeta Agent'
     );
 
+    // Dual-indexing test: Title Case name in kebab-case directory
+    const careerDir = path.join(agentsDir, 'career-advisor');
+    await fs.mkdir(careerDir, { recursive: true });
+    await fs.writeFile(
+      path.join(careerDir, 'agent.md'),
+      '---\nname: Career Advisor\ndescription: "Executive career partner and JD auditor"\n---\n# Career Advisor'
+    );
+
     // Non-agent files without frontmatter (must be ignored)
     await fs.writeFile(
       path.join(agentsDir, 'README.md'),
@@ -92,9 +100,19 @@ describe('Stage 2: Dynamic Workspace Subagent Discovery', () => {
     expect(agents['delta-agent']).toBe('Delta specialist for testing directory-per-agent');
     expect(agents['epsilon-agent']).toBe('Epsilon specialist with default directory name');
     expect(agents.zeta_agent).toBe('Zeta directory implementation');
+    expect(agents['Career Advisor']).toBe('Executive career partner and JD auditor');
+    expect(agents['career-advisor']).toBe('Executive career partner and JD auditor');
 
     const keys = Object.keys(agents);
-    expect(keys.length).toBeGreaterThanOrEqual(8);
+    expect(keys.length).toBeGreaterThanOrEqual(9);
+  });
+
+  test('dual-indexes human-readable Title Case names and normalized kebab-case aliases', async () => {
+    const agents = await discoverWorkspaceAgents(fixtureDir);
+    expect(agents['Career Advisor']).toBeDefined();
+    expect(agents['career-advisor']).toBeDefined();
+    expect(agents['Career Advisor']).toBe('Executive career partner and JD auditor');
+    expect(agents['career-advisor']).toBe('Executive career partner and JD auditor');
   });
 
   test('supports kebab-case identifiers and directory-per-agent precedence over file fallbacks', async () => {

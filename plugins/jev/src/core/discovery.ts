@@ -80,6 +80,41 @@ function parseAgentContent(content: string, defaultName: string): { name: string
 }
 
 /**
+ * Registers an agent in the results map:
+ * 1. Primary name (e.g. human-readable "Career Advisor" or exact frontmatter name)
+ * 2. Normalized kebab-case alias (e.g. "career-advisor") if different
+ * 3. Fallback directory or file name alias if different
+ */
+function registerAgent(
+  result: Record<string, string>,
+  name: string,
+  description: string,
+  fallbackId?: string
+): void {
+  // 1. Primary name
+  if (!result[name]) {
+    result[name] = description;
+  }
+
+  // 2. Normalized kebab-case alias
+  const kebab = name.toLowerCase().replace(/[\s_]+/g, '-');
+  if (kebab && !result[kebab]) {
+    result[kebab] = description;
+  }
+
+  // 3. Fallback directory or filename identifier if different
+  if (fallbackId) {
+    if (!result[fallbackId]) {
+      result[fallbackId] = description;
+    }
+    const fallbackKebab = fallbackId.toLowerCase().replace(/[\s_]+/g, '-');
+    if (fallbackKebab && !result[fallbackKebab]) {
+      result[fallbackKebab] = description;
+    }
+  }
+}
+
+/**
  * Dynamic Subagent Discovery
  * Discovers subagents in hierarchical order of precedence:
  * 1. Workspace candidates (from findWorkspaceRoot(cwd)):
@@ -203,8 +238,8 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
               if (st.isFile()) {
                 const content = await fs.readFile(agentFile, 'utf8');
                 const parsed = parseAgentContent(content, entry.name);
-                if (parsed && parsed.name && !result[parsed.name]) {
-                  result[parsed.name] = parsed.description;
+                if (parsed && parsed.name) {
+                  registerAgent(result, parsed.name, parsed.description, entry.name);
                 }
               }
             } catch {
@@ -231,8 +266,8 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
             try {
               const content = await fs.readFile(filePath, 'utf8');
               const parsed = parseAgentContent(content, defaultName);
-              if (parsed && parsed.name && !result[parsed.name]) {
-                result[parsed.name] = parsed.description;
+              if (parsed && parsed.name) {
+                registerAgent(result, parsed.name, parsed.description, defaultName);
               }
             } catch {
               // ignore unreadable file

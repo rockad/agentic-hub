@@ -4,6 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   readZdrPolicy,
+  parseZdrValue,
+  callJev,
   callJevDecision,
   callJevRouter,
   callRouterCompletion,
@@ -101,7 +103,56 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-describe('readZdrPolicy resolution hierarchy', () => {
+describe('parseZdrValue normalization & fail-closed', () => {
+  it('returns null for undefined, null, or empty string', () => {
+    expect(parseZdrValue(undefined)).toBeNull();
+    expect(parseZdrValue(null)).toBeNull();
+    expect(parseZdrValue('')).toBeNull();
+    expect(parseZdrValue('   ')).toBeNull();
+  });
+
+  it('normalizes boolean values', () => {
+    expect(parseZdrValue(true)).toBe('on');
+    expect(parseZdrValue(false)).toBe('off');
+  });
+
+  it('normalizes affirmative strings to "on" case-insensitively', () => {
+    expect(parseZdrValue('on')).toBe('on');
+    expect(parseZdrValue('ON')).toBe('on');
+    expect(parseZdrValue('On')).toBe('on');
+    expect(parseZdrValue('true')).toBe('on');
+    expect(parseZdrValue('TRUE')).toBe('on');
+    expect(parseZdrValue('yes')).toBe('on');
+    expect(parseZdrValue('YES')).toBe('on');
+    expect(parseZdrValue('1')).toBe('on');
+  });
+
+  it('normalizes negative strings to "off" case-insensitively', () => {
+    expect(parseZdrValue('off')).toBe('off');
+    expect(parseZdrValue('OFF')).toBe('off');
+    expect(parseZdrValue('Off')).toBe('off');
+    expect(parseZdrValue('false')).toBe('off');
+    expect(parseZdrValue('FALSE')).toBe('off');
+    expect(parseZdrValue('no')).toBe('off');
+    expect(parseZdrValue('NO')).toBe('off');
+    expect(parseZdrValue('0')).toBe('off');
+  });
+
+  it('normalizes "strict" case-insensitively', () => {
+    expect(parseZdrValue('strict')).toBe('strict');
+    expect(parseZdrValue('STRICT')).toBe('strict');
+    expect(parseZdrValue('Strict')).toBe('strict');
+  });
+
+  it('fails closed to "strict" on typos and unrecognized non-empty strings', () => {
+    expect(parseZdrValue('strcit')).toBe('strict');
+    expect(parseZdrValue('onn')).toBe('strict');
+    expect(parseZdrValue('enabled')).toBe('strict');
+    expect(parseZdrValue('unknown')).toBe('strict');
+  });
+});
+
+describe('readZdrPolicy monotonic tightening', () => {
   it('defaults to "off" when no configs and no env vars exist', () => {
     expect(readZdrPolicy()).toBe('off');
   });
@@ -132,35 +183,38 @@ describe('readZdrPolicy resolution hierarchy', () => {
     expect(readZdrPolicy()).toBe('off');
   });
 
-  it('prioritizes config.json (privacy.zdr) over JEV_ZDR', () => {
-    process.env.JEV_ZDR = 'off';
-    writeConfig({ version: 2, privacy: { zdr: 'strict' } });
+  it('monotonic tightening: JEV_ZDR=strict tightens config.json with privacy.zdr: "off"', () => {
+    writeConfig({ version: 2, privacy: { zdr: 'off' } });
+    process.env.JEV_ZDR = 'strict';
 
     expect(readZdrPolicy()).toBe('strict');
   });
 
-  it('supports boolean true/false in config.json', () => {
+  it('monotonic tightening: config.json with privacy.zdr: "strict" tightens egress.json with zdr: "off"', () => {
+    writeEgress({ zdr: 'off' });
+    writeConfig({ version: 2, privacy: { zdr: 'strict' } });
+    process.env.JEV_ZDR = 'off';
+
+    expect(readZdrPolicy()).toBe('strict');
+  });
+
+  it('monotonic tightening: egress.json with zdr: "on" tightens config.json with privacy.zdr: "off"', () => {
+    writeEgress({ zdr: 'on' });
+    writeConfig({ version: 2, privacy: { zdr: 'off' } });
+    process.env.JEV_ZDR = 'off';
+
+    expect(readZdrPolicy()).toBe('on');
+  });
+
+  it('supports boolean true/false in config.json and egress.json', () => {
     writeConfig({ version: 2, privacy: { zdr: true } });
     expect(readZdrPolicy()).toBe('on');
 
     writeConfig({ version: 2, privacy: { zdr: false } });
     expect(readZdrPolicy()).toBe('off');
-  });
 
-  it('prioritizes egress.json over config.json and JEV_ZDR', () => {
-    process.env.JEV_ZDR = 'off';
-    writeConfig({ version: 2, privacy: { zdr: 'off' } });
-    writeEgress({ zdr: 'strict' });
-
-    expect(readZdrPolicy()).toBe('strict');
-  });
-
-  it('supports boolean true/false in egress.json', () => {
     writeEgress({ zdr: true });
     expect(readZdrPolicy()).toBe('on');
-
-    writeEgress({ zdr: false });
-    expect(readZdrPolicy()).toBe('off');
   });
 });
 
@@ -281,10 +335,36 @@ describe('Upstream 404 Guardrail Rejections', () => {
     expect(thrown).not.toBeNull();
     expect(thrown.code).toBe(EGRESS_ZDR_UNAVAILABLE_CODE);
   });
+
+  it('callJev rethrows immediately when signal is aborted without attempting router fallback', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    let routerCalled = false;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes('chat/completions')) {
+        routerCalled = true;
+      }
+      const err = new Error('The operation was aborted');
+      (err as any).name = 'AbortError';
+      throw err;
+    }) as typeof fetch;
+
+    let thrown: any = null;
+    try {
+      await callJev('test state', questions, controller.signal);
+    } catch (err: any) {
+      thrown = err;
+    }
+
+    expect(thrown).not.toBeNull();
+    expect(routerCalled).toBe(false);
+  });
 });
 
 describe('Audit Logging for ZDR', () => {
-  it('records zdr_policy and zdr_applied in egress log', () => {
+  it('records zdr_policy and zdr_applied in egress log with active egress policy', () => {
     writeEgress({ allowPaths: [process.cwd()], zdr: 'on' });
 
     assertEgressAllowed(
@@ -298,5 +378,35 @@ describe('Audit Logging for ZDR', () => {
     const entry = JSON.parse(content);
     expect(entry.zdr_policy).toBe('on');
     expect(entry.zdr_applied).toBe(true);
+    expect(entry.decision).toBe('sent');
+  });
+
+  it('records egress log when ZDR is active even if egress policy is absent', () => {
+    process.env.JEV_ZDR = 'on';
+
+    assertEgressAllowed(
+      'https://openrouter.ai/api/v1/chat/completions',
+      JSON.stringify({ model: 'test/model', provider: { zdr: true, data_collection: 'deny' } })
+    );
+
+    const logFile = egressLogFile();
+    expect(fs.existsSync(logFile)).toBe(true);
+    const content = fs.readFileSync(logFile, 'utf8').trim();
+    const entry = JSON.parse(content);
+    expect(entry.zdr_policy).toBe('on');
+    expect(entry.zdr_applied).toBe(true);
+    expect(entry.decision).toBe('sent');
+  });
+
+  it('does not log egress when ZDR is off and egress policy is absent', () => {
+    process.env.JEV_ZDR = 'off';
+
+    assertEgressAllowed(
+      'https://openrouter.ai/api/v1/chat/completions',
+      JSON.stringify({ model: 'test/model' })
+    );
+
+    const logFile = egressLogFile();
+    expect(fs.existsSync(logFile)).toBe(false);
   });
 });

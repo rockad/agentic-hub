@@ -43,45 +43,54 @@ export function egressLogFile(): string {
 }
 
 export function parseZdrValue(v: unknown): ZdrPolicy | null {
-  if (v === true || v === 'true' || v === 'on' || v === '1') return 'on';
-  if (v === false || v === 'false' || v === 'off' || v === '0') return 'off';
-  if (typeof v === 'string' && v.trim().toLowerCase() === 'strict') return 'strict';
-  return null;
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'boolean') return v ? 'on' : 'off';
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'on' || s === 'true' || s === 'yes' || s === '1') return 'on';
+  if (s === 'off' || s === 'false' || s === 'no' || s === '0') return 'off';
+  if (s === 'strict') return 'strict';
+  // For any other unrecognized non-empty string (e.g. typos like 'strcit', 'onn', 'enabled'): fail closed and return 'strict'.
+  return 'strict';
 }
 
 export function readZdrPolicy(): ZdrPolicy {
-  // 1. ~/.config/jev/egress.json ("zdr": "on" | "strict" | "off" | true | false)
+  const RANK: Record<ZdrPolicy, number> = { off: 0, on: 1, strict: 2 };
+  let highest: ZdrPolicy = 'off';
+  const consider = (val: ZdrPolicy | null) => {
+    if (val && RANK[val] > RANK[highest]) highest = val;
+  };
+
+  // 1. ~/.config/jev/egress.json ("zdr": "on" | "strict" | "off" | true | false, or privacy?.zdr)
   const egressFile = egressPolicyFile();
   if (fs.existsSync(egressFile)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(egressFile, 'utf8'));
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.zdr !== undefined) {
-        const val = parseZdrValue(parsed.zdr);
-        if (val !== null) return val;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (parsed.zdr !== undefined) consider(parseZdrValue(parsed.zdr));
+        if (parsed.privacy?.zdr !== undefined) consider(parseZdrValue(parsed.privacy.zdr));
       }
     } catch {}
   }
 
-  // 2. ~/.config/jev/config.json (privacy?.zdr)
+  // 2. ~/.config/jev/config.json (privacy?.zdr or root zdr)
   const configFile = process.env.JEV_CONFIG_FILE || path.join(homeDir(), '.config', 'jev', 'config.json');
   if (fs.existsSync(configFile)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-      if (parsed && typeof parsed === 'object' && parsed.privacy?.zdr !== undefined) {
-        const val = parseZdrValue(parsed.privacy.zdr);
-        if (val !== null) return val;
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.privacy?.zdr !== undefined) consider(parseZdrValue(parsed.privacy.zdr));
+        if (parsed.zdr !== undefined) consider(parseZdrValue(parsed.zdr));
       }
     } catch {}
   }
 
   // 3. process.env.JEV_ZDR ("on" | "strict" | "off" | "1" | "0" | "true" | "false")
   if (process.env.JEV_ZDR !== undefined) {
-    const val = parseZdrValue(process.env.JEV_ZDR.trim());
-    if (val !== null) return val;
+    consider(parseZdrValue(process.env.JEV_ZDR));
   }
 
-  // 4. Default: 'off'
-  return 'off';
+  return highest;
 }
 
 function expandHome(p: string): string {
@@ -215,7 +224,8 @@ function logEgress(entry: Record<string, unknown>): void {
 export function assertEgressAllowed(url: string, body: unknown, extraDirs: Array<string | undefined> = []): void {
   if (isLoopback(url)) return;
   const policy = readEgressPolicy();
-  if (policy.state === 'absent') return;
+  const zdr_policy = readZdrPolicy();
+  if (policy.state === 'absent' && zdr_policy === 'off') return;
 
   const dirs = egressContextDirs(extraDirs);
   const decision = checkEgress(dirs, policy);
@@ -225,7 +235,6 @@ export function assertEgressAllowed(url: string, body: unknown, extraDirs: Array
   } catch {
     host = 'invalid-url';
   }
-  const zdr_policy = readZdrPolicy();
   const zdr_applied = isZdrApplied(body);
   const meta = {
     host,

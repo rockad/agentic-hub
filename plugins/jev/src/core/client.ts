@@ -398,7 +398,7 @@ export async function callJev(
   try {
     return await callJevDecision(state, questions, undefined, signal);
   } catch (err: any) {
-    if (err?.code === EGRESS_ZDR_UNAVAILABLE_CODE) {
+    if (err?.code === EGRESS_ZDR_UNAVAILABLE_CODE || signal?.aborted) {
       throw err;
     }
     return await callJevRouter(state, questions, signal);

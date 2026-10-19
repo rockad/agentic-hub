@@ -211,13 +211,13 @@ async function main() {
     return;
   }
 
-  try {
-    execSync(`git commit -m ${JSON.stringify(commitMsg)}`, { stdio: 'inherit' });
-    console.log('\x1b[32m✔ Successfully committed changes!\x1b[0m');
-  } catch (err: any) {
-    console.error('\x1b[31mGit commit failed:\x1b[0m', err.message);
+  // Pass the message as an argument, never through a shell: it comes from a model that reads the diff.
+  const result = Bun.spawnSync(['git', 'commit', '-m', commitMsg], { stdio: ['inherit', 'inherit', 'inherit'] });
+  if (result.exitCode !== 0) {
+    console.error(`\x1b[31mGit commit failed:\x1b[0m git exited with code ${result.exitCode}`);
     process.exit(1);
   }
+  console.log('\x1b[32m✔ Successfully committed changes!\x1b[0m');
 }
 
 main().catch(err => {

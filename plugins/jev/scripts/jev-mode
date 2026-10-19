@@ -31,6 +31,11 @@ function check_agy() {
   fi
 }
 
+# Same write as the jev_set_mode tool: mode.json plus config.json, which the Claude Code hooks read.
+function write_mode() {
+  bun -e "import { writeModeState } from '${PLUGIN_ROOT}/src/tools/mode.ts'; await writeModeState('$1');"
+}
+
 function run_agy_mcp() {
   check_agy
   local action="$1"
@@ -145,17 +150,17 @@ case "$TARGET" in
     show_status
     ;;
   off|disable)
-    echo '{"mode":"off","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    write_mode off
     run_agy_mcp disable
     echo -e "\033[33m✔ Jev mode set to OFF\033[0m (MCP disabled, zero token overhead)"
     ;;
   on-demand|ondemand)
-    echo '{"mode":"on-demand","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    write_mode on-demand
     run_agy_mcp enable
     echo -e "\033[34m✔ Jev mode set to ON-DEMAND\033[0m (MCP enabled, passive routing for multi-role workflows)"
     ;;
   on|aggressive|enable)
-    echo '{"mode":"on","updated_at":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}' > "$STATE_FILE"
+    write_mode on
     run_agy_mcp enable
     echo -e "\033[32m✔ Jev mode set to ON\033[0m (Aggressive System 1 enforcement: pre-flight dispatch, free-tier offloading, strict quality gates)"
     ;;

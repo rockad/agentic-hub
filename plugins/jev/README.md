@@ -240,15 +240,17 @@ Create a `.env` file in the plugin root (`.env` is ignored by git via `.gitignor
 | `JEV_OPENROUTER_API_KEY` | **Required.** API key for OpenRouter to access free-tier endpoints. | *(None)* |
 | `JEV_MODE` | Initial operating mode (`ON`, `ON-DEMAND`, `OFF`). | `ON` |
 | `JEV_EGRESS_DENY` | Optional. Extra directories (separated by `:`) from which nothing may be sent. It can only add restrictions. | *(None)* |
+| `JEV_ZDR` | Optional. Zero Data Retention enforcement mode (`off`, `on`, `strict`). Overridden by configuration files. | `off` |
 
-### Outbound Data Control (optional)
+### Outbound Data Control & Privacy (optional)
 
 By default jev sends requests exactly as before. To keep some of your work away from OpenRouter, create `~/.config/jev/egress.json`. jev reads this file but never writes it:
 
 ```json
 {
   "allowPaths": ["~/Work/public-repo", "~/Work/agentic-hub"],
-  "denyPaths": ["~/Work/public-repo/private-notes"]
+  "denyPaths": ["~/Work/public-repo/private-notes"],
+  "zdr": "on"
 }
 ```
 
@@ -258,9 +260,54 @@ By default jev sends requests exactly as before. To keep some of your work away 
 - If `egress.json` is not valid JSON or has the wrong shape, everything is blocked. A broken policy never fails open.
 - Blocked requests fail before any data leaves the machine. Hooks stay silent; MCP tools return an error.
 - Requests to `localhost` / `127.0.0.1` (the local memory server) are not affected.
-- While a policy is active, each sent and blocked request is logged to `~/.config/jev/egress-log.jsonl` with host, model, and byte count. Request bodies are never logged.
+- While a policy is active, each sent and blocked request is logged to `~/.config/jev/egress-log.jsonl` with host, model, byte count, and ZDR audit markers (`zdr_policy`, `zdr_applied`). Request bodies are never logged.
 
 **Limits.** The policy looks at *where the session runs*, not at *what the data is*. Text from a blocked directory that you paste into a prompt, or a file read by absolute path from an allowed session, is not detected.
+
+#### 🔒 Zero Data Retention (ZDR) & Provider Data Policies
+
+OpenRouter allows clients to enforce data privacy guardrails via provider routing constraints (`provider.zdr: true` and `provider.data_collection: "deny"`). When enabled, OpenRouter routes exclusively to upstream model providers with signed Zero Data Retention agreements that contractually commit to not retaining prompts or completions, and never training on customer data.
+
+Jev provides first-class governance for ZDR across all coprocessor workflows:
+
+##### Operational ZDR Policy Modes
+
+| Mode | Behavior | Decisions API (`~typesafe/jev-latest`) | Free Offloading (`openrouter/free`) | Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| `off` *(default)* | Standard routing without ZDR or data collection restrictions. | Standard routing | Allowed (standard routing) | Development, public open-source code, or non-sensitive environments. |
+| `on` *(recommended)* | Pragmatic privacy balance. Enforces ZDR and `data_collection: "deny"` on all System 1 Decisions API calls, leaving zero prompt retention footprint. Free generative offloading proceeds without ZDR headers but records audit markers. | Enforced ZDR (`zdr_applied: true`) | Allowed with audit marker (`zdr_applied: false`) | Recommended default for mixed development workflows needing quota protection and private decision routing. |
+| `strict` | Zero-trust enforcement. Requires ZDR across 100% of outbound calls. Any request to endpoints lacking ZDR agreements is blocked locally before network transmission. | Enforced ZDR (`zdr_applied: true`) | Blocked locally (`JEV_ZDR_UNAVAILABLE`) | High-compliance, proprietary enterprise, or zero-trust environments where uncontracted data handling is prohibited. |
+
+##### Configuration & Precedence
+
+ZDR policy can be defined in multiple locations. Jev resolves the active policy using a strict precedence hierarchy (highest to lowest):
+
+1. **`~/.config/jev/egress.json`** (Highest precedence):
+   ```json
+   {
+     "zdr": "on"
+   }
+   ```
+2. **`~/.config/jev/config.json`** (`privacy.zdr`):
+   ```json
+   {
+     "privacy": {
+       "zdr": "on"
+     }
+   }
+   ```
+3. **Environment Variable (`JEV_ZDR`)**:
+   ```bash
+   export JEV_ZDR=on      # Accepted values: "on" ("1", "true"), "strict", "off" ("0", "false")
+   ```
+4. **Default**: Falls back to `off` when unset.
+
+##### The Free-Tier Trade-off: Pragmatic vs Zero-Trust
+
+Free community models on OpenRouter (e.g. `openrouter/free`, `google/gemma-4-31b-it:free`) are hosted across diverse open endpoints that do not provide commercial Zero Data Retention contracts or signed enterprise data protection agreements.
+
+- In **`on` mode**, Jev protects your proprietary codebase and system reasoning by enforcing ZDR on decision routing (`jev_dispatch`, `jev_judge`, `jev_route`) while still permitting $0.00 mechanical offloading (scaffolding, formatting, commits) to free endpoints. Each outbound offload records `"zdr_policy": "on"` and `"zdr_applied": false` in `~/.config/jev/egress-log.jsonl` for compliance auditing.
+- In **`strict` mode**, Jev adopts a zero-trust posture: any attempt to route to an endpoint without verified ZDR compliance fails closed with a typed `JEV_ZDR_UNAVAILABLE` error (`EGRESS_ZDR_UNAVAILABLE_CODE`). No tokens leave the machine to unverified endpoints.
 
 ---
 

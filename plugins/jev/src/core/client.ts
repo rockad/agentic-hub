@@ -3,12 +3,25 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { getTracer, type JevSpan, type JevTracer } from '../tracing.js';
-import { assertEgressAllowed } from './egress.js';
+import { assertEgressAllowed, readZdrPolicy } from './egress.js';
 import {
   getFreeModelsPool,
   getJevTimeouts,
   loadJevConfigSync
 } from './config.js';
+
+export const EGRESS_ZDR_UNAVAILABLE_CODE = 'JEV_ZDR_UNAVAILABLE';
+
+export function isZdrUnavailableError(status: number, errText: string): boolean {
+  if (status !== 404) return false;
+  const lower = errText.toLowerCase();
+  return (
+    lower.includes('guardrail restrictions') ||
+    lower.includes('guardrail') ||
+    lower.includes('data policy') ||
+    lower.includes('no router pool model is routable')
+  );
+}
 
 // ── Endpoints / models ───────────────────────────────────────────────────────
 export const JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
@@ -209,6 +222,11 @@ export async function callJevDecision(
   });
 
   try {
+    const bodyObj: Record<string, unknown> = { model: targetModel, state, questions };
+    if (readZdrPolicy() !== 'off') {
+      bodyObj.provider = { zdr: true, data_collection: 'deny' };
+    }
+
     const res = await fetchWithTimeout(
       JEV_DECISIONS_URL,
       {
@@ -219,7 +237,7 @@ export async function callJevDecision(
           'HTTP-Referer': 'https://github.com/agentic-hub/jev',
           'X-Title': 'Jev Decisions Gateway'
         },
-        body: JSON.stringify({ model: targetModel, state, questions }),
+        body: JSON.stringify(bodyObj),
         signal
       },
       timeouts.decisionMs
@@ -227,6 +245,11 @@ export async function callJevDecision(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      if (isZdrUnavailableError(res.status, errText)) {
+        const err = new Error(`Jev Decisions API Error ${res.status}: ${errText}`);
+        (err as any).code = EGRESS_ZDR_UNAVAILABLE_CODE;
+        throw err;
+      }
       throw new Error(`Jev Decisions API Error ${res.status}: ${errText}`);
     }
     const result = await res.json();
@@ -283,6 +306,28 @@ export async function callJevRouter(
   });
 
   try {
+    const bodyObj: Record<string, unknown> = {
+      model: targetModel,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'jev_router_answers',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              answers: { type: 'object', additionalProperties: true }
+            },
+            required: ['answers']
+          }
+        }
+      }
+    };
+    if (readZdrPolicy() !== 'off') {
+      bodyObj.provider = { zdr: true, data_collection: 'deny' };
+    }
+
     const res = await fetchWithTimeout(
       OPENROUTER_CHAT_URL,
       {
@@ -293,24 +338,7 @@ export async function callJevRouter(
           'HTTP-Referer': 'https://github.com/agentic-hub/jev',
           'X-Title': 'Jev Router (OpenRouter)'
         },
-        body: JSON.stringify({
-          model: targetModel,
-          messages: [{ role: 'user', content: prompt }],
-          response_format: {
-            type: 'json_schema',
-            json_schema: {
-              name: 'jev_router_answers',
-              strict: true,
-              schema: {
-                type: 'object',
-                properties: {
-                  answers: { type: 'object', additionalProperties: true }
-                },
-                required: ['answers']
-              }
-            }
-          }
-        }),
+        body: JSON.stringify(bodyObj),
         signal
       },
       timeouts.fallbackMs
@@ -318,6 +346,11 @@ export async function callJevRouter(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      if (isZdrUnavailableError(res.status, errText)) {
+        const err = new Error(`Jev Router Error ${res.status}: ${errText}`);
+        (err as any).code = EGRESS_ZDR_UNAVAILABLE_CODE;
+        throw err;
+      }
       throw new Error(`Jev Router Error ${res.status}: ${errText}`);
     }
 
@@ -364,7 +397,10 @@ export async function callJev(
 ): Promise<any> {
   try {
     return await callJevDecision(state, questions, undefined, signal);
-  } catch {
+  } catch (err: any) {
+    if (err?.code === EGRESS_ZDR_UNAVAILABLE_CODE) {
+      throw err;
+    }
     return await callJevRouter(state, questions, signal);
   }
 }
@@ -387,6 +423,14 @@ export async function callRouterCompletion(prompt: string, systemInstruction?: s
   const timeouts = getJevTimeouts();
   const targetModel = models.fallback;
 
+  const bodyObj: Record<string, unknown> = {
+    model: targetModel,
+    messages: buildRouterCompletionMessages(prompt, systemInstruction)
+  };
+  if (readZdrPolicy() !== 'off') {
+    bodyObj.provider = { zdr: true, data_collection: 'deny' };
+  }
+
   const res = await fetchWithTimeout(OPENROUTER_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -395,14 +439,16 @@ export async function callRouterCompletion(prompt: string, systemInstruction?: s
       'HTTP-Referer': 'https://github.com/agentic-hub/jev',
       'X-Title': 'Jev Escalation (OpenRouter)'
     },
-    body: JSON.stringify({
-      model: targetModel,
-      messages: buildRouterCompletionMessages(prompt, systemInstruction)
-    })
+    body: JSON.stringify(bodyObj)
   }, timeouts.fallbackMs);
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    if (isZdrUnavailableError(res.status, errText)) {
+      const err = new Error(`Jev Escalation Error ${res.status}: ${errText}`);
+      (err as any).code = EGRESS_ZDR_UNAVAILABLE_CODE;
+      throw err;
+    }
     throw new Error(`Jev Escalation Error ${res.status}: ${errText}`);
   }
   const json: any = await res.json();
@@ -450,6 +496,15 @@ export async function callOpenRouterFree(
   cwd?: string,
   timeoutMsOverride?: number
 ): Promise<FreeExecutionResult> {
+  const zdrPolicy = readZdrPolicy();
+  if (zdrPolicy === 'strict') {
+    const err = new Error(
+      'openrouter/free does not provide Zero Data Retention (ZDR) guarantees. Request blocked by strict ZDR policy.'
+    );
+    (err as any).code = EGRESS_ZDR_UNAVAILABLE_CODE;
+    throw err;
+  }
+
   if (requestedModel) {
     assertFreeModel(requestedModel);
   }

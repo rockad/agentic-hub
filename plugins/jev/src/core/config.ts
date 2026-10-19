@@ -6,10 +6,15 @@ import * as os from 'node:os';
 export type JevMode = 'off' | 'on-demand' | 'on';
 export const JEV_STATE_FILE = path.join(os.homedir(), '.config', 'jev', 'mode.json');
 export const JEV_CONFIG_FILE = process.env.JEV_CONFIG_FILE || path.join(os.homedir(), '.config', 'jev', 'config.json');
-
 export type JevHarness = 'antigravity' | 'claude-code' | 'opencode' | 'cli';
 
+import type { ZdrPolicy } from './egress.js';
+
 export type CognitiveTier = 'free' | 'cheap' | 'standard' | 'deep';
+
+export interface JevPrivacyConfig {
+  zdr?: ZdrPolicy | boolean;
+}
 
 export interface JevTiersConfig {
   free: { description: string; concurrencyCap?: number; requiresApproval?: boolean };
@@ -66,6 +71,7 @@ export interface JevConfig {
   cache?: Partial<JevCacheConfig>;
   thresholds?: Record<string, number>;
   harnesses?: Partial<Record<JevHarness, Partial<HarnessConfig>>>;
+  privacy?: JevPrivacyConfig;
 }
 
 export const DEFAULT_JEV_CONFIG: JevConfig = {

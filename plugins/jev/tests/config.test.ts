@@ -39,7 +39,8 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       'CLAUDE_PROJECT_DIR',
       'OPENCODE_SESSION',
       'OPENCODE_HOME',
-      'CORTEX_SESSION'
+      'CORTEX_SESSION',
+      'JEV_ZDR'
     ];
     for (const v of HARNESS_ENV_VARS) {
       delete process.env[v];

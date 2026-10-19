@@ -17,6 +17,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+export type ZdrPolicy = 'off' | 'on' | 'strict';
+
 export type EgressPolicy =
   | { state: 'absent' }
   | { state: 'broken'; problem: string }
@@ -38,6 +40,48 @@ export function egressPolicyFile(): string {
 
 export function egressLogFile(): string {
   return path.join(homeDir(), '.config', 'jev', 'egress-log.jsonl');
+}
+
+export function parseZdrValue(v: unknown): ZdrPolicy | null {
+  if (v === true || v === 'true' || v === 'on' || v === '1') return 'on';
+  if (v === false || v === 'false' || v === 'off' || v === '0') return 'off';
+  if (typeof v === 'string' && v.trim().toLowerCase() === 'strict') return 'strict';
+  return null;
+}
+
+export function readZdrPolicy(): ZdrPolicy {
+  // 1. ~/.config/jev/egress.json ("zdr": "on" | "strict" | "off" | true | false)
+  const egressFile = egressPolicyFile();
+  if (fs.existsSync(egressFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(egressFile, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.zdr !== undefined) {
+        const val = parseZdrValue(parsed.zdr);
+        if (val !== null) return val;
+      }
+    } catch {}
+  }
+
+  // 2. ~/.config/jev/config.json (privacy?.zdr)
+  const configFile = process.env.JEV_CONFIG_FILE || path.join(homeDir(), '.config', 'jev', 'config.json');
+  if (fs.existsSync(configFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+      if (parsed && typeof parsed === 'object' && parsed.privacy?.zdr !== undefined) {
+        const val = parseZdrValue(parsed.privacy.zdr);
+        if (val !== null) return val;
+      }
+    } catch {}
+  }
+
+  // 3. process.env.JEV_ZDR ("on" | "strict" | "off" | "1" | "0" | "true" | "false")
+  if (process.env.JEV_ZDR !== undefined) {
+    const val = parseZdrValue(process.env.JEV_ZDR.trim());
+    if (val !== null) return val;
+  }
+
+  // 4. Default: 'off'
+  return 'off';
 }
 
 function expandHome(p: string): string {
@@ -144,6 +188,16 @@ function modelOf(body: unknown): string | null {
   }
 }
 
+function isZdrApplied(body: unknown): boolean {
+  if (typeof body !== 'string') return false;
+  try {
+    const b = JSON.parse(body) as { provider?: { zdr?: unknown } };
+    return Boolean(b?.provider?.zdr);
+  } catch {
+    return false;
+  }
+}
+
 function logEgress(entry: Record<string, unknown>): void {
   try {
     const file = egressLogFile();
@@ -171,7 +225,16 @@ export function assertEgressAllowed(url: string, body: unknown, extraDirs: Array
   } catch {
     host = 'invalid-url';
   }
-  const meta = { host, model: modelOf(body), bytes: typeof body === 'string' ? Buffer.byteLength(body) : 0, dirs };
+  const zdr_policy = readZdrPolicy();
+  const zdr_applied = isZdrApplied(body);
+  const meta = {
+    host,
+    model: modelOf(body),
+    bytes: typeof body === 'string' ? Buffer.byteLength(body) : 0,
+    dirs,
+    zdr_policy,
+    zdr_applied
+  };
   if (decision.allowed) {
     logEgress({ decision: 'sent', ...meta });
     return;

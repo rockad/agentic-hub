@@ -17,6 +17,7 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const os = require('os');
 const { spawnSync, spawn } = require('child_process');
 
 const DEBUG_PORT = process.env.CHROME_DEBUG_PORT || '9222';
@@ -140,7 +141,8 @@ async function main() {
   const nodeDir = path.dirname(process.execPath);
   const npxCandidate = path.join(nodeDir, 'npx');
   const npxCmd = fs.existsSync(npxCandidate) ? npxCandidate : 'npx';
-  const resolvedPath = [nodeDir, '/home/rockad/.local/bin', process.env.PATH || ''].filter(Boolean).join(':');
+  const localBin = path.join(os.homedir(), '.local', 'bin');
+  const resolvedPath = [nodeDir, localBin, process.env.PATH || ''].filter(Boolean).join(':');
 
   const child = spawn(npxCmd, [
     '-y',

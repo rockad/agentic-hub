@@ -259,3 +259,36 @@ describe('custom agent discovery and dispatch in Claude Code', () => {
     );
   });
 });
+
+describe('withTimeout', () => {
+  it('aborts the AbortSignal when timeout expires', async () => {
+    const { withTimeout } = await import('../claude/hook.ts');
+    let aborted = false;
+    let signalReceived: AbortSignal | undefined;
+
+    const result = await withTimeout((signal) => {
+      signalReceived = signal;
+      signal.addEventListener('abort', () => {
+        aborted = true;
+      });
+      return new Promise((resolve) => setTimeout(() => resolve('done'), 100));
+    }, 20);
+
+    expect(result).toBeNull();
+    expect(aborted).toBe(true);
+    expect(signalReceived?.aborted).toBe(true);
+  });
+
+  it('resolves value before timeout without aborting', async () => {
+    const { withTimeout } = await import('../claude/hook.ts');
+    let signalReceived: AbortSignal | undefined;
+
+    const result = await withTimeout((signal) => {
+      signalReceived = signal;
+      return Promise.resolve('quick');
+    }, 50);
+
+    expect(result).toBe('quick');
+    expect(signalReceived?.aborted).toBe(false);
+  });
+});

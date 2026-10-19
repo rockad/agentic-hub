@@ -65,8 +65,23 @@ export type HookDeps = {
   egressAllowed?: (cwd: string | undefined) => boolean;
 };
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
+export function withTimeout<T>(
+  pOrFn: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+  ms: number,
+  externalController?: AbortController
+): Promise<T | null> {
+  const controller = externalController || new AbortController();
+  let timer: any;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, ms);
+  });
+  const promise = typeof pOrFn === 'function' ? pOrFn(controller.signal) : pOrFn;
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
@@ -167,7 +182,12 @@ function readSessionModel(sessionId: string | null): string | null {
 async function liveDispatch(task: string, quotaStrategy: string, criteria?: Record<string, string>): Promise<Dispatch | null> {
   try {
     const data = await withTimeout(
-      callJev(`Task: ${task}\n\nQuota strategy for this machine: ${quotaStrategy}.`, dispatchQuestions(criteria)),
+      (signal) =>
+        callJev(
+          `Task: ${task}\n\nQuota strategy for this machine: ${quotaStrategy}.`,
+          dispatchQuestions(criteria),
+          signal
+        ),
       JEV_HOOK_TIMEOUT_MS
     );
     return data ? parseDispatch(data, task, quotaStrategy, criteria) : null;

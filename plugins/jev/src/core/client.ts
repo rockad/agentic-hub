@@ -74,11 +74,9 @@ export function loadEnvFile(filePath: string): void {
 }
 
 export function ensureSecretsLoaded(): void {
-  if (isPlaceholder(process.env.JEV_OPENROUTER_API_KEY) && isPlaceholder(process.env.OPENROUTER_API_KEY)) {
-    loadEnvFile(path.join(os.homedir(), '.config', 'zsh', 'secrets.env'));
-    loadEnvFile(path.join(os.homedir(), '.config', 'jev', 'env'));
-    loadEnvFile(path.join(os.homedir(), '.gemini', 'config', 'plugins', 'jev', '.env'));
-  }
+  loadEnvFile(path.join(os.homedir(), '.config', 'zsh', 'secrets.env'));
+  loadEnvFile(path.join(os.homedir(), '.config', 'jev', 'env'));
+  loadEnvFile(path.join(os.homedir(), '.gemini', 'config', 'plugins', 'jev', '.env'));
 }
 
 ensureSecretsLoaded();
@@ -103,11 +101,23 @@ export function getOpenRouterApiKey(): string {
   }
 }
 
-export async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+export async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  extraDirs: Array<string | undefined> = []
+): Promise<Response> {
   // Single choke point for every outbound request: blocks before any byte leaves the machine.
-  assertEgressAllowed(url, options.body);
+  assertEgressAllowed(url, options.body, extraDirs);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort(options.signal.reason);
+    } else {
+      options.signal.addEventListener('abort', () => controller.abort(options.signal?.reason), { once: true });
+    }
+  }
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
     return res;
@@ -164,7 +174,8 @@ export function stripJsonFences(raw: string): string {
 export async function callJevDecision(
   state: string,
   questions: Record<string, unknown>,
-  modelTier?: string
+  modelTier?: string,
+  signal?: AbortSignal
 ): Promise<any> {
   const models = getJevModels();
   const timeouts = getJevTimeouts();
@@ -208,7 +219,8 @@ export async function callJevDecision(
           'HTTP-Referer': 'https://github.com/agentic-hub/jev',
           'X-Title': 'Jev Decisions Gateway'
         },
-        body: JSON.stringify({ model: targetModel, state, questions })
+        body: JSON.stringify({ model: targetModel, state, questions }),
+        signal
       },
       timeouts.decisionMs
     );
@@ -246,7 +258,11 @@ export async function callJevDecision(
 /**
  * Tier 2: `typesafe/jev-router` via OpenRouter Chat Completions with strict structured JSON schema.
  */
-export async function callJevRouter(state: string, questions: Record<string, unknown>): Promise<any> {
+export async function callJevRouter(
+  state: string,
+  questions: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<any> {
   const models = getJevModels();
   const timeouts = getJevTimeouts();
   const targetModel = models.router;
@@ -294,7 +310,8 @@ export async function callJevRouter(state: string, questions: Record<string, unk
               }
             }
           }
-        })
+        }),
+        signal
       },
       timeouts.fallbackMs
     );
@@ -340,11 +357,15 @@ export async function callJevRouter(state: string, questions: Record<string, unk
 /**
  * Unified Jev decision call: Tier 1 decisions API first, then Tier 2 router fallback.
  */
-export async function callJev(state: string, questions: Record<string, unknown>): Promise<any> {
+export async function callJev(
+  state: string,
+  questions: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<any> {
   try {
-    return await callJevDecision(state, questions);
+    return await callJevDecision(state, questions, undefined, signal);
   } catch {
-    return await callJevRouter(state, questions);
+    return await callJevRouter(state, questions, signal);
   }
 }
 
@@ -425,7 +446,9 @@ export interface FreeExecutionResult {
 export async function callOpenRouterFree(
   prompt: string,
   systemInstruction?: string,
-  requestedModel?: string
+  requestedModel?: string,
+  cwd?: string,
+  timeoutMsOverride?: number
 ): Promise<FreeExecutionResult> {
   if (requestedModel) {
     assertFreeModel(requestedModel);
@@ -457,7 +480,8 @@ export async function callOpenRouterFree(
     throw new Error('No valid free model candidates available');
   }
 
-  const timeoutMs = timeouts.freeExecutionMs || FREE_EXEC_TIMEOUT_MS || 25000;
+  const timeoutMs = timeoutMsOverride || timeouts.freeExecutionMs || FREE_EXEC_TIMEOUT_MS || 25000;
+  const extraDirs = cwd ? [cwd] : [];
   let lastError: any = null;
 
   for (const apiKey of keysToTry) {
@@ -475,7 +499,7 @@ export async function callOpenRouterFree(
             model: m,
             messages
           })
-        }, timeoutMs);
+        }, timeoutMs, extraDirs);
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');

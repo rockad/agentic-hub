@@ -242,7 +242,7 @@ describe('egress policy: fetchWithTimeout choke point', () => {
   });
 
   it('sends the request when the session is allowed', async () => {
-    writePolicy({ allowPaths: [PLUGIN_ROOT] });
+    writePolicy({ allowPaths: [PLUGIN_ROOT, process.cwd()] });
 
     await fetchWithTimeout('https://openrouter.ai/x', { method: 'POST' }, 1000);
 
@@ -269,7 +269,7 @@ describe('egress policy: log', () => {
   });
 
   it('logs a sent request with its model', async () => {
-    writePolicy({ allowPaths: [PLUGIN_ROOT] });
+    writePolicy({ allowPaths: [PLUGIN_ROOT, process.cwd()] });
 
     await fetchWithTimeout('https://openrouter.ai/x', { method: 'POST', body }, 1000);
 
@@ -323,6 +323,15 @@ describe('egress policy: every network sink is gated', () => {
     block();
 
     await callOpenRouterFree('prompt text').catch(() => null);
+
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('callOpenRouterFree with denied cwd sends nothing', async () => {
+    writePolicy({ allowPaths: [PLUGIN_ROOT] });
+    const deniedDir = mkdir('private-sub');
+
+    await callOpenRouterFree('prompt text', undefined, undefined, deniedDir).catch(() => null);
 
     expect(fetchCalls.length).toBe(0);
   });

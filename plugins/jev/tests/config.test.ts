@@ -30,6 +30,22 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
     tmpUserConfigFile = path.join(tmpUserDir, 'config.json');
     process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
 
+    const HARNESS_ENV_VARS = [
+      'JEV_HARNESS',
+      'ANTIGRAVITY_CLI',
+      'GEMINI_CLI',
+      'CLAUDE_CODE',
+      'CLAUDECODE',
+      'CLAUDE_PROJECT_DIR',
+      'OPENCODE_SESSION',
+      'OPENCODE_HOME',
+      'CORTEX_SESSION',
+      'JEV_ZDR'
+    ];
+    for (const v of HARNESS_ENV_VARS) {
+      delete process.env[v];
+    }
+
     tmpProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-proj-test-'));
     clearConfigCacheForTesting();
   });

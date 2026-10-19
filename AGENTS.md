@@ -55,7 +55,7 @@ agentic-hub/
   - Router/Judge: OpenRouter Decisions API (`~typesafe/jev-latest`).
   - Free Execution: `openrouter/free` pool (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`, `nvidia/nemotron-3.5-lightning:free`).
 - **Quality Gate Scripts**:
-  - `commit.ts` (`dg-commit`): Semantic commit generator using free models and `jev_judge` validation. Enforces strict quality gate blocking (`noul >= 0.35` required, exits code 1 if rejected unless overridden with `--force` or `--no-verify`).
+  - `commit.ts` (`commit.sh`): Semantic commit generator using free models and `jev_judge` validation. Enforces strict quality gate blocking (`noul >= 0.35` required, exits code 1 if rejected unless overridden with `--force` or `--no-verify`).
 
 ## `plugins/memory` — Unified Session Memory Umbrella
 

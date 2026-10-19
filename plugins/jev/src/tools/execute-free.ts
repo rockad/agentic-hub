@@ -60,7 +60,7 @@ export const executeFreeGuardedToolDefinition: Tool = {
 
 export async function handleAgentFreeTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
-  const { prompt, model } = (args || {}) as {
+  const { prompt, cwd, model, timeoutMs } = (args || {}) as {
     prompt: string;
     cwd?: string;
     model?: string;
@@ -79,7 +79,7 @@ export async function handleAgentFreeTool(args: unknown): Promise<{ content: Arr
   let latencyMs = 0;
 
   try {
-    const data = await callOpenRouterFree(prompt, undefined, freeModel);
+    const data = await callOpenRouterFree(prompt, undefined, freeModel, cwd, timeoutMs);
     content = data.choices?.[0]?.message?.content || data.content || '';
     actualModel = data.model || data.modelUsed || freeModel;
     const promptTokens = data.usage?.prompt_tokens ?? 0;

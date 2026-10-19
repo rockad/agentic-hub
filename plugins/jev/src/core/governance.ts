@@ -366,9 +366,10 @@ export function defaultEffortForSubagent(subagent: string, promptText: string = 
 
   // Low effort mechanical roles / keywords
   if (
-    sa === 'inbox_processor' ||
-    sa === 'syntax_formatter' ||
-    sa === 'git_scribe' ||
+    sa.includes('inbox') ||
+    sa.includes('processor') ||
+    sa.includes('format') ||
+    sa.includes('scribe') ||
     hasWord(/\b(re)?format(s|ted|ting|ter|ters)?\b/) ||
     hasWord(/\bfile into\b/) ||
     hasWord(/\bcommit message\b/)

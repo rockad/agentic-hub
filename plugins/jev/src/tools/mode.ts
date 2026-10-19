@@ -1,14 +1,15 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import * as fs from 'node:fs/promises';
-import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { JEV_STATE_FILE, JEV_CONFIG_FILE, type JevMode, logTelemetry } from '../core/index.js';
+import {
+  type JevMode,
+  logTelemetry,
+  readJevMode,
+  writeModeState as coreWriteModeState,
+  loadJevConfigSync
+} from '../core/index.js';
 
-const execFileAsync = promisify(execFile);
-export const JEV_MODE_BIN = path.join(os.homedir(), '.local', 'bin', 'jev-mode');
+export { coreWriteModeState as writeModeState };
 
 export interface ModeDetails {
   mode: JevMode;
@@ -59,53 +60,14 @@ export function getModeDetails(mode: string): ModeDetails {
 }
 
 export async function readCurrentMode(): Promise<{ mode: JevMode; updatedAt?: string; raw?: Record<string, any> }> {
-  try {
-    if (fsSync.existsSync(JEV_STATE_FILE)) {
-      const raw = await fs.readFile(JEV_STATE_FILE, 'utf8');
-      const parsed = JSON.parse(raw);
-      const m = (parsed.mode || 'on').toLowerCase();
-      const validMode: JevMode = (m === 'off' || m === 'on-demand' || m === 'on') ? m : 'on';
-      return { mode: validMode, updatedAt: parsed.updated_at, raw: parsed };
-    }
-  } catch {
-    // Ignore read errors, default to on
-  }
-  return { mode: 'on' };
-}
-
-export async function writeModeState(mode: JevMode, harness?: string): Promise<string> {
-  const dir = path.dirname(JEV_STATE_FILE);
-  await fs.mkdir(dir, { recursive: true });
-  const updatedAt = new Date().toISOString();
-  const payload = JSON.stringify({ mode, updated_at: updatedAt });
-  await fs.writeFile(JEV_STATE_FILE, payload + '\n', 'utf8');
-
-  try {
-    let cfg: any = {};
-    if (fsSync.existsSync(JEV_CONFIG_FILE)) {
-      cfg = JSON.parse(await fs.readFile(JEV_CONFIG_FILE, 'utf8'));
-    }
-    if (!cfg.harnesses) cfg.harnesses = {};
-    if (harness) {
-      if (!cfg.harnesses[harness]) cfg.harnesses[harness] = {};
-      cfg.harnesses[harness].mode = mode;
-    } else {
-      if (!cfg.defaults) cfg.defaults = {};
-      cfg.defaults.mode = mode;
-      if (!cfg.harnesses.antigravity) cfg.harnesses.antigravity = {};
-      cfg.harnesses.antigravity.mode = mode;
-    }
-    await fs.writeFile(JEV_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-  } catch {
-    // best-effort
-  }
-
-  return updatedAt;
+  const mode = await readJevMode();
+  const cfg = loadJevConfigSync();
+  return { mode, raw: cfg };
 }
 
 export const setModeToolDefinition: Tool = {
   name: 'jev_set_mode',
-  description: 'Switch TypeSafe Jev operating mode ("off" | "on-demand" | "on"). Updates ~/.config/jev/mode.json and MCP availability via ~/.local/bin/jev-mode.',
+  description: 'Switch TypeSafe Jev operating mode ("off" | "on-demand" | "on"). Updates ~/.config/jev/config.json directly in-process.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -146,32 +108,7 @@ export async function handleSetModeTool(args: unknown): Promise<{ content: Array
     throw new Error(`Invalid mode "${mode}". Supported modes: "off", "on-demand", "on"`);
   }
 
-  let cliOutput = '';
-  if (targetMode === 'off') {
-    await writeModeState('off');
-    if (fsSync.existsSync(JEV_MODE_BIN)) {
-      const timer = setTimeout(() => {
-        execFile(JEV_MODE_BIN, ['off'], () => {});
-      }, 150);
-      timer.unref?.();
-    }
-    cliOutput = 'Jev mode set to OFF (MCP server disable scheduled in 150ms after response flush)';
-  } else {
-    if (fsSync.existsSync(JEV_MODE_BIN)) {
-      try {
-        const { stdout, stderr } = await execFileAsync(JEV_MODE_BIN, [targetMode]);
-        cliOutput = (stdout + (stderr ? `\n${stderr}` : '')).trim();
-      } catch (execErr: any) {
-        await writeModeState(targetMode);
-        cliOutput = `Direct state update fallback (binary exec error: ${execErr.message})`;
-      }
-    } else {
-      await writeModeState(targetMode);
-      cliOutput = 'Direct state update fallback (jev-mode binary not found)';
-    }
-  }
-
-  const currentState = await readCurrentMode();
+  const updatedAt = await coreWriteModeState(targetMode);
   const details = getModeDetails(targetMode);
 
   const result = {
@@ -180,9 +117,8 @@ export async function handleSetModeTool(args: unknown): Promise<{ content: Array
     title: details.title,
     explanation: details.explanation,
     characteristics: details.characteristics,
-    stateFile: JEV_STATE_FILE,
-    updatedAt: currentState.updatedAt || new Date().toISOString(),
-    cliOutput
+    configFile: process.env.JEV_CONFIG_FILE || path.join(os.homedir(), '.config', 'jev', 'config.json'),
+    updatedAt
   };
 
   await logTelemetry({
@@ -203,38 +139,14 @@ export async function handleGetModeTool(_args?: unknown): Promise<{ content: Arr
   const currentState = await readCurrentMode();
   const details = getModeDetails(currentState.mode);
 
-  let cliStatusOutput: string | undefined = undefined;
-  let extractedMcpStatus: string | undefined = undefined;
-  if (fsSync.existsSync(JEV_MODE_BIN)) {
-    try {
-      const { stdout } = await execFileAsync(JEV_MODE_BIN, ['status']);
-      cliStatusOutput = stdout.trim();
-      const match = cliStatusOutput.match(/MCP Status:\s+\x1b\[[0-9;]*m([^\x1b]+)\x1b/);
-      if (match && match[1]) {
-        extractedMcpStatus = match[1].trim();
-      } else {
-        const lines = cliStatusOutput.split('\n');
-        for (const line of lines) {
-          if (line.includes('MCP Status:')) {
-            extractedMcpStatus = line.replace(/.*MCP Status:\s*/, '').replace(/\x1b\[[0-9;]*m/g, '').trim();
-          }
-        }
-      }
-    } catch {
-      // Non-fatal status script error
-    }
-  }
-
   const result = {
     mode: currentState.mode,
     status: 'active',
     title: details.title,
     explanation: details.explanation,
     characteristics: details.characteristics,
-    stateFile: JEV_STATE_FILE,
-    updatedAt: currentState.updatedAt,
-    cliStatus: cliStatusOutput,
-    mcpStatus: extractedMcpStatus
+    configFile: process.env.JEV_CONFIG_FILE || path.join(os.homedir(), '.config', 'jev', 'config.json'),
+    updatedAt: currentState.updatedAt
   };
 
   await logTelemetry({

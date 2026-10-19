@@ -212,14 +212,9 @@ describe('escalation request', () => {
 
 
 describe('WS2 Jev Plugin Core & CLI Fixes', () => {
-  it('scripts/jev-mode uses dynamic PLUGIN_ROOT resolution and contains auto-heal logic', () => {
+  it('scripts/jev-mode is retired and mode state is managed via in-process writeModeState', () => {
     const jevModePath = path.join(PLUGIN_ROOT, 'scripts', 'jev-mode');
-    const content = fs.readFileSync(jevModePath, 'utf-8');
-    expect(content).toContain('SCRIPT_PATH=');
-    expect(content).toContain('PLUGIN_ROOT=');
-    expect(content).not.toContain("import { readQuotaView } from '/home/rockad/projects/agentic-hub/plugins/jev/src/shared.ts'");
-    expect(content).toContain('${PLUGIN_ROOT}/src/shared.ts');
-    expect(content).toContain('auto-healed');
+    expect(fs.existsSync(jevModePath)).toBe(false);
   });
 
   it('jev_set_mode with "off" schedules a detached timeout rather than blocking synchronously', async () => {

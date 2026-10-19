@@ -245,25 +245,16 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       try {
         const cfg = loadJevConfigSync(tmpProjectDir, true);
         expect(cfg.version).toBe(2);
+        expect(cfg.defaults.mode).toBe('off');
         expect(cfg.defaults.agentPaths).toEqual([]);
-        expect(cfg.defaults.availableSubagents).toEqual([
-          'career-advisor',
-          'code-engineer',
-          'ghostwriter',
-          'inbox-processor',
-          'knowledge-researcher',
-          'qa-engineer',
-          'system-operator',
-          'vault-librarian',
-          'self'
-        ]);
+        expect(cfg.defaults.availableSubagents).toEqual(['self']);
         expect(cfg.tiers).toBeDefined();
         expect(cfg.tiers?.free.concurrencyCap).toBe(10);
         expect(cfg.tiers?.deep.requiresApproval).toBe(true);
 
         const agyConfig = getHarnessConfig('antigravity', tmpProjectDir);
         expect(agyConfig.agentPaths).toEqual([]);
-        expect(agyConfig.availableSubagents).toContain('code-engineer');
+        expect(agyConfig.availableSubagents).toEqual(['self']);
 
         const agyModels = getHarnessModels('antigravity');
         expect(agyModels.cheap).toBe('flash_lite');
@@ -277,7 +268,7 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
 
         const openCodeModels = getHarnessModels('opencode');
         expect(openCodeModels.cheap).toBe('google/gemini-2.5-flash-lite');
-        expect(openCodeModels.deep).toBe('anthropic/claude-3.7-sonnet');
+        expect(openCodeModels.deep).toBe('anthropic/claude-3.5-sonnet');
       } finally {
         process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
         clearConfigCacheForTesting();
@@ -317,6 +308,7 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
         tmpUserConfigFile,
         JSON.stringify({
           version: 2,
+          defaults: { mode: 'on' },
           timeouts: { decisionMs: 4000 }
         })
       );
@@ -373,6 +365,13 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
     });
 
     it('Level 3: Untrusted root .jev.json fallback strictly strips mode, models, and arbitrary cache paths', () => {
+      fs.writeFileSync(
+        tmpUserConfigFile,
+        JSON.stringify({
+          version: 2,
+          defaults: { mode: 'on' }
+        })
+      );
       const rootConfigPath = path.join(tmpProjectDir, '.jev.json');
       fs.writeFileSync(
         rootConfigPath,
@@ -428,8 +427,8 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(opencodeConfig.mode).toBe('on-demand');
     });
 
-    it('verifies opencode deep model typo fix (claude-3.7-sonnet)', () => {
-      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-3.7-sonnet');
+    it('verifies opencode deep model alignment (claude-3.5-sonnet)', () => {
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-3.5-sonnet');
     });
 
     it('Level 5: Environment variables override project and user config at runtime', () => {

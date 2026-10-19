@@ -30,30 +30,28 @@ To inspect the active operating mode, configuration state, and mode characterist
 
 - **Via MCP Tool (Chat Interface)**:
   Call `jev_get_mode` (or `call_mcp_tool` with `ServerName: "jev_jev"` or `"jev"`, `ToolName: "jev_get_mode"`, `Arguments: {}`).
-- **Via Terminal**:
-  Run `jev status` or `jev` (or `~/.local/bin/jev-mode status`).
+- **Via Configuration**:
+  Inspect `~/.config/jev/config.json`.
 
 ### 2. Switch Operating Modes
 
 To switch modes directly:
 
-**Important Note on Lockout Recovery**: When Jev is `off`, the `jev` MCP server is disabled (`agy mcp disable jev`), meaning MCP tools (`jev_set_mode`, `jev_get_mode`) are unavailable. Therefore, always use the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` to switch modes or check status (`jev status`). When Jev is enabled (`on` or `on-demand`), MCP tools are also available (`jev_set_mode("off")` automatically schedules disabling the server after flushing its response).
-
 #### Switching to `on` (Aggressive System 1):
-- **Via Terminal (Primary & Required when `off`)**:
-  Run `jev on` (or `~/.local/bin/jev-mode on`).
+- **Via Skill / Command**:
+  Update `defaults.mode: "on"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool (When enabled)**:
   Call `jev_set_mode` with argument `{"mode": "on"}`.
 
 #### Switching to `on-demand` (Passive Coprocessor):
-- **Via Terminal**:
-  Run `jev on-demand` (or `~/.local/bin/jev-mode on-demand`).
+- **Via Skill / Command**:
+  Update `defaults.mode: "on-demand"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "on-demand"}`.
 
 #### Switching to `off` (Zero Overhead):
-- **Via Terminal**:
-  Run `jev off` (or `~/.local/bin/jev-mode off`).
+- **Via Skill / Command**:
+  Update `defaults.mode: "off"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp disable jev` via `run_command`.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "off"}`.
 
@@ -70,22 +68,21 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
 - The session model is the ceiling. In mode `on`, a `PreToolUse` hook asks the user before an `Agent` call runs on a stronger model, and before a delegation Jev rates `pro`. Treat a denial as "run it on the session model or cheaper", not as "do it yourself".
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
-- Switch modes with the `jev` CLI (`jev-mode <mode>`).
+- Mode state is read directly from `~/.config/jev/config.json`.
 
 ---
 
 ## Slash Command Usage
 
 When invoked via `/jev` or `/jev <mode>`:
-- `/jev` or `/jev status`: Run `jev status` via terminal (`run_command`) to inspect current mode and auto-heal MCP sync drift with `mode.json`.
-- `/jev on`: Run `jev on` via terminal to enable Jev and the MCP server.
-- `/jev on-demand`: Run `jev on-demand` via terminal.
-- `/jev off`: Run `jev off` via terminal to disable Jev MCP server and achieve zero overhead.
+- `/jev` or `/jev status`: Inspect current mode from `~/.config/jev/config.json`.
+- `/jev on`: Sets mode to `on` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev on-demand`: Sets mode to `on-demand` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev off`: Sets mode to `off` in `~/.config/jev/config.json` and disables MCP server (`agy mcp disable jev`) for zero overhead.
 
 ## Underlying State & Files
 
-- **Config File**: `~/.config/jev/mode.json` (`{"mode": "<mode>", "updated_at": "..."}`)
-- **CLI Helper**: `~/.local/bin/jev-mode` (symlinked or available as `jev`)
+- **Config File**: `~/.config/jev/config.json` (canonical configuration store, defaults to `mode: "off"`)
 - **Telemetry Log**: `~/.gemini/antigravity-cli/jev_telemetry.jsonl`
 
 ---

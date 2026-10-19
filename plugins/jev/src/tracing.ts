@@ -12,6 +12,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { assertEgressAllowed } from './core/egress.js';
 
 export interface JevSpan {
   setAttribute(key: string, value: string | number | boolean): void;
@@ -116,6 +117,9 @@ function emitOtlpSpan(data: {
     const targetUrl = data.endpoint.endsWith('/v1/traces')
       ? data.endpoint
       : `${data.endpoint.replace(/\/$/, '')}/v1/traces`;
+    const body = JSON.stringify(payload);
+    // Same egress policy as every other outbound call; a blocked span is dropped by the catch below.
+    assertEgressAllowed(targetUrl, body);
 
     // Asynchronous fire-and-forget: short abort timeout, unref'd timer, never blocks process exit
     const controller = new AbortController();
@@ -127,7 +131,7 @@ function emitOtlpSpan(data: {
     fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body,
       signal: controller.signal
     })
       .catch(() => {

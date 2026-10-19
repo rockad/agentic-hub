@@ -20,6 +20,7 @@ import {
 } from '../src/shared.ts';
 import { onUserPromptSubmit, onPreToolUse, type HookDeps } from '../claude/hook.ts';
 import type { Dispatch } from '../claude/logic.ts';
+import { initTracingSync } from '../src/tracing.ts';
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
 const ENV_KEYS = ['HOME', 'CLAUDE_PROJECT_DIR', 'JEV_EGRESS_DENY', 'OPENROUTER_API_KEY', 'JEV_CACHE_FILE'] as const;
@@ -387,7 +388,53 @@ describe('egress policy: Claude Code hook', () => {
   });
 });
 
+describe('egress policy: OTLP span export', () => {
+  const emitSpan = (endpoint: string): void => {
+    initTracingSync({ enabled: true, endpoint }).startSpan('egress-test').end();
+    initTracingSync({ enabled: false });
+  };
+
+  it('drops a span bound for a remote collector when the policy blocks', () => {
+    writePolicy({ allowPaths: [mkdir('elsewhere')] });
+
+    emitSpan('https://otel.example.com');
+
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it('logs the dropped span as blocked', () => {
+    writePolicy({ allowPaths: [mkdir('elsewhere')] });
+
+    emitSpan('https://otel.example.com');
+
+    expect(fs.readFileSync(egressLogFile(), 'utf8')).toContain('"decision":"blocked"');
+  });
+
+  it('still exports to a loopback collector when the policy blocks', () => {
+    writePolicy({ allowPaths: [mkdir('elsewhere')] });
+
+    emitSpan('http://127.0.0.1:4318');
+
+    expect(fetchCalls).toEqual(['http://127.0.0.1:4318/v1/traces']);
+  });
+
+  it('exports to a remote collector when there is no policy', () => {
+    emitSpan('https://otel.example.com');
+
+    expect(fetchCalls).toEqual(['https://otel.example.com/v1/traces']);
+  });
+});
+
 describe('egress policy: no bypass of the choke point', () => {
+  it('checks the policy in every file that calls fetch directly', () => {
+    const allowed = new Set(['src/core/client.ts', 'src/tracing.ts']);
+    const unchecked = [...allowed].filter(
+      (rel) => !/assertEgressAllowed\(/.test(fs.readFileSync(path.join(PLUGIN_ROOT, rel), 'utf8'))
+    );
+
+    expect(unchecked).toEqual([]);
+  });
+
   it('calls fetch directly only from fetchWithTimeout and tracing', () => {
     const allowed = new Set(['src/core/client.ts', 'src/tracing.ts']);
     const offenders: string[] = [];

@@ -258,6 +258,12 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   };
 }
 
+/** The discovered agent for a role: its snake_case name or the kebab-case alias discovery registers. */
+export function findAgent(availableKeys: string[], name: string): string | null {
+  const kebab = name.replace(/_/g, '-');
+  return availableKeys.includes(name) ? name : availableKeys.includes(kebab) ? kebab : null;
+}
+
 export async function handleBatchDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
   const { tasks, availableSubagents } = (args || {}) as {
@@ -282,24 +288,24 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const deps = Array.isArray(item.dependencies) ? item.dependencies : [];
     const scaffolding = detectScaffoldingTask(taskText);
 
-    let subagent = availableKeys.includes('code_engineer') ? 'code_engineer' : 'self';
+    let subagent = findAgent(availableKeys, 'code_engineer') ?? 'self';
     const tLower = taskText.toLowerCase();
     if (tLower.includes('career') || tLower.includes('job') || tLower.includes('cv') || tLower.includes('resume')) {
-      subagent = availableKeys.includes('career_advisor') ? 'career_advisor' : subagent;
+      subagent = findAgent(availableKeys, 'career_advisor') ?? subagent;
     } else if (tLower.includes('vault') || tLower.includes('obsidian') || tLower.includes('note')) {
-      subagent = availableKeys.includes('vault_librarian') ? 'vault_librarian' : subagent;
+      subagent = findAgent(availableKeys, 'vault_librarian') ?? subagent;
     } else if (tLower.includes('writing') || tLower.includes('cover letter') || tLower.includes('ghost') || tLower.includes('article')) {
-      subagent = availableKeys.includes('ghostwriter') ? 'ghostwriter' : subagent;
+      subagent = findAgent(availableKeys, 'ghostwriter') ?? subagent;
     } else if (tLower.includes('qa') || tLower.includes('test') || tLower.includes('fuzz') || tLower.includes('suite')) {
-      subagent = availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent;
+      subagent = findAgent(availableKeys, 'qa_engineer') ?? subagent;
     } else if (tLower.includes('inbox') || tLower.includes('triage') || tLower.includes('staging')) {
-      subagent = availableKeys.includes('inbox_processor') ? 'inbox_processor' : subagent;
+      subagent = findAgent(availableKeys, 'inbox_processor') ?? subagent;
     } else if (tLower.includes('system') || tLower.includes('infra') || tLower.includes('daemon') || tLower.includes('docker') || tLower.includes('operator')) {
-      subagent = availableKeys.includes('system_operator') ? 'system_operator' : subagent;
+      subagent = findAgent(availableKeys, 'system_operator') ?? subagent;
     } else if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
-      subagent = availableKeys.includes('knowledge_researcher') ? 'knowledge_researcher' : (availableKeys.includes('research') ? 'research' : subagent);
+      subagent = findAgent(availableKeys, 'knowledge_researcher') ?? findAgent(availableKeys, 'research') ?? subagent;
     } else if (tLower.includes('review') || tLower.includes('audit') || tLower.includes('gate')) {
-      subagent = availableKeys.includes('review') ? 'review' : (availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent);
+      subagent = findAgent(availableKeys, 'review') ?? findAgent(availableKeys, 'qa_engineer') ?? subagent;
     }
 
     let rawTier = 'flash';

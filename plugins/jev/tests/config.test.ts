@@ -277,7 +277,7 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
 
         const openCodeModels = getHarnessModels('opencode');
         expect(openCodeModels.cheap).toBe('google/gemini-2.5-flash-lite');
-        expect(openCodeModels.deep).toBe('anthropic/claude-3.7-sonnet');
+        expect(openCodeModels.deep).toBe('anthropic/claude-sonnet-5.5');
       } finally {
         process.env.JEV_CONFIG_FILE = tmpUserConfigFile;
         clearConfigCacheForTesting();
@@ -428,8 +428,8 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(opencodeConfig.mode).toBe('on-demand');
     });
 
-    it('verifies opencode deep model typo fix (claude-3.7-sonnet)', () => {
-      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-3.7-sonnet');
+    it('uses an opencode deep model that exists in the OpenRouter catalog', () => {
+      expect(DEFAULT_JEV_CONFIG.harnesses?.opencode?.models?.deep).toBe('anthropic/claude-sonnet-5.5');
     });
 
     it('Level 5: Environment variables override project and user config at runtime', () => {

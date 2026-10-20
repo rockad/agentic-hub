@@ -162,7 +162,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
         free: 'openrouter/free',
         cheap: 'google/gemini-2.5-flash-lite',
         standard: 'google/gemini-2.5-flash',
-        deep: 'anthropic/claude-3.7-sonnet'
+        deep: 'anthropic/claude-sonnet-5.5'
       }
     },
     cli: {

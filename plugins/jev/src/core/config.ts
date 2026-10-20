@@ -161,9 +161,9 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
       mode: 'off',
       models: {
         free: 'openrouter/free',
-        cheap: 'google/gemini-2.5-flash-lite',
-        standard: 'google/gemini-2.5-flash',
-        deep: 'anthropic/claude-3.5-sonnet'
+        cheap: '~anthropic/claude-haiku-latest',
+        standard: '~anthropic/claude-sonnet-latest',
+        deep: '~anthropic/claude-opus-latest'
       }
     },
     cli: {
@@ -386,7 +386,7 @@ export function getHarnessConfig(harness?: JevHarness, startDir?: string): Harne
   const targetHarness = harness || detectActiveHarness();
   const cfg = loadJevConfigSync(startDir);
   const overrides = cfg.harnesses?.[targetHarness] || {};
-  const mode = (cfg.defaults.mode === 'off' ? 'off' : (overrides.mode || cfg.defaults.mode || 'off')) as JevMode;
+  const mode = (overrides.mode || cfg.defaults.mode || 'off') as JevMode;
   const requireUpgradeApproval =
     typeof overrides.requireUpgradeApproval === 'boolean'
       ? overrides.requireUpgradeApproval
@@ -523,14 +523,8 @@ export function getCacheConfig(startDir?: string): JevCacheConfig {
 }
 
 export function readJevModeSync(harness?: JevHarness, startDir?: string): JevMode {
-  const cfg = loadJevConfigSync(startDir);
-  if (cfg.defaults.mode === 'off') {
-    return 'off';
-  }
-  if (harness) {
-    return getHarnessConfig(harness, startDir).mode;
-  }
-  return cfg.defaults.mode || 'off';
+  const targetHarness = harness || detectActiveHarness();
+  return getHarnessConfig(targetHarness, startDir).mode;
 }
 
 export async function readJevMode(harness?: JevHarness, startDir?: string): Promise<JevMode> {
@@ -561,10 +555,10 @@ export async function writeModeState(mode: JevMode, harness?: string): Promise<s
     cfg.harnesses[harness].mode = mode;
   } else {
     cfg.defaults.mode = mode;
-    if (mode === 'off') {
+    if (cfg.harnesses && typeof cfg.harnesses === 'object') {
       for (const h of Object.keys(cfg.harnesses)) {
         if (cfg.harnesses[h] && typeof cfg.harnesses[h] === 'object') {
-          cfg.harnesses[h].mode = 'off';
+          cfg.harnesses[h].mode = mode;
         }
       }
     }

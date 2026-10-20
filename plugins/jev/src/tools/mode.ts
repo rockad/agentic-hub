@@ -5,6 +5,8 @@ import {
   type JevMode,
   logTelemetry,
   readJevMode,
+  readJevModeSync,
+  detectActiveHarness,
   writeModeState as coreWriteModeState,
   loadJevConfigSync
 } from '../core/index.js';
@@ -60,7 +62,8 @@ export function getModeDetails(mode: string): ModeDetails {
 }
 
 export async function readCurrentMode(): Promise<{ mode: JevMode; updatedAt?: string; raw?: Record<string, any> }> {
-  const mode = await readJevMode();
+  const activeHarness = detectActiveHarness();
+  const mode = readJevModeSync(activeHarness);
   const cfg = loadJevConfigSync();
   return { mode, raw: cfg };
 }
@@ -136,22 +139,27 @@ export async function handleSetModeTool(args: unknown): Promise<{ content: Array
 }
 
 export async function handleGetModeTool(_args?: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const currentState = await readCurrentMode();
-  const details = getModeDetails(currentState.mode);
+  const activeHarness = detectActiveHarness();
+  const activeMode = readJevModeSync(activeHarness);
+  const cfg = loadJevConfigSync();
+  const details = getModeDetails(activeMode);
 
   const result = {
-    mode: currentState.mode,
+    harness: activeHarness,
+    mode: activeMode,
+    defaultMode: cfg.defaults?.mode || 'off',
+    harnesses: cfg.harnesses || {},
     status: 'active',
     title: details.title,
     explanation: details.explanation,
     characteristics: details.characteristics,
     configFile: process.env.JEV_CONFIG_FILE || path.join(os.homedir(), '.config', 'jev', 'config.json'),
-    updatedAt: currentState.updatedAt
+    updatedAt: undefined
   };
 
   await logTelemetry({
     tool: 'jev_get_mode',
-    mode: currentState.mode,
+    mode: activeMode,
     status: 'success'
   });
 

@@ -288,11 +288,21 @@ Example configuration:
 
 #### Precedence & Scoping Rules
 
-1. **Per-Harness Override:** `harnesses.<harness>.mode` takes precedence when running inside that harness.
+1. **Per-Harness Override:** `harnesses.<harness>.mode` takes precedence when running inside that harness (e.g. enabling a specific harness even if `defaults.mode` is `"off"`).
 2. **Global Default:** Falls back to `defaults.mode` if no harness-specific override exists.
-3. **Hard Stop (`off`):** When the global default or active harness mode is `off`, all background decisions and dispatch checks are completely disabled.
-4. **Fallback Default:** If unconfigured, mode strictly defaults to **`off`** (Opt-In Intent).
-5. **Routing Strategy:** `routing.strategy` selects between `"router"` (OpenRouter Decisions API `~typesafe/jev-latest` with local keyword fallback) and `"keyword"` (offline local description scoring only).
+3. **Fallback Default:** If unconfigured, mode strictly defaults to **`off`** (Opt-In Intent).
+4. **Routing Strategy:** `routing.strategy` selects between `"router"` (OpenRouter Decisions API `~typesafe/jev-latest` with local keyword fallback) and `"keyword"` (offline local description scoring only).
+
+#### Harness Model Configuration
+
+Jev maps execution tiers across supported agent harnesses to their native or configured models:
+
+| Harness | Free Tier (`free`) | Cheap Tier (`cheap`) | Standard Tier (`standard`) | Deep Tier (`deep`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Antigravity** | `openrouter/free` | `flash_lite` | `flash` | `pro` |
+| **Claude Code** | `openrouter/free` | `haiku` | `sonnet` | `opus` |
+| **OpenCode** | `openrouter/free` | `~anthropic/claude-haiku-latest` | `~anthropic/claude-sonnet-latest` | `~anthropic/claude-opus-latest` |
+| **CLI** | `openrouter/free` | `google/gemma-4-31b-it:free` | `typesafe/jev-router` | `typesafe/jev-router` |
 
 ### Outbound Data Control & Privacy (optional)
 
@@ -315,6 +325,9 @@ By default jev sends requests exactly as before. To keep some of your work away 
 - While a policy is active, each sent and blocked request is logged to `~/.config/jev/egress-log.jsonl` with host, model, byte count, and ZDR audit markers (`zdr_policy`, `zdr_applied`). Request bodies are never logged.
 
 **Limits.** The policy looks at *where the session runs*, not at *what the data is*. Text from a blocked directory that you paste into a prompt, or a file read by absolute path from an allowed session, is not detected.
+
+> [!NOTE]
+> **Batch Dispatch Outbound Data Notice:** When `routing.strategy` is set to `"router"` (the default), `jev_batch_dispatch` routes task descriptions and criteria to the OpenRouter Decisions API (`~typesafe/jev-latest`). These requests are strictly governed by your egress directory rules and Zero Data Retention (ZDR) policy. If an egress policy blocks the working directory, or if `zdr: "strict"` is active and ZDR is unavailable, dispatch automatically falls back to offline local keyword matching without leaking data.
 
 #### 🔒 Zero Data Retention (ZDR) & Provider Data Policies
 

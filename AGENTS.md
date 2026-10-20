@@ -48,8 +48,16 @@ agentic-hub/
 
 `plugins/jev` provides fast, low-cost System 1 decision-making, task routing, quality gate enforcement, and free-tier coprocessor execution.
 
-- **Architecture**: Lightweight orchestration layer using OpenRouter Decisions API (~800ms) for probabilistic routing, rubric scoring, and binary diff judging.
-- **MCP Server (`jev-mcp`)**: Exposes decision tools (`jev_route`, `jev_judge`, `jev_score`, `jev_dispatch`, `jev_agent_free`, `jev_execute_free`, `jev_set_mode`, `jev_get_mode`, `jev_quota`, `jev_select_model`).
+- **Default OFF (Opt-In Intent)**: Strictly **OFF by default** when unconfigured (`defaults.mode: "off"`). No background decisions, pre-flight routing, or external network calls occur until explicitly enabled via `/jev on` or `/jev on-demand`.
+- **Single-Store Architecture (`~/.config/jev/config.json`)**: Sole source of truth for global defaults (`defaults.mode`) and per-harness overrides (`harnesses.<harness>.mode`). Legacy `mode.json` is completely deprecated and ignored, and can be safely deleted.
+- **Shell Script Retirement**: `scripts/jev-mode` is retired. Mode switching and inspection are handled natively via the `/jev` slash command / skill inside agent harnesses and the `jev_set_mode` / `jev_get_mode` MCP tools.
+- **Dynamic Subagent Discovery**: Discovers subagents per harness without hardcoded persona assumptions:
+  - Antigravity: `<workspace>/.agents/agents/`
+  - Claude Code: `<workspace>/.claude/agents/`
+  - OpenCode: `<workspace>/.opencode/agents/`
+  - Universal Shared Global: `~/.agents/agents/` across all harnesses (local workspace agents take precedence).
+- **Dynamic Semantic Batch Dispatch (`jev_batch_dispatch`)**: Routes multi-task DAG workstreams dynamically using OpenRouter Decisions API (`~typesafe/jev-latest`), falling back to local description keyword scoring if offline or timed out. Configurable via `routing.strategy` (`"router"` | `"keyword"`) in `config.json`.
+- **MCP Server (`jev-mcp`)**: Exposes decision tools (`jev_route`, `jev_judge`, `jev_score`, `jev_dispatch`, `jev_batch_dispatch`, `jev_agent_free`, `jev_execute_free`, `jev_execute_free_guarded`, `jev_set_mode`, `jev_get_mode`, `jev_quota`, `jev_select_model`).
 - **OpenCode Integration**: OpenCode V2 plugin (`plugins/jev/opencode/`) provides cost-tiered model selection, automatic model swapping, free-tier delegation, and approval flows for expensive model tiers.
 - **Router & Free Models**:
   - Router/Judge: OpenRouter Decisions API (`~typesafe/jev-latest`).

@@ -62,9 +62,16 @@ export interface JevConfigDefaults {
   agentPaths?: string[];
 }
 
+export interface JevRoutingConfig {
+  strategy?: 'router' | 'keyword';
+  swap?: boolean;
+  models?: Record<string, string>;
+}
+
 export interface JevConfig {
   version: number;
   defaults: JevConfigDefaults;
+  routing?: JevRoutingConfig;
   tiers?: JevTiersConfig;
   models?: Record<string, string>;
   timeouts?: Partial<JevTimeoutsConfig>;
@@ -77,21 +84,15 @@ export interface JevConfig {
 export const DEFAULT_JEV_CONFIG: JevConfig = {
   version: 2,
   defaults: {
-    mode: 'on',
+    mode: 'off',
     requireUpgradeApproval: true,
     swap: true,
     agentPaths: [],
-    availableSubagents: [
-      'career-advisor',
-      'code-engineer',
-      'ghostwriter',
-      'inbox-processor',
-      'knowledge-researcher',
-      'qa-engineer',
-      'system-operator',
-      'vault-librarian',
-      'self'
-    ]
+    availableSubagents: ['self']
+  },
+  routing: {
+    strategy: 'router',
+    swap: true
   },
   tiers: {
     free: {
@@ -133,7 +134,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
   },
   harnesses: {
     antigravity: {
-      mode: 'on',
+      mode: 'off',
       models: {
         free: 'openrouter/free',
         cheap: 'flash_lite',
@@ -148,7 +149,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
       ]
     },
     'claude-code': {
-      mode: 'on',
+      mode: 'off',
       models: {
         free: 'openrouter/free',
         cheap: 'haiku',
@@ -160,13 +161,13 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
       mode: 'off',
       models: {
         free: 'openrouter/free',
-        cheap: 'google/gemini-2.5-flash-lite',
-        standard: 'google/gemini-2.5-flash',
-        deep: 'anthropic/claude-3.7-sonnet'
+        cheap: '~anthropic/claude-haiku-latest',
+        standard: '~anthropic/claude-sonnet-latest',
+        deep: '~anthropic/claude-opus-latest'
       }
     },
     cli: {
-      mode: 'on',
+      mode: 'off',
       models: {
         free: 'openrouter/free',
         cheap: 'google/gemma-4-31b-it:free',
@@ -385,7 +386,7 @@ export function getHarnessConfig(harness?: JevHarness, startDir?: string): Harne
   const targetHarness = harness || detectActiveHarness();
   const cfg = loadJevConfigSync(startDir);
   const overrides = cfg.harnesses?.[targetHarness] || {};
-  const mode = (overrides.mode || cfg.defaults.mode || 'on') as JevMode;
+  const mode = (overrides.mode || cfg.defaults.mode || 'off') as JevMode;
   const requireUpgradeApproval =
     typeof overrides.requireUpgradeApproval === 'boolean'
       ? overrides.requireUpgradeApproval
@@ -521,18 +522,50 @@ export function getCacheConfig(startDir?: string): JevCacheConfig {
   };
 }
 
-export async function readJevMode(harness?: JevHarness): Promise<JevMode> {
-  if (harness) {
-    return getHarnessConfig(harness).mode;
-  }
-  try {
-    if (fsSync.existsSync(JEV_STATE_FILE)) {
-      const parsed = JSON.parse(await fs.readFile(JEV_STATE_FILE, 'utf8'));
-      const m = String(parsed.mode || '').toLowerCase();
-      if (m === 'off' || m === 'on-demand' || m === 'on') return m as JevMode;
+export function readJevModeSync(harness?: JevHarness, startDir?: string): JevMode {
+  const targetHarness = harness || detectActiveHarness();
+  return getHarnessConfig(targetHarness, startDir).mode;
+}
+
+export async function readJevMode(harness?: JevHarness, startDir?: string): Promise<JevMode> {
+  return readJevModeSync(harness, startDir);
+}
+
+export async function writeModeState(mode: JevMode, harness?: string): Promise<string> {
+  const configFile = process.env.JEV_CONFIG_FILE || path.join(os.homedir(), '.config', 'jev', 'config.json');
+  const dir = path.dirname(configFile);
+  await fs.mkdir(dir, { recursive: true });
+
+  let cfg: any = {};
+  if (fsSync.existsSync(configFile)) {
+    try {
+      cfg = JSON.parse(await fs.readFile(configFile, 'utf8'));
+    } catch {
+      cfg = {};
     }
-  } catch {
-    // fall through
   }
-  return loadJevConfigSync().defaults.mode || 'on';
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    cfg = {};
+  }
+  if (!cfg.harnesses) cfg.harnesses = {};
+  if (!cfg.defaults) cfg.defaults = {};
+
+  if (harness) {
+    if (!cfg.harnesses[harness]) cfg.harnesses[harness] = {};
+    cfg.harnesses[harness].mode = mode;
+  } else {
+    cfg.defaults.mode = mode;
+    if (cfg.harnesses && typeof cfg.harnesses === 'object') {
+      for (const h of Object.keys(cfg.harnesses)) {
+        if (cfg.harnesses[h] && typeof cfg.harnesses[h] === 'object') {
+          cfg.harnesses[h].mode = mode;
+        }
+      }
+    }
+  }
+
+  const updatedAt = new Date().toISOString();
+  await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  clearConfigCacheForTesting();
+  return updatedAt;
 }

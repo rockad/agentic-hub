@@ -10,6 +10,8 @@ import {
   defaultEffortForSubagent,
   applyEffortGovernance,
   discoverWorkspaceAgents,
+  detectActiveHarness,
+  loadJevConfigSync,
   normalizeTier,
   getHarnessModels,
   type CognitiveTier,
@@ -83,22 +85,21 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     throw new Error('jev_dispatch requires a non-empty "task" string');
   }
 
-  const defaultSubagentCriteria: Record<string, string> = {
-    code_engineer: 'Software engineering, writing/refactoring code, automation scripts, tests, MCP servers',
-    research: 'Broad web exploration, documentation gathering, deep analysis',
-    general_assistant: 'General multi-domain coordination, task execution, planning',
-    review: 'Quality gate review, code/diff verification, sanity checking',
-    self: 'Direct clone of parent execution or current session',
-    none: 'Direct answer without subagent delegation'
-  };
-
   let subagentCriteria: Record<string, string> = {};
   if (Array.isArray(availableSubagents) && availableSubagents.length > 0) {
+    const discovered = await discoverWorkspaceAgents(process.cwd(), detectActiveHarness());
     for (const sa of availableSubagents) {
-      subagentCriteria[sa] = defaultSubagentCriteria[sa] || sa;
+      subagentCriteria[sa] = discovered[sa] || `Agent specialized in ${sa.replace(/[-_]/g, ' ')}`;
     }
   } else {
-    subagentCriteria = await discoverWorkspaceAgents();
+    subagentCriteria = await discoverWorkspaceAgents(process.cwd(), detectActiveHarness());
+  }
+
+  if (
+    Object.keys(subagentCriteria).length === 0 ||
+    (Object.keys(subagentCriteria).length <= 2 && subagentCriteria.self && subagentCriteria.none)
+  ) {
+    subagentCriteria.self = 'Generalist tasks, direct code changes, orchestrator execution';
   }
 
   const tierCriteria: Record<string, string> = {
@@ -258,6 +259,52 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   };
 }
 
+export function matchSubagentByKeywords(
+  taskText: string,
+  workspaceAgents: Record<string, string>
+): string {
+  const tLower = taskText.toLowerCase();
+  const taskTokens = tLower.replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  const taskTokenSet = new Set(taskTokens);
+
+  let bestAgent = 'self';
+  let bestScore = 0;
+
+  for (const [agentKey, desc] of Object.entries(workspaceAgents)) {
+    if (agentKey === 'none') continue;
+    let score = 0;
+
+    // Check direct normalized key match (hyphens, underscores, spaces)
+    const keyNorm = agentKey.toLowerCase().replace(/[-_]+/g, ' ');
+    if (tLower.includes(keyNorm)) {
+      score += 10;
+    }
+
+    // Split agentKey into tokens
+    const keyTokens = agentKey.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(w => w.length > 2);
+    for (const kt of keyTokens) {
+      if (taskTokenSet.has(kt)) {
+        score += 4;
+      }
+    }
+
+    // Description tokens match
+    const descTokens = (desc || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(w => w.length > 3);
+    for (const dt of descTokens) {
+      if (taskTokenSet.has(dt)) {
+        score += 1;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestAgent = agentKey;
+    }
+  }
+
+  return bestScore > 0 ? bestAgent : 'self';
+}
+
 export async function handleBatchDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
   const { tasks, availableSubagents } = (args || {}) as {
@@ -270,8 +317,60 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
   }
 
   const quotaView = await readQuotaView();
-  const workspaceAgents = await discoverWorkspaceAgents();
-  const availableKeys = Object.keys(workspaceAgents);
+  const activeHarness = detectActiveHarness();
+  const cfg = loadJevConfigSync();
+  const routingStrategy = cfg.routing?.strategy || 'router';
+
+  let workspaceAgents: Record<string, string> = {};
+  if (Array.isArray(availableSubagents) && availableSubagents.length > 0) {
+    const discovered = await discoverWorkspaceAgents(process.cwd(), activeHarness);
+    for (const sa of availableSubagents) {
+      workspaceAgents[sa] = discovered[sa] || `Agent specialized in ${sa.replace(/[-_]/g, ' ')}`;
+    }
+  } else {
+    workspaceAgents = await discoverWorkspaceAgents(process.cwd(), activeHarness);
+  }
+
+  if (
+    Object.keys(workspaceAgents).length === 0 ||
+    (Object.keys(workspaceAgents).length <= 2 && workspaceAgents.self && workspaceAgents.none)
+  ) {
+    workspaceAgents.self = 'Generalist tasks, direct code changes, orchestrator execution';
+  }
+
+  // Pre-route subagents via Decisions API in 'router' mode, or keyword fallback
+  const subagentAssignments: Record<string, string> = {};
+  if (routingStrategy === 'router') {
+    try {
+      const questions: Record<string, any> = {};
+      for (const item of tasks) {
+        questions[`sa_${item.id}`] = {
+          type: 'choice',
+          instructions: `Select the best specialized subagent for the task: ${item.task}`,
+          criteria: workspaceAgents
+        };
+      }
+      const data = await callJevDecision(`Batch routing for ${tasks.length} tasks`, questions);
+      for (const item of tasks) {
+        const choice = data.answers?.[`sa_${item.id}`]?.choice;
+        if (choice && choice !== 'none' && workspaceAgents[choice]) {
+          subagentAssignments[item.id] = choice;
+        } else {
+          subagentAssignments[item.id] = matchSubagentByKeywords(item.task || '', workspaceAgents);
+        }
+      }
+    } catch {
+      // Fall back to keyword scoring on network / timeout error
+      for (const item of tasks) {
+        subagentAssignments[item.id] = matchSubagentByKeywords(item.task || '', workspaceAgents);
+      }
+    }
+  } else {
+    for (const item of tasks) {
+      subagentAssignments[item.id] = matchSubagentByKeywords(item.task || '', workspaceAgents);
+    }
+  }
+
   const plannedTasks: SubTask[] = [];
   let freeTierCount = 0;
   let totalEstimatedCost = 0;
@@ -279,28 +378,11 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   for (const item of tasks) {
     const taskText = item.task || '';
+    const tLower = taskText.toLowerCase();
     const deps = Array.isArray(item.dependencies) ? item.dependencies : [];
     const scaffolding = detectScaffoldingTask(taskText);
 
-    let subagent = availableKeys.includes('code_engineer') ? 'code_engineer' : 'self';
-    const tLower = taskText.toLowerCase();
-    if (tLower.includes('career') || tLower.includes('job') || tLower.includes('cv') || tLower.includes('resume')) {
-      subagent = availableKeys.includes('career_advisor') ? 'career_advisor' : subagent;
-    } else if (tLower.includes('vault') || tLower.includes('obsidian') || tLower.includes('note')) {
-      subagent = availableKeys.includes('vault_librarian') ? 'vault_librarian' : subagent;
-    } else if (tLower.includes('writing') || tLower.includes('cover letter') || tLower.includes('ghost') || tLower.includes('article')) {
-      subagent = availableKeys.includes('ghostwriter') ? 'ghostwriter' : subagent;
-    } else if (tLower.includes('qa') || tLower.includes('test') || tLower.includes('fuzz') || tLower.includes('suite')) {
-      subagent = availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent;
-    } else if (tLower.includes('inbox') || tLower.includes('triage') || tLower.includes('staging')) {
-      subagent = availableKeys.includes('inbox_processor') ? 'inbox_processor' : subagent;
-    } else if (tLower.includes('system') || tLower.includes('infra') || tLower.includes('daemon') || tLower.includes('docker') || tLower.includes('operator')) {
-      subagent = availableKeys.includes('system_operator') ? 'system_operator' : subagent;
-    } else if (tLower.includes('research') || tLower.includes('search') || tLower.includes('investigate')) {
-      subagent = availableKeys.includes('knowledge_researcher') ? 'knowledge_researcher' : (availableKeys.includes('research') ? 'research' : subagent);
-    } else if (tLower.includes('review') || tLower.includes('audit') || tLower.includes('gate')) {
-      subagent = availableKeys.includes('review') ? 'review' : (availableKeys.includes('qa_engineer') ? 'qa_engineer' : subagent);
-    }
+    const subagent = subagentAssignments[item.id] || 'self';
 
     let rawTier = 'flash';
     if (tLower.includes('scaffold') || tLower.includes('format') || tLower.includes('boilerplate')) {

@@ -28,15 +28,20 @@ Jev acts as three things in a single layer:
 ## ✨ Key Features
 
 ### ⚙️ Operating Modes
-Control the coprocessor's behavior via a toggleable state machine, persisted across sessions:
+Control the coprocessor's behavior via a toggleable state machine, persisted across sessions in `~/.config/jev/config.json`:
 
 | Mode | Behavior | Use Case |
 | :--- | :--- | :--- |
-| `ON` | **Always Active.** Jev automatically dispatches eligible tasks and offloads free-tier work. | Daily development workflows; quota protection by default. |
-| `ON-DEMAND` | **Manual Trigger.** Jev only engages when explicitly requested (via slash command). | Auditing, debugging, or when you want full manual control over costs. |
-| `OFF` | **Disabled.** No offloading, no dispatching. Direct pass-through to primary model. | Emergency high-complexity tasks where free models might hallucinate. |
+| `OFF` *(default)* | **Disabled.** No offloading, no dispatching, zero token overhead. Direct pass-through to primary model. | Default unconfigured state; emergency high-complexity tasks. |
+| `ON-DEMAND` | **Manual Trigger.** Passive coprocessor; engages only when explicitly invoked or requested. | Auditing, debugging, or selective manual control over costs. |
+| `ON` | **Always Active.** Jev automatically dispatches eligible tasks, offloads free-tier work, and guards quotas. | Daily development workflows; automatic quota protection and offloading. |
 
-> Toggle anytime using the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` (the primary switch mechanism to prevent tool lockouts when switching back from `off` where MCP is disabled) or the in-chat slash command (`/jev`). `mode.json` auto-heals `agy mcp` state on status/pre-flight.
+> [!IMPORTANT]
+> **Default OFF (Opt-In Intent):** Jev is strictly **OFF by default** when unconfigured. No background decisions or external network calls occur until explicitly enabled by the user.
+>
+> **Migration Notice:** `mode.json` is completely deprecated and ignored, and can be safely deleted. `~/.config/jev/config.json` is the single canonical configuration store for global defaults (`defaults.mode`) and per-harness overrides (`harnesses.<harness>.mode`).
+>
+> **Shell Script Retirement:** `scripts/jev-mode` is retired. Mode switching and inspection are handled directly via the `/jev` slash command / skill inside agent harnesses (`/jev on`, `/jev on-demand`, `/jev off`, `/jev status`) and the `jev_set_mode` / `jev_get_mode` MCP tools.
 
 ### 🚀 Pre-flight Dispatch (`jev_dispatch` & `jev_batch_dispatch`)
 Before a task hits the primary model, `jev_dispatch` runs a calibrated inference on the task metadata. It produces a **probability distribution** over:
@@ -44,9 +49,18 @@ Before a task hits the primary model, `jev_dispatch` runs a calibrated inference
 - **Execution Tiers:** `openrouter_free`, `flash_lite`, `flash`, or `pro`.
 - **Session Model Ceiling Clamping:** Dynamically clamps subagent recommendations $\le$ active session model tier (`Gemini 3.8 Flash`), preventing over-eager `pro` recommendations for routine CLI porting.
 - **Scaffolding Detection:** Automatically detects package/crate creation tasks and flags `scaffoldFirst: true` to trigger Tier 0 `$0.00` mechanical boilerplate generation.
-- **DAG Batch Dispatch (`jev_batch_dispatch`):** Decomposes multi-task roadmaps or phases into parallel and sequential execution waves, enforces dependency order, and applies safety concurrency caps ($\le 10$ simultaneous free workers).
+- **Dynamic Semantic Batch Dispatch (`jev_batch_dispatch`):** Decomposes multi-task roadmaps or phases into parallel and sequential execution waves, enforces dependency order, and applies safety concurrency caps ($\le 10$ simultaneous free workers). Routes tasks dynamically using the OpenRouter Decisions API (`~typesafe/jev-latest`), with automatic fallback to local token and description keyword scoring if offline or timed out. Configurable via `routing.strategy` (`"router"` | `"keyword"`) in `~/.config/jev/config.json`.
 
 This prevents expensive models from processing routine formatting, simple search requests, or bounded ports.
+
+### 🔍 Per-Harness Dynamic Subagent Discovery
+Jev discovers candidate subagents dynamically from the filesystem without hardcoded persona assumptions:
+- **Antigravity:** `<workspace>/.agents/agents/`
+- **Claude Code:** `<workspace>/.claude/agents/`
+- **OpenCode:** `<workspace>/.opencode/agents/`
+- **Universal Shared Global:** `~/.agents/agents/` across all harnesses
+
+Local workspace agents take precedence over universal shared agents with the same identifier, enabling clean per-project specialization while sharing common subagents across machines.
 
 ### 🆓 Free-Tier Offloading
 Jev intercepts specific workload patterns and reroutes them to `openrouter/free` endpoints. This guarantees **$0.00 spend** and **0 quota usage** for:
@@ -99,8 +113,8 @@ flowchart TD
     A["👤 User Request / Task Prompt"] --> B["⚡ Jev Pre-Flight Dispatch (jev_dispatch)"]
     
     B --> C{"🔍 Subagent & Intent Evaluator"}
-    C -->|Mechanical / Formatting| D["🟢 Low Effort (low)\n(inbox_processor, syntax_formatter, git_scribe)\n-30% Tokens, Min Latency"]
-    C -->|Standard Work / Vault| E["🔵 Medium Effort (medium)\n(vault_librarian, code_engineer, research)\nBalanced Reasoning Depth"]
+    C -->|Mechanical / Formatting| D["🟢 Low Effort (low)\n(formatter, syntax_checker, git_scribe)\n-30% Tokens, Min Latency"]
+    C -->|Standard Work / Code| E["🔵 Medium Effort (medium)\n(code_engineer, research, general_developer)\nBalanced Reasoning Depth"]
     C -->|Complex Architecture| F["🟣 High Effort (high)\n(system_architect, security_auditor)\nMaximum CoT Depth"]
     
     D --> G{"📊 Quota Strategy Governor (readQuotaView)"}
@@ -193,7 +207,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Mechanical Formatting & Scaffolding** | Paid Tier (`Gemini Pro` / `Flash`) @ high effort | Offloaded to `openrouter/free` via `jev_execute_free` @ `low` effort | **100% Paid Savings** | **0% Quota Burn ($0.00)** | ~600ms (Fast) |
 | **Git Commit Generation (`commit.sh`)** | Primary Session Model (~2k tokens) | `jev_agent_free` + `jev_judge` validation (~350ms) | **100% Paid Savings** | **0% Quota Burn ($0.00)** | ~350ms (Sub-second) |
-| **Vault Notes & Indexing (`vault_librarian`)** | High CoT reasoning budget | Calibrated `medium` effort + quota governor throttling | **~30% Token Savings** | **60% Reduced Burn** | ~1.2s |
+| **Documentation & Research (`research` / `docs_engineer`)** | High CoT reasoning budget | Calibrated `medium` effort + quota governor throttling | **~30% Token Savings** | **60% Reduced Burn** | ~1.2s |
 | **Standard Feature Engineering (`code_engineer`)** | Unbounded reasoning tokens | Pre-flight `jev_dispatch` + `medium` effort governance | **~25% Token Savings** | **Optimal Quota Preservation** | ~2.5s |
 | **Security Audits & RFC Architecture** | Uniform static reasoning budget | Dynamic `high` effort + `jev_judge` diff integrity check | Deepest CoT Reasoning Depth | Calibrated & Guarded | Extended CoT Depth |
 | **Overall Monthly Benchmark** | High risk of 5-Hour / 7-Day Quota Exhaustion (`429`) | Guaranteed continuous operation under quota safety caps | **~45% Overall Token & Cost Savings** | **Quota Lifetime Extended 3x** | **Up to 4x Faster Turn Completion** |
@@ -217,8 +231,7 @@ plugins/jev
 ├── scripts/
 │   ├── commit.ts            # Semantic commit generation pipeline
 │   ├── commit.sh            # Shell wrapper for commit.ts
-│   ├── audit-agentic-gaps.ts# Agentic hub gap auditor
-│   └── jev-mode             # Mode switching CLI
+│   └── audit-agentic-gaps.ts# Agentic hub gap auditor
 ├── skills/
 │   └── jev/                 # In-chat slash command skill
 ├── tests/                   # Bun unit test suite (config, cache, audit, egress, jev, etc.)
@@ -233,14 +246,63 @@ plugins/jev
 
 Create a `.env` file in the plugin root (`.env` is ignored by git via `.gitignore`).
 
-### Required Variables
+### Environment Variables
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `JEV_OPENROUTER_API_KEY` | **Required.** API key for OpenRouter to access free-tier endpoints. | *(None)* |
-| `JEV_MODE` | Initial operating mode (`ON`, `ON-DEMAND`, `OFF`). | `ON` |
+| `JEV_OPENROUTER_API_KEY` | **Required.** API key for OpenRouter to access free-tier and decision endpoints. | *(None)* |
+| `JEV_MODE` | Initial operating mode (`ON`, `ON-DEMAND`, `OFF`). Overridden by `config.json`. | `OFF` |
 | `JEV_EGRESS_DENY` | Optional. Extra directories (separated by `:`) from which nothing may be sent. It can only add restrictions. | *(None)* |
 | `JEV_ZDR` | Optional. Zero Data Retention enforcement mode (`off`, `on`, `strict`). Overridden by configuration files. | `off` |
+
+### Canonical Configuration Store (`~/.config/jev/config.json`)
+
+`~/.config/jev/config.json` is the **single canonical source of truth** for Jev settings across all harnesses (Antigravity, Claude Code, OpenCode). Legacy `mode.json` is completely deprecated and ignored.
+
+Example configuration:
+
+```json
+{
+  "defaults": {
+    "mode": "off"
+  },
+  "harnesses": {
+    "antigravity": {
+      "mode": "on"
+    },
+    "claude-code": {
+      "mode": "on"
+    },
+    "opencode": {
+      "mode": "on-demand"
+    }
+  },
+  "routing": {
+    "strategy": "router"
+  },
+  "privacy": {
+    "zdr": "off"
+  }
+}
+```
+
+#### Precedence & Scoping Rules
+
+1. **Per-Harness Override:** `harnesses.<harness>.mode` takes precedence when running inside that harness (e.g. enabling a specific harness even if `defaults.mode` is `"off"`).
+2. **Global Default:** Falls back to `defaults.mode` if no harness-specific override exists.
+3. **Fallback Default:** If unconfigured, mode strictly defaults to **`off`** (Opt-In Intent).
+4. **Routing Strategy:** `routing.strategy` selects between `"router"` (OpenRouter Decisions API `~typesafe/jev-latest` with local keyword fallback) and `"keyword"` (offline local description scoring only).
+
+#### Harness Model Configuration
+
+Jev maps execution tiers across supported agent harnesses to their native or configured models:
+
+| Harness | Free Tier (`free`) | Cheap Tier (`cheap`) | Standard Tier (`standard`) | Deep Tier (`deep`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Antigravity** | `openrouter/free` | `flash_lite` | `flash` | `pro` |
+| **Claude Code** | `openrouter/free` | `haiku` | `sonnet` | `opus` |
+| **OpenCode** | `openrouter/free` | `~anthropic/claude-haiku-latest` | `~anthropic/claude-sonnet-latest` | `~anthropic/claude-opus-latest` |
+| **CLI** | `openrouter/free` | `google/gemma-4-31b-it:free` | `typesafe/jev-router` | `typesafe/jev-router` |
 
 ### Outbound Data Control & Privacy (optional)
 
@@ -263,6 +325,9 @@ By default jev sends requests exactly as before. To keep some of your work away 
 - While a policy is active, each sent and blocked request is logged to `~/.config/jev/egress-log.jsonl` with host, model, byte count, and ZDR audit markers (`zdr_policy`, `zdr_applied`). Request bodies are never logged.
 
 **Limits.** The policy looks at *where the session runs*, not at *what the data is*. Text from a blocked directory that you paste into a prompt, or a file read by absolute path from an allowed session, is not detected.
+
+> [!NOTE]
+> **Batch Dispatch Outbound Data Notice:** When `routing.strategy` is set to `"router"` (the default), `jev_batch_dispatch` routes task descriptions and criteria to the OpenRouter Decisions API (`~typesafe/jev-latest`). These requests are strictly governed by your egress directory rules and Zero Data Retention (ZDR) policy. If an egress policy blocks the working directory, or if `zdr: "strict"` is active and ZDR is unavailable, dispatch automatically falls back to offline local keyword matching without leaking data.
 
 #### 🔒 Zero Data Retention (ZDR) & Provider Data Policies
 
@@ -344,15 +409,18 @@ Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
 
 ---
 
-## 📟 CLI & Slash Commands
+## 📟 Slash Commands & Tool Interfaces
 
-| Command | Description |
-| :--- | :--- |
-| `jev` | Alias for `jev status`. Shows current quota and mode. |
-| `jev status` | Displays quota bucket usage and active mode. |
-| `jev on` | Sets mode to `ON` (Always Active). |
-| `jev off` | Sets mode to `OFF` (Pass-through). |
-| `/jev` | In-chat slash command to inspect/switch mode. |
+Operating modes and status are managed via the in-chat `/jev` slash command / skill inside agent harnesses and the `jev_set_mode` / `jev_get_mode` MCP tools. The legacy shell script (`scripts/jev-mode`) is retired.
+
+| Interface | Command / Call | Description |
+| :--- | :--- | :--- |
+| **Slash Command** | `/jev` or `/jev status` | Inspects current quota and active mode from `~/.config/jev/config.json`. |
+| **Slash Command** | `/jev on` | Sets active mode to `ON` (Always Active). |
+| **Slash Command** | `/jev on-demand` | Sets active mode to `ON-DEMAND` (Passive Coprocessor). |
+| **Slash Command** | `/jev off` | Sets active mode to `OFF` (Zero Overhead / Pass-through). |
+| **MCP Tool** | `jev_get_mode()` | Programmatically queries active mode, resolved harness mode, and configuration. |
+| **MCP Tool** | `jev_set_mode({ mode })` | Programmatically updates mode directly in `~/.config/jev/config.json`. |
 
 ---
 

@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { loadJevConfig, detectActiveHarness } from './config.js';
+import { loadJevConfig, detectActiveHarness, type JevHarness } from './config.js';
 
 interface AgentCacheEntry {
   timestamp: number;
@@ -130,37 +130,18 @@ function registerAgent(
  * For each existing candidate directory, subdirectories with agent.md take precedence
  * over standalone .md files. First encountered agent name takes precedence.
  */
-export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Promise<Record<string, string>> {
+export async function discoverWorkspaceAgents(
+  cwd: string = process.cwd(),
+  harness?: JevHarness
+): Promise<Record<string, string>> {
   try {
     const config = await loadJevConfig(cwd);
-    const activeHarness = detectActiveHarness();
+    const targetHarness = harness || detectActiveHarness();
     const root = findWorkspaceRoot(cwd);
 
-    const rawCandidates: string[] = [
-      // 1. Workspace candidates
-      path.join(root, '.agents', 'agents'),
-      path.join(root, '.agents', 'subagents'),
-      path.join(root, '.claude', 'agents'),
-      path.join(root, '.opencode', 'agents')
-    ];
+    const rawCandidates: string[] = [];
 
-    // 2. Harness-specific config paths
-    const harnessAgentPaths = config.harnesses?.[activeHarness]?.agentPaths || [];
-    for (const p of harnessAgentPaths) {
-      if (typeof p === 'string' && p.trim()) {
-        rawCandidates.push(expandHome(p.trim()));
-      }
-    }
-
-    // 3. Global default config paths
-    const defaultAgentPaths = config.defaults?.agentPaths || [];
-    for (const p of defaultAgentPaths) {
-      if (typeof p === 'string' && p.trim()) {
-        rawCandidates.push(expandHome(p.trim()));
-      }
-    }
-
-    // 4. Generic env override
+    // Generic env override takes top priority if set
     if (process.env.JEV_AGENTS_DIR) {
       for (const p of process.env.JEV_AGENTS_DIR.split(path.delimiter)) {
         if (p.trim()) {
@@ -169,12 +150,56 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
       }
     }
 
-    // 5. Standard global harness locations
-    rawCandidates.push(
-      path.join(os.homedir(), '.gemini', 'config', 'agents'),
-      path.join(os.homedir(), '.claude', 'agents'),
-      path.join(os.homedir(), '.config', 'opencode', 'agents')
-    );
+    // Partition candidate directories per harness:
+    if (targetHarness === 'antigravity') {
+      rawCandidates.push(
+        path.join(root, '.agents', 'agents'),
+        path.join(root, '.agents', 'subagents'),
+        path.join(os.homedir(), '.gemini', 'antigravity-cli', 'agents'),
+        path.join(os.homedir(), '.gemini', 'config', 'agents')
+      );
+    } else if (targetHarness === 'claude-code') {
+      rawCandidates.push(
+        path.join(root, '.claude', 'agents'),
+        path.join(os.homedir(), '.claude', 'agents')
+      );
+    } else if (targetHarness === 'opencode') {
+      rawCandidates.push(
+        path.join(root, '.opencode', 'agents'),
+        path.join(os.homedir(), '.config', 'opencode', 'agents')
+      );
+    } else {
+      // 'cli' or other: scan across candidate folders
+      rawCandidates.push(
+        path.join(root, '.agents', 'agents'),
+        path.join(root, '.agents', 'subagents'),
+        path.join(root, '.claude', 'agents'),
+        path.join(root, '.opencode', 'agents'),
+        path.join(os.homedir(), '.gemini', 'config', 'agents'),
+        path.join(os.homedir(), '.claude', 'agents'),
+        path.join(os.homedir(), '.config', 'opencode', 'agents')
+      );
+    }
+
+    // Universal Shared Global Pool: for all harnesses, append ~/.agents/agents
+    // (local workspace agents appear before this, so local takes precedence)
+    rawCandidates.push(path.join(os.homedir(), '.agents', 'agents'));
+
+    // Append harness config paths (config.harnesses?.[targetHarness]?.agentPaths)
+    const harnessAgentPaths = config.harnesses?.[targetHarness]?.agentPaths || [];
+    for (const p of harnessAgentPaths) {
+      if (typeof p === 'string' && p.trim()) {
+        rawCandidates.push(expandHome(p.trim()));
+      }
+    }
+
+    // Append global paths (config.defaults?.agentPaths)
+    const defaultAgentPaths = config.defaults?.agentPaths || [];
+    for (const p of defaultAgentPaths) {
+      if (typeof p === 'string' && p.trim()) {
+        rawCandidates.push(expandHome(p.trim()));
+      }
+    }
 
     // Deduplicate candidate directories
     const seenPaths = new Set<string>();
@@ -202,7 +227,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
       }
     }
 
-    const cacheKey = `${path.resolve(cwd)}:${activeHarness}`;
+    const cacheKey = `${path.resolve(cwd)}:${targetHarness}`;
     const now = Date.now();
     if (
       agentCache &&
@@ -283,7 +308,7 @@ export async function discoverWorkspaceAgents(cwd: string = process.cwd()): Prom
       result.self = 'Direct execution in current context';
       result.none = 'Direct answer without subagent delegation';
     } else {
-      if (!result.self) result.self = 'Direct clone of parent execution or current session';
+      if (!result.self) result.self = 'Direct execution in current context';
       if (!result.none) result.none = 'Direct answer without subagent delegation';
     }
 

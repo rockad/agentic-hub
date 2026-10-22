@@ -144,6 +144,8 @@ export interface QuotaView {
   strategy: QuotaStrategy;
   thresholds: QuotaThresholds;
   geminiRemainingFraction: number | null;
+  /** Pool backing the currently selected model (Gemini buckets for Gemini models, 3p buckets otherwise). */
+  active: { pool: 'gemini' | '3p'; five_hour: number | null; weekly: number | null; min_remaining: number | null; strategy: QuotaStrategy };
 }
 
 export function evaluatePoolStrategy(
@@ -263,6 +265,12 @@ export async function readQuotaView(): Promise<QuotaView> {
 
   const stale = updatedAt === null || nowSec - updatedAt > QUOTA_STALE_SECONDS;
 
+  // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
+  const isGeminiActive = !activeModel || /gemini/i.test(activeModel) || p3Min === null;
+  const active = isGeminiActive
+    ? { pool: 'gemini' as const, five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining, strategy: geminiStrategy }
+    : { pool: '3p' as const, five_hour: p3Five, weekly: p3Weekly, min_remaining: p3Min, strategy: p3Strategy };
+
   return {
     source,
     schema,
@@ -274,7 +282,8 @@ export async function readQuotaView(): Promise<QuotaView> {
     gemini: { five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining },
     strategy,
     thresholds,
-    geminiRemainingFraction: geminiMin ?? minRemaining
+    geminiRemainingFraction: geminiMin ?? minRemaining,
+    active
   };
 }
 

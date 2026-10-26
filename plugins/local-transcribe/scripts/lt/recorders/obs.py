@@ -118,6 +118,23 @@ def _app_present() -> bool:
     return shutil.which("obs") is not None
 
 
+def _normalize_wsl_path(path_str: str | None) -> Path | None:
+    if not path_str:
+        return None
+    if _running_under_wsl() and (re.match(r"^[a-zA-Z]:", path_str) or "\\" in path_str):
+        if shutil.which("wslpath"):
+            try:
+                res = subprocess.run(
+                    ["wslpath", "-u", path_str],
+                    capture_output=True, text=True, check=True,
+                )
+                if converted := res.stdout.strip():
+                    return Path(converted)
+            except Exception:
+                pass
+    return Path(path_str)
+
+
 class ObsRecorder(Recorder):
     name = "obs"
 
@@ -256,7 +273,16 @@ class ObsRecorder(Recorder):
         Simple and Advanced. Try both and count the bits; report None rather
         than guessing when neither answers.
         """
-        for category, name in (("AdvOut", "RecTracks"), ("SimpleOutput", "RecTracks")):
+        categories = [("AdvOut", "RecTracks"), ("SimpleOutput", "RecTracks")]
+        try:
+            mode_res = client.get_profile_parameter("Output", "Mode")
+            mode = getattr(mode_res, "parameter_value", "")
+            if str(mode).lower() == "simple":
+                categories = [("SimpleOutput", "RecTracks"), ("AdvOut", "RecTracks")]
+        except Exception:
+            pass
+
+        for category, name in categories:
             try:
                 response = client.get_profile_parameter(category, name)
             except Exception:
@@ -320,7 +346,7 @@ class ObsRecorder(Recorder):
         path = getattr(response, "output_path", None)
         return Recording(
             backend=self.name,
-            path=Path(path) if path else None,
+            path=_normalize_wsl_path(path),
             active=False,
             duration=self._duration_seconds(status),
             bytes_written=getattr(status, "output_bytes", None),

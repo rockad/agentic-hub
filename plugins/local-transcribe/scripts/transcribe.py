@@ -92,6 +92,10 @@ by default and `--no-verify` turns it off. See `lt/verify.py`.
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -801,6 +805,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"before recognition{shortfall}",
                 file=sys.stderr,
             )
+
+    if args.input is not None and not args.input.exists():
+        if sys.platform == "linux" and shutil.which("wslpath"):
+            s = str(args.input)
+            if re.match(r"^[a-zA-Z]:", s) or "\\" in s:
+                try:
+                    res = subprocess.run(
+                        ["wslpath", "-u", s],
+                        capture_output=True, text=True, check=True,
+                    )
+                    if converted := res.stdout.strip():
+                        args.input = Path(converted)
+                except Exception:
+                    pass
 
     if not args.input.exists():
         print(f"error: no such file: {args.input}", file=sys.stderr)

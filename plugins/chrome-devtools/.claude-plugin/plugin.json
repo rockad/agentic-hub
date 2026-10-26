@@ -6,6 +6,14 @@
   "author": {
     "name": "Aleksandr Korolev"
   },
+  "skills": [
+    "skills/chrome-devtools",
+    "skills/troubleshooting",
+    "skills/debug-optimize-lcp",
+    "skills/cookie-debugging",
+    "skills/a11y-debugging",
+    "skills/memory-leak-debugging"
+  ],
   "keywords": [
     "chrome",
     "browser",

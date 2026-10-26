@@ -67,6 +67,25 @@ class Recognition:
     device: str = "unknown"
 
 
+def _ensure_cuda_libs() -> None:
+    """Pre-load CUDA runtime libraries if found in standard system locations."""
+    if sys.platform != "linux":
+        return
+    import ctypes
+    candidate_paths = [
+        Path("/usr/local/lib/ollama/cuda_v12"),
+        Path("/usr/local/cuda/lib64"),
+    ]
+    for p in candidate_paths:
+        cublas = p / "libcublas.so.12"
+        if cublas.exists():
+            try:
+                ctypes.CDLL(str(cublas), mode=ctypes.RTLD_GLOBAL)
+                break
+            except Exception:
+                pass
+
+
 def cuda_devices() -> int:
     """How many CUDA devices CTranslate2 can see, 0 if none or if it cannot look.
 
@@ -75,6 +94,7 @@ def cuda_devices() -> int:
     driver and a card but a CPU-only wheel must answer 0 here, or the run picks
     `cuda` and dies after the model has loaded.
     """
+    _ensure_cuda_libs()
     try:
         import ctranslate2
 

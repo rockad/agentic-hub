@@ -7,7 +7,7 @@ This document governs System 1 decision-making, model tier governance, thinking 
 - **`off`**: MCP disabled (`agy mcp disable jev`), zero token overhead, zero OpenRouter calls.
 - **`on-demand`**: MCP enabled. Passive System 1 coprocessor for multi-role workflows and ad-hoc routing.
 - **`on`**: Aggressive System 1 enforcement: mandatory pre-flight dispatch, free-tier offloading, thinking effort governance, and automated quality gates.
-- **Primary Switch Mechanism**: Always use the terminal CLI `jev <mode>` (`~/.local/bin/jev-mode <mode>`) via `run_command` to switch modes or check status (`jev status`). When `jev off`, MCP server is disabled so MCP tools (`jev_set_mode`, `jev_get_mode`) are unavailable; using the CLI prevents lockout. `mode.json` acts as the single master switch and automatically auto-heals any drift in `agy mcp` state during status checks or pre-flight.
+- **Primary Switch Mechanism**: Managed directly via the in-chat `/jev` slash command / skill (`/jev on`, `/jev on-demand`, `/jev off`, `/jev status`) and the `jev_set_mode` / `jev_get_mode` MCP tools. The legacy shell script (`scripts/jev-mode`) is retired. `~/.config/jev/config.json` is the single canonical configuration store for global defaults (`defaults.mode`) and per-harness overrides (`harnesses.<harness>.mode`). Drift between `config.json` and `agy mcp` is automatically healed during pre-flight.
 
 ## 2. Pre-Flight Dispatch & Routing
 

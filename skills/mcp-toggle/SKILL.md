@@ -51,8 +51,8 @@ Both argument orders are supported: `mcp-toggle <target> <on|off>` or `mcp-toggl
 | `mcp-toggle google off` | Disable Google Workspace plugin to reclaim ~10k tokens. | `mcp-toggle workspace off` |
 | `mcp-toggle deepl on` | Enable DeepL MCP server (`npx -y deepl-mcp-server` using `DEEPL_API_KEY` from `~/.config/zsh/secrets.env`). | `mcp-toggle deepl-mcp on` |
 | `mcp-toggle deepl off` | Disable/remove DeepL MCP server from active MCP config. | `mcp-toggle deepl-mcp off` |
-| `mcp-toggle jev on` | Enable aggressive TypeSafe Jev System 1 pre-flight enforcement. | `jev on`, `jev-mode on` |
-| `mcp-toggle jev off` | Disable Jev System 1 coprocessor. | `jev off`, `jev-mode off` |
+| `mcp-toggle jev on` | Enable aggressive TypeSafe Jev System 1 pre-flight enforcement. | `/jev on`, `jev_set_mode` |
+| `mcp-toggle jev off` | Disable Jev System 1 coprocessor. | `/jev off`, `jev_set_mode` |
 
 ---
 

@@ -74,14 +74,10 @@ function show_status() {
     fi
   }
 
-  local jmode="on"
-  if [ -f "$HOME/.config/jev/mode.json" ]; then
-    jmode=$(jq -r '.mode // "on"' "$HOME/.config/jev/mode.json" 2>/dev/null || echo "on")
-  fi
-
-  # Auto-heal / check jev via jev-mode if available
-  if command -v jev-mode >/dev/null 2>&1; then
-    jev-mode status >/dev/null 2>&1 || true
+  local jmode="off"
+  local jcfg="$HOME/.config/jev/config.json"
+  if [ -f "$jcfg" ]; then
+    jmode=$(jq -r '.defaults.mode // "off"' "$jcfg" 2>/dev/null || echo "off")
   fi
 
   echo -e "  - chrome-devtools:  $(get_plugin_state chrome-devtools false) (30 tools, ~12,000–14,000 tokens/turn)"
@@ -177,7 +173,13 @@ toggle_deepl() {
 case "$ACTION" in
   on|enable)
     if [ "$SERVER" = "jev" ]; then
-      command -v jev-mode >/dev/null 2>&1 && jev-mode on || agy plugin enable jev
+      local jcfg="$HOME/.config/jev/config.json"
+      if [ -f "$jcfg" ]; then
+        local tmp
+        tmp=$(jq '.defaults.mode = "on" | if .harnesses.antigravity then .harnesses.antigravity.mode = "on" else . end' "$jcfg" 2>/dev/null) && echo "$tmp" > "$jcfg"
+      fi
+      agy mcp enable jev 2>/dev/null || true
+      echo -e "\033[32m✔ jev enabled (mode: on)\033[0m"
     elif [ "$SERVER" = "deepl" ]; then
       toggle_deepl on
     else
@@ -187,7 +189,13 @@ case "$ACTION" in
     ;;
   off|disable)
     if [ "$SERVER" = "jev" ]; then
-      command -v jev-mode >/dev/null 2>&1 && jev-mode off || agy plugin disable jev
+      local jcfg="$HOME/.config/jev/config.json"
+      if [ -f "$jcfg" ]; then
+        local tmp
+        tmp=$(jq '.defaults.mode = "off" | if .harnesses.antigravity then .harnesses.antigravity.mode = "off" else . end' "$jcfg" 2>/dev/null) && echo "$tmp" > "$jcfg"
+      fi
+      agy mcp disable jev 2>/dev/null || true
+      echo -e "\033[33m✔ jev disabled (mode: off)\033[0m"
     elif [ "$SERVER" = "deepl" ]; then
       toggle_deepl off
     else

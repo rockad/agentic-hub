@@ -86,7 +86,7 @@ function show_status() {
   echo -e "  - jev:              $(get_plugin_state jev true) (mode: $jmode)"
   echo -e "  - memory:           $(get_plugin_state memory true) (recall :8110, lookup :8100)"
   echo -e "  - gitea:            $(get_plugin_state gitea true) (repositories & issues)"
-  echo -e "  - obsidian:         $(get_plugin_state obsidian true) (local REST API :27123)"
+  echo -e "  - obsidian:         $(get_plugin_state obsidian true) (local REST API :27125)"
   echo -e "\n\033[90mUsage: mcp-toggle <browser|google|deepl|jev> <on|off>\033[0m"
 }
 

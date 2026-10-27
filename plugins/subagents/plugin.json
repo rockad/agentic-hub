@@ -1,16 +1,1 @@
-{
-  "name": "subagents",
-  "version": "1.0.0",
-  "description": "Specialized AI engineering, testing, research, and systems subagents",
-  "author": {
-    "name": "Aleksandr Korolev"
-  },
-  "agents": "./agents",
-  "keywords": [
-    "subagents",
-    "engineering",
-    "testing",
-    "operations",
-    "research"
-  ]
-}
+.claude-plugin/plugin.json

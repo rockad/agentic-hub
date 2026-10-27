@@ -41,6 +41,12 @@
       "source": "./plugins/google-workspace",
       "description": "Google Workspace integration: Gmail and Google Calendar",
       "version": "1.0.0"
+    },
+    {
+      "name": "subagents",
+      "source": "./plugins/subagents",
+      "description": "Specialized engineering, testing, and operations subagents",
+      "version": "1.0.0"
     }
   ]
 }

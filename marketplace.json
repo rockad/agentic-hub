@@ -41,7 +41,8 @@
       "skills": [
         "plugins/memory/skills/memory",
         "plugins/memory/skills/lookup",
-        "plugins/memory/skills/recall"
+        "plugins/memory/skills/recall",
+        "plugins/memory/skills/session-handoff"
       ]
     },
     {
@@ -59,6 +60,13 @@
       "version": "1.0.0",
       "path": "plugins/google-workspace",
       "skills": ["plugins/google-workspace/skills/google-workspace"]
+    },
+    {
+      "id": "subagents",
+      "name": "Specialized Subagents",
+      "description": "Specialized engineering, testing, and operations subagents",
+      "version": "1.0.0",
+      "path": "plugins/subagents"
     }
   ],
   "standalone_skills": [

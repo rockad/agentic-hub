@@ -8,7 +8,8 @@
   "skills": [
     "skills/memory",
     "skills/lookup",
-    "skills/recall"
+    "skills/recall",
+    "skills/session-handoff"
   ],
   "keywords": [
     "memory",

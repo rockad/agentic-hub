@@ -95,11 +95,27 @@ This ensures total transparency: if the skill picked up an artifact the user did
 
 ## Before the First Question
 
-1. **Decompose the request** into orthogonal forks. Aim for three to fifteen decisions, each **independent** of the others — answering one must not predetermine another.
-2. More than fifteen forks means some of them are derived. Merge and reformulate.
-3. Fewer than three means the mode is unnecessary. Ask one or two ordinary questions instead.
-4. **Present the map briefly** before starting: "There are N forks; we start with the one that determines the core data model".
-5. **Never batch the questions.** One fork, one interactive question call, one answer.
+1. **Decompose the request exhaustively into all genuine architectural forks**:
+   - **No artificial 4-fork limit**: There is no limit of 3 or 4 forks. If a design has 6, 8, 10, or 12 genuine architectural forks, the skill **must identify and walk through all of them**.
+   - Do not truncate or stop prematurely at 4 forks. An artificial cap leaves major architectural decisions made by silent assumption.
+   - Aim to identify all orthogonal decisions that are independent of each other — answering one must not predetermine another.
+   - Only derived or purely cosmetic choices should be omitted or merged.
+2. **Systematic Architectural Discovery Taxonomy**:
+   Sweep across the entire problem space using this dimension checklist during pre-flight decomposition to ensure all possible forks are uncovered:
+   - **Core Architecture & Topology**: Monolithic vs modular, client vs server compute, process boundaries, execution environments.
+   - **Data Model & Schemas**: Entity relationships, normalization vs denormalization (e.g. JSONB), compound indexes, type definitions.
+   - **State Management & Persistence**: Storage engine, caching layers, invalidation strategy, transactional semantics, durability, retention.
+   - **API & Protocol Contracts**: Synchronous REST/gRPC vs asynchronous job/webhook, payload shapes, batching, pagination model.
+   - **Concurrency, Sync & Locking**: Optimistic vs pessimistic locking, event ordering, idempotency keys, race condition mitigation, worker pool topology.
+   - **Error Handling & Failure Modes**: Fail-open vs fail-closed, backoff/retry policies, dead-letter queues, degraded modes, circuit breakers.
+   - **Security, Auth & Privacy**: Token scopes, RBAC/ABAC enforcement boundary, secret handling, data isolation, encryption at rest/in-transit.
+   - **Lifecycle & Execution Flow**: Push vs pull, event-driven vs cron polling, synchronous blocking vs background queue.
+   - **UI/UX & User Interaction Model**: Optimistic UI updates vs blocking progress indicators, modal vs inline flows, manual trigger vs automated sync.
+   - **Migration, Rollback & Compatibility**: Dual-writing, phased schema rollouts, backward compatibility boundaries, data backfill strategy.
+3. **Present the complete fork map upfront**:
+   - Always state the total count and list all identified forks before asking the first question:
+     > "Identified N orthogonal architectural forks across [topics]: [list of forks 1..N]. We start with Fork 1: <topic>."
+4. **Never batch the questions**: One fork, one interactive question call, one answer. Walk through all N forks sequentially.
 
 ## The Shape of Each Step (Prose-First Previews)
 
@@ -110,17 +126,21 @@ All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in 
 A short numbered heading:
 
 ```markdown
-## Question N — <name of the fork, four to eight words>
+## Question N (of Total) — <name of the fork, four to eight words>
 ```
 
 Below it, **two to four sentences of context**: what is being decided, why it matters, and what it will constrain downstream.
 
 ### 2. Options, Argued
 
-For each option (two to four per fork):
+For each option (two to four options per fork):
 
-- A bold heading (`### A. <name>`).
-- A technical block — ASCII diagram, code snippet, DTO, schema, or formula.
+- **Option A is ALWAYS the Recommended Option**: Formulate the best architectural path as **Option A**, titled `### Option A. <name> (Recommended)`. This guarantees that:
+  - Option A is presented first in prose.
+  - Option A is placed first in the interactive selection tool with the `(Recommended)` tag, satisfying harness-level requirements (like Antigravity `ask_question`).
+  - In the selection UI, Option A is assigned number `1.` (`1. Option A: <name> (Recommended)`), followed by `2. Option B: <name>`, `3. Option C: <name>`. The numbers and letters align in identical 1:1 order without confusing the user.
+- Subsequent options are labeled `### Option B. <name>`, `### Option C. <name>`, etc.
+- A technical block for each option — ASCII diagram, code snippet, DTO, schema, or formula.
 - **Pros:** two to four concrete points.
 - **Cons:** two to four concrete points.
 
@@ -128,19 +148,27 @@ Options must be **mutually exclusive** and genuinely different in consequence. I
 
 ### 3. Your Reading, and a Recommendation
 
-After the options, **three to six sentences**: which choice you consider best and why, under what conditions that recommendation would flip, and what downstream forks this decision cascades into.
+After the options, **three to six sentences**: why Option A is recommended, under what specific conditions that recommendation would flip to Option B or C, and what downstream forks this decision cascades into.
 
 Close with a one-line recommendation:
 
-> **Recommendation:** **<option>** — <one clause explaining why>.
+> **Recommendation:** **Option A: <name>** — <one clause explaining why>.
 
 ### 4. Adaptive Interactive Tool Calling
 
-After printing the markdown analysis, invoke the harness-appropriate interactive question tool. Visual previews and deep prose remain in the markdown text; the tool call carries concise labels and descriptions.
+After printing the markdown analysis, invoke the harness-appropriate interactive question tool.
+
+> [!IMPORTANT]
+> **Strict Option Naming & Sequence Rule**:
+> Options in the selection tool MUST be named with their explicit letter prefix and title in the exact order they appeared in prose:
+> - `1. Option A: <name> (Recommended)`
+> - `2. Option B: <name>`
+> - `3. Option C: <name>`
+> Never emit bare option names without the `Option X:` prefix, and never reorder options in the selection tool.
 
 #### A. Google Antigravity (`ask_question`)
 
-Uses `ask_question`. The recommended option is prefixed with `(Recommended)` and listed first:
+Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 
 ```json
 ask_question({
@@ -148,14 +176,22 @@ ask_question({
     {
       "question": "Which data model should we use for record tagging?",
       "options": [
-        "M:N join table (Recommended)",
-        "Denormalized JSONB array",
-        "Single-tenant delimited string"
+        "(Recommended) Option A: M:N join table",
+        "Option B: Denormalized JSONB array",
+        "Option C: Single-tenant delimited string"
       ],
       "is_multi_select": false
     }
   ]
 })
+```
+
+*What the user sees in the Antigravity UI picker:*
+```
+1. (Recommended) Option A: M:N join table
+2. Option B: Denormalized JSONB array
+3. Option C: Single-tenant delimited string
+4. Other
 ```
 
 #### B. Claude Code (`AskUserQuestion`)
@@ -171,14 +207,19 @@ AskUserQuestion({
       "multiSelect": false,
       "options": [
         {
-          "label": "M:N join table (Recommended)",
+          "label": "Option A: M:N join table (Recommended)",
           "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt.",
           "preview": "record_tags\n  record_id\n  tag_id\n  UNIQUE (record_id, tag_id)"
         },
         {
-          "label": "Denormalized JSONB array",
+          "label": "Option B: Denormalized JSONB array",
           "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys.",
           "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']"
+        },
+        {
+          "label": "Option C: Single-tenant delimited string",
+          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying.",
+          "preview": "records\n  id\n  tags: text -- 'backend,urgent'"
         }
       ]
     }
@@ -188,7 +229,7 @@ AskUserQuestion({
 
 #### C. OpenCode (`question`)
 
-Uses `question` following standard option schema:
+Uses `question` following standard option schema with `Option A:` labels:
 
 ```json
 question({
@@ -198,12 +239,16 @@ question({
       "question": "Which data model should we use for record tagging?",
       "options": [
         {
-          "label": "M:N join table (Recommended)",
+          "label": "Option A: M:N join table (Recommended)",
           "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt."
         },
         {
-          "label": "Denormalized JSONB array",
+          "label": "Option B: Denormalized JSONB array",
           "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys."
+        },
+        {
+          "label": "Option C: Single-tenant delimited string",
+          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying."
         }
       ]
     }
@@ -217,9 +262,9 @@ When running in headless CLI environments or where no interactive question tool 
 
 ```markdown
 Which data model should we use for record tagging?
-1. M:N join table (Recommended)
-2. Denormalized JSONB array
-3. Single-tenant delimited string
+1. Option A: M:N join table (Recommended)
+2. Option B: Denormalized JSONB array
+3. Option C: Single-tenant delimited string
 ```
 
 Wait for the user's text reply before advancing to the next fork.
@@ -294,6 +339,8 @@ Once the user approves:
 
 ## Anti-Patterns
 
+- **Artificial 4-fork truncation** — capping the clarification at 3 or 4 superficial questions when major architectural dimensions (persistence, error handling, auth, concurrency, lifecycle) remain unclarified.
+- **Unlabeled or scrambled options in selection** — emitting options in the interactive tool without `Option A:`, `Option B:` prefixes, or reordering them so they disagree with the prose preview.
 - **Firing options without codebase discovery** — asking questions the codebase already answers damages trust.
 - **Firing options without analysis** — that is a questionnaire, not a clarification.
 - **Options with no preview in prose** — the visual comparison is the point. If a fork resists having a preview, it may not be a fork worth this mode.
@@ -309,6 +356,8 @@ Once the user approves:
 
 - **Cross-Harness Tool Names**: Antigravity uses `ask_question`, Claude Code uses `AskUserQuestion`, OpenCode uses `question`. Adapt dynamically without crashing if a specific tool is absent.
 - **Single Question per Call**: One question per call is this skill's protocol, even if the underlying tool schema permits multi-question arrays. A batch turns the session back into an overwhelming questionnaire.
+- **Option Naming & Ordering in Selection**: Every option in the interactive selection tool MUST be named `Option A: <name>`, `Option B: <name>` in the exact sequence they appeared in prose. The UI numbers them (`1.`, `2.`, `3.`), rendering `1. Option A: <name> (Recommended)`, `2. Option B: <name>`, etc. Always make Option A the recommended path so that the recommendation is first without breaking letter ordering.
+- **Total Forks vs. Options per Fork Distinction**: Clarify this distinction carefully: **4 options per question is the harness limit for choices**, NOT a limit on the total number of architectural forks in the session! A comprehensive clarification should uncover **all** genuine architectural forks (e.g. 5 to 12+), sweeping across all architectural dimensions, and walk through them one by one.
 - **Previews in Markdown Prose**: Do not rely exclusively on tool-specific preview properties. Markdown prose is the universal preview canvas across all harnesses.
 - **Claude Code `preview` Rendering**: In Claude Code, the `preview` field renders only when `multiSelect: false`. On a multi-select fork the preview blocks silently do not appear in the terminal UI comparison box — keep the comparison in markdown prose.
 - **Option Count & Limits**: Four options per question is the harness limit. "Other" is automatically appended by the UI; never add a manual "Other" option.

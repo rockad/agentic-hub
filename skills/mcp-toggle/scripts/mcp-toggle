@@ -170,16 +170,33 @@ toggle_deepl() {
   fi
 }
 
+toggle_jev() {
+  local mode="$1"
+  local jcfg="$HOME/.config/jev/config.json"
+  local tmp="${jcfg}.tmp.$$"
+
+  mkdir -p "$(dirname "$jcfg")"
+  [ -f "$jcfg" ] || echo '{}' > "$jcfg"
+  if ! jq --arg m "$mode" '.defaults.mode = $m | if .harnesses.antigravity then .harnesses.antigravity.mode = $m else . end' "$jcfg" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo -e "\033[31m✘ $jcfg is not valid JSON, jev mode unchanged\033[0m" >&2
+    return 1
+  fi
+  mv "$tmp" "$jcfg"
+
+  if [ "$mode" = "on" ]; then
+    agy mcp enable jev 2>/dev/null || true
+    echo -e "\033[32m✔ jev enabled (mode: on)\033[0m"
+  else
+    agy mcp disable jev 2>/dev/null || true
+    echo -e "\033[33m✔ jev disabled (mode: off)\033[0m"
+  fi
+}
+
 case "$ACTION" in
   on|enable)
     if [ "$SERVER" = "jev" ]; then
-      local jcfg="$HOME/.config/jev/config.json"
-      if [ -f "$jcfg" ]; then
-        local tmp
-        tmp=$(jq '.defaults.mode = "on" | if .harnesses.antigravity then .harnesses.antigravity.mode = "on" else . end' "$jcfg" 2>/dev/null) && echo "$tmp" > "$jcfg"
-      fi
-      agy mcp enable jev 2>/dev/null || true
-      echo -e "\033[32m✔ jev enabled (mode: on)\033[0m"
+      toggle_jev on
     elif [ "$SERVER" = "deepl" ]; then
       toggle_deepl on
     else
@@ -189,13 +206,7 @@ case "$ACTION" in
     ;;
   off|disable)
     if [ "$SERVER" = "jev" ]; then
-      local jcfg="$HOME/.config/jev/config.json"
-      if [ -f "$jcfg" ]; then
-        local tmp
-        tmp=$(jq '.defaults.mode = "off" | if .harnesses.antigravity then .harnesses.antigravity.mode = "off" else . end' "$jcfg" 2>/dev/null) && echo "$tmp" > "$jcfg"
-      fi
-      agy mcp disable jev 2>/dev/null || true
-      echo -e "\033[33m✔ jev disabled (mode: off)\033[0m"
+      toggle_jev off
     elif [ "$SERVER" = "deepl" ]; then
       toggle_deepl off
     else

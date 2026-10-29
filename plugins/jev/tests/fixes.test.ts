@@ -15,21 +15,21 @@ const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
  * QUOTA_STATE_FILE is resolved from the home directory at import time, so the
  * quota view is exercised in a child process with its own HOME.
  */
-function quotaViewUnderHome(home: string, extraEnv: Record<string, string> = {}): { ok: boolean; strategy?: string; fiveHour?: number | null; error?: string } {
+function quotaViewUnderHome(home: string, extraEnv: Record<string, string> = {}): { ok: boolean; strategy?: string; fiveHour?: number | null; weekly?: number | null; error?: string } {
   const script =
     "const m = await import('./src/shared.ts');" +
     'try { const v = await m.readQuotaView();' +
-    ' console.log(JSON.stringify({ ok: true, strategy: v.strategy, fiveHour: v.gemini.five_hour })); }' +
+    ' console.log(JSON.stringify({ ok: true, strategy: v.strategy, fiveHour: v.gemini.five_hour, weekly: v.gemini.weekly })); }' +
     ' catch (e) { console.log(JSON.stringify({ ok: false, error: String(e) })); }';
   const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: { ...process.env, ...extraEnv, HOME: home } });
   return JSON.parse(proc.stdout.toString().trim());
 }
 
-function writeQuotaState(home: string, buckets: Record<string, unknown>): void {
+function writeQuotaState(home: string, buckets: Record<string, unknown>, activeModel?: string): void {
   const dir = path.join(home, '.gemini', 'antigravity-cli');
   fs.mkdirSync(dir, { recursive: true });
   const now = Math.floor(Date.now() / 1000);
-  fs.writeFileSync(path.join(dir, 'quota-state.json'), JSON.stringify({ schema: 2, updated_at: now, buckets }));
+  fs.writeFileSync(path.join(dir, 'quota-state.json'), JSON.stringify({ schema: 2, active_model: activeModel, updated_at: now, buckets }));
 }
 
 describe('readQuotaView', () => {
@@ -153,6 +153,21 @@ describe('readQuotaView', () => {
     const view = quotaViewUnderHome(home);
 
     expect(view.strategy).toBe('conserve');
+  });
+
+  it('uses gemini-argon-wtu-weekly when Gemini 4 Argon is the active model', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.93, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.11, reset_at: resetAt },
+      'gemini-argon-wtu-weekly': { remaining_fraction: 0.92, reset_at: resetAt }
+    }, 'Gemini 4 Argon (Medium)');
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.weekly).toBe(0.92);
+    expect(view.strategy).toBe('normal');
   });
 });
 

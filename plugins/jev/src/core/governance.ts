@@ -236,8 +236,14 @@ export async function readQuotaView(): Promise<QuotaView> {
     if (b) buckets[k] = b;
   }
 
-  const geminiFive = buckets['gemini-5h']?.effective_remaining_fraction ?? null;
-  const geminiWeekly = buckets['gemini-weekly']?.effective_remaining_fraction ?? null;
+  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel));
+  const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
+  const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
+
+  const geminiFive = (isArgonActive && argonFiveKey ? buckets[argonFiveKey]?.effective_remaining_fraction : undefined)
+    ?? buckets['gemini-5h']?.effective_remaining_fraction ?? null;
+  const geminiWeekly = (isArgonActive ? buckets[argonWeeklyKey]?.effective_remaining_fraction : undefined)
+    ?? buckets['gemini-weekly']?.effective_remaining_fraction ?? null;
   const p3Five = buckets['3p-5h']?.effective_remaining_fraction ?? null;
   const p3Weekly = buckets['3p-weekly']?.effective_remaining_fraction ?? null;
 

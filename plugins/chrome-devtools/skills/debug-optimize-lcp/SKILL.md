@@ -3,6 +3,8 @@ name: debug-optimize-lcp
 description: Guides debugging and optimizing Largest Contentful Paint (LCP) using Chrome DevTools MCP tools. Use this skill whenever the user asks about LCP performance, slow page loads, Core Web Vitals optimization, or wants to understand why their page's main content takes too long to appear. Also use when the user mentions "largest contentful paint", "page load speed", "CWV", or wants to improve how fast their hero image or main content renders.
 ---
 
+<!-- Adapted from skills/debug-optimize-lcp in ChromeDevTools/chrome-devtools-mcp (https://github.com/ChromeDevTools/chrome-devtools-mcp), Apache-2.0; see ../../LICENSE.chrome-devtools-mcp. Modified in this repository. -->
+
 ## What is LCP and why it matters
 
 Largest Contentful Paint (LCP) measures how quickly a page's main content becomes visible. It's the time from navigation start until the largest image or text block renders in the viewport.

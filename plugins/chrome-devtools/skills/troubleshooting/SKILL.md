@@ -3,6 +3,8 @@ name: troubleshooting
 description: Uses Chrome DevTools MCP and documentation to troubleshoot connection and target issues. Trigger this skill when list_pages, new_page, or navigate_page fail, or when the server initialization fails.
 ---
 
+<!-- Adapted from skills/troubleshooting in ChromeDevTools/chrome-devtools-mcp (https://github.com/ChromeDevTools/chrome-devtools-mcp), Apache-2.0; see ../../LICENSE.chrome-devtools-mcp. Modified in this repository. -->
+
 ## Troubleshooting Wizard
 
 You are acting as a troubleshooting wizard to help the user configure and fix their Chrome DevTools MCP server setup. When this skill is triggered (e.g., because `list_pages`, `new_page`, or `navigate_page` failed, or the server wouldn't start), follow this step-by-step diagnostic process:

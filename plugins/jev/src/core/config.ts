@@ -213,7 +213,17 @@ export function detectActiveHarness(): JevHarness {
       return h as JevHarness;
     }
   }
-  if (process.env.ANTIGRAVITY_CLI || process.env.GEMINI_CLI || process.env.CORTEX_SESSION) {
+  if (
+    process.env.ANTIGRAVITY_AGENT ||
+    process.env.ANTIGRAVITY_APP_DATA_DIR ||
+    process.env.ANTIGRAVITY_LS_ADDRESS ||
+    process.env.ANTIGRAVITY_LS_VERSION ||
+    process.env.ANTIGRAVITY_CONVERSATION_ID ||
+    process.env.ANTIGRAVITY_PROJECT_ID ||
+    process.env.ANTIGRAVITY_CLI ||
+    process.env.GEMINI_CLI ||
+    process.env.CORTEX_SESSION
+  ) {
     return 'antigravity';
   }
   if (process.env.CLAUDE_CODE || process.env.CLAUDE_PROJECT_DIR || process.env.CLAUDECODE) {
@@ -222,6 +232,36 @@ export function detectActiveHarness(): JevHarness {
   if (process.env.OPENCODE_SESSION || process.env.OPENCODE_HOME) {
     return 'opencode';
   }
+
+  // When jev runs as an MCP server launched by Antigravity without inherited env vars,
+  // check if running src/index.ts (the MCP server) when quota-state.json was updated recently
+  try {
+    const scriptPath = process.argv[1] || '';
+    const isMcpServer =
+      scriptPath.endsWith('src/index.ts') ||
+      scriptPath.endsWith('src/index.js') ||
+      scriptPath.endsWith('dist/index.js') ||
+      scriptPath.endsWith('index.ts') ||
+      scriptPath.endsWith('index.js') ||
+      process.argv.slice(1).some(
+        (arg) => typeof arg === 'string' && (arg.endsWith('src/index.ts') || arg.endsWith('index.ts'))
+      );
+
+    if (isMcpServer) {
+      const quotaPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'quota-state.json');
+      if (fsSync.existsSync(quotaPath)) {
+        const stats = fsSync.statSync(quotaPath);
+        const ageMs = Date.now() - stats.mtimeMs;
+        // Updated recently (within 48 hours)
+        if (ageMs < 48 * 60 * 60 * 1000) {
+          return 'antigravity';
+        }
+      }
+    }
+  } catch {
+    // ignore access errors
+  }
+
   return 'cli';
 }
 
@@ -248,7 +288,7 @@ export function normalizeTier(rawTier: string): CognitiveTier {
   const t = (rawTier || '').toLowerCase().trim();
   if (t === 'free' || t === 'openrouter_free' || t.includes('free')) return 'free';
   if (t === 'cheap' || t === 'flash_lite' || t.includes('haiku') || t.includes('lite') || t.includes('cheap')) return 'cheap';
-  if (t === 'deep' || t === 'pro' || t.includes('opus') || t.includes('expensive') || t.includes('deep') || t === 'pro' || /(?:^|[-_/:])pro(?:$|[-_/:])/.test(t)) return 'deep';
+  if (t === 'deep' || t === 'pro' || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t.includes('deep') || t === 'pro' || /(?:^|[-_/:])pro(?:$|[-_/:])/.test(t)) return 'deep';
   if (t === 'standard' || t === 'flash' || t.includes('sonnet') || t.includes('standard') || t.includes('flash')) return 'standard';
   return 'standard';
 }

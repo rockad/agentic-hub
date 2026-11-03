@@ -32,6 +32,12 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
 
     const HARNESS_ENV_VARS = [
       'JEV_HARNESS',
+      'ANTIGRAVITY_AGENT',
+      'ANTIGRAVITY_APP_DATA_DIR',
+      'ANTIGRAVITY_LS_ADDRESS',
+      'ANTIGRAVITY_LS_VERSION',
+      'ANTIGRAVITY_CONVERSATION_ID',
+      'ANTIGRAVITY_PROJECT_ID',
       'ANTIGRAVITY_CLI',
       'GEMINI_CLI',
       'CLAUDE_CODE',
@@ -101,8 +107,28 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(detectActiveHarness()).toBe('opencode');
     });
 
-    it('detects Antigravity from ANTIGRAVITY_CLI or GEMINI_CLI', () => {
+    it('detects Antigravity from ANTIGRAVITY_AGENT, ANTIGRAVITY_APP_DATA_DIR, ANTIGRAVITY_CLI, or GEMINI_CLI', () => {
       delete process.env.JEV_HARNESS;
+      process.env.ANTIGRAVITY_AGENT = '1';
+      expect(detectActiveHarness()).toBe('antigravity');
+      expect(getHarnessModels()).toEqual({
+        free: 'openrouter/free',
+        cheap: 'flash_lite',
+        standard: 'flash',
+        deep: 'pro'
+      });
+
+      delete process.env.ANTIGRAVITY_AGENT;
+      process.env.ANTIGRAVITY_APP_DATA_DIR = '/home/rockad/.gemini/antigravity-cli';
+      expect(detectActiveHarness()).toBe('antigravity');
+      expect(getHarnessModels()).toEqual({
+        free: 'openrouter/free',
+        cheap: 'flash_lite',
+        standard: 'flash',
+        deep: 'pro'
+      });
+
+      delete process.env.ANTIGRAVITY_APP_DATA_DIR;
       process.env.ANTIGRAVITY_CLI = '1';
       expect(detectActiveHarness()).toBe('antigravity');
 
@@ -115,6 +141,8 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       delete process.env.JEV_HARNESS;
       delete process.env.ANTIGRAVITY_CLI;
       delete process.env.GEMINI_CLI;
+      delete process.env.ANTIGRAVITY_AGENT;
+      delete process.env.ANTIGRAVITY_APP_DATA_DIR;
       process.env.CLAUDE_CODE = '1';
       expect(detectActiveHarness()).toBe('claude-code');
 
@@ -127,6 +155,8 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       delete process.env.JEV_HARNESS;
       delete process.env.ANTIGRAVITY_CLI;
       delete process.env.GEMINI_CLI;
+      delete process.env.ANTIGRAVITY_AGENT;
+      delete process.env.ANTIGRAVITY_APP_DATA_DIR;
       delete process.env.CLAUDE_CODE;
       process.env.OPENCODE_SESSION = 'sess_123';
       expect(detectActiveHarness()).toBe('opencode');
@@ -134,6 +164,12 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
 
     it('falls back to "cli" when no harness environment signals are present', () => {
       delete process.env.JEV_HARNESS;
+      delete process.env.ANTIGRAVITY_AGENT;
+      delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+      delete process.env.ANTIGRAVITY_LS_ADDRESS;
+      delete process.env.ANTIGRAVITY_LS_VERSION;
+      delete process.env.ANTIGRAVITY_CONVERSATION_ID;
+      delete process.env.ANTIGRAVITY_PROJECT_ID;
       delete process.env.ANTIGRAVITY_CLI;
       delete process.env.GEMINI_CLI;
       delete process.env.CLAUDE_CODE;

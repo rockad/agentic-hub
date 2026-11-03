@@ -312,7 +312,7 @@ export function modelTierRank(tierOrModel: string): number {
   if (t.includes('free') || t === 'openrouter_free') return 0;
   if (t.includes('flash_lite') || t.includes('flash-lite')) return 1;
   if (t.includes('flash') || t.includes('cheap') || t.includes('standard')) return 2;
-  if (t.includes('pro') || t.includes('opus') || t.includes('expensive')) return 3;
+  if (t.includes('pro') || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t === 'deep') return 3;
   return 2;
 }
 
@@ -338,7 +338,11 @@ export function clampTierToSessionCeiling(
     text.includes('cross-system architecture') ||
     text.includes('manual pro approval') ||
     text.includes('claude opus') ||
-    text.includes('gemini pro');
+    text.includes('gemini pro') ||
+    text.includes('gemini argon') ||
+    text.includes('argon') ||
+    text.includes('claude fable') ||
+    text.includes('fable');
 
   const ceilingRank = modelTierRank(activeModel);
   const ceilingTier = rankToTierName(ceilingRank);

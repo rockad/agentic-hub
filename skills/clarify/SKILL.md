@@ -32,6 +32,12 @@ Unifies `/clarify`, `/grill-me`, `/cplain`, and `/celi5` into a single cross-har
 
 The point is not to collect answers faster or run a superficial questionnaire. It is to make every decision visible, argued, and reversible while it is still cheap to reverse, before a single line of implementation code is written.
 
+## Relationship to Native Harness Commands (`/grill-me`)
+
+- **Native Antigravity Slash Command**: In Google Antigravity, `/grill-me` is a built-in slash command that injects the native `<GRILL_ME>` system prompt. The `clarify` skill does **not** shadow, replace, or override `/grill-me` at the CLI or parser level.
+- **Architectural Fulfillment**: Instead, `clarify` recognizes `/grill-me` as an intentional trigger to fulfill and elevate the native command with industrial-strength discipline: exhaustive fork decomposition (no artificial 4-fork cap), codebase pre-flight discovery, prose-first visual previews, Option A recommendations, and Jev-aware parallel execution handoffs.
+- **Cross-Harness Parity**: In Claude Code and OpenCode, where native `/grill-me` does not exist, `clarify` brings this exact interview capability across harnesses under the same command syntax.
+
 ## Operational Modes
 
 The skill provides two operational modes tailored to different audiences and depth requirements:

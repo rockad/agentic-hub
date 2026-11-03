@@ -72,6 +72,8 @@
   "standalone_skills": [
     {
       "id": "clarify",
+      "name": "Architecture & Plain-English Clarifier",
+      "description": "Walk non-trivial designs through their forks one question at a time. Supports deep technical architecture (/clarify, /grill-me) and plain-English intuitive mental models (/cplain, /celi5).",
       "path": "skills/clarify"
     },
     {

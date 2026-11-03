@@ -5,14 +5,18 @@ description: >-
   design targets without parameters via a multi-tier recency cascade, explores the
   codebase first, surfaces genuine architectural trade-offs with prose-first
   previews and explicit recommendations, and asks interactive single-choice
-  questions across Antigravity, Claude Code, and OpenCode. Closes with a
-  decision table, architecture artifact, and Jev-aware parallel workstream handoff.
+  questions across Antigravity, Claude Code, and OpenCode. Supports both deep
+  technical architecture (/clarify, /grill-me) and plain-English intuitive mental
+  model clarification (/cplain, /celi5). Closes with a decision table, architecture
+  artifact, and Jev-aware parallel workstream handoff.
 when_to_use: >-
   The user is designing something non-trivial (DB schema, data model, API contract,
   UX flow, architecture, migration) and at least three orthogonal decisions are open,
   each with two or more defensible options — or the user asks to clarify before coding.
-  Triggers include /clarify, /grill-me, "walk me through the options", "interview me",
-  "one at a time", "clarify architecture before coding", "trade-offs", "design decision",
+  Triggers include /clarify, /grill-me, /cplain, /celi5, /clarify --plain, /clarify --eli5,
+  /clarify eli5, "explain like I'm five", "plain english", "cplain", "celi5",
+  "walk me through the options", "interview me", "one at a time",
+  "clarify architecture before coding", "trade-offs", "design decision",
   "discuss before coding", "architecture without code". Skip for a single isolated choice,
   for urgent implementation where the user said to just build it, or while another
   interactive flow already owns the conversation.
@@ -24,14 +28,25 @@ metadata:
 
 A working mode for designing something non-trivial together with the user — a database schema, a data model, an API contract, a UX flow, an architecture refactor, or a migration — when several orthogonal forks are open and each carries its own trade-offs.
 
-Unifies `/clarify` and `/grill-me` into a single cross-harness skill compatible with Google Antigravity, Claude Code, and OpenCode.
+Unifies `/clarify`, `/grill-me`, `/cplain`, and `/celi5` into a single cross-harness skill compatible with Google Antigravity, Claude Code, and OpenCode.
 
 The point is not to collect answers faster or run a superficial questionnaire. It is to make every decision visible, argued, and reversible while it is still cheap to reverse, before a single line of implementation code is written.
 
+## Operational Modes
+
+The skill provides two operational modes tailored to different audiences and depth requirements:
+
+- **Mode A: Standard Architectural Mode (`/clarify`, `/grill-me`)**: Senior engineering mechanics, DDL, DTOs, ERDs, interface contracts, formal invariants, and technical pros/cons. Previews feature code snippets, database schemas, and protocol specs.
+- **Mode B: Plain English & Intuitive Mode (`/cplain`, `/celi5`, `--plain`, `--eli5`, `eli5`, "explain like I'm five", "plain english")**: Everyday analogies, mental models, 4-Question framing, Door Type reversibility (One-Way Tattoo vs. Two-Way Sticker), concrete Failure Blast Radius, and Dual-Anchors ("Where the analogy breaks"). Ensures complex architectural decisions are intuitive without sacrificing technical rigor.
+
 ## Triggers & When to Enter
 
-- **Slash commands & phrase triggers**: `/clarify` (universal slash command), `/grill-me` (native slash command in Antigravity; prompt phrase trigger in Claude Code & OpenCode).
-- **User prompts**: "walk me through the options", "interview me", "one at a time", "clarify architecture before coding", "trade-offs", "let's clarify this first", "design decision", "discuss before coding", "architecture without code".
+- **Slash commands & phrase triggers**:
+  - **Standard Architectural Mode**: `/clarify` (universal slash command), `/grill-me` (native slash command in Antigravity; prompt phrase trigger in Claude Code & OpenCode).
+  - **Plain English / ELI5 Mode**: `/cplain`, `/celi5`, `/clarify --plain`, `/clarify --eli5`, `/clarify eli5`, `cplain`, `celi5`.
+- **User prompts**:
+  - **Standard Architecture**: "walk me through the options", "interview me", "one at a time", "clarify architecture before coding", "trade-offs", "let's clarify this first", "design decision", "discuss before coding", "architecture without code".
+  - **Plain English / ELI5**: "explain like I'm five", "plain english", "plain english clarification", "explain this simply before coding", "eli5 architecture".
 - Three or more related design decisions are open, and each has at least two reasonable, defensible options.
 - The user explicitly asks for trade-off analysis without jumping into implementation.
 - You decomposed the request yourself and can see that without a choice on each fork, the implementation would be either incomplete or built on silent assumptions.
@@ -53,12 +68,12 @@ Before formulating forks or prompting the user, **investigate the existing codeb
 
 ## Target Resolution When Invoked Without Parameters
 
-When invoked simply as `/clarify` or `/grill-me` without an explicit target or file argument, the skill must determine what architectural topic, plan, or artifact to interrogate. To ensure it focuses on what the user currently cares about without asking an unnecessary disambiguation question, evaluate the following cascade in order:
+When invoked simply as `/clarify`, `/grill-me`, `/cplain`, or `/celi5` without an explicit target or file argument, the skill must determine what architectural topic, plan, or artifact to interrogate. To ensure it focuses on what the user currently cares about without asking an unnecessary disambiguation question, evaluate the following cascade in order:
 
 ### 1. The Resolution Cascade
 
 - **Tier 0 — Explicit Argument**:
-  - The invocation contains an explicit path or topic string (e.g., `/clarify plans/auth-service.md`, `/clarify database migration`).
+  - The invocation contains an explicit path or topic string (e.g., `/clarify plans/auth-service.md`, `/clarify database migration`, `/cplain auth service`, `/celi5 database indexing`).
   - Target: The provided path or topic directly.
 
 - **Tier 1 — Recent User Chat Override**:
@@ -87,11 +102,15 @@ When invoked simply as `/clarify` or `/grill-me` without an explicit target or f
 
 ### 2. Target Announcement Protocol
 
-Always announce the resolved target in a single unambiguous declarative line before presenting the fork map:
+Always announce the resolved target and the active operational mode in a single unambiguous declarative line before presenting the fork map:
 
-> Target resolved: **[<target name or path>]**. Decomposing into N orthogonal forks...
+> Target resolved: **[<target name or path>]** (Mode: <Standard Architecture /clarify | Plain English /cplain>). Decomposing into N orthogonal forks...
 
-This ensures total transparency: if the skill picked up an artifact the user did not intend to clarify, the user can immediately intervene or provide an explicit argument on the next turn.
+*Examples:*
+- **Standard Mode:** `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Architecture /clarify). Decomposing into 6 orthogonal forks...`
+- **Plain English Mode:** `> Target resolved: **[User Authentication Architecture]** (Mode: Plain English /cplain). Decomposing into 5 orthogonal forks...`
+
+This ensures total transparency: if the skill picked up an artifact the user did not intend to clarify or selected the wrong operational mode, the user can immediately intervene or re-invoke with explicit parameters on the next turn.
 
 ## Before the First Question
 
@@ -121,7 +140,13 @@ This ensures total transparency: if the skill picked up an artifact the user did
 
 All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. This keeps interactive UI dialogs, chips, and modal prompts concise, clean, and readable across all harnesses.
 
-### 1. Heading and Context
+The step structure adapts based on the active operational mode:
+
+---
+
+### Mode A: Standard Architectural Step Format (`/clarify`, `/grill-me`)
+
+#### 1. Heading and Context
 
 A short numbered heading:
 
@@ -131,14 +156,14 @@ A short numbered heading:
 
 Below it, **two to four sentences of context**: what is being decided, why it matters, and what it will constrain downstream.
 
-### 2. Options, Argued
+#### 2. Options, Argued
 
 For each option (two to four options per fork):
 
 - **Option A is ALWAYS the Recommended Option**: Formulate the best architectural path as **Option A**, titled `### Option A. <name> (Recommended)`. This guarantees that:
   - Option A is presented first in prose.
   - Option A is placed first in the interactive selection tool with the `(Recommended)` tag, satisfying harness-level requirements (like Antigravity `ask_question`).
-  - In the selection UI, Option A is assigned number `1.` (`1. Option A: <name> (Recommended)`), followed by `2. Option B: <name>`, `3. Option C: <name>`. The numbers and letters align in identical 1:1 order without confusing the user.
+  - In the selection UI, Option A is assigned number `1.` (`1. (Recommended) Option A: <name>`), followed by `2. Option B: <name>`, `3. Option C: <name>`. The numbers and letters align in identical 1:1 order without confusing the user.
 - Subsequent options are labeled `### Option B. <name>`, `### Option C. <name>`, etc.
 - A technical block for each option — ASCII diagram, code snippet, DTO, schema, or formula.
 - **Pros:** two to four concrete points.
@@ -146,7 +171,7 @@ For each option (two to four options per fork):
 
 Options must be **mutually exclusive** and genuinely different in consequence. If two differ only cosmetically, merge them or drop one.
 
-### 3. Your Reading, and a Recommendation
+#### 3. Your Reading, and a Recommendation
 
 After the options, **three to six sentences**: why Option A is recommended, under what specific conditions that recommendation would flip to Option B or C, and what downstream forks this decision cascades into.
 
@@ -154,22 +179,87 @@ Close with a one-line recommendation:
 
 > **Recommendation:** **Option A: <name>** — <one clause explaining why>.
 
-### 4. Adaptive Interactive Tool Calling
+---
+
+### Mode B: Plain English & Intuitive Step Format (`/cplain`, `/celi5`)
+
+Plain English mode translates technical trade-offs into accessible mental models, everyday analogies, and clear risk boundaries while maintaining technical precision underneath.
+
+#### 1. Header with Door Type & Under the Hood Anchor
+
+Every question in Plain Mode begins with a clear classification of reversibility and its technical domain:
+
+```markdown
+## Question N (of Total) — <Everyday Descriptive Name>
+> **Door Type:** One-Way Door (Tattoo — high cost to reverse) | Two-Way Door (Sticker — easily changed)
+> **Under the Hood:** <Formal Engineering Topic / Subsystem>
+```
+
+- **One-Way Door (Tattoo)**: High cost to reverse. Hard or destructive to undo once code and data are live (e.g. database schema topology, primary storage engine, public API protocol contracts).
+- **Two-Way Door (Sticker)**: Easily changed. Low cost to reverse or iterate upon (e.g. cache TTL duration, polling interval, worker batch chunk size, internal retry limits).
+
+#### 2. The 4-Question Framing
+
+Structure the markdown prose above the tool call around these four questions:
+
+##### 1. What problem are we actually solving?
+1–2 plain-English sentences removing all jargon, explaining the practical user-facing or system challenge.
+
+##### 2. What are our choices in plain English?
+Present two to four mutually exclusive choices. **Option A is ALWAYS the Recommended Option** (`### Option A. <Analogy Name> (Recommended)`).
+
+For each option, provide:
+- **Everyday Analogy**: A relatable real-world comparison (e.g., "The Digital Sticky Tag", "The Fast-Food Drive-Through Lane", "The Central Dispatch Office").
+- **Conceptual ASCII Sketch**: Simple mental model diagram (not raw code or DDL).
+- **Under the Hood**: Formal engineering mechanism/term (e.g., `M:N Join Table with compound unique index`, `Redis pub/sub ring buffer`, `Optimistic locking with version column`).
+- **Where the Analogy Breaks**: The exact boundary where the real-world analogy stops matching software reality, preventing false assumptions.
+
+*Example Option Format:*
+```markdown
+### Option A. The Digital Sticky Tag (Recommended)
+- **Everyday Analogy**: Like sticking a color-coded reusable post-it note on a folder.
+- **Mental Model**:
+  [Record Folder] <---> [Sticky Tag Box] <---> [Tag Name]
+- **Under the Hood**: Normalized `record_tags` join table with foreign keys and compound unique index `(record_id, tag_id)`.
+- **Where the Analogy Breaks**: Unlike physical sticky notes that fall off or tear, database join rows never peel off accidentally and enforce strict referential integrity.
+```
+
+##### 3. What are the tangible trade-offs & blast radius?
+- **What gets easier (Pros)**: 2–3 concrete operational or developer benefits.
+- **Failure Blast Radius / Rework Cost (Cons)**: What happens if this assumption is wrong? How much work is required to undo this decision? Who or what gets affected?
+
+##### 4. Why is Option A the common-sense pick?
+- 2–3 plain sentences explaining why Option A is the pragmatic default.
+- Specific scenario or constraint under which the recommendation would flip to Option B or C.
+
+Close with the recommendation line:
+
+> **Recommendation:** **Option A: <Analogy Name> (<Formal Tech Anchor>)** — <one plain sentence explaining why>.
+
+---
+
+### Adaptive Interactive Tool Calling
 
 After printing the markdown analysis, invoke the harness-appropriate interactive question tool.
 
 > [!IMPORTANT]
 > **Strict Option Naming & Sequence Rule**:
 > Options in the selection tool MUST be named with their explicit letter prefix and title in the exact order they appeared in prose:
-> - `1. Option A: <name> (Recommended)`
-> - `2. Option B: <name>`
-> - `3. Option C: <name>`
+> - **Mode A (Architecture)**:
+>   - `1. (Recommended) Option A: <name>`
+>   - `2. Option B: <name>`
+>   - `3. Option C: <name>`
+> - **Mode B (Plain English)**:
+>   - `1. (Recommended) Option A: <Analogy Name> (<Formal Tech Anchor>)`
+>   - `2. Option B: <Analogy Name> (<Formal Tech Anchor>)`
+>   - `3. Option C: <Analogy Name> (<Formal Tech Anchor>)`
 > Never emit bare option names without the `Option X:` prefix, and never reorder options in the selection tool.
 
 #### A. Google Antigravity (`ask_question`)
 
 Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 
+**Mode A (Standard Architecture):**
 ```json
 ask_question({
   "questions": [
@@ -186,11 +276,28 @@ ask_question({
 })
 ```
 
-*What the user sees in the Antigravity UI picker:*
+**Mode B (Plain English / ELI5):**
+```json
+ask_question({
+  "questions": [
+    {
+      "question": "How should we organize user tags on records?",
+      "options": [
+        "(Recommended) Option A: The Digital Sticky Tag (M:N Join Table)",
+        "Option B: The Direct Sharpie Label (Denormalized JSONB)",
+        "Option C: The Comma List on the Box (Delimited String)"
+      ],
+      "is_multi_select": false
+    }
+  ]
+})
 ```
-1. (Recommended) Option A: M:N join table
-2. Option B: Denormalized JSONB array
-3. Option C: Single-tenant delimited string
+
+*What the user sees in the Antigravity UI picker (Mode B):*
+```
+1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
+2. Option B: The Direct Sharpie Label (Denormalized JSONB)
+3. Option C: The Comma List on the Box (Delimited String)
 4. Other
 ```
 
@@ -198,6 +305,7 @@ ask_question({
 
 Uses `AskUserQuestion` with concise `header`, `label`, `description`, and `"multiSelect": false` (strictly required by Claude Code). Options can include the `"preview"` field to provide side-by-side terminal UI comparison boxes on single-select forks:
 
+**Mode A (Standard Architecture):**
 ```json
 AskUserQuestion({
   "questions": [
@@ -227,10 +335,41 @@ AskUserQuestion({
 })
 ```
 
+**Mode B (Plain English / ELI5):**
+```json
+AskUserQuestion({
+  "questions": [
+    {
+      "header": "Tag Storage",
+      "question": "How should we organize user tags on records?",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
+          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box.",
+          "preview": "[Records] <---> [Sticky Tag Box] <---> [Tags]\nIndependent, clean, searchable from either side."
+        },
+        {
+          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
+          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag.",
+          "preview": "[Record Folder]\nTags written in ink: [urgent, backend]\nHard to rename tags across 10,000 folders."
+        },
+        {
+          "label": "Option C: The Comma List on the Box (Delimited String)",
+          "description": "Writing tags separated by commas. Quickest to start, messy to organize later.",
+          "preview": "[Record Folder]\nString: \"urgent,backend\"\nTypos break searches easily."
+        }
+      ]
+    }
+  ]
+})
+```
+
 #### C. OpenCode (`question`)
 
 Uses `question` following standard option schema with `Option A:` labels:
 
+**Mode A (Standard Architecture):**
 ```json
 question({
   "questions": [
@@ -256,15 +395,50 @@ question({
 })
 ```
 
+**Mode B (Plain English / ELI5):**
+```json
+question({
+  "questions": [
+    {
+      "header": "Tag Storage",
+      "question": "How should we organize user tags on records?",
+      "options": [
+        {
+          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
+          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box."
+        },
+        {
+          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
+          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag."
+        },
+        {
+          "label": "Option C: The Comma List on the Box (Delimited String)",
+          "description": "Writing tags separated by commas. Quickest to start, messy to organize later."
+        }
+      ]
+    }
+  ]
+})
+```
+
 #### D. Terminal CLI Fallback
 
 When running in headless CLI environments or where no interactive question tool is bound:
 
+**Mode A (Standard Architecture):**
 ```markdown
 Which data model should we use for record tagging?
-1. Option A: M:N join table (Recommended)
+1. (Recommended) Option A: M:N join table
 2. Option B: Denormalized JSONB array
 3. Option C: Single-tenant delimited string
+```
+
+**Mode B (Plain English / ELI5):**
+```markdown
+How should we organize user tags on records?
+1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
+2. Option B: The Direct Sharpie Label (Denormalized JSONB)
+3. Option C: The Comma List on the Box (Delimited String)
 ```
 
 Wait for the user's text reply before advancing to the next fork.
@@ -286,16 +460,27 @@ Once all forks are resolved, present the consolidated architectural blueprint an
 
 ### 1. Decision Table
 
-| # | Decision | Changed? |
-|---|----------|----------|
-| 1 | <decision> | unchanged / revised |
-| 2 | <decision> | new |
+#### Mode A (Standard Architecture)
+
+| # | Decision Topic | Chosen Option | Changed? |
+|---|----------------|---------------|----------|
+| 1 | <topic> | Option A: <formal technical decision> | unchanged / revised |
+| 2 | <topic> | Option B: <formal technical decision> | new |
+
+#### Mode B (Plain English / ELI5)
+
+| # | Decision Topic | Plain English Analogy | Under the Hood | Door Type | Changed? |
+|---|----------------|-----------------------|----------------|-----------|----------|
+| 1 | Tag Storage | The Digital Sticky Tag | M:N Join Table | Two-Way (Sticker) | unchanged / revised |
+| 2 | Cache Invalidation | The Daily Menu Board | TTL Cache Invalidation | One-Way (Tattoo) | new |
 
 The "Changed?" column earns its place only if something was revised mid-series; drop it when every decision held.
 
 ### 2. Final Architecture Artifact
 
-Assemble the **final picture** — complete ASCII diagram, DTOs/schemas, state machines, API contracts, and governing invariants — in a single consolidated block.
+Assemble the **final picture**:
+- **Mode A (Standard Architecture)**: Complete technical blueprint — complete ASCII diagram, DTOs/schemas, state machines, API contracts, and governing invariants in a single consolidated block.
+- **Mode B (Plain English / ELI5)**: Dual-layer blueprint providing **both** the conceptual ASCII mental model (everyday system metaphor) and the formal technical specification (under-the-hood contracts, schemas, and invariants). This bridges the intuitive high-level understanding with rigorous implementation-ready contracts.
 
 ### 3. Proposed Parallel Workstream Breakdown Table
 
@@ -341,6 +526,8 @@ Once the user approves:
 
 - **Artificial 4-fork truncation** — capping the clarification at 3 or 4 superficial questions when major architectural dimensions (persistence, error handling, auth, concurrency, lifecycle) remain unclarified.
 - **Unlabeled or scrambled options in selection** — emitting options in the interactive tool without `Option A:`, `Option B:` prefixes, or reordering them so they disagree with the prose preview.
+- **Analogy without technical anchor (Plain Mode)** — using everyday analogies without naming the "Under the Hood" engineering mechanism or "Where the analogy breaks". A metaphor without an anchor is fiction, not architecture.
+- **Skipping Door Type or failure blast radius (Plain Mode)** — failing to classify decisions as One-Way (Tattoo) vs Two-Way (Sticker), or omitting the failure blast radius if the assumption is wrong.
 - **Firing options without codebase discovery** — asking questions the codebase already answers damages trust.
 - **Firing options without analysis** — that is a questionnaire, not a clarification.
 - **Options with no preview in prose** — the visual comparison is the point. If a fork resists having a preview, it may not be a fork worth this mode.
@@ -357,6 +544,9 @@ Once the user approves:
 - **Cross-Harness Tool Names**: Antigravity uses `ask_question`, Claude Code uses `AskUserQuestion`, OpenCode uses `question`. Adapt dynamically without crashing if a specific tool is absent.
 - **Single Question per Call**: One question per call is this skill's protocol, even if the underlying tool schema permits multi-question arrays. A batch turns the session back into an overwhelming questionnaire.
 - **Option Naming & Ordering in Selection**: Every option in the interactive selection tool MUST be named `Option A: <name>`, `Option B: <name>` in the exact sequence they appeared in prose. The UI numbers them (`1.`, `2.`, `3.`), rendering `1. Option A: <name> (Recommended)`, `2. Option B: <name>`, etc. Always make Option A the recommended path so that the recommendation is first without breaking letter ordering.
+- **Plain Mode Dual Anchoring**: In Plain English mode, always format option names as `Option X: <Analogy Name> (<Formal Tech Anchor>)` to preserve both conversational intuition and engineering clarity in the picker UI.
+- **Door Type Classification**: One-Way Doors (Tattoos) are expensive or destructive to undo (database storage engine, primary key schema, public API shape, distributed protocol). Two-Way Doors (Stickers) are cheap to change (cache TTL, batch chunk size, retry count, UI label phrasing). Make this distinction explicit in Plain Mode.
+- **Dual Anchors ("Where the Analogy Breaks")**: Every analogy breaks somewhere. Explicitly identifying the break-point prevents false mental models that could cause bad downstream assumptions.
 - **Total Forks vs. Options per Fork Distinction**: Clarify this distinction carefully: **4 options per question is the harness limit for choices**, NOT a limit on the total number of architectural forks in the session! A comprehensive clarification should uncover **all** genuine architectural forks (e.g. 5 to 12+), sweeping across all architectural dimensions, and walk through them one by one.
 - **Previews in Markdown Prose**: Do not rely exclusively on tool-specific preview properties. Markdown prose is the universal preview canvas across all harnesses.
 - **Claude Code `preview` Rendering**: In Claude Code, the `preview` field renders only when `multiSelect: false`. On a multi-select fork the preview blocks silently do not appear in the terminal UI comparison box — keep the comparison in markdown prose.

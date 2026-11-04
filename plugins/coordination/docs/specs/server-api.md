@@ -31,9 +31,9 @@ The service is a portable image that can run anywhere; production runs on `core`
 
 - S1: dev and spikes on alyx, `127.0.0.1:8120` only.
 - S2: production on core. Every workstation (alyx, mac) reaches core over the tailnet from day one, through `tailscale serve` on core. One `local-harness` API key per harness per machine, checked against the Tailscale identity for all harness keys including alyx [D17, D23].
-- S3: public HTTPS through the user's existing Cloudflare Tunnel (`cloudflared`) on core. The route `a2a.bigrockad.com` to `localhost:8120` on core was created by the user on 2026-11-04 [D20, D23]. `cloudflared` reaches the service on core's own loopback; there is no tunnel-to-tailnet hop. Consequences in 8.4.1.
+- S3: public HTTPS through the user's existing Cloudflare Tunnel (`cloudflared`) on core, hostname `a2a.bigrockad.com` [D20, D23]. **No route exists now**: one was created and deleted on 2026-11-04 [verified by Claude Code: the hostname no longer resolves, curl returns 000]. The route is created only at S3, after the S3 gate passes and on the user's explicit go. When it exists, `cloudflared` reaches the service on core's own loopback; there is no tunnel-to-tailnet hop. Consequences in 8.4.1.
 
-Until the S3 gate passes the public hostname must sit behind a Cloudflare Access deny-all (or service-token-only) policy, and the service is never started on core's 8120 without it (plan Risk 13; 1.6).
+No route is created, and nothing listens where a route would point, before the S3 gate (plan Risk 13; 1.6). If a route is created early for testing it must sit behind a Cloudflare Access deny-all or service-token-only policy.
 
 Terms:
 
@@ -203,7 +203,7 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name of core, at S3 also `a2a.bigrockad.com`, which arrives through the tunnel (8.4.1). The public hostname is refused unless `A2A_EXPOSURE_STAGE` is `s3` (1.6) |
 | `A2A_ALLOWED_ORIGINS` | empty | accepted `Origin` values; empty means any request with an `Origin` header is refused |
 | `A2A_TRUSTED_PROXY_IPS` | empty | peers whose `X-Forwarded-*` headers are honoured |
-| `A2A_TUNNEL_HOSTS` | empty | S3: `Host` values that mean "arrived through `cloudflared` on this host" (`a2a.bigrockad.com`). `CF-Connecting-IP` is believed only when `Host` is in this list and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on these hosts [D20, D23]; required at `s3` |
+| `A2A_TUNNEL_HOSTS` | empty | S3: `Host` values that mean "arrived through `cloudflared` on this host" (`a2a.bigrockad.com`). `CF-Connecting-IP` is believed only when `Host` is in this list and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on these hosts [D20, D23]; required at `s3` in the `Host`-based fallback only. Not needed if the user chooses the dedicated loopback port (`8121`) for the tunnel at S3 (8.4.1, pending user decision) |
 | `A2A_CARDS_FILE` | `/config/cards.yaml` | non-secret card definitions |
 | `A2A_KEY_PEPPER` | unset | optional HMAC key for API key hashing (secret) |
 | `A2A_WAKE_ROUND_S` | `900` | maximum long-poll round [D8] |
@@ -233,7 +233,7 @@ The process exits non-zero, with a one-line reason, if any of these hold:
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_PUBLIC_URL` is not `https://`.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_TRUSTED_PROXY_IPS` is empty. This is the "refuse non-loopback bind without TLS proxy config" rule [D11]. Inside a container the listen address is `0.0.0.0` by necessity, so the check keys on stage and public URL, and the compose port mapping stays `127.0.0.1:` for every stage; the tailnet hop is `tailscale serve` on the host, and TLS for the public hostname ends at Cloudflare [D20].
 - `A2A_EXPOSURE_STAGE` is `s3` and `A2A_TUNNEL_HOSTS` is empty (without it the server cannot tell requests that came through the tunnel from `tailscale serve` traffic, which also arrives on core's loopback).
-- `A2A_EXPOSURE_STAGE` is not `s3` and `A2A_ALLOWED_HOSTS` contains the public hostname (`a2a.bigrockad.com`). The route already exists at Cloudflare [plan Risk 13], so before S3 the server refuses to accept that `Host` at all. This is a second layer; the Cloudflare Access deny-all is the first and is the user's action.
+- `A2A_EXPOSURE_STAGE` is not `s3` and `A2A_ALLOWED_HOSTS` contains the public hostname (`a2a.bigrockad.com`). No route exists now (a route was created and deleted on 2026-11-04, plan Risk 13), but before S3 the server refuses to accept that `Host` at all. This is a safety layer for a route created early by mistake.
 - The `A2A_ENV` value is not `dev` or `live`.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_ENFORCE_TAILNET_IDENTITY` is `0`.
 - `A2A_PUSH_ENABLED=1` and `A2A_PUSH_ENC_KEY` is unset.
@@ -750,19 +750,20 @@ The `coord` key sits inside `metadata` Structs. The extension itself is declared
 
 Steps 1 to 3 have not been run against real clients. Settled by spikes.md SP2 (section 12).
 
-#### 5.4.1 agy: bind to the conversation id, not to `Mcp-Session-Id` [D6, SP2 A1 partial result]
+#### 5.4.1 agy: bind to the conversation id, not to `Mcp-Session-Id` [D6, SP2 A1 and A4]
 
-The SP2 A6 run (2026-11-04, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md)) found two facts about agy:
+The SP2 A6 run and its follow-up (2026-11-04, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md), sections 5 and 6) found:
 
-- `Mcp-Session-Id` is process-scoped: agy keeps one MCP client session per process, shared by all conversations in it [verified, one run]. Binding a handle to it would mix sessions.
-- Every observed `tools/call` carried `params._meta["antigravity.google/conversation_id"]` (plus `antigravity.google/root_conversation_id` and `antigravity.google/artifacts_dir`) [verified on one call].
+- `Mcp-Session-Id` is process-scoped: agy's MCP servers are managed by one Language Server process for all conversations [reported by Antigravity from the architecture; a two-conversation wire comparison did not show it, because its second session looks like a separate process]. Binding a handle to `Mcp-Session-Id` would mix sessions, so it is not used for agy.
+- `params._meta["antigravity.google/conversation_id"]` was present on 3 of 3 `tools/call` requests, together with `antigravity.google/root_conversation_id` and `antigravity.google/artifacts_dir`, and absent on `tools/list` and the notifications [verified on the wire].
 
 Rule for agy sessions:
 
-- The handle binds to `_meta["antigravity.google/conversation_id"]` on each `tools/call`. The server maps that conversation id to the `harness_session_id` registered by the agy `SessionStart` hook (`conversationId` on its stdin, 11.2) and so to the handle. `Mcp-Session-Id` is not used for agy identity.
+- The handle binds to `_meta["antigravity.google/conversation_id"]` on each `tools/call`. The server maps that conversation id to the `harness_session_id` registered by the agy `SessionStart` hook (`conversationId` on its stdin, 11.2) and so to the handle. `Mcp-Session-Id` is not used for agy identity. Presence of the key is no longer a condition (verified).
+- The server also records `antigravity.google/root_conversation_id`. A background or sub-invocation (`conversation_id` different from `root_conversation_id`) is grouped under the parent's handle by `root_conversation_id`; it does not become a new top-level session handle [design; whether such invocations carry a different `conversation_id` is not yet shown, SP2 A4].
 - `a2a_hello` for agy still exists, but it is a confirmation step (it returns the handle and the inbox count), not the binding.
-- **Never trust `conversation_id` from an API key that is not `local-harness`.** The `_meta` value is client-supplied. The server reads it only on requests that passed the `local-harness` scope check (and, at S2 and S3, the tailnet identity check), and only accepts a conversation id that was registered under the calling API key's card. A `remote-peer` or `status-client` request never has its `_meta` interpreted. Like all binding, this is an assertion by an API key holder, not authentication of a session (spikes.md SP2 Record).
-- **Conditional.** This rests on the follow-up pass confirming three things: the key is present on every `tools/call`, it differs between two conversations in one agy process, and it is stable across resume. If any fails, agy falls back to the explicit `as_handle` argument in write tools (spikes.md SP2 fallback).
+- **Never trust `conversation_id` or `root_conversation_id` from an API key that is not `local-harness`.** Both values are client-supplied. The server reads them only on requests that passed the `local-harness` scope check (and, at S2 and S3, the tailnet identity check), and only accepts ids that were registered under the calling API key's card. A `remote-peer` or `status-client` request never has its `_meta` interpreted. Like all binding, this is an assertion by an API key holder, not authentication of a session (spikes.md SP2 Record).
+- **Still conditional, on two checks moved to SP2 A4:** per-conversation distinctness (two conversations in one agy process give different `conversation_id` values; plausible, not proven) and stability across an agy restart and resume (partly verified: only the same conversation across turns and a daemon restart was observed). If either fails, agy falls back to the explicit `as_handle` argument in write tools (spikes.md SP2 fallback).
 
 Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stays, pending the SP2 Claude half (C1 to C6).
 
@@ -1024,7 +1025,7 @@ Credentials are service-issued API keys, like Claude API keys.
 - Revocation closes parked listeners and MCP sessions of that key immediately.
 - Client storage [D24] (how the key reaches each client; the installer is 11.0):
   - Claude Code: the key is in the environment variable `A2A_API_KEY`. The MCP entry's `Authorization` header references it by environment expansion [unverified for Claude Code header values; SP2 Claude half]. Hooks pass it to curl on stdin (`curl -K -`), never on a command line [reported, t1b section 1: switchboard pattern].
-  - agy: the key is written literally (agy does not expand env vars in headers [reported, live confirmation pending]) into an unmanaged plugin-scoped file `.agents/plugins/coordination/mcp_config.json`, mode 0600, outside chezmoi. Whether agy loads a user-level plugin config from `~/.agents/plugins/` (versus workspace level only), and whether `~/.agents` collides with the frozen bridge folder, are [unverified] (spikes.md SP2 A8).
+  - agy: the key is written literally (agy does not expand env vars in headers [verified on the wire, SP2 A6 follow-up]) into an unmanaged plugin-scoped file `.agents/plugins/coordination/mcp_config.json`, mode 0600, outside chezmoi. Whether agy loads a user-level plugin config from `~/.agents/plugins/` (versus workspace level only), and whether `~/.agents` collides with the frozen bridge folder, are [unverified] (spikes.md SP2 A8).
   - chezmoi-managed files never hold keys and are not edited for keys.
   - The cognitive-engine status client and remote peers hold keys the same way: a mode-0600 file or one environment variable read by the sending process.
 
@@ -1073,14 +1074,21 @@ Real-terminal rule [D10, D11, D19, design]:
 
 #### 8.4.1 S3 behind the Cloudflare Tunnel [D20]
 
-Topology [D20, D23]: the user's existing Cloudflare Tunnel (`cloudflared`) on core has the route `a2a.bigrockad.com` to `localhost:8120`, created by the user on 2026-11-04 [verified by Claude Code: `https://a2a.bigrockad.com/` returns 502 through Cloudflare, and nothing listens on core:8120]. The service runs on core in production and binds core's loopback only, so `cloudflared` reaches it on the same host: there is no tunnel-to-tailnet hop. The workstations reach the same loopback port through `tailscale serve` on core (S2). Both paths therefore arrive from core's loopback and cannot be told apart by peer address.
+Topology [D20, D23]: the chosen hostname is `a2a.bigrockad.com` on the user's existing Cloudflare Tunnel (`cloudflared`) on core. **No route exists now.** The user created a route to `localhost:8120` on 2026-11-04 and deleted it the same day [verified by Claude Code: the hostname no longer resolves, curl returns 000]. The route is created only at S3, after the S3 gate passes and on the user's explicit go. The service runs on core in production and binds core's loopback only, so when the route exists `cloudflared` reaches it on the same host: there is no tunnel-to-tailnet hop. The workstations reach the service through `tailscale serve` on core (S2).
 
-The route exists before the S3 gates are met, so anything that listens on core:8120 is internet-reachable through Cloudflare immediately [plan Risk 13]. Rules until the S3 gate passes:
+Rules until the S3 gate passes (plan Risk 13, historical and mitigated):
 
-- The hostname sits behind a Cloudflare Access deny-all (or service-token-only) policy. This is the user's action in Cloudflare, not something the server can enforce.
-- The service is never started on core's 8120 without that policy in place.
+- Never create the route, and never let anything listen where it would point, before the S3 gate.
+- If a route is created early for testing, it sits behind a Cloudflare Access deny-all or service-token-only policy.
 - As a second layer the server refuses the public `Host` unless `A2A_EXPOSURE_STAGE` is `s3` (1.6).
-- S2 workstation traffic goes over the tailnet through `tailscale serve`, not the public hostname, so Cloudflare sees none of it. `cloudflared` carries only what is sent to `a2a.bigrockad.com`.
+- S2 workstation traffic goes over the tailnet through `tailscale serve`, not the public hostname, so Cloudflare sees none of it.
+
+**Pending user decision at S3 (recommended, not decided): a dedicated loopback port for the tunnel.**
+
+- Design: the tunnel targets `localhost:8121`. The server treats 8121 as the public listener: only `remote-peer` keys are accepted, only `/a2a/v1` and the Agent Card are served, and `CF-Connecting-IP` is trusted only on that port. Port 8120 stays tailnet-only (reached through `tailscale serve`), serves every scope, and never trusts `CF-Connecting-IP`.
+- Why: the two paths then differ by listener, not by a client-controlled `Host` header. This removes the forged-header weakness of the `Host`-based workaround below and makes `A2A_TUNNEL_HOSTS` unnecessary.
+- Cost: a second published loopback port (`127.0.0.1:8121`) and a second listener in the one process. It changes the route target from the earlier plan (8120). The user decides at S3; nothing is built or published before that.
+- If the user declines, the `Host`-based design below stands, with the tunnel pointing at 8120.
 
 Ingress scope:
 
@@ -1090,7 +1098,7 @@ Ingress scope:
 Consequences, each a requirement on the server:
 
 - **Cloudflare sees decrypted traffic.** TLS ends at Cloudflare [reported: standard Tunnel behaviour]. Remote-peer task text and API keys are visible to Cloudflare. Accepted by the user's choice [D20]; a peer must not be sent anything secret. Risk 11 in the plan.
-- **Client IP only through `CF-Connecting-IP`.** The TCP peer the server sees is core's loopback (the Docker gateway), never the real client. The server reads `CF-Connecting-IP` for per-client-IP rate limits and for the `audit` log, and believes it only when the request arrived from `cloudflared` on the same host. Because `tailscale serve` traffic also arrives from core's loopback, the rule is by `Host`: `CF-Connecting-IP` is believed only when `Host` is in `A2A_TUNNEL_HOSTS` (the public hostname) and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on those hosts, and `CF-Connecting-IP` is ignored and stripped on every other `Host`. A tailnet client could send `Host: a2a.bigrockad.com` itself and so forge `CF-Connecting-IP`; it would still need a valid `remote-peer` key and could only change which rate-limit bucket it lands in, but this is a known weakness. Whether the tunnel can be told apart more strongly (for example a second loopback port for `cloudflared`, which would change the user's route target and needs the user's approval) is open: spikes.md section 13, L2 [unverified].
+- **Client IP only through `CF-Connecting-IP`.** The TCP peer the server sees is core's loopback (the Docker gateway), never the real client. The server reads `CF-Connecting-IP` for per-client-IP rate limits and for the `audit` log, and believes it only when the request arrived from `cloudflared` on the same host. With the dedicated-port design above the rule is by listener (port 8121 only). In the fallback, because `tailscale serve` traffic also arrives from core's loopback, the rule is by `Host`: `CF-Connecting-IP` is believed only when `Host` is in `A2A_TUNNEL_HOSTS` (the public hostname) and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on those hosts, and `CF-Connecting-IP` is ignored and stripped on every other `Host`. A tailnet client could send `Host: a2a.bigrockad.com` itself and so forge `CF-Connecting-IP`; it would still need a valid `remote-peer` key and could only change which rate-limit bucket it lands in, but this is a known weakness, and it is what the dedicated-port design removes. Which one is used is the pending S3 decision above; spikes.md section 13, L2 [unverified].
 - **Host and Origin checks.** `A2A_ALLOWED_HOSTS` contains the public hostname at S3. cloudflared forwards the original `Host` unless the ingress rule rewrites it [reported]; the server accepts exactly the configured values and answers `421` otherwise. `Origin`, when present, must be in `A2A_ALLOWED_ORIGINS`; CORS stays off, so browser origins are refused by default.
 - **Rate limits.** Per remote-peer API key and per client IP (from `CF-Connecting-IP` under the trust rule above), in the server. Cloudflare-side rate limiting is an optional extra whose availability on the user's plan is [unverified]. Without a trusted `CF-Connecting-IP` the per-IP limit falls back to the API key only; it never keys on core's loopback address, which would put every peer in one bucket.
 - **Timeout.** Cloudflare's request timeout is about 100 s [reported, unverified for the user's plan]. Hence the 60 s cap on blocking `SendMessage` [D22]. Streaming (`SendStreamingMessage`, `SubscribeToTask`, S2 or later) through the tunnel needs a keep-alive event well under 100 s [design, unverified].
@@ -1166,7 +1174,7 @@ Trust and auth:
 - Only a human releases a held task: one typed decision per task on a TTY. No code path releases automatically (no rules, no agent pre-screen) [D19].
 - There is no admin HTTP endpoint and no admin API key scope; admin commands use the in-container Unix socket only [D15].
 - A `local-harness` API key is accepted at S2 and S3 only from the Tailscale identity it was issued for, every harness key including alyx's [D17, D23]. `CF-Connecting-IP` is believed only on requests from `cloudflared` on the same host, told apart from `tailscale serve` traffic by `Host` (8.4.1) [D20, D23].
-- The service is never started on core's 8120 while the public route is unguarded: the hostname stays behind a Cloudflare Access deny-all (or service-token-only) policy until the S3 gate passes, and the server refuses the public `Host` before `A2A_EXPOSURE_STAGE=s3` (1.6) [plan Risk 13].
+- No public route exists before the S3 gate, and the service is never started on core while one is present; the server refuses the public `Host` before `A2A_EXPOSURE_STAGE=s3` (1.6). A route created early for testing must sit behind a Cloudflare Access deny-all or service-token-only policy [plan Risk 13].
 - An API key whose `<env>` does not equal `A2A_ENV` is refused; a dev key never works on production [D24].
 - Release does not approve the content; it only changes the task from held to offered.
 - Every endpoint requires an API key, loopback included [D11]. Wrong scope is `403`. A remote-peer API key can never reach `/mcp`, `/wake/*`, `/sessions` or `/status`.
@@ -1250,7 +1258,7 @@ Rules:
 
 - **Keys never go into chezmoi-managed files, and chezmoi-managed files are not edited for keys** [D24]. This replaces the earlier plan of a chezmoi secret template function. The installer never touches `~/.gemini/config/mcp_config.json` for the key.
   - Claude Code: the key is in the environment variable `A2A_API_KEY`. It reaches the environment from a mode-0600 file outside chezmoi (for example `~/.config/a2a-coord/env`) sourced by a non-secret line in the shell startup file; that one line is a chezmoi-managed edit made through chezmoi (design, not decided).
-  - agy: the key is written literally into the unmanaged `.agents/plugins/coordination/mcp_config.json` (mode 0600) because agy does not expand env vars in headers [reported by Antigravity in the SP2 A6 run, live confirmation pending].
+  - agy: the key is written literally into the unmanaged `.agents/plugins/coordination/mcp_config.json` (mode 0600) because agy does not expand env vars in headers [verified on the wire, SP2 A6 follow-up].
   - [unverified] whether agy loads a user-level plugin config from `~/.agents/plugins/` or only a workspace-level one, and whether `~/.agents` (where the frozen bridge folder lives) collides with it: spikes.md SP2 A8. Fallback if unsupported: a non-chezmoi include that agy reads, chosen by the user.
   - The installer is told where the key comes from (an environment variable name or a file path); it never prints the key and never writes it anywhere except the 0600 file above.
 - **Non-secret parts that live in chezmoi-managed files are edited through chezmoi.** For each target the installer first asks `chezmoi source-path <target>`. If the file is managed, it edits the chezmoi source file (a template stays a template), then runs `chezmoi apply` for that target. It never writes the target file directly, because the next `chezmoi apply` would silently revert it. Unmanaged files may be edited in place after a printed diff and the user's confirmation.
@@ -1341,9 +1349,9 @@ The literal expansion above would store the key in Claude's config. Use a projec
 
 ### 11.2 Antigravity (agy)
 
-All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is documented only in `agy mcp add --help` (`--header`), not in agy's `mcp_servers.md`, which documents `url` (legacy `serverUrl`, line 66) and does not mention `headers` [verified, Claude Code review of the A6 run]. Per-request delivery is now **verified by wire log** (spikes.md SP2 A6 Result, 2026-11-04): the header is sent on every request. Env-var interpolation is **reported unsupported**, live confirmation pending.
+All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is documented only in `agy mcp add --help` (`--header`), not in agy's `mcp_servers.md`, which documents `url` (legacy `serverUrl`, line 66) and does not mention `headers` [verified, Claude Code review of the A6 run]. Per-request delivery is now **verified by wire log** (spikes.md SP2 A6 Result, 2026-11-04): the header is sent on every request. Env-var interpolation is **verified unsupported**: agy sent `${A2A_TOKEN}` and `$A2A_TOKEN` literally (SP2 A6 follow-up).
 
-`.agents/plugins/coordination/mcp_config.json`, sketch [D24]. This is an unmanaged, plugin-scoped file (mode 0600, outside chezmoi). The key is a literal because agy does not expand env vars in headers [reported, live confirmation pending]:
+`.agents/plugins/coordination/mcp_config.json`, sketch [D24]. This is an unmanaged, plugin-scoped file (mode 0600, outside chezmoi). The key is a literal because agy does not expand env vars in headers [verified on the wire, SP2 A6 follow-up]:
 
 ```json
 {"mcpServers": {"a2a": {"url": "http://127.0.0.1:8120/mcp",
@@ -1416,6 +1424,7 @@ All of these are defined as spikes in [spikes.md](file:///home/rockad/projects/a
 | which Claude hook input field, if any, gives a session display name, and whether `session_id` is stable across `resume`, `clear` and `compact` | SP2 C1 and C3 |
 | whether Claude Code expands `${A2A_API_KEY}` in MCP header values [D24] | SP2 C9 |
 | whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and whether `~/.agents` collides with the frozen bridge folder [D24] | SP2 A8 |
+| for the agy binding by `conversation_id` (5.4.1): per-conversation distinctness in one agy process, stability across an agy restart and resume, and whether a background or sub-invocation's `conversation_id` differs from its `root_conversation_id` | SP2 A4 |
 
 ### 12.2 Open points I could not resolve from the evidence
 
@@ -1423,7 +1432,7 @@ Numbers 1, 2, 5 and 9 were resolved by decisions 14 to 24 and removed (12.3); th
 
 3. Card discovery with several cards behind one well-known path. Proposed `?agent=` plus `300` for the unqualified request; strict A2A clients cannot follow that.
 4. Public card. Proposed unauthenticated (A2A convention). Decision 11 says loopback still requires an API key; read here as applying to API calls, not to the card. A key-gated card is the alternative at the cost of breaking standard discovery.
-6. agy and authenticated MCP. Whether agy's `mcp_config.json` can send a custom `Authorization` header is not in the evidence. If not, options are a different documented auth mechanism that agy supports, a small stdio MCP proxy that agy starts as an ordinary MCP server, or a decision to relax loopback API key rules for `/mcp` (which contradicts decision 11). Update 2026-11-04: the SP2 A6 run passed the header gate (header sent on every request, wire log). Env-var interpolation in `headers` is reported unsupported (live confirmation pending), so the agy key is a literal in an unmanaged, 0600, plugin-scoped `mcp_config.json` outside chezmoi [D24]. Whether agy loads that file from a user-level location, and whether `~/.agents` collides with the frozen bridge folder, is open: SP2 A8 (11.2).
+6. agy and authenticated MCP. Whether agy's `mcp_config.json` can send a custom `Authorization` header is not in the evidence. If not, options are a different documented auth mechanism that agy supports, a small stdio MCP proxy that agy starts as an ordinary MCP server, or a decision to relax loopback API key rules for `/mcp` (which contradicts decision 11). Update 2026-11-04: the SP2 A6 run passed the header gate (header sent on every request, wire log). Env-var interpolation in `headers` is verified unsupported (sent literally on the wire), so the agy key is a literal in an unmanaged, 0600, plugin-scoped `mcp_config.json` outside chezmoi [D24]. Whether agy loads that file from a user-level location, and whether `~/.agents` collides with the frozen bridge folder, is open: SP2 A8 (11.2).
 7. Defaults. Every `[design]` number in 1.5 (TTLs, re-offer schedule, quotas, rate limits, 15 minute `active` window) is a starting value, not tuned. Only the 900 s round and the 20 per hour budget come from decisions.
 8. Tailscale identity delivery for the S2 identity check [D17, D23]: whether `tailscale serve` on core passes a node or user identity to the server (the `Tailscale-User-Login` header is reported; a node name is not), or whether the server must look up the source address, is not covered by the audit. Also how the server tells `cloudflared` traffic from `tailscale serve` traffic when both arrive from core's loopback, and whether `CF-Connecting-IP` arrives unchanged from `cloudflared` on the same host [D20, D23]. Both are later-stage checks (spikes.md section 13). `tailscale`, `cloudflared` and `caddy` are not installed on alyx today; `cloudflared` runs on core [reported by the user].
 9. S3 front-door facts that depend on the user's Cloudflare plan and the exact ingress rule: the request timeout (about 100 s reported), whether the ingress can restrict by path, whether Cloudflare-side rate limiting and mTLS are available. Unverified; checked when the ingress rule is written. The server-side requirements are fixed in 8.4.1 and do not depend on the answers.

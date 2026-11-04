@@ -24,8 +24,8 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 - Implementation is allowed only where strictly necessary for a spike.
   - Spike code lives in a scratch directory and is never merged.
   - Do not add `plugin.json`, Dockerfiles, hook scripts, config files or marketplace entries as real files unless the user says so.
-  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on core already exists, with the route `a2a.bigrockad.com` to `localhost:8120` (created 2026-11-04). Do not edit its configuration or its Cloudflare Access policy.
-  - **Never start the service on core's port 8120** (or tell anyone to) until the user confirms a Cloudflare Access deny-all (or service-token-only) policy is on `a2a.bigrockad.com`: the route is public and nothing else guards it before the S3 gate (decision 23, plan Risk 13).
+  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on core already exists. `a2a.bigrockad.com` is the chosen S3 hostname, but no route exists now (a route was created and deleted on 2026-11-04). Do not edit the tunnel configuration.
+  - **Do not create, or ask the user to create, the public route before the S3 gate. Do not start the service on core while a public route is present** (decision 23, plan Risk 13).
   - Do not write harness hook or MCP configuration by hand or by script. The planned installer `a2a-coord install --claude --agy` does that later, only when the user runs it. It edits the non-secret parts of chezmoi-managed files through chezmoi (edit the chezmoi source, then apply), never the targets (decision 16).
   - **API keys never go into chezmoi-managed files or the dotfiles repository, and chezmoi-managed files are not edited for keys** (decision 24).
 - Do not commit or switch branches unless the user asks.
@@ -77,7 +77,7 @@ These hold in every design, spec and spike.
   - Remote peers hold per-peer keys, delivered out of band: hashed, revocable, rate-limited (decision 18).
   - Claude Code keeps its key in `A2A_API_KEY`; agy's key is a literal in an unmanaged, mode-0600 plugin-scoped file outside chezmoi (decision 24).
 - **Admin access.** `a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`), on the host that runs it (core in production: `ssh core` first), over an unpublished in-container Unix socket. Never add an admin HTTP endpoint or an admin API-key scope (decisions 15 and 23).
-- **Public front door (S3).** The user's existing Cloudflare Tunnel on core pointing at core's own `localhost:8120`, routing only `/a2a/v1` and the Agent Card. Cloudflare sees decrypted traffic. Trust `CF-Connecting-IP` only for requests arriving from `cloudflared` on the same host. Blocking `SendMessage` is capped at 60 s (decisions 20, 22 and 23). The route exists before the S3 gate: the hostname stays behind a Cloudflare Access deny-all (or service-token-only) policy until the gate passes.
+- **Public front door (S3).** The user's existing Cloudflare Tunnel on core pointing at core's own `localhost:8120`, routing only `/a2a/v1` and the Agent Card. Cloudflare sees decrypted traffic. Trust `CF-Connecting-IP` only for requests arriving from `cloudflared` on the same host. Blocking `SendMessage` is capped at 60 s (decisions 20, 22 and 23). No route exists before the S3 gate; one created early for testing must sit behind a Cloudflare Access deny-all or service-token-only policy. A dedicated loopback port for the tunnel is a pending user decision at S3.
 - **Never expose, on any interface or stage:**
   - anything that starts a sweep or grants approval
   - credentials (OpenRouter key, the RFC 006 credential route, Claude and agy tokens)

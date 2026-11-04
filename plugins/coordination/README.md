@@ -4,13 +4,13 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 
 ## Status
 
-- **Planning only.** No server code, Dockerfile, hook script or `plugin.json` exists yet.
-- **Next step: S0 spikes.** They test the unverified parts of the design (handle binding, Claude Code wake, agy hook behaviour) in scratch space. Spike code is never merged.
+- **Planning only, and planning is complete.** No server code, Dockerfile, hook script or `plugin.json` exists yet. There is no urgency.
+- **Next step: S0 spikes on alyx.** They test the unverified parts of the design (handle binding, Claude Code wake, agy hook behaviour) in scratch space. Spike code is never merged.
 - Branch: `feat/coordination` in the `agentic-hub` repository.
 - Decisions of 2026-11-04 are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
   - 13 binding decisions from the `/clarify` session.
   - 11 more (decisions 14 to 24) from later the same day: go-live after S3, admin access inside the container, one harness installer, per-machine API keys with a Tailscale identity check, per-peer remote keys, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, a 60 s cap on blocking `SendMessage`, production on core (a portable image; dev and spikes on alyx), and service-issued API keys that never enter chezmoi-managed files.
-  - Nothing is waiting on a user decision. What remains is spike outcomes and one user action: a Cloudflare Access deny-all (or service-token-only) policy on `a2a.bigrockad.com` before the service ever runs on core's port 8120, because the tunnel route already exists (plan section 7, Risk 13).
+  - Nothing is waiting on a user decision. What remains is spike outcomes, and one design choice that falls due at S3 (the tunnel's listener port, plan section 7).
 
 ## What it is
 
@@ -72,8 +72,8 @@ Notes on the diagram:
 
 - **S1, dev on alyx.** `127.0.0.1:8120` only. Gate: S0 spikes done.
 - **S2, production on core.** `tailscale serve` on core; every workstation (alyx, mac) reaches core over the tailnet from day one, with one `local-harness` API key per harness per machine. The server checks the Tailscale identity matches the machine the key was issued for, for all harness keys including alyx's. Hooks on alyx and mac long-poll core over the tailnet (wake latency and tailnet dependency are risks). Gate: API keys and scopes live, cross-host wake works.
-- **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core; the route `a2a.bigrockad.com` to core's `localhost:8120` was created on 2026-11-04 (verified: it returns 502 through Cloudflare, nothing listens yet). Only `/a2a/v1` and the card are to be routed. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own API key, delivered out of band. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
-- **The public route exists before the S3 gates are met.** Anything bound to core:8120 is internet-reachable at once. Until the S3 gate passes, the hostname must sit behind a Cloudflare Access deny-all (or service-token-only) policy, and the service must never be started on core's 8120 without it. S2 workstation traffic goes over the tailnet, not through the public hostname.
+- **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core; the chosen hostname is `a2a.bigrockad.com`, but no route exists now (one was created and deleted on 2026-11-04; the hostname no longer resolves). The route is created only at S3, after the gate passes and on the user's explicit go. Only `/a2a/v1` and the card are to be routed. Recommended and pending the user's decision at S3: the tunnel targets a dedicated loopback port (`localhost:8121`) that the server treats as the public listener, while 8120 stays tailnet-only. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own API key, delivered out of band. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **Rule:** never create the public route, and never let anything listen where it would point, before the S3 gate. If a route is created early for testing, it must sit behind a Cloudflare Access deny-all or service-token-only policy. S2 workstation traffic goes over the tailnet, not through the public hostname.
 - **Go-live migration** (import and deletion of the old file channel) comes after S3.
 
 `tailscale`, `cloudflared` and `caddy` are not installed on alyx today. The user's Cloudflare Tunnel runs on core (reported by the user).

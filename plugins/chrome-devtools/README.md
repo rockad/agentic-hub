@@ -74,5 +74,5 @@ Exception: the `troubleshooting`, `debug-optimize-lcp`, `cookie-debugging`, `a11
 `memory-leak-debugging` skills, including their `references/`, come from the `skills/` directory of
 [ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) and stay
 under the Apache License 2.0 — see [LICENSE.chrome-devtools-mcp](LICENSE.chrome-devtools-mcp). Four of
-their `SKILL.md` files are modified here; `memory-leak-debugging` and the `references/` files are
-unmodified copies.
+their `SKILL.md` files are copies of earlier upstream revisions (not synchronised with the latest);
+nothing in the five skills or their `references/` has been modified here.

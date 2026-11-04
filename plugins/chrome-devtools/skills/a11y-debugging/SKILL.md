@@ -3,7 +3,7 @@ name: a11y-debugging
 description: Uses Chrome DevTools MCP for accessibility (a11y) debugging and auditing based on web.dev guidelines. Use when testing semantic HTML, ARIA labels, focus states, keyboard navigation, tap targets, and color contrast.
 ---
 
-<!-- Adapted from skills/a11y-debugging in ChromeDevTools/chrome-devtools-mcp (https://github.com/ChromeDevTools/chrome-devtools-mcp), Apache-2.0; see ../../LICENSE.chrome-devtools-mcp. Modified in this repository. -->
+<!-- Copied without changes from skills/a11y-debugging in ChromeDevTools/chrome-devtools-mcp (https://github.com/ChromeDevTools/chrome-devtools-mcp) at commit 50a16fa, Apache-2.0; see ../../LICENSE.chrome-devtools-mcp. Later upstream revisions differ. -->
 
 ## Core Concepts
 

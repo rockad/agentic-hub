@@ -48,14 +48,24 @@ flowchart TD
 - **Status**: **ACCEPTED & APPROVED BY USER** (2026-11-03). Never launch, drive or wrap `agy`; the restrictive-terms rule applies to Antigravity too. Carrier wording amended by DDR-004 (peers communicate through the server). Full record in the plan, Section 3.
 
 ### DDR-004: A2A Coordination Server (ACCEPTED 2026-11-04)
-- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions recorded in [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
+- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 22 from the later `/cplain` session (same day) recorded in [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
 - **Summary**:
   - A2A server on `a2a-python` (>= 1.3.0), `uv`, Docker; one process owns SQLite (WAL) on named volume `a2a-data`; MCP tools served at `/mcp` on port 8120.
   - Identity: one Agent Card per harness and machine, per-session handles under it.
   - Wake: Claude Code `asyncRewake` long-poll; agy surfacing only (accepted asymmetry; nothing wraps agy).
   - Inbound trust by origin (`SUBMITTED`, `QUARANTINED`, `REJECTED`); scoped bearer tokens.
-  - Staged exposure: S1 localhost, S2 tailnet, S3 public HTTPS.
+  - Staged exposure: S1 localhost, S2 tailnet, S3 public HTTPS (the user's existing Cloudflare Tunnel on core, decision 20).
   - cognitive-engine: optional one-way status client, built after S1.
+  - Decisions 14 to 22 (`/cplain`):
+    - 14: go-live after S3; the file channel stays frozen until then, except that Antigravity may use it for research on this work.
+    - 15: admin commands run inside the container over an unpublished Unix socket; no admin endpoint or scope.
+    - 16: one installer `a2a-coord install --claude --agy`, through chezmoi; the R8 grey area accepted.
+    - 17: own machines get one `local-harness` token each plus a Tailscale identity check.
+    - 18: remote peers hold per-peer tokens; the allowlist is the token holders.
+    - 19: quarantine release only by a human on a TTY, one typed decision per task.
+    - 20: public front door is the existing Cloudflare Tunnel on core.
+    - 21: all six research clones deleted.
+    - 22: blocking `SendMessage` capped at 60 s.
 - **Scope**: daemon and container restrictions lifted; **planning only remains**, implementation only where strictly necessary for a spike.
 - **Superseded by it**: DDR-002 (carrier and ACP), old Phase 2 ledger forks A and B, Phase 3 swarmail, Phase 4 ACP, heartbeat sidecar files. **Still in force**: DDR-001 exclusions (`mcp_agent_mail_rust`), DDR-003, BuildSlot (PR #13), symmetric agency.
 
@@ -109,8 +119,8 @@ flowchart TD
 
 ## 3. Operational Infrastructure
 
-- [x] **Operational Channel**: [`bridge-v2-coordination-channel.md`](file:///home/rockad/.agents/bridge-v2-coordination-channel.md) was active and synchronized through Block 27 / Turn 14. **FROZEN as of 2026-11-04** (decision 7: nobody uses it); one-time import then deletion in the go-live migration (Section 4).
-- [x] **Turn Watcher**: [`watch-bridge-coordination.sh`](file:///home/rockad/.local/bin/watch-bridge-coordination.sh) was running in background. Obsolete with the frozen channel; stop it in the go-live migration (user-approved).
+- [x] **Operational Channel**: [`bridge-v2-coordination-channel.md`](file:///home/rockad/.agents/bridge-v2-coordination-channel.md) was active and synchronized through Block 27 / Turn 14. **FROZEN as of 2026-11-04** (decision 7: nobody uses it; exception by decision 14: Antigravity may still use it for research on this work); one-time import, tar backup and deletion in the go-live migration, which now runs after S3 (Section 4).
+- [x] **Turn Watcher**: [`watch-bridge-coordination.sh`](file:///home/rockad/.local/bin/watch-bridge-coordination.sh) was running in background. Obsolete with the frozen channel; stop it in the go-live migration, after S3 (user-approved).
 
 ---
 
@@ -121,25 +131,31 @@ Roadmap and gates: [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projec
 - [ ] **S0 Spikes** ([`spikes.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md)):
   - [ ] Claude Code `asyncRewake` wake with the `sh`+`curl` listener (Claude Code >= 2.1.290, reported).
   - [ ] Handle binding: `SessionStart` `POST /sessions`, context injection, `a2a_hello(handle)` (unverified).
-  - [ ] agy: `serverUrl` MCP, `SessionStart` and `PreInvocation` `injectSteps`.
+  - [ ] agy: `url` MCP entry (`serverUrl` is the accepted legacy key), `SessionStart` and `PreInvocation` `injectSteps`.
   - [ ] agy held-`Stop` park (spike only, not shipped).
   - [ ] a2a-python `DatabaseTaskStore` on SQLite with WAL and `busy_timeout`; A2A and `/mcp` in one process.
   - [ ] Record results and the go or no-go on binding and wake in docs/research/spike-results-<date>.md, linked here.
 - [ ] **S1 Localhost** (`127.0.0.1:8120` on alyx; entry gate: spikes done):
   - [ ] Plugin layout, container, volume `a2a-data`, server on `a2a-python`.
   - [ ] Endpoints `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status`, Agent Card; contract in [`server-api.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md).
-  - [ ] Scoped tokens (`a2a-coord token new`) and `a2a-coord review`.
+  - [ ] Scoped tokens (`a2a-coord token new|list|revoke`) and `a2a-coord review`, run inside the container over the unpublished admin socket (decision 15).
   - [ ] Claude Code hooks (`a2a-listen`, `UserPromptSubmit`) and agy hooks, MCP entry and `AGENTS.md` rule.
+  - [ ] Installer `a2a-coord install --claude --agy` through chezmoi (source, then apply), tokens kept out of plain-text dotfiles where avoidable (decision 16; agy env-var interpolation unverified, SP2 A6).
   - [ ] Exit gate: two-way task round trip, Claude idle wake, agy surfacing, token refusal, quarantine end to end.
 - [ ] **S2 Tailnet** (`tailscale serve`; alyx, mac, core; gate: tokens and scopes live, cross-host wake works):
-  - [ ] User installs Tailscale; per-machine cards and tokens; Tailscale identity as an extra check.
+  - [ ] User installs Tailscale; one `local-harness` token and card per machine (`claude-code@mac`, `antigravity@core`); the server checks the Tailscale identity matches the machine the token was issued for (decision 17; delivery mechanism unverified, [`spikes.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md) section 13).
 - [ ] **S3 Public HTTPS** (gate: quarantine live, rate limits, fuzz pass, honest card, explicit user go):
-  - [ ] Choose front end (`bigrockad.com` reverse proxy or Cloudflare Tunnel).
-  - [ ] Remote-peer allowlist policy, rate limits, optional mTLS, fuzz pass per RFC 006 section 3.
-- [ ] **Go-live migration** ([`go-live-migration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md)):
-  - [ ] Import the `~/.agents` channel files into the store, verify, then delete the channel and stop the watcher.
+  - [x] Front end chosen: the user's existing Cloudflare Tunnel on core (decision 20).
+  - [ ] User confirms the hostname (example `a2a.bigrockad.com`) and adds the ingress rule to `alyx:8120` over the tailnet; only `/a2a/v1` and the card are routed.
+  - [ ] `CF-Connecting-IP` trust, Host and Origin checks, rate limits behind the tunnel; Cloudflare timeout (about 100 s, reported) versus the 60 s `SendMessage` cap (decision 22).
+  - [ ] Per-peer `remote-peer` tokens (hashed, revocable, rate-limited), optional mTLS later (decision 18); human-only release (decision 19); fuzz pass per RFC 006 section 3.
+- [ ] **Go-live migration** ([`go-live-migration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md)); after S3 (decision 14):
+  - [ ] Import the `~/.agents` channel files (including Antigravity's research appends) into the store, verify, take the tar backup, then delete the channel and stop the watcher.
 - [ ] **cognitive-engine status adapter** (after S1, off by default, user go; contract in [`status-client.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/status-client.md)):
   - [ ] Adapter package in cognitive-engine posting `{run_id, run_scope, state, report_path, ts}` to `/status`.
 - [x] **agents-bridge retirement** (user decision 2026-11-04: remove the repo entirely, files copied without history):
   - [x] Copy into `plugins/coordination/docs/` complete (23 files, links rewritten).
   - [x] `~/projects/agents-bridge` deleted after this commit; no remote existed, so its git history is gone by design.
+- [x] **Research clones** (decision 21): all six evaluation clones in `~/projects` (`agent-bus`, `agent-client-protocol`, `beads`, `mcp-multiagent-bridge`, `swarmail`, `A2A`) **deleted 2026-11-04** by the main session. Sources and pinned commits are in the plan, Section 8.
+  - [x] References to the local `A2A` spec clone replaced by pinned GitHub URLs at commit `4735f4876449c6f381825d8a841b31b16c6ad0c4`.
+- [ ] **Open items left** (plan Section 7): the S3 hostname confirmation, and the spike outcomes (agy header and env-var interpolation, tailnet identity, tunnel headers, Cloudflare timeout).

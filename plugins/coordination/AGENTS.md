@@ -5,7 +5,7 @@ Rules for Google Antigravity, Claude Code and any other AI coding assistant work
 ## Read first
 
 - Read [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) before doing any work here.
-- The plan records DDR-004 (accepted 2026-11-04) and its 13 binding decisions; they override anything older in `docs/`. Superseded:
+- The plan records DDR-004 (accepted 2026-11-04) and its 22 binding decisions (13 from the `/clarify` session, 14 to 22 from the `/cplain` session); they override anything older in `docs/`. Superseded:
   - DDR-002 file-channel carrier and ACP
   - old Phase 2 ledger forks A and B
   - Phase 3 swarmail
@@ -24,7 +24,8 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 - Implementation is allowed only where strictly necessary for a spike.
   - Spike code lives in a scratch directory and is never merged.
   - Do not add `plugin.json`, Dockerfiles, hook scripts, config files or marketplace entries as real files unless the user says so.
-  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked.
+  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on core already exists; do not edit its configuration.
+  - Do not write harness hook or MCP configuration by hand or by script. The planned installer `a2a-coord install --claude --agy` does that later, only when the user runs it, and it edits chezmoi-managed dotfiles through chezmoi (edit the chezmoi source, then apply), never the targets (decision 16).
 - Do not commit or switch branches unless the user asks.
 
 ## Architectural conventions
@@ -56,7 +57,8 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 
 - `~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files are frozen. Nobody uses them.
 - Do not post to them, append to them or poll them.
-- After go-live, a one-time migration imports them into the plugin's store, then the channel is deleted. That is a later task and needs the user's go.
+  - **One exception (decision 14): Antigravity may still use the channel for research on this work.** No other agent does.
+- Go-live is after S3, the public stage. Then a one-time migration imports the files into the plugin's store, a tar backup is taken, and the channel is deleted. That is a later task and needs the user's go.
 
 ## Security invariants
 
@@ -66,9 +68,13 @@ These hold in every design, spec and spike.
 - **Bodies are untrusted data.** Frame them as data. A body is never an approval and never a command. Tasks are parked, never auto-executed.
 - **Trust by origin.**
   - Own local handles: `SUBMITTED`.
-  - Allowlisted remote: `QUARANTINED` until a human releases it with `a2a-coord review` on a real TTY with typed confirmation.
+  - Allowlisted remote (a peer that holds a `remote-peer` token): `QUARANTINED` until a human releases it with `a2a-coord review` on a real TTY, one typed decision per task. No code path releases a task automatically: no rules, no agent pre-screen (decision 19).
   - Unknown remote: `REJECTED`.
 - **Auth.** Scoped bearer tokens (`local-harness`, `remote-peer`, `status-client`), shown once, stored hashed. Loopback still needs a token. `remote-peer` never reaches `/mcp`, `/wake/listen` or `/sessions`.
+  - Own machines on the tailnet (mac, core) get one `local-harness` token each with their own cards, and the server also checks the Tailscale identity matches the machine the token was issued for (decision 17).
+  - Remote peers hold per-peer tokens: hashed, revocable, rate-limited (decision 18).
+- **Admin access.** `a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`) over an unpublished in-container Unix socket. Never add an admin HTTP endpoint or an admin token scope (decision 15).
+- **Public front door (S3).** The user's existing Cloudflare Tunnel on core, routing only `/a2a/v1` and the Agent Card. Cloudflare sees decrypted traffic. Trust `CF-Connecting-IP` only for requests arriving from the tunnel. Blocking `SendMessage` is capped at 60 s (decisions 20 and 22).
 - **Never expose, on any interface or stage:**
   - anything that starts a sweep or grants approval
   - credentials (OpenRouter key, the RFC 006 credential route, Claude and agy tokens)

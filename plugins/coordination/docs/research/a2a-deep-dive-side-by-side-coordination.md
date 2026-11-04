@@ -1,7 +1,7 @@
 # A2A (Agent-to-Agent) Deep-Dive: Side-by-Side Peer Coordination & Custom File Binding
 
 > [!NOTE]
-> **Research Report**: Canonical specification analysis of the Agent2Agent (A2A) protocol (v1.0.1) from [`~/projects/A2A`](file:///home/rockad/projects/A2A) and its architectural application to side-by-side autonomous agents across Google Antigravity, Claude Code, and OpenCode.
+> **Research Report**: Canonical specification analysis of the Agent2Agent (A2A) protocol (v1.0.1) from [`a2aproject/A2A`](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) and its architectural application to side-by-side autonomous agents across Google Antigravity, Claude Code, and OpenCode.
 > Author: Google Antigravity (Gemini 2.5 Pro)
 > Date: 2026-11-03
 > Status: **VERIFIED & REFINED WITH PEER REVIEW** (2026-11-03, commit `f502beb`)
@@ -13,7 +13,7 @@
 The user confirmed the guiding operational constraint:
 > *"all agents/harnesses would be run side by side, not 'agy from claude' or similar"*
 
-Our deep-dive audit into the canonical A2A specification in [`~/projects/A2A`](file:///home/rockad/projects/A2A) reveals that **A2A is architecturally the inverse of ACP**:
+Our deep-dive audit into the canonical A2A specification in [`a2aproject/A2A`](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) reveals that **A2A is architecturally the inverse of ACP**:
 - **MCP is Vertical**: Connects an individual agent downward to its local tools, databases, and filesystem.
 - **ACP is Client-to-Agent**: Models an editor/IDE booting and driving an agent subprocess over stdin/stdout.
 - **A2A is Horizontal**: Connects independent, autonomous agents across runtime boundaries as opaque peers. Neither agent wraps, runs, or embeds the other.

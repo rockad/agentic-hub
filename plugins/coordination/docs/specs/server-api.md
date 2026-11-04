@@ -14,21 +14,21 @@ Evidence sources (all under `docs/research/`):
 - [`t1c-bridges-and-sdks.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md): a2a-python details and gaps.
 - [`t2-cognitive-engine-integration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): cognitive-engine constraints.
 - [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): DDR-001 to DDR-004.
-- A2A 1.0.1 sources (read-only): [`a2a.proto`](file:///home/rockad/projects/A2A/specification/a2a.proto) and [`specification.md`](file:///home/rockad/projects/A2A/docs/specification.md).
+- A2A 1.0.1 sources (read-only): [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto) and [`specification.md`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/docs/specification.md).
 
 Labels used on claims:
 
 - `[verified]`: read in code or official docs by the audit, or read in the A2A sources while writing this spec.
 - `[reported]`: a project README, PR text or the audit's own report; not reproduced.
 - `[unverified]`: inference, or not documented anywhere we read. Needs a spike.
-- `[D1]` to `[D13]`: a binding decision the user made on 2026-11-04 (/clarify session).
+- `[D1]` to `[D22]`: a binding decision the user made on 2026-11-04 (`[D1]` to `[D13]` in the `/clarify` session, `[D14]` to `[D22]` in the `/cplain` session). The list is in the plan, section 3.
 - `[design]`: a proposal made by this spec to fill a gap. Not user-decided; each is a candidate for review. Numeric defaults marked `[design]` are starting values, not measurements.
 
 Stage names (decision 12):
 
 - S1: localhost, `127.0.0.1:8120` on alyx.
-- S2: tailnet via `tailscale serve`, own machines alyx, mac, core.
-- S3: public HTTPS behind the existing reverse proxy or a Cloudflare Tunnel (choice deferred).
+- S2: tailnet via `tailscale serve`, own machines alyx, mac, core; one `local-harness` token per machine, checked against the Tailscale identity [D17].
+- S3: public HTTPS through the user's existing Cloudflare Tunnel (`cloudflared`) on core, hostname like `a2a.bigrockad.com`, forwarding over the tailnet to `alyx:8120` [D20]. Consequences in 8.4.
 
 Terms:
 
@@ -53,7 +53,7 @@ Terms:
    MCP: /mcp               MCP: /mcp           /a2a/v1
         |                       |                  |                        |
         +-----------+-----------+------------------+------------------------+
-                    |  S1 127.0.0.1:8120 -> S2 tailscale serve -> S3 TLS proxy
+                    |  S1 127.0.0.1:8120 -> S2 tailscale serve -> S3 cloudflared on core
         +-----------v-------------------------------------------------------------+
         | coordination container: one process, one uvicorn worker                  |
         |  middleware: Host/Origin -> bearer auth -> scope check -> rate limit     |
@@ -97,7 +97,7 @@ Our tables [design]:
 | --- | --- | --- |
 | `cards` | card registry, loaded from the cards file at start | `card_id`, `harness`, `machine`, `card_json` |
 | `sessions` | registered sessions | `handle` (unique), `card_id`, `harness_session_id`, `registered_at`, `last_seen_at`, `ended_at`, unique on (`card_id`, `harness_session_id`) |
-| `tokens` | bearer tokens, hashed | `token_id`, `name`, `scope`, `card_id`, `peer_id`, `cards_allowed`, `secret_hash`, `created_at`, `expires_at`, `last_used_at`, `revoked_at` |
+| `tokens` | bearer tokens, hashed | `token_id`, `name`, `scope`, `card_id`, `peer_id`, `cards_allowed`, `tailnet_node`, `tailnet_login`, `secret_hash`, `created_at`, `expires_at`, `last_used_at`, `revoked_at` (`tailnet_node` and `tailnet_login` bind a `local-harness` token to the machine it was issued for [D17]; a `remote-peer` token with a `peer_id` and `cards_allowed` is the allowlist entry [D18]) |
 | `task_index` | routing and visibility per task | `task_id`, `from_principal`, `origin`, `to_card`, `to_handle`, `addressing`, `hold`, `offer_count`, `last_offered_at`, `next_offer_at`, `expires_at`, `released_at` |
 | `wakes` | wake budget and wake confirmation | `wake_id`, `handle`, `at`, `pending_n`, `confirmed_at` |
 | `status_runs` | cognitive-engine run status, one row per run (build after S1) | defined in [status-client.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/status-client.md) section 6 (authoritative) |
@@ -189,9 +189,10 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_PUBLIC_URL` | `http://127.0.0.1:8120` | origin written into card interfaces; must be `https://` at S2 and S3 |
 | `A2A_EXPOSURE_STAGE` | `s1` | `s1`, `s2` or `s3`; drives start-up checks (1.6) |
 | `A2A_ALLOW_WRITES` | `0` | registers the MCP write tools [D5] |
-| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values |
+| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name, at S3 also the public hostname that arrives through the tunnel (8.4) |
 | `A2A_ALLOWED_ORIGINS` | empty | accepted `Origin` values; empty means any request with an `Origin` header is refused |
 | `A2A_TRUSTED_PROXY_IPS` | empty | peers whose `X-Forwarded-*` headers are honoured |
+| `A2A_TUNNEL_NODES` | empty | S3: tailnet node names of the machines that run the Cloudflare Tunnel (core). `CF-Connecting-IP` is believed only on requests whose tailnet node identity is in this list [D20]; required at `s3` |
 | `A2A_CARDS_FILE` | `/config/cards.yaml` | non-secret card definitions |
 | `A2A_TOKEN_PEPPER` | unset | optional HMAC key for token hashing (secret) |
 | `A2A_WAKE_ROUND_S` | `900` | maximum long-poll round [D8] |
@@ -203,12 +204,14 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_WORKING_TTL_H` | `24` [design] | WORKING task of an ended session expires to FAILED |
 | `A2A_SESSION_IDLE_TTL_H` | `12` [design] | session with no authenticated call is marked ended |
 | `A2A_MAX_BODY_BYTES` | `65536` [design] | request body cap |
-| `A2A_MAX_WAIT_S` | `240` [design] | cap for `a2a_wait` and blocking `SendMessage` |
+| `A2A_MAX_WAIT_S` | `240` [design] | cap for the MCP tool `a2a_wait` (local sessions only) |
+| `A2A_SEND_BLOCK_MAX_S` | `60` [D22] | cap for a blocking `SendMessage` on `/a2a/v1`; below Cloudflare's reported ~100 s timeout. Not raised above 60 without the user |
 | `A2A_PUSH_ENABLED` | `0` | enables push delivery (section 3.3.4) |
 | `A2A_PUSH_ALLOW_HOSTS` | empty | exact hostnames allowed as push targets |
 | `A2A_PUSH_ENC_KEY` | unset | Fernet key for stored push credentials (secret); required when push is enabled |
 | `A2A_STATUS_ENABLED` | `0` | enables `POST /status` (build after S1) [D13] |
-| `A2A_TAILNET_LOGINS` | empty | S2 extra check: accepted `Tailscale-User-Login` values |
+| `A2A_ENFORCE_TAILNET_IDENTITY` | `0` at `s1`, `1` at `s2` and `s3` | a `local-harness` token with a tailnet binding (`tailnet_node` or `tailnet_login`, 1.3) is accepted only from that identity [D17]; a non-loopback `local-harness` request without a verifiable identity is refused |
+| `A2A_ADMIN_SOCKET` | `/run/a2a/admin.sock` | in-container Unix socket for `a2a-coord` admin commands (3.7) [D15]; mode 0600, never published, no TCP fallback |
 | `A2A_LOG_LEVEL` | `info` | logs never contain bodies or tokens |
 
 ### 1.6 Start-up checks [design]
@@ -217,7 +220,9 @@ The process exits non-zero, with a one-line reason, if any of these hold:
 
 - The database schema is newer than the code knows.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_PUBLIC_URL` is not `https://`.
-- `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_TRUSTED_PROXY_IPS` is empty. This is the "refuse non-loopback bind without TLS proxy config" rule [D11]. Inside a container the listen address is `0.0.0.0` by necessity, so the check keys on stage and public URL, and the compose port mapping stays `127.0.0.1:` for every stage that terminates TLS in a proxy on the same host.
+- `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_TRUSTED_PROXY_IPS` is empty. This is the "refuse non-loopback bind without TLS proxy config" rule [D11]. Inside a container the listen address is `0.0.0.0` by necessity, so the check keys on stage and public URL, and the compose port mapping stays `127.0.0.1:` for every stage; the tailnet hop is `tailscale serve` on the host, and TLS for the public hostname ends at Cloudflare [D20].
+- `A2A_EXPOSURE_STAGE` is `s3` and `A2A_TUNNEL_NODES` is empty (without it the server cannot tell requests that came through the tunnel from any other peer's).
+- `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_ENFORCE_TAILNET_IDENTITY` is `0`.
 - `A2A_PUSH_ENABLED=1` and `A2A_PUSH_ENC_KEY` is unset.
 - The cards file is missing, invalid, or defines a card id that does not match `^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$`.
 - More than one worker is configured.
@@ -248,8 +253,8 @@ Order of checks on every request except `/healthz` and the card:
 3. If `Origin` is present it must be in `A2A_ALLOWED_ORIGINS`: otherwise `403`. CORS is off; no `Access-Control-*` headers are sent.
 4. `Authorization: Bearer <token>`: missing or malformed `401` with `WWW-Authenticate: Bearer`; unknown, revoked or expired `401`.
 5. Scope check against the path table: wrong scope `403` with no detail about what the token could do.
-6. Per-token rate limit: `429` with `Retry-After`.
-7. At S2 with `A2A_TAILNET_LOGINS` set: `Tailscale-User-Login` must match, trusted only from a peer in `A2A_TRUSTED_PROXY_IPS` [unverified: header behaviour of `tailscale serve` is not in the audit evidence].
+6. Per-token rate limit, and at S3 a per-client-IP limit (client IP rule in 8.4): `429` with `Retry-After`.
+7. Tailnet identity [D17], when `A2A_ENFORCE_TAILNET_IDENTITY=1` (S2 and S3): a `local-harness` token that carries a tailnet binding (`tailnet_node` or `tailnet_login`) is accepted only when the request's Tailscale identity equals it; otherwise `403`, with no detail. The identity is believed only when it arrives from a peer in `A2A_TRUSTED_PROXY_IPS` (the `tailscale serve` front on the host). How the identity reaches the server (the `Tailscale-User-Login` header that `tailscale serve` is reported to add, or a lookup of the source address) is [unverified] and not in the audit evidence: later-stage spike, [spikes.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md) section 13. A user login identifies a person, not a machine, so on its own it cannot distinguish the user's two machines; the node name is the machine-level check [unverified whether it is available].
 
 Rules that always hold:
 
@@ -336,22 +341,26 @@ Processing [design, except where tagged]:
 2. Resolve addressing (section 5.2): handle or card.
 3. Apply the trust-by-origin rule [D10]:
    - origin `local` (own-harness token) creates a task in `SUBMITTED`.
-   - origin `remote`, peer's `cards_allowed` includes the tenant: task in the internal state `QUARANTINED`, reported on the wire as `TASK_STATE_INPUT_REQUIRED` with `coord.hold = "quarantine"` and a constant status message.
+   - origin `remote`, peer holds a `remote-peer` token (the allowlist, [D18]) whose `cards_allowed` includes the tenant: task in the internal state `QUARANTINED`, reported on the wire as `TASK_STATE_INPUT_REQUIRED` with `coord.hold = "quarantine"` and a constant status message.
    - origin `remote`, peer not allowed for the tenant (or the card is unknown): task in `REJECTED`, stored 24 h, counted against the peer's quota.
 4. If `message.task_id` is set, the message continues that task (6.4). Terminal tasks answer `UnsupportedOperationError` (-32004) [verified, spec 3.1.1].
 5. Return the Task.
 
-Blocking semantics (deviation to record) [design]:
+Blocking semantics (documented deviation from A2A 1.0.1) [D22]:
 
-- A2A 1.0.1 says that without `return_immediately: true` the server MUST wait for a terminal or interrupted state [verified, spec section on SendMessageConfiguration]. Our tasks are parked for a live human-supervised session and may wait for hours.
-- Rule: wait up to `min(A2A_MAX_WAIT_S, request-specific cap)` for a terminal or interrupted state, then return the current non-terminal Task. Default wait is 0 for remote-peer tokens.
+- A2A 1.0.1 says that without `return_immediately: true` the server MUST wait for a terminal or interrupted state [verified, spec section on SendMessageConfiguration]. Our tasks are parked for a live human-supervised session and may wait for hours, and the S3 front door (Cloudflare) has a request timeout of about 100 s [reported, unverified for the user's plan].
+- Rule [D22]:
+  - A blocking request (no `return_immediately`) waits at most `A2A_SEND_BLOCK_MAX_S` (60 s) for a terminal or interrupted state, then returns the current non-terminal Task (`SUBMITTED` or `WORKING`). The client polls with `GetTask`.
+  - A non-blocking request (`return_immediately: true`) is honoured as it is: it returns the Task at once.
+  - The cap is the same for local and remote callers. An earlier draft defaulted remote-peer tokens to a wait of 0; that default is dropped because the user decided one cap [D22].
+  - The 60 s cap is independent of `A2A_MAX_WAIT_S`, which bounds the local MCP tool `a2a_wait` only.
 - A held task is already in `INPUT_REQUIRED` on the wire, an interrupted state, so it returns at once and conforms.
-- The deviation applies only to `SUBMITTED` and `WORKING` tasks and is declared in the card extension (`coord.async_tasks: true`). TCK runs in CI may flag it (open point 5).
+- The deviation applies only to `SUBMITTED` and `WORKING` tasks. It is declared in the card extension (`coord.async_tasks: true`) and stated in the Agent Card `description` (8.5), so a peer reads it before it sends. TCK runs in CI may still flag it.
 
 Quotas for remote peers [design]:
 
 - At most 20 held tasks per peer; over that, `429` with `Retry-After`.
-- Per-peer `SendMessage` rate: 10 per minute.
+- Per-peer `SendMessage` rate: 10 per minute. At S3 a per-client-IP limit applies as well, keyed on the address from `CF-Connecting-IP` under the trust rule in 8.4 [D18, D20].
 - Body caps as in 3.3.
 
 #### 3.3.3 Visibility and extended card
@@ -361,7 +370,7 @@ Visibility [design]:
 - A principal sees a task if it is the originator (`from_principal`) or the recipient side (`to_card` equals its card, for local-harness tokens).
 - `remote-peer` principals see only tasks they originated.
 - Tasks with `coord.origin = import` (the one-time channel migration, [go-live-migration.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md) section 6) are visible to every local-harness token and to no other scope. They have no `task_index` row, so this rule is evaluated from the `coord.origin` marker.
-- Quarantined tasks are visible to the originator (as `INPUT_REQUIRED` with the hold marker) and to the admin plane. They are never returned to a recipient session through MCP or `/a2a/v1` until released.
+- Quarantined tasks are visible to the originator (as `INPUT_REQUIRED` with the hold marker) and to the admin socket (`a2a-coord review`, 3.7). They are never returned to a recipient session through MCP or `/a2a/v1` until released.
 - Implementation note: `a2a-python` supports an owner column and `owner_resolver` [verified]. Recipient card is the natural owner; originator access needs our `task_index`. The SDK's per-owner `ListTasks` filtering does not express "originator or recipient", so `ListTasks` is a wrapper over the store [unverified fit; spikes.md SP5 D11].
 
 `GetExtendedAgentCard` [design]:
@@ -390,7 +399,7 @@ When `A2A_PUSH_ENABLED=1`:
 
 ### 3.4 `/mcp`: streamable HTTP MCP [D5]
 
-- Transport: MCP streamable HTTP (`POST` for messages, optional `GET` for the server stream, `DELETE` to end a session). Same server as lookup's pattern; agy already reaches lookup at `http://127.0.0.1:8100/mcp` through `serverUrl` [D5].
+- Transport: MCP streamable HTTP (`POST` for messages, optional `GET` for the server stream, `DELETE` to end a session). Same server as lookup's pattern; agy already reaches lookup at `http://127.0.0.1:8100/mcp` through its `serverUrl` entry (agy's documented key is `url`; `serverUrl` is the accepted legacy key) [D5].
 - Auth: local-harness token only. A remote-peer or status-client token gets `403` here [D11].
 - Implementation [design, unverified]: the official `mcp` Python SDK's streamable-HTTP app mounted into the same Starlette application, behind the same middleware. Compatibility with the `a2a-python` Starlette app is untested (spikes.md SP5 D12).
 - Stateful sessions are required. The server issues `Mcp-Session-Id` at `initialize` and keeps `mcp_session_id -> (token_id, handle)` in memory. The recall server runs `FASTMCP_STATELESS_HTTP=true` [verified, memory plugin compose]; this server must not.
@@ -471,19 +480,19 @@ Specified now, built after S1 in the cognitive-engine adapter package, off by de
   - human Ctrl-C: `CANCELED`
 - `audit.jsonl` in cognitive-engine stays the source of truth; a mismatch is resolved in its favour. The server is never a second approval path [D13].
 
-### 3.7 `/healthz` and the admin plane
+### 3.7 `/healthz` and admin access
 
 `GET /healthz`: unauthenticated, no Host check, returns `200 {"ok":true}` only. It leaks nothing and exists for the container healthcheck [design].
 
-Admin plane [design; open point 1]:
+Admin access [D15]:
 
-- `a2a-coord token ...` and `a2a-coord review ...` must reach the server without breaking "one process owns SQLite" [D4], and without a fourth network-reachable scope.
-- Proposal: a second listener on a Unix domain socket `/run/a2a/admin.sock` (mode 0600, inside the container, on tmpfs, never published). `a2a-coord` is a thin client that talks to that socket. The host command is a wrapper around `docker compose exec -it coordination a2a-coord "$@"`.
-- `a2a-coord` therefore exists in two parts:
-  - a host-side wrapper for commands that must touch the host (parse, plan, backup and retire for the channel migration, which read `~/.agents` and write backups, and the typed-confirmation TTY prompt)
-  - an in-container admin-socket client for commands that need the server's state (token, review, admin-apply)
-- Result: the admin plane is not reachable over TCP, at any stage, by any token. Its only credential is the ability to run a command inside the container, which already implies control of the host's Docker.
-- The admin socket serves: token create, list and revoke; review list, show, release and deny; `status` (sessions, parked listeners, pending counts, wake budgets, stale offers, schema version); `card check`.
+- The `a2a-coord` admin commands (`token new`, `token list`, `token revoke`, `review ...`, `status`, `card check`) run inside the container: `docker compose exec -it coordination a2a-coord ...`.
+- They talk to the running server over an in-container Unix domain socket `/run/a2a/admin.sock` (`A2A_ADMIN_SOCKET`, mode 0600, on tmpfs, never published on any port). The server process stays the only one that touches SQLite [D4].
+- **There is no admin HTTP endpoint and no admin token scope.** No route under any prefix, no `/admin`, no scope that grants admin rights, at any stage. The three token scopes in 8.1 are the only ones.
+- The credential is the ability to run a command inside the container, which already implies control of the host's Docker. Docker access on the host is the credential [D15].
+- `review` requires a TTY. `-it` is therefore part of the command; without a TTY the command refuses (8.3). `token new` needs one as well, so a secret is printed only to a terminal.
+- The admin socket serves: token create, list and revoke; review list, show, release and deny; `status` (sessions, parked listeners, pending counts, wake budgets, stale offers, schema version); `card check`; and, for the go-live migration, `admin-apply`.
+- Host-side parts: `a2a-coord install` (11.0) and the channel-migration steps that read `~/.agents` and write backups (go-live-migration.md sections 7 and 13) run on the host, because they touch host files. They reach the server, when they need its state, through the same `docker compose exec` route, with the bundle on stdin. Nothing here opens a network path.
 
 ## 4. MCP tool catalogue
 
@@ -727,6 +736,22 @@ The `coord` key sits inside `metadata` Structs. The extension itself is declared
 
 Steps 1 to 3 have not been run against real clients. Settled by spikes.md SP2 (section 12).
 
+#### 5.4.1 agy: bind to the conversation id, not to `Mcp-Session-Id` [D6, SP2 A1 partial result]
+
+The SP2 A6 run (2026-11-04, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md)) found two facts about agy:
+
+- `Mcp-Session-Id` is process-scoped: agy keeps one MCP client session per process, shared by all conversations in it [verified, one run]. Binding a handle to it would mix sessions.
+- Every observed `tools/call` carried `params._meta["antigravity.google/conversation_id"]` (plus `antigravity.google/root_conversation_id` and `antigravity.google/artifacts_dir`) [verified on one call].
+
+Rule for agy sessions:
+
+- The handle binds to `_meta["antigravity.google/conversation_id"]` on each `tools/call`. The server maps that conversation id to the `harness_session_id` registered by the agy `SessionStart` hook (`conversationId` on its stdin, 11.2) and so to the handle. `Mcp-Session-Id` is not used for agy identity.
+- `a2a_hello` for agy still exists, but it is a confirmation step (it returns the handle and the inbox count), not the binding.
+- **Never trust `conversation_id` from a token that is not `local-harness`.** The `_meta` value is client-supplied. The server reads it only on requests that passed the `local-harness` scope check (and, at S2 and S3, the tailnet identity check), and only accepts a conversation id that was registered under the calling token's card. A `remote-peer` or `status-client` request never has its `_meta` interpreted. Like all binding, this is an assertion by a token holder, not authentication of a session (spikes.md SP2 Record).
+- **Conditional.** This rests on the follow-up pass confirming three things: the key is present on every `tools/call`, it differs between two conversations in one agy process, and it is stable across resume. If any fails, agy falls back to the explicit `as_handle` argument in write tools (spikes.md SP2 fallback).
+
+Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stays, pending the SP2 Claude half (C1 to C6).
+
 ### 5.5 Liveness
 
 - `listening`: a parked `/wake/listen` request exists for the session.
@@ -889,7 +914,7 @@ Responses:
 Rules:
 
 - The 200 body is an integer only. The server never sends free text on the wake path. The stub wording lives in the client script, so the injection surface is a constant string with one validated number in it [D8, D10].
-- Round length: the server holds the request up to the requested wait (at most 900 s) and answers `408` at the end. Any reverse proxy in front must allow a read timeout above 930 s [reported, t1b section 5.1].
+- Round length: the server holds the request up to the requested wait (at most 900 s) and answers `408` at the end. Any proxy in front of `/wake/listen` (the S2 `tailscale serve` front) must allow a read timeout above 930 s [reported, t1b section 5.1]. `/wake/*` is local-harness only and is never routed through the S3 Cloudflare Tunnel, whose timeout is about 100 s (8.4) [D20].
 - Latency target on a wakeable task arriving while a listener is parked: the response is written immediately; the rest is the client's.
 - `410 unregistered` right after `SessionStart` can be a race between the registration hook and the listener hook (both are SessionStart hooks). The client retries a `410 unregistered` for the first 15 seconds before treating it as final [design, settled by spikes.md SP2 C7].
 
@@ -956,15 +981,16 @@ When there is nothing to announce it returns `{}` with status 200. The string is
 
 | scope | issued to | allowed | refused | binding |
 | --- | --- | --- | --- | --- |
-| `local-harness` | one token per harness and machine (a harness on alyx, mac or core) | `/mcp`, `/wake/*`, `/sessions`, `/a2a/v1` | `/status` | bound to one card id |
-| `remote-peer` | one token per external agent | `/a2a/v1` only, reduced extended card | `/mcp`, `/wake/*`, `/sessions`, `/status` | bound to a `peer_id` and a `cards_allowed` list |
+| `local-harness` | one token per harness and machine (a harness on alyx, mac or core) [D17] | `/mcp`, `/wake/*`, `/sessions`, `/a2a/v1` | `/status` | bound to one card id; at S2 and S3 also bound to the Tailscale identity of the machine it was issued for (`tailnet_node` or `tailnet_login`) [D17] |
+| `remote-peer` | one token per external agent [D18] | `/a2a/v1` only, reduced extended card | `/mcp`, `/wake/*`, `/sessions`, `/status` | bound to a `peer_id` and a `cards_allowed` list; hashed, revocable, rate-limited [D18] |
 | `status-client` | cognitive-engine adapter | `POST /status` only | everything else | none |
 
 Notes [design]:
 
-- "Allowlisted remote" in decision 10 is modelled as the `cards_allowed` list on the remote-peer token (open point 2). A valid remote-peer token whose list does not include the addressed card is the "unknown remote" case and gets a REJECTED task.
+- The allowlist of decision 10 is the set of peers that hold a `remote-peer` token [D18]; no separate peer registry exists. The `cards_allowed` list on the token says which cards that peer may address. A valid remote-peer token whose list does not include the addressed card is the "unknown remote" case and gets a REJECTED task. A request with no valid token never reaches that logic (`401`).
 - Remote-peer tokens can never address handles (5.2) and can never see other peers' tasks.
-- `local-harness` is "own harness", not "same machine". At S2 the same scope is issued for `claude-code@mac` and the like, and its tasks are `origin: local`.
+- Quarantine is the backstop, not the gate: a token holder's tasks are still held for a human [D18, D19]. mTLS per peer is optional and later [D18]; where it would terminate behind Cloudflare is [unverified] and not planned now.
+- `local-harness` is "own harness", not "same machine". At S2 one token is issued per machine, with its own card (`claude-code@mac`, `antigravity@core`), and its tasks are `origin: local` [D17]. Origin `local` requires both the token and, at S2 and S3, the matching Tailscale identity (2.1 check 7). This replaces the earlier assumption that own-machine harnesses simply use the scope.
 
 ### 8.2 Token format and storage
 
@@ -978,7 +1004,7 @@ Notes [design]:
 
 ### 8.3 CLI
 
-`a2a-coord` talks to the admin socket (3.7). Commands [D11 for the first three groups]:
+`a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`) and talk to the admin socket (3.7) [D15]. Commands [D11 for the first three groups]:
 
 | command | effect |
 | --- | --- |
@@ -992,10 +1018,20 @@ Notes [design]:
 | `a2a-coord review release <task-id>` | release to `SUBMITTED` after typed confirmation |
 | `a2a-coord review deny <task-id>` | reject, reason `denied_by_human` |
 | `a2a-coord status` | sessions, listeners, pending, budgets, stale offers, schema (additions [design]) |
+| `a2a-coord install --claude --agy` | host-side installer, not an admin-socket command (11.0) [D16] |
 
-Real-terminal rule [D10, D11, design]:
+`token new` also takes `--tailnet-node <name>` (or `--tailnet-login <login>`) for `local-harness` tokens at S2 and S3 [D17, design for the flag names].
 
-- `token new`, `review show`, `release` and `deny` refuse to run unless standard input and output are a TTY.
+Quarantine release rule [D19]:
+
+- Only a human releases a held task, with one typed decision per task on a TTY (`a2a-coord review release <task-id>` or `deny <task-id>`).
+- No batch form, no `--yes`, no "release all", and no flag or environment variable that skips the prompt.
+- No auto-release path exists in code: no rules engine, no sender-based allow rules, no pre-screening by an agent or a model. The only automatic transition out of a held state is expiry to `REJECTED` (`A2A_QUARANTINE_TTL_H`), which is a refusal, not a release.
+- A test asserts that no code path other than the admin-socket `release` command moves a task from held to `SUBMITTED`.
+
+Real-terminal rule [D10, D11, D19, design]:
+
+- `token new`, `review show`, `release` and `deny` refuse to run unless standard input and output are a TTY. Over `docker compose exec` that means `-it`; without it the command refuses [D15].
 - The confirmation is read from `/dev/tty`, not from stdin, and refuses when an agent-session marker is set in the environment (Claude Code and agy variables, `CI`).
 - The prompt asks for the typed phrase `release <last 6 characters of the task id>`.
 - This is friction against accidents and against a model that scripts the call. It is not proof of a human: an agent with a shell that allocates its own pseudo-terminal and reads the screen can still type it. The invariants in section 9 do not rely on it; the worst outcome of a wrongly released task is that framed untrusted text is offered to a session that still decides.
@@ -1005,8 +1041,26 @@ Real-terminal rule [D10, D11, design]:
 
 - Constant-time token compare, Host and Origin checks, no CORS (section 2.1).
 - Refuse to start with a non-TLS public URL beyond S1 (1.6).
-- S2 add-on: tailnet identity as an extra check (`Tailscale-User-Login` against `A2A_TAILNET_LOGINS`, honoured only from a trusted proxy peer) [unverified].
-- S3 add-ons: public TLS at the reverse proxy, per-token and per-IP rate limits at the proxy as well as in the server, optional mTLS for known peers at the proxy, optional signed Agent Card (`signing` extra of the SDK [verified exists]).
+- S2 add-on [D17]: the Tailscale identity (node or user) of the request must match the machine a `local-harness` token was issued for (2.1 check 7). Delivery of the identity to the server is [unverified]; later-stage spike.
+- S3 add-ons: public TLS at Cloudflare (8.4.1), per-token and per-IP rate limits in the server (and at Cloudflare if the user's plan offers it [unverified]), per-peer tokens [D18], optional mTLS later per peer [D18], optional signed Agent Card (`signing` extra of the SDK [verified exists]).
+
+#### 8.4.1 S3 behind the Cloudflare Tunnel [D20]
+
+Topology: the user's existing Cloudflare Tunnel (`cloudflared`) on core has an ingress rule for a hostname like `a2a.bigrockad.com` that forwards over the tailnet to `alyx:8120`. The server stays bound to loopback on alyx; the tailnet hop is the S2 `tailscale serve` front. Whether the origin URL in the ingress rule is the `tailscale serve` HTTPS name or a plain tailnet address is the user's call and is decided when the rule is written; this spec only fixes what the server requires. The hostname is an example until the user confirms it (plan section 7).
+
+Ingress scope:
+
+- Route only `/a2a/v1` (and its tenant-prefixed REST paths) and `/.well-known/agent-card.json`. `/mcp`, `/wake/*`, `/sessions`, `/status` and the admin socket are never routed through the tunnel. This also keeps every long poll away from Cloudflare's timeout.
+- Whether the ingress rule can restrict by path (cloudflared supports a `path` match on ingress rules [reported, not read by us]) or the server must refuse those paths when the `Host` is the public hostname is [unverified]. The server-side refusal is the safe default: a request with the public `Host` to any path outside the two routed ones gets `404` with no body.
+
+Consequences, each a requirement on the server:
+
+- **Cloudflare sees decrypted traffic.** TLS ends at Cloudflare [reported: standard Tunnel behaviour]. Remote-peer task text and bearer tokens are visible to Cloudflare. Accepted by the user's choice [D20]; a peer must not be sent anything secret. Risk 11 in the plan.
+- **Client IP only through `CF-Connecting-IP`.** The TCP peer the server sees is the tailnet hop, never the real client. The server reads `CF-Connecting-IP` for per-client-IP rate limits and for the `audit` log, and believes it only when the request arrives from the tunnel on core (the request's tailnet node identity is in `A2A_TUNNEL_NODES`). On any other request the header is ignored and stripped, so a client that reaches the server another way cannot forge its address. Other `X-Forwarded-*` headers follow `A2A_TRUSTED_PROXY_IPS` (1.5). Whether `CF-Connecting-IP` survives the `tailscale serve` hop unchanged is [unverified]; later-stage spike.
+- **Host and Origin checks.** `A2A_ALLOWED_HOSTS` contains the public hostname at S3. cloudflared forwards the original `Host` unless the ingress rule rewrites it [reported]; the server accepts exactly the configured values and answers `421` otherwise. `Origin`, when present, must be in `A2A_ALLOWED_ORIGINS`; CORS stays off, so browser origins are refused by default.
+- **Rate limits.** Per remote-peer token and per client IP (from `CF-Connecting-IP` under the trust rule above), in the server. Cloudflare-side rate limiting is an optional extra whose availability on the user's plan is [unverified]. Without a trusted `CF-Connecting-IP` the per-IP limit falls back to the token only; it never keys on the tailnet hop's address, which would put every peer in one bucket.
+- **Timeout.** Cloudflare's request timeout is about 100 s [reported, unverified for the user's plan]. Hence the 60 s cap on blocking `SendMessage` [D22]. Streaming (`SendStreamingMessage`, `SubscribeToTask`, S2 or later) through the tunnel needs a keep-alive event well under 100 s [design, unverified].
+- **Honest card.** The public card's interface URLs come from `A2A_PUBLIC_URL` (the public `https://` hostname) and declare only what is enforced (3.2).
 
 ### 8.5 Agent Card example
 
@@ -1015,7 +1069,7 @@ Real-terminal rule [D10, D11, design]:
 ```json
 {
   "name": "claude-code@alyx",
-  "description": "Claude Code sessions on machine alyx. Tasks are parked until a live session picks them up with a tool call; nothing is executed automatically. Task text from other agents is treated as untrusted data.",
+  "description": "Claude Code sessions on machine alyx. Tasks are parked until a live session picks them up with a tool call; nothing is executed automatically. Task text from other agents is treated as untrusted data. Deviation from A2A 1.0.1: a SendMessage request without returnImmediately waits at most 60 seconds, then returns the current task in SUBMITTED or WORKING state; poll with GetTask. A request with returnImmediately returns at once.",
   "supportedInterfaces": [
     {"url": "http://127.0.0.1:8120/a2a/v1", "protocolBinding": "JSONRPC",   "protocolVersion": "1.0", "tenant": "claude-code@alyx"},
     {"url": "http://127.0.0.1:8120/a2a/v1", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0", "tenant": "claude-code@alyx"}
@@ -1055,7 +1109,7 @@ Real-terminal rule [D10, D11, design]:
 }
 ```
 
-At S2 and S3 only these change: the `url` values (from `A2A_PUBLIC_URL`, `https://`), `capabilities.streaming` and `pushNotifications` once enabled, and optionally `signatures`. The S3 description must not claim more than what is enforced. For `antigravity@alyx` the card differs in `name`, `description`, `tenant` and the skill text only.
+At S2 and S3 only these change: the `url` values (from `A2A_PUBLIC_URL`, `https://`), `capabilities.streaming` and `pushNotifications` once enabled, and optionally `signatures`. The S3 description must not claim more than what is enforced, and keeps the 60-second deviation sentence [D22]. The `antigravity@alyx` card and the per-machine cards (`claude-code@mac`, `antigravity@core`) [D17] carry the same sentence. For `antigravity@alyx` the card differs in `name`, `description`, `tenant` and the skill text only.
 
 Card definitions live in `config/cards.yaml` (non-secret) with the same fields minus the interface URLs, which the server fills in [design].
 
@@ -1075,6 +1129,9 @@ Wake and content:
 Trust and auth:
 
 - Remote tasks never reach a session without a human release; unknown remote senders are rejected [D10].
+- Only a human releases a held task: one typed decision per task on a TTY. No code path releases automatically (no rules, no agent pre-screen) [D19].
+- There is no admin HTTP endpoint and no admin token scope; admin commands use the in-container Unix socket only [D15].
+- A `local-harness` token is accepted at S2 and S3 only from the Tailscale identity it was issued for [D17]. `CF-Connecting-IP` is believed only on requests from the tunnel on core [D20].
 - Release does not approve the content; it only changes the task from held to offered.
 - Every endpoint requires a token, loopback included [D11]. Wrong scope is `403`. A remote-peer token can never reach `/mcp`, `/wake/*`, `/sessions` or `/status`.
 - Tokens are stored hashed, shown once, compared in constant time, revocable with immediate effect.
@@ -1100,6 +1157,7 @@ The MCP tool list is a closed set (section 4); there is no tool that proxies ano
 
 S3 gate checks (decision 12; the fuzz list is from RFC 006 section 3 [reported, t2]):
 
+- forged `CF-Connecting-IP` and `Tailscale-*` headers on requests that did not come through the tunnel or `tailscale serve`
 - header smuggling
 - request splitting
 - SSRF through push configuration
@@ -1117,7 +1175,7 @@ From the audit:
 - Push URL SSRF policy: pass `validate_push_notification_url` always, and add our resolve-and-pin screen (3.3.4).
 - The wake endpoint and per-session listener table (section 7). Nothing in any candidate wakes a live idle harness; this is our own design.
 - The MCP facade, now in-process at `/mcp`, with stateful sessions (3.4).
-- TLS behind a reverse proxy. The card `url` and `supportedInterfaces` must carry the public HTTPS origin (the Docker Agent trap).
+- TLS and client identity behind the Cloudflare Tunnel [D20]. The card `url` and `supportedInterfaces` must carry the public HTTPS origin (the Docker Agent trap), and the real client IP exists only in `CF-Connecting-IP` (8.4.1).
 - Version pinning: the SDK releases about weekly and cluster mode is five weeks old. Pin exactly, read the changelog on every bump, run the SDK TCK against our server in CI.
 
 Added by this spec [design]:
@@ -1135,7 +1193,38 @@ Added by this spec [design]:
 
 ## 11. Client configuration sketches
 
-Illustrative only. None of these is a file to install now. Field names marked `[unverified]` have not been checked against the live client.
+Illustrative only. None of these is a file to install now. Field names marked `[unverified]` have not been checked against the live client. Section 11.0 says how they reach the harnesses once the installer exists.
+
+### 11.0 The installer: `a2a-coord install --claude --agy` [D16]
+
+One command configures both harnesses. It replaces the earlier open question of user-applied snippets versus a plugin manifest. It is a host-side command (3.7), run by the user, and it does not exist yet.
+
+What it configures:
+
+- `--claude`:
+  - the Claude Code hooks of 11.1 (`SessionStart`, `Stop`, `UserPromptSubmit`, `SessionEnd`)
+  - the `a2a` MCP server entry for `/mcp`
+  - a check of `claude --version` against the required minimum (7.6)
+- `--agy`:
+  - the `a2a` entry in agy's `mcp_config.json`: `url` `:8120/mcp` plus `headers.Authorization` (11.2; `serverUrl` is the accepted legacy key)
+  - the agy hooks of 11.2 (`SessionStart`, `PreInvocation`)
+  - the `AGENTS.md` inbox rule of 11.2
+
+Rules:
+
+- **Chezmoi-managed files are edited through chezmoi.** For each target the installer first asks `chezmoi source-path <target>`. If the file is managed, it edits the chezmoi source file (a template stays a template), then runs `chezmoi apply` for that target. It never writes the target file directly, because the next `chezmoi apply` would silently revert it. Unmanaged files may be edited in place after a printed diff and the user's confirmation.
+  - Observed 2026-11-04 on alyx [verified, `chezmoi source-path`, file contents not read]: `~/.claude/settings.json` is managed as plain `dot_claude/settings.json`; `~/.gemini/config/mcp_config.json` is managed as `dot_gemini/config/private_mcp_config.json.tmpl` (a template with the `private_` attribute). Other machines (mac, core) were not checked [unverified].
+- **Idempotent and reversible.** Entries carry a marker so a second run changes nothing and `a2a-coord install --uninstall` can remove exactly what was added (the S1 kill switch uses it).
+- **Dry run first.** Without `--apply` it prints the unified diff of each chezmoi source file and each non-managed file and changes nothing. The user reviews, then applies.
+- **Tokens never appear as literals in the chezmoi source repository.** Chezmoi source is committed to the dotfiles repository.
+  - agy: agy does not interpolate environment variables in `headers` values [reported by Antigravity in the SP2 A6 run; a live confirmation is pending, spikes.md A6]. The token therefore has to be a literal in the rendered `~/.gemini/config/mcp_config.json`.
+  - That file is managed as `dot_gemini/config/private_mcp_config.json.tmpl`. **Rule: the installer writes the token through a chezmoi template function that reads a secret source** (chezmoi's password-manager or keyring integration, or a chezmoi-encrypted file), so the committed template holds a function call and the literal exists only in the rendered target, which has the `private_` attribute (mode 0600).
+  - **Open point for the user: the secret backend.** Which source (a password manager or keyring chezmoi supports, or an encrypted file such as one using `age`) is not decided. Until the user picks one, the installer refuses to write an agy token. It never writes a literal token into a managed source file.
+  - The existing `obsidian` entry shows the same constraint: spikes.md A6 says its credential sits in `mcp_config.json` in plain text [reported there; value not read here]. How it got into the template (function or literal) is [unverified].
+  - Claude Code: environment expansion in MCP header values is [unverified] for the installed version (11.1). Where it works, the header value is `Bearer ${A2A_TOKEN}` and the token stays in the environment or a mode-0600 file outside chezmoi.
+- **The installer never launches, drives or wraps agy.** It writes files and nothing else; it does not start, signal or talk to an agy process (DDR-003 unchanged). It writes agy's own configuration, which is the R8 grey area the user accepted [D16, plan Risk 1].
+- Token creation stays separate: `a2a-coord token new` (in the container, on a TTY) prints the token once. The user puts it in the chosen secret source; the installer is told the reference to that source (a template function argument, an environment variable name or a file path) and never prints the token or writes it into a source file.
+- Per machine: run once on each of alyx, mac and core with that machine's card and token [D17].
 
 ### 11.1 Claude Code
 
@@ -1217,18 +1306,20 @@ The literal expansion above would store the token in Claude's config. Prefer a p
 
 ### 11.2 Antigravity (agy)
 
-All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is `[verified]` in shape (agy 1.5.0 `agy mcp add --header`, and the user's existing `obsidian` entry uses `serverUrl` + `headers.Authorization`); per-request delivery and env-var interpolation remain `[unverified]` (spikes.md SP2 A6).
+All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is documented only in `agy mcp add --help` (`--header`), not in agy's `mcp_servers.md`, which documents `url` (legacy `serverUrl`, line 66) and does not mention `headers` [verified, Claude Code review of the A6 run]. Per-request delivery is now **verified by wire log** (spikes.md SP2 A6 Result, 2026-11-04): the header is sent on every request. Env-var interpolation is **reported unsupported**, live confirmation pending.
 
-`mcp_config.json`, sketch:
+`mcp_config.json`, sketch (the token placeholder stands for a value the installer renders through a chezmoi secret template function, 11.0; it is never a literal in a committed file):
 
 ```json
-{"mcpServers": {"a2a": {"serverUrl": "http://127.0.0.1:8120/mcp",
-  "headers": {"Authorization": "Bearer ${A2A_TOKEN}"}}}}
+{"mcpServers": {"a2a": {"url": "http://127.0.0.1:8120/mcp",
+  "headers": {"Authorization": "Bearer <token rendered from the secret source>"}}}}
 ```
+
+`url` is the documented key; `serverUrl` is accepted as the legacy key. The user's existing entries may still use `serverUrl`.
 
 If agy cannot send a custom `Authorization` header, authenticated `/mcp` does not work and the plan needs a decision (open point 6; settled by spikes.md SP2 A6). Putting the token in the URL is not acceptable.
 
-`.agents/hooks.json`, sketch (workspace hooks load only in trusted workspaces [reported, t1b section 3]; decided by decision 9; applied to host config by the user):
+`.agents/hooks.json`, sketch (workspace hooks load only in trusted workspaces [reported, t1b section 3]; decided by decision 9; written to the host config by the installer through chezmoi, 11.0 [D16]):
 
 ```json
 {
@@ -1285,15 +1376,14 @@ All of these are defined as spikes in [spikes.md](file:///home/rockad/projects/a
 
 ### 12.2 Open points I could not resolve from the evidence
 
-1. Admin plane. The 13 decisions define three token scopes and CLI commands (`token`, `review`) but not how the CLI authenticates to a server that "everyone else uses over HTTP". Proposed: Unix socket inside the container, reached with `docker compose exec`. Needs the user's yes (3.7).
-2. Allowlist model. Decision 10 distinguishes "allowlisted remote" from "unknown remote". Modelled as `cards_allowed` on the remote-peer token. A separate peer registry is the alternative.
+Numbers 1, 2, 5 and 9 were resolved by decisions 14 to 22 and removed (12.3); the other numbers are kept so references to them stay valid.
+
 3. Card discovery with several cards behind one well-known path. Proposed `?agent=` plus `300` for the unqualified request; strict A2A clients cannot follow that.
 4. Public card. Proposed unauthenticated (A2A convention). Decision 11 says loopback still requires a token; read here as applying to API calls, not to the card. A token-gated card is the alternative at the cost of breaking standard discovery.
-5. `SendMessage` blocking. A2A 1.0.1 requires waiting for a terminal or interrupted state by default. This spec waits up to a cap, then returns a non-terminal task. A TCK run may flag it.
-6. agy and authenticated MCP. Whether agy's `mcp_config.json` can send a custom `Authorization` header is not in the evidence. If not, options are a different documented auth mechanism that agy supports, a small stdio MCP proxy that agy starts as an ordinary MCP server, or a decision to relax loopback token rules for `/mcp` (which contradicts decision 11).
+6. agy and authenticated MCP. Whether agy's `mcp_config.json` can send a custom `Authorization` header is not in the evidence. If not, options are a different documented auth mechanism that agy supports, a small stdio MCP proxy that agy starts as an ordinary MCP server, or a decision to relax loopback token rules for `/mcp` (which contradicts decision 11). Update 2026-11-04: the SP2 A6 run passed the header gate (header sent on every request, wire log). Env-var interpolation in `headers` is reported unsupported (live confirmation pending), so the installer renders the token from a chezmoi secret template function; the choice of secret backend is an open point for the user [D16, 11.0].
 7. Defaults. Every `[design]` number in 1.5 (TTLs, re-offer schedule, quotas, rate limits, 15 minute `active` window) is a starting value, not tuned. Only the 900 s round and the 20 per hour budget come from decisions.
-8. Tailscale identity headers for the S2 extra check: not covered by the audit.
-9. S3 proxy choice (existing `bigrockad.com` reverse proxy or Cloudflare Tunnel) is deferred [D12]. The server-side requirements are fixed here: read timeout above 930 s, no response buffering for long polls, the proxy strips and sets `X-Forwarded-*`, and only `A2A_TRUSTED_PROXY_IPS` are believed. `tailscale`, `cloudflared` and `caddy` are not installed on alyx today [D12].
+8. Tailscale identity delivery for the S2 identity check [D17]: whether `tailscale serve` passes a node or user identity to the server (the `Tailscale-User-Login` header is reported; a node name is not), or whether the server must look up the source address, is not covered by the audit. Also whether `CF-Connecting-IP` survives the cloudflared to `tailscale serve` hop [D20]. Both are later-stage spikes (spikes.md section 13). `tailscale`, `cloudflared` and `caddy` are not installed on alyx today; `cloudflared` runs on core [reported by the user].
+9. S3 front-door facts that depend on the user's Cloudflare plan and the exact ingress rule: the request timeout (about 100 s reported), whether the ingress can restrict by path, whether Cloudflare-side rate limiting and mTLS are available. Unverified; checked when the ingress rule is written. The server-side requirements are fixed in 8.4.1 and do not depend on the answers.
 10. Status visibility. `a2a_runs` is my addition so a session can read status; decision 13 only defines the write side. It can be dropped without affecting anything else.
 11. Peer handles. Remote peers address cards only in this spec. If the user wants remote peers to address a session, that needs a per-token flag and an explicit review of what handle names reveal.
 12. Handle spoofing inside one token. Two sessions sharing a token can claim each other's handle. A bind code is the fix if it matters.
@@ -1301,3 +1391,14 @@ All of these are defined as spikes in [spikes.md](file:///home/rockad/projects/a
 14. `A2A-Version` strictness. Treating a missing header as unsupported is stricter than the spec's "assume 0.3". If a needed client omits the header, enable the SDK v0.3 compatibility layer or relax this rule.
 16. Migration of the frozen file channel [D7] into the store: see [go-live-migration.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md) section 6. Imported tasks are marked `coord.origin = "import"` with provenance in `coord.import` (5.3); the tables here have no import-specific columns.
 17. Card routing falls back from `listening` to `active` (needed because agy never listens, D9); this extends decision 6 and needs the user's confirmation. The alternative is to queue on the card when no listener exists, which `a2a_inbox` already surfaces to any live session of that card.
+
+### 12.3 Resolved by decisions 14 to 22 (2026-11-04, /cplain)
+
+- Admin plane (was open point 1): [D15]. `docker compose exec -it` over an in-container Unix socket; no admin HTTP endpoint, no admin scope; `review` needs a TTY (3.7, 8.3).
+- Allowlist model (was open point 2): [D18]. The allowlist is the set of peers holding a `remote-peer` token; `cards_allowed` stays on the token; no separate peer registry (8.1).
+- `SendMessage` blocking (was open point 5): [D22]. 60 s cap, then the current non-terminal Task; non-blocking honoured as is (3.3.2, 8.5).
+- S3 proxy choice (was open point 9): [D20]. The user's existing Cloudflare Tunnel on core; consequences in 8.4.1.
+- Harness configuration delivery (snippets versus plugin manifest): [D16]. The installer through chezmoi (11.0).
+- Own-machine tokens on the tailnet: [D17]. One `local-harness` token per machine with a Tailscale identity check (8.1).
+- Release of held tasks: [D19]. Human only, one typed decision per task, no auto-release path (8.3).
+- Go-live timing: [D14]. After S3 (go-live-migration.md).

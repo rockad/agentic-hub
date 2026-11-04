@@ -7,7 +7,10 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 - **Planning only.** No server code, Dockerfile, hook script or `plugin.json` exists yet.
 - **Next step: S0 spikes.** They test the unverified parts of the design (handle binding, Claude Code wake, agy hook behaviour) in scratch space. Spike code is never merged.
 - Branch: `feat/coordination` in the `agentic-hub` repository.
-- Decisions of 2026-11-04 (13 binding decisions from the `/clarify` session) are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
+- Decisions of 2026-11-04 are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
+  - 13 binding decisions from the `/clarify` session.
+  - 9 more (decisions 14 to 22) from the `/cplain` session: go-live after S3, admin access inside the container, one harness installer through chezmoi, per-machine tokens with a Tailscale identity check, per-peer remote tokens, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, and a 60 s cap on blocking `SendMessage`.
+  - Nothing is waiting on a user decision except the S3 hostname confirmation and spike outcomes (plan section 7).
 
 ## What it is
 
@@ -46,7 +49,7 @@ One server process, one SQLite database, several doors.
   +-----------------------+                         +--------------+--------------+
                                                                    |
         S2: tailnet (tailscale serve): alyx, mac, core             |  /a2a/v1 only
-        S3: public HTTPS via reverse proxy or tunnel (deferred) ---+  for remote peers
+        S3: public HTTPS via Cloudflare Tunnel on core ------------+  for remote peers
                                                                       (remote-peer scope)
   cognitive-engine model sessions (sbx) must never reach :8120.
 ```
@@ -60,18 +63,21 @@ Notes on the diagram:
   - `remote-peer`: `/a2a/v1` only.
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
+- Admin commands (`token new|list|revoke`, `review`) run inside the container: `docker compose exec -it coordination a2a-coord ...`, over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin token scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
+- Harness setup is one installer, `a2a-coord install --claude --agy`. It edits chezmoi-managed dotfiles through chezmoi, never the targets, and nothing in it launches, drives or wraps agy.
 
 ### Exposure stages
 
 - **S1, localhost.** `127.0.0.1:8120` on alyx. Gate: S0 spikes done.
-- **S2, tailnet.** `tailscale serve` for own machines (alyx, mac, core). Gate: tokens and scopes live, cross-host wake works.
-- **S3, public HTTPS.** Existing `bigrockad.com` reverse proxy or Cloudflare Tunnel, choice deferred. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **S2, tailnet.** `tailscale serve` for own machines (alyx, mac, core), one `local-harness` token per machine, and the server checks the Tailscale identity matches the machine the token was issued for. Gate: tokens and scopes live, cross-host wake works.
+- **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core, with an ingress rule for a hostname like `a2a.bigrockad.com` forwarding over the tailnet to `alyx:8120`; only `/a2a/v1` and the card are routed. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own token. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **Go-live migration** (import and deletion of the old file channel) comes after S3.
 
-`tailscale`, `cloudflared` and `caddy` are not installed on alyx today.
+`tailscale`, `cloudflared` and `caddy` are not installed on alyx today. The user's Cloudflare Tunnel runs on core (reported by the user).
 
 ## Planned layout
 
-Illustrative. Nothing below exists yet except `docs/`. The single illustrative layout is the tree in [`docs/specs/server-api.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) section 1.4 (`servers/coordination`, `bin/a2a-register`, `bin/a2a-listen`, `hooks/hooks.json`); the tree below is a rough sketch and does not override it. The final layout is open decision 3 in the plan.
+Illustrative. Nothing below exists yet except `docs/`. The single illustrative layout is the tree in [`docs/specs/server-api.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) section 1.4 (`servers/coordination`, `bin/a2a-register`, `bin/a2a-listen`, `hooks/hooks.json`); the tree below is a rough sketch and does not override it. The final layout is settled when S1 starts (plan section 7, design details).
 
 ```
 plugins/coordination/
@@ -100,7 +106,7 @@ All links are absolute `file://` links.
 
 ### Start here
 
-- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 13 decisions of 2026-11-04, and the S0-S3 roadmap.
+- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 22 decisions of 2026-11-04 (13 from `/clarify`, 9 from `/cplain`), and the S0-S3 roadmap.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 
 ### Plans
@@ -155,7 +161,8 @@ What changed on 2026-11-04:
 
 - DDR-004 was accepted, which lifts the daemon and container restrictions.
 - ACP was removed from the plan entirely.
-- The file channel (`~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files) is frozen. After go-live, a one-time migration imports those files into this plugin's store and the channel is deleted.
+- The file channel (`~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files) is frozen, with one exception: Antigravity may still use it for research on this work. Go-live is after S3; then a one-time migration imports those files into this plugin's store, a tar backup is taken, and the channel is deleted.
+- The six research clones in `~/projects` were deleted on 2026-11-04; spec references use pinned GitHub URLs (plan section 8).
 - The old Phase 2 ledger forks, Phase 3 swarmail and Phase 4 ACP are superseded.
 
 Still in force: the DDR-001 exclusions (`mcp_agent_mail_rust`), DDR-003 (never wrap agy), BuildSlot for Docker and GPU contention, and symmetric agency.

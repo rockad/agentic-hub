@@ -6,7 +6,7 @@ Inputs:
 
 - [`t2-cognitive-engine-integration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): reply from the `cognitive-engine` session. It read origin refs, not PR #13. Everything it says about the cognitive-engine repo is **reported**, not verified here.
 - [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis, section 5.
-- A2A `TaskState` enum: **verified** in `/home/rockad/projects/A2A/specification/a2a.proto` (lines 187 to 208). The wire names carry the `TASK_STATE_` prefix (for example `TASK_STATE_INPUT_REQUIRED`); section 5 lists the seven this contract uses.
+- A2A `TaskState` enum: **verified** in [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto#L187-L208) at commit `4735f48` (lines 187 to 208). The wire names carry the `TASK_STATE_` prefix (for example `TASK_STATE_INPUT_REQUIRED`); section 5 lists the seven this contract uses.
 
 ## 1. Purpose and direction
 
@@ -24,7 +24,7 @@ Inputs:
 - **When it is built**: after S1 is live (see the exposure gates in the plan), and only with an explicit user go. Until then, nothing in cognitive-engine changes. The contract can be exercised by hand with `curl` against S1 (example in section 4).
 - **Off by default**: the adapter is inactive unless both an explicit enable setting and a token are present. Missing either means no network call at all, and no warning on every run.
 - **Where it runs**: in the host-side `stage1` process only. It is never imported into, or reachable from, a model session (section 9).
-- **Token**: scope `status-client`, issued by `a2a-coord token new` (shown once, stored hashed by the server). Suggested label for the token: `cognitive-engine@alyx`. The label appears in the server's audit log. It is not an Agent Card name.
+- **Token**: scope `status-client`, issued by `a2a-coord token new` (run inside the container with `docker compose exec -it coordination a2a-coord token new ...`, over the unpublished admin socket, decision 15; shown once, stored hashed by the server). Suggested label for the token: `cognitive-engine@alyx`. The label appears in the server's audit log. It is not an Agent Card name.
   - On the sender side the token lives in a mode-0600 file read by the host process, or in one environment variable of the host process. It is never written into a run dir, a report, an audit line or a sandbox mount.
   - Loopback still requires the token (decision 11).
   - Proposal, not yet decided: `a2a-coord token new --allow-from <cidr>` so a status-client token only works from `127.0.0.1/32` (S1) or the sender's tailnet address (S2).
@@ -41,7 +41,7 @@ Inputs:
   - any `GET`
 - **Content type**: `application/json`. Maximum body 4 KiB (413 above that).
 - **No Agent Card entry**: `/status` is not advertised in `/.well-known/agent-card.json`. It is not part of A2A.
-- **Not routed at S3**: the public reverse proxy or tunnel forwards only `/a2a/v1` and the Agent Card path. `/status`, `/mcp`, `/wake/listen` and `/sessions` are never publicly routed. A status sender is always a local or tailnet machine.
+- **Not routed at S3**: the public front door (the Cloudflare Tunnel on core, decision 20) forwards only `/a2a/v1` and the Agent Card path. `/status`, `/mcp`, `/wake/listen` and `/sessions` are never publicly routed. A status sender is always a local or tailnet machine.
 
 ## 4. Request schema
 

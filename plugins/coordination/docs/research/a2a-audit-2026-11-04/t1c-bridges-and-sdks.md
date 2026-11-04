@@ -2,7 +2,7 @@
 
 Date of audit: 2026-11-04. Method: shallow clones (depth 200) under `/tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/<owner>-<repo>`, read with `rg`/`fd`/`jq`/`gh api`. Nothing was built, installed or executed. No missing tools (`jq`, `rg`, `fd`, `gh` present). Labels: **verified** = read in the clone; **reported** = from README/docs/GitHub metadata only; **unverified** = not checked.
 
-Spec note: the local spec clone `/home/rockad/projects/A2A` has a `LICENSE` byte-identical (sha1 2b8b8152...) to the a2a-python and a2a-js LICENSE files (verified). The user-facing names of the 11 core operations match the dispatcher tables of the SDKs below.
+Spec note: the spec repository [`a2aproject/A2A`](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) (checked as a local clone at that commit; the clone is now deleted) has a `LICENSE` byte-identical (sha1 2b8b8152...) to the a2a-python and a2a-js LICENSE files (verified). The user-facing names of the 11 core operations match the dispatcher tables of the SDKs below.
 
 ---
 

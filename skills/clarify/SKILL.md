@@ -246,7 +246,15 @@ Close with the recommendation line:
 
 ### Adaptive Interactive Tool Calling
 
-After printing the markdown analysis, invoke the harness-appropriate interactive question tool.
+After printing the markdown analysis, **ALWAYS invoke the harness-appropriate interactive question tool**.
+
+> [!CRITICAL]
+> **MANDATORY TOOL CALL RULE — NEVER OMIT THE TOOL CALL**:
+> In Google Antigravity (Web UI and IDE), Claude Code, and OpenCode, interactive selection chips, radio buttons, and terminal comparison pickers are rendered **exclusively when an active question tool is called**.
+> - **Antigravity**: MUST call `ask_question`. If the agent merely outputs markdown text without invoking `ask_question`, the Web UI silently degrades to static markdown text, forcing the user to type answers manually.
+> - **Claude Code**: MUST call `AskUserQuestion` (with `"multiSelect": false`).
+> - **OpenCode**: MUST call `question`.
+> **Never terminate a question turn with markdown prose alone.** Every single fork step MUST conclude with the native tool call. Only when running in headless environments where no interactive question tool is exposed should the terminal CLI fallback be used.
 
 > [!IMPORTANT]
 > **Strict Option Naming & Sequence Rule**:
@@ -530,6 +538,7 @@ Once the user approves:
 
 ## Anti-Patterns
 
+- **Text-only question turns (Omitting the tool call)** — printing options as markdown text without calling `ask_question` (Antigravity), `AskUserQuestion` (Claude Code), or `question` (OpenCode). This silently disables the interactive UI picker widget in Web/IDE harnesses and forces the user to manually type replies.
 - **Artificial 4-fork truncation** — capping the clarification at 3 or 4 superficial questions when major architectural dimensions (persistence, error handling, auth, concurrency, lifecycle) remain unclarified.
 - **Unlabeled or scrambled options in selection** — emitting options in the interactive tool without `Option A:`, `Option B:` prefixes, or reordering them so they disagree with the prose preview.
 - **Analogy without technical anchor (Plain Mode)** — using everyday analogies without naming the "Under the Hood" engineering mechanism or "Where the analogy breaks". A metaphor without an anchor is fiction, not architecture.

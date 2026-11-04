@@ -1217,7 +1217,7 @@ The literal expansion above would store the token in Claude's config. Prefer a p
 
 ### 11.2 Antigravity (agy)
 
-All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting and the `mcp_config.json` header support are `[unverified]`.
+All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is `[verified]` in shape (agy 1.5.0 `agy mcp add --header`, and the user's existing `obsidian` entry uses `serverUrl` + `headers.Authorization`); per-request delivery and env-var interpolation remain `[unverified]` (spikes.md SP2 A6).
 
 `mcp_config.json`, sketch:
 

@@ -48,7 +48,7 @@ flowchart TD
 - **Status**: **ACCEPTED & APPROVED BY USER** (2026-11-03). Never launch, drive or wrap `agy`; the restrictive-terms rule applies to Antigravity too. Carrier wording amended by DDR-004 (peers communicate through the server). Full record in the plan, Section 3.
 
 ### DDR-004: A2A Coordination Server (ACCEPTED 2026-11-04)
-- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 24 from later the same day (`/cplain` and after) recorded in [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
+- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 36 from later (2026-11-04 and 2026-11-05, `/cplain` and after) recorded in [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
 - **Summary**:
   - A2A server on `a2a-python` (>= 1.3.0), `uv`, Docker; one process owns SQLite (WAL) on named volume `a2a-data`; MCP tools served at `/mcp` on port 8120.
   - Identity: one Agent Card per harness and machine, per-session handles under it.
@@ -56,7 +56,7 @@ flowchart TD
   - Inbound trust by origin (`SUBMITTED`, `QUARANTINED`, `REJECTED`); scoped bearer API keys.
   - Staged exposure (revised by decision 23): S1 dev on alyx (localhost), S2 production on core with workstations over the tailnet, S3 public HTTPS (the user's existing Cloudflare Tunnel on core pointing at core's own localhost:8120, decision 20; hostname `a2a.bigrockad.com`).
   - cognitive-engine: optional one-way status client, built after S1; posts to core over the tailnet.
-  - Decisions 14 to 24:
+  - Decisions 14 to 36 (14 to 24 on 2026-11-04, 25 to 36 on 2026-11-05):
     - 14: go-live after S3; the file channel stays frozen until then, except that Antigravity may use it for research on this work.
     - 15: admin commands run inside the container over an unpublished Unix socket; no admin endpoint or scope; on core in production (`ssh core`).
     - 16: one installer `a2a-coord install --claude --agy`; non-secret parts of chezmoi-managed files go through chezmoi; the R8 grey area accepted.
@@ -68,6 +68,18 @@ flowchart TD
     - 22: blocking `SendMessage` capped at 60 s.
     - 23: portable image; production on core, dev and spikes on alyx; workstations reach core over the tailnet from day one.
     - 24: service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, `a2a-coord key create|list|rotate|revoke`); Claude Code key in `A2A_API_KEY`, agy key literal in an unmanaged 0600 plugin-scoped file; chezmoi-managed files never hold keys.
+    - 25: spike host changes allowed under "borrow and put back" (back up, use the harness CLI, prefer project scope, restore, verify, `chezmoi diff` clean).
+    - 26: agy hook entries in the user-level `~/.gemini/config/hooks.json`; hooks exit fast and silently if the server is unreachable or a workspace has an opt-out marker.
+    - 27: agy inbox instruction from `SessionStart` `injectSteps`; the installer never writes any `AGENTS.md`.
+    - 28: hook scripts copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink.
+    - 29: card routing: parked listener, then newest `active` session, then card queue.
+    - 30: an unseen agy `conversation_id` on a `local-harness` key auto-registers a handle on its first `tools/call`.
+    - 31: card discovery per path (`/agents/<card>/.well-known/agent-card.json`) plus a front-desk root card.
+    - 32: the front-desk card is public and generic; member cards and listings need a valid API key.
+    - 33: `A2A-Version` strict (missing or 0.3 returns `VersionNotSupported`).
+    - 34: Claude key from `~/.config/a2a-coord/api-key` (0600, unmanaged), env export through one non-secret chezmoi shell line, `~/.claude.json` fallback.
+    - 35: streaming and push deferred until a peer needs them.
+    - 36: go-live importer built during S2 and S3; one final gate (FG) for server and importer; GL-REHEARSE, user go, GL-APPLY, GL-RETIRE after S3 exit.
 - **Scope**: daemon and container restrictions lifted; **planning only remains**, implementation only where strictly necessary for a spike.
 - **Superseded by it**: DDR-002 (carrier and ACP), old Phase 2 ledger forks A and B, Phase 3 swarmail, Phase 4 ACP, heartbeat sidecar files. **Still in force**: DDR-001 exclusions (`mcp_agent_mail_rust`), DDR-003, BuildSlot (PR #13), symmetric agency.
 
@@ -143,8 +155,8 @@ Roadmap and gates: [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projec
   - [ ] Plugin layout, container, volume `a2a-data`, server on `a2a-python`.
   - [ ] Endpoints `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status`, Agent Card; contract in [`server-api.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md).
   - [ ] API keys (`a2a-coord key create|list|rotate|revoke`, `a2ak_<env>_<keyid>_<secret>`) and `a2a-coord review`, run inside the container over the unpublished admin socket (decisions 15 and 24).
-  - [ ] Claude Code hooks (`a2a-listen`, `UserPromptSubmit`) and agy hooks, MCP entry and `AGENTS.md` rule.
-  - [ ] Installer `a2a-coord install --claude --agy`: non-secret parts of chezmoi-managed files through chezmoi; Claude key via `A2A_API_KEY`; agy key literal in the unmanaged `.agents/plugins/coordination/mcp_config.json` (mode 0600); no key in any chezmoi-managed file (decisions 16 and 24).
+  - [ ] Claude Code hooks (`a2a-listen`, `UserPromptSubmit`) and agy hooks (user-level `~/.gemini/config/hooks.json`, decision 26), MCP entries, and the agy inbox instruction through `SessionStart` `injectSteps` (decision 27; no `AGENTS.md` is written). Hook scripts copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink (decision 28).
+  - [ ] Installer `a2a-coord install --claude --agy`: non-secret parts of chezmoi-managed files through chezmoi; Claude key from the unmanaged 0600 `~/.config/a2a-coord/api-key`, exported as `A2A_API_KEY` by one non-secret chezmoi-managed shell line, with a `~/.claude.json` fallback if SP2 C9 shows no header env expansion (decision 34); agy key literal in the unmanaged `.agents/plugins/coordination/mcp_config.json` (mode 0600); no key in any chezmoi-managed file (decisions 16, 24 and 34). The installer never writes an `AGENTS.md` and refuses to write through symlinks (decision 27). `a2a-coord install --rotate-key` rotates the key file.
   - [ ] Exit gate: two-way task round trip, Claude idle wake, agy surfacing, API key refusal, quarantine end to end.
 - [ ] **S2 Production on core** (`tailscale serve` on core; workstations alyx and mac over the tailnet; gate: API keys and scopes live, cross-host wake works; decision 23):
   - [ ] Deploy the image on core (`A2A_ENV=live`, `A2A_DEPLOY_HOST=core`); user installs Tailscale; one `local-harness` API key and card per machine (`claude-code@alyx`, `antigravity@alyx`, `claude-code@mac`, ...); the server checks the Tailscale identity matches the machine the key was issued for, for all harness keys including alyx (decisions 17 and 23; delivery mechanism unverified, [`spikes.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md) section 13).
@@ -157,7 +169,8 @@ Roadmap and gates: [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projec
   - [ ] `CF-Connecting-IP` from `cloudflared` on the same host, told apart from `tailscale serve` traffic; Host and Origin checks, rate limits; Cloudflare timeout (about 100 s, reported) versus the 60 s `SendMessage` cap (decision 22).
   - [ ] Per-peer `remote-peer` API keys, delivered out of band (hashed, revocable, rate-limited), optional mTLS later (decision 18); human-only release (decision 19); fuzz pass per RFC 006 section 3; create the route only after the gate.
 - [ ] **Go-live migration** ([`go-live-migration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md)); after S3 (decision 14):
-  - [ ] Import the `~/.agents` channel files (including Antigravity's research appends) into the store, verify, take the tar backup, then delete the channel and stop the watcher.
+  - [ ] Build the importer (GL-IMPORT) during S2 and S3 against copies of the channel files; the S3 final gate covers server and importer together (decision 36).
+  - [ ] After S3 exit: dress rehearsal, the user's go, then import the `~/.agents` channel files (including Antigravity's research appends, so the dry run is rerun at go-live), verify, take the tar backup, then delete the channel and stop the watcher.
 - [ ] **cognitive-engine status adapter** (after S1, off by default, user go; contract in [`status-client.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/status-client.md)):
   - [ ] Adapter package in cognitive-engine posting `{run_id, run_scope, state, report_path, ts}` to `/status`.
 - [x] **agents-bridge retirement** (user decision 2026-11-04: remove the repo entirely, files copied without history):

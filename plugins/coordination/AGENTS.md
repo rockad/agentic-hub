@@ -5,7 +5,7 @@ Rules for Google Antigravity, Claude Code and any other AI coding assistant work
 ## Read first
 
 - Read [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) before doing any work here.
-- The plan records DDR-004 (accepted 2026-11-04) and its 24 binding decisions (13 from the `/clarify` session, 14 to 24 from later the same day); they override anything older in `docs/`. Superseded:
+- The plan records DDR-004 (accepted 2026-11-04) and its 36 binding decisions (13 from the `/clarify` session, 14 to 24 on 2026-11-04, 25 to 36 on 2026-11-05); they override anything older in `docs/`. Superseded:
   - DDR-002 file-channel carrier and ACP
   - old Phase 2 ledger forks A and B
   - Phase 3 swarmail
@@ -26,6 +26,8 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
   - Do not add `plugin.json`, Dockerfiles, hook scripts, config files or marketplace entries as real files unless the user says so.
   - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on core already exists. `a2a.bigrockad.com` is the chosen S3 hostname, but no route exists now (a route was created and deleted on 2026-11-04). Do not edit the tunnel configuration.
   - **Do not create, or ask the user to create, the public route before the S3 gate. Do not start the service on core while a public route is present** (decision 23, plan Risk 13).
+  - **Never write an `AGENTS.md` (or edit any file through a symlink) on behalf of the plugin**: the agy inbox instruction comes from `SessionStart` `injectSteps`, and the installer never writes any `AGENTS.md` (decision 27). `~/.gemini/config/AGENTS.md` is a symlink into a git-tracked file in another repository.
+  - Spikes may change host configuration only under "borrow and put back" (decision 25): back up first, use the harness CLI, prefer project scope, restore and verify, `chezmoi diff` clean. agy-side changes are made only by agy or the user.
   - Do not write harness hook or MCP configuration by hand or by script. The planned installer `a2a-coord install --claude --agy` does that later, only when the user runs it. It edits the non-secret parts of chezmoi-managed files through chezmoi (edit the chezmoi source, then apply), never the targets (decision 16).
   - **API keys never go into chezmoi-managed files or the dotfiles repository, and chezmoi-managed files are not edited for keys** (decision 24).
 - Do not commit or switch branches unless the user asks.
@@ -75,7 +77,8 @@ These hold in every design, spec and spike.
 - **Auth.** Service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, created by `a2a-coord key create`), sent as a bearer credential, with scopes `local-harness`, `remote-peer` and `status-client`, shown once, stored hashed. Loopback still needs a key. `remote-peer` never reaches `/mcp`, `/wake/listen` or `/sessions`. Say "API key", not "token", for these credentials (decision 24).
   - Every harness machine (alyx, mac, and core where a harness runs) gets one `local-harness` key with its own card, and the server also checks the Tailscale identity matches the machine the key was issued for, alyx's key included (decisions 17 and 23).
   - Remote peers hold per-peer keys, delivered out of band: hashed, revocable, rate-limited (decision 18).
-  - Claude Code keeps its key in `A2A_API_KEY`; agy's key is a literal in an unmanaged, mode-0600 plugin-scoped file outside chezmoi (decision 24).
+  - Claude Code's key is in the unmanaged, mode-0600 `~/.config/a2a-coord/api-key` (read by the hooks, exported as `A2A_API_KEY` by one non-secret chezmoi-managed shell line); agy's key is a literal in an unmanaged, mode-0600 plugin-scoped file outside chezmoi (decisions 24 and 34).
+  - Card access: the root front-desk card is public and generic; member cards, the listing and extended cards need any valid API key (decisions 31 and 32). `A2A-Version` is strict (decision 33).
 - **Admin access.** `a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`), on the host that runs it (core in production: `ssh core` first), over an unpublished in-container Unix socket. Never add an admin HTTP endpoint or an admin API-key scope (decisions 15 and 23).
 - **Public front door (S3).** The user's existing Cloudflare Tunnel on core pointing at core's own `localhost:8120`, routing only `/a2a/v1` and the Agent Card. Cloudflare sees decrypted traffic. Trust `CF-Connecting-IP` only for requests arriving from `cloudflared` on the same host. Blocking `SendMessage` is capped at 60 s (decisions 20, 22 and 23). No route exists before the S3 gate; one created early for testing must sit behind a Cloudflare Access deny-all or service-token-only policy. A dedicated loopback port for the tunnel is a pending user decision at S3.
 - **Never expose, on any interface or stage:**

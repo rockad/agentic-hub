@@ -7,9 +7,10 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 - **Planning only, and planning is complete.** No server code, Dockerfile, hook script or `plugin.json` exists yet. There is no urgency.
 - **Next step: S0 spikes on alyx.** They test the unverified parts of the design (handle binding, Claude Code wake, agy hook behaviour) in scratch space. Spike code is never merged.
 - Branch: `feat/coordination` in the `agentic-hub` repository.
-- Decisions of 2026-11-04 are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
+- Decisions of 2026-11-04 and 2026-11-05 are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
   - 13 binding decisions from the `/clarify` session.
-  - 11 more (decisions 14 to 24) from later the same day: go-live after S3, admin access inside the container, one harness installer, per-machine API keys with a Tailscale identity check, per-peer remote keys, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, a 60 s cap on blocking `SendMessage`, production on core (a portable image; dev and spikes on alyx), and service-issued API keys that never enter chezmoi-managed files.
+  - 12 more on 2026-11-05 (decisions 25 to 36): spike host changes under "borrow and put back", agy hooks in the user-level `~/.gemini/config/hooks.json`, the agy inbox instruction through `SessionStart` `injectSteps` (the installer never writes an `AGENTS.md`), hook scripts under `~/.local/share/a2a-coord/<version>/bin/`, card routing and discovery (a path per card plus a public front-desk card; member cards need an API key), strict `A2A-Version`, Claude key delivery from `~/.config/a2a-coord/api-key`, streaming and push deferred, and the go-live importer built during S2 and S3 under one final gate.
+  - 11 more (decisions 14 to 24) on 2026-11-04: go-live after S3, admin access inside the container, one harness installer, per-machine API keys with a Tailscale identity check, per-peer remote keys, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, a 60 s cap on blocking `SendMessage`, production on core (a portable image; dev and spikes on alyx), and service-issued API keys that never enter chezmoi-managed files.
   - Nothing is waiting on a user decision. What remains is spike outcomes, and one design choice that falls due at S3 (the tunnel's listener port, plan section 7).
 
 ## What it is
@@ -65,8 +66,9 @@ Notes on the diagram:
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
 - Admin commands (`key create|list|rotate|revoke`, `review`) run inside the container, on whichever host runs it (core in production: `ssh core`, then `docker compose exec -it coordination a2a-coord ...`), over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin API-key scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
-- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code keeps its key in the environment (`A2A_API_KEY`); agy's key is a literal in an unmanaged, mode-0600, plugin-scoped `.agents/plugins/coordination/mcp_config.json`. Chezmoi-managed files never hold keys.
-- Harness setup is one installer, `a2a-coord install --claude --agy`. It configures the non-secret parts through chezmoi where the files are chezmoi-managed, never writing the targets, and nothing in it launches, drives or wraps agy.
+- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret chezmoi-managed shell line (with a `~/.claude.json` fallback if Claude Code does not expand env vars in MCP headers); agy's key is a literal in an unmanaged, mode-0600, plugin-scoped `.agents/plugins/coordination/mcp_config.json`. Chezmoi-managed files never hold keys.
+- Harness setup is one installer, `a2a-coord install --claude --agy`. It configures the non-secret parts through chezmoi where the files are chezmoi-managed, never writing the targets. Hook scripts are copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink. agy hooks go in the user-level `~/.gemini/config/hooks.json`, and the agy inbox instruction comes from `SessionStart` `injectSteps`: the installer never writes any `AGENTS.md`. Nothing in it launches, drives or wraps agy.
+- Agent Cards: one path per card, `/agents/<card>/.well-known/agent-card.json`, plus a public, generic "front desk" card at the root. Member cards need a valid API key. `A2A-Version` is strict. Streaming and push are off until a peer needs them.
 
 ### Exposure stages
 
@@ -109,7 +111,7 @@ All links are absolute `file://` links.
 
 ### Start here
 
-- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 24 decisions of 2026-11-04 (13 from `/clarify`, 11 from later the same day), and the S0-S3 roadmap.
+- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 36 decisions of 2026-11-04 and 2026-11-05 (13 from `/clarify`, 11 later on 2026-11-04, 12 on 2026-11-05), and the S0-S3 roadmap.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 
 ### Plans

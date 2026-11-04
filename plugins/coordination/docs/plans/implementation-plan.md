@@ -1,10 +1,10 @@
 # Coordination server: implementation plan and workstreams
 
-Status (2026-11-04): **PLANNING ONLY, planning complete, S0 spikes are next.** Nothing here is built. This file turns the accepted DDR-004 (24 binding decisions) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
+Status (2026-11-05): **PLANNING ONLY, planning complete, S0 spikes are next.** Nothing here is built. This file turns the accepted DDR-004 (36 binding decisions, 25 to 36 of 2026-11-05 closing the former section 6 items) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
 
 Home: `agentic-hub/plugins/coordination`, branch `feat/coordination`. Authoritative inputs, in this order: [plan][plan] (decisions, roadmap, risks, section 7), [server-api][api], [spikes][spikes], [status-client][status], [go-live-migration][golive], [master-tasklist][tasklist], the two agy results ([A6][a6], [A4][a4]), and the plugin [AGENTS.md][agentsmd].
 
-Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D24. Risk numbers are R1 to R13 from plan section 6.
+Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D36. Risk numbers are R1 to R13 from plan section 6.
 
 ## 1. Purpose, status, scope, links
 ### 1.1 Purpose
@@ -51,7 +51,7 @@ Out of scope (all from plan or specs):
 - Tiers (user rule, Claude Code, CLAUDE.md "Claude Code subagent model rule"):
   - **sonnet** by default; pass `model` explicitly on every subagent call.
   - **opus** only for adversarial verification, design proposals and subtle debugging. Run `jev_judge` in parallel with each such escalation when Jev is available.
-  - One final verification gate per body of work on **opus** (the highest tier available on the Claude Pro plan; Fable is not in the subscription), per the user rule. FG at S3-GATE closes the server body of work; FG-GL closes the go-live body of work (section 4.5).
+  - One final verification gate per body of work on **opus** (the highest tier available on the Claude Pro plan; Fable is not in the subscription), per the user rule. FG at S3-GATE closes the server body of work and the go-live importer and retirement code together (D36; there is no separate go-live gate, section 4.5).
   - Low-Quota Protocol: with Jev mode `on` and under 20% quota remaining, ask the user before any opus escalation.
   - Agy-side work runs in Antigravity, tier not applicable.
 - Size key: S is an upper bound of 6 h, M up to 18 h, L above. Hours are focused work including tests and user time (assumptions in section 8). They are estimates **[proposal]**, not measurements.
@@ -116,7 +116,7 @@ flowchart TD
     S0SP2A --> BP10{"BP10 to BP12<br/>injectSteps, A3, A8"}
     BP10 -->|"A8 fails"| UA8(["USER: choose non-chezmoi include for agy key"])
     S0SP3 --> BP13{"BP13<br/>SP3 passes?"}
-    BP13 -->|"fails"| DROPHOOK["agy PreInvocation hook dropped<br/>AGENTS.md rule, a2a_inbox, a2a_wait stay"]
+    BP13 -->|"fails"| DROPHOOK["agy PreInvocation hook dropped<br/>SessionStart injectSteps, a2a_inbox, a2a_wait stay"]
     S0SP5 --> BP15{"BP15 and BP16<br/>SP5 passes?"}
     BP15 -->|"fails"| SDKFB["fallbacks from spikes.md section 8"]
     BP1 & BP6 & BP10 & BP13 & BP15 & S0SP4 --> S0RES
@@ -134,7 +134,7 @@ flowchart TD
         S1ID["S1-ID<br/>identity and binding"]
         S1WAKE["S1-WAKE<br/>wake and pending"]
         S1CLAUDE["S1-CLAUDE<br/>Claude hooks"]
-        S1AGY["S1-AGY<br/>agy hooks and rule"]
+        S1AGY["S1-AGY<br/>agy hooks, injectSteps inbox line"]
         S1INST["S1-INST<br/>installer"]
         S1SEC["S1-SEC<br/>invariants suite"]
         S1TEST["S1-TEST<br/>test strategy, TCK, e2e"]
@@ -180,7 +180,7 @@ flowchart TD
         S3CARD["S3-CARD<br/>honest public card"]
         S3PEER["S3-PEER<br/>remote-peer flow"]
         S3FUZZ["S3-FUZZ<br/>fuzz pass"]
-        S3GATE["S3-GATE<br/>pre-route gate, FG, user go"]
+        S3GATE["S3-GATE<br/>pre-route gate, FG (server and importer), user go"]
         S3CF["S3-CF<br/>route, L2, L3"]
         S3EXIT["S3-EXIT<br/>S3 exit evidence"]
     end
@@ -195,19 +195,18 @@ flowchart TD
     S3CF --> BP20{"BP20 and BP21<br/>L2 and L3 pass?"}
     BP20 --> S3EXIT
 
-    subgraph P4["Go-live"]
-        GLIMP["GL-IMPORT<br/>importer and fixtures"]
-        GLREH["GL-REHEARSE<br/>dress rehearsal, scratch volume"]
-        GLFG["FG-GL<br/>final gate for GL"]
+    subgraph P4["Go-live (importer built during S2 and S3, decision 36)"]
+        GLIMP["GL-IMPORT<br/>importer and fixtures, built against copies"]
+        GLREH["GL-REHEARSE<br/>dress rehearsal, scratch volume, after S3 exit"]
         GLAPPLY["GL-APPLY<br/>freeze, snapshot, apply, verify"]
         GLRET["GL-RETIRE<br/>tar, typed delete, watcher"]
     end
-    S3EXIT --> UGL(["USER: declares go-live"])
-    UGL --> GLIMP
+    S1GATE --> GLIMP
+    GLIMP --> S3GATE
+    S3EXIT --> GLREH
     GLIMP --> GLREH
-    GLREH --> GLFG
-    GLFG --> GLAPPLY
-    UGOA(["USER: explicit go for the apply"]) --> GLAPPLY
+    GLREH --> UGOA(["USER: declares go-live, explicit go for the apply"])
+    UGOA --> GLAPPLY
     GLAPPLY --> GLRET
     S0SP5 -.-> BP23{"BP23<br/>store timestamps settable?"}
     BP23 -.-> GLIMP
@@ -237,7 +236,7 @@ Each row says what to do on either outcome. The fallbacks are copied in substanc
 | BP8 | SP2 C8 and A7, MCP tool timeout | `a2a_wait` default 30 s and maximum `A2A_MAX_WAIT_S` 240, and `a2a_send` `wait_seconds` maximum 240, stay if inside the limit | lower both below the measured limit and document it (both are blocking MCP tool calls) | S1-MCP, S1-DOC | CC |
 | BP9 | SP2 C9, `${A2A_API_KEY}` in Claude MCP headers | installer writes the env reference | key cannot live in the environment for the MCP entry: a user-chosen wrapper or headers helper, never a literal key in a chezmoi-managed file | S1-INST | USER |
 | BP10 | SP2 A2 and A4 compliance, agy `injectSteps` | at least one `injectSteps` type reaches the model; at least 8 of 10 bind after the injected text or the error | none of the types reaches the model: move the handle into the `AGENTS.md` rule. A6 and A4 identity are already verified, so agy binding itself does not depend on the model | S1-AGY, S1-ID | CC |
-| BP11 | SP2 A3, agy `SessionStart` on `/clear` and resume | hook registers the new conversation | server registers an unknown `conversation_id` on its first `tools/call` ([api 5.4.1][api], already the design). This becomes mandatory | S1-ID, S1-AGY | CC (needs the user's confirmation of the design, section 6) |
+| BP11 | SP2 A3, agy `SessionStart` on `/clear` and resume | hook registers the new conversation | server registers an unknown `conversation_id` on its first `tools/call` ([api 5.4.1][api], accepted by D30). This becomes the only registration path | S1-ID, S1-AGY | CC |
 | BP12 | SP2 A8, user-level plugin config and `~/.agents` collision | installer writes `.agents/plugins/coordination/mcp_config.json` (0600) at the location that loaded, provided `chezmoi source-path` returns "not managed" for both the file and its parent directory (`~/.gemini/config/plugins/` is chezmoi-managed, verified, so it never qualifies) | a non-chezmoi include that agy reads, chosen by the user | S1-INST, S1-AGY | USER |
 | BP13 | SP3, `PreInvocation` | agy hook ships | `ephemeralMessage` unseen: try `userMessage` and `systemMessage`, else drop; hook blocks the turn and cannot be avoided: do not ship it. Dropping does not block S1 | S1-AGY | CC |
 | BP14 | SP4, held `Stop` | recorded as usable or not | nothing ships either way. K6 "background command wakes agy" is recorded as a candidate for a later user decision | none | USER (later) |
@@ -465,7 +464,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Goal: all task behaviour lives in one service layer called identically by `/a2a/v1` and `/mcp`.
 - Scope: `src/coordination/service/`.
 - Spec: api 3.3.2, 3.3.3, 5.2, 6 (6.1 to 6.4), 7.4; D6, D10, D19, D22.
-- Inputs: S1-STORE; SP5 D4 and D11 results; user confirmation of card routing fallback (section 6, item 4).
+- Inputs: S1-STORE; SP5 D4 and D11 results; the decided card routing order (D29: parked listener, then newest `active` session, then card-level queue after the offer TTL; the first `a2a_inbox` caller claims).
 - Deliverables:
   - Transition table of api 6.2 including `QUARANTINED` stored as `INPUT_REQUIRED` plus `coord.hold`.
   - Trust by origin: local gives `SUBMITTED`; allowlisted remote gives held; unknown remote or card not in `cards_allowed` gives `REJECTED` (identical for "not allowed" and "does not exist"); quotas (20 held per peer, 10 `SendMessage` per minute per peer).
@@ -489,17 +488,17 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Spec: api 3.2, 3.3 (3.3.1 to 3.3.4), 8.5, 10; D5, D22.
 - Deliverables:
   - The 11 operations as in api 3.3.1: SendMessage, GetTask, ListTasks (wrapper over the store with `task_index`), CancelTask, GetExtendedAgentCard work at S1; SendStreamingMessage and SubscribeToTask return -32004; the four push operations return -32003 while `A2A_PUSH_ENABLED=0`.
-  - `A2A-Version: 1.0` required (missing gives -32009), content types `text/plain` and `application/json`, limits (8 parts, 32 KiB per text part, 200 history messages).
+  - `A2A-Version: 1.0` required (D33: missing or `0.3` gives -32009 with a message to send `1.0`), content types `text/plain` and `application/json`, limits (8 parts, 32 KiB per text part, 200 history messages).
   - Blocking `SendMessage` capped at `A2A_SEND_BLOCK_MAX_S` (60 s); non-blocking honoured.
-  - Card builder: ProtoJSON camelCase, all eight required fields, `tenant` equals card id, interface URLs from `A2A_PUBLIC_URL`, `securitySchemes` bearer, `streaming` and `pushNotifications` false at S1, the 60 s deviation sentence in `description`, extension URI `urn:agentic-hub:coordination:v1`; selection by `?agent=<card-id>`; `300` with a JSON array for several cards **[design, pending user input, section 6]**.
+  - Card builder: ProtoJSON camelCase, all eight required fields, `tenant` equals card id, interface URLs from `A2A_PUBLIC_URL`, `securitySchemes` bearer, `streaming` and `pushNotifications` false at S1, the 60 s deviation sentence in `description`, extension URI `urn:agentic-hub:coordination:v1`; one card path per member, `/agents/<card>/.well-known/agent-card.json`, each card's interface URL pointing at its own path, and a root `/.well-known/agent-card.json` "front desk" card (public and generic: name, description, bearer auth declared, no member names); member cards, the member listing and extended cards need any valid API key, `401` otherwise (D31, D32). The front desk's member listing through an extension field, and routing by `metadata.target` or rejection with a pointer, are **[proposal]**. The `?agent=` selector and the `300` reply are dropped. Cards declare `streaming: false` and `pushNotifications: false` (D35).
   - Push (code present, off): `DatabasePushNotificationConfigStore` with Fernet, `validate_push_notification_url` always passed, our resolve-and-pin screen at config and send time, originator only, 3 configs per task.
 - Acceptance:
   - Wire test per operation over JSON-RPC and REST against the pinned spec commit `4735f48`.
   - **A2A TCK in CI** (the SDK's, per api 10): deviations are an explicit allowlist reviewed by the user; any failure not on it blocks. The spec only says the TCK may flag the 60 s cap. The initial list is **[proposal]**:
     - the 60 s blocking cap
-    - `A2A-Version` strictness
+    - `A2A-Version` strictness (D33: missing or `0.3` returns `VersionNotSupported` with the message to send `1.0`; our MCP tools and hooks always send it)
     - `QUARANTINED` shown as `INPUT_REQUIRED`
-    - candidate entry: the `300` response for several cards
+    - card access (D32): the front-desk card is reachable without a key, member cards and the listing return `401` without one
     - candidate entry: the tenant rules
   - The TCK's invocation is unverified: read its source first.
   - With `A2A_SEND_BLOCK_MAX_S=2` a blocking request on a parked task returns the `SUBMITTED` task after about 2 s; `returnImmediately` returns at once.
@@ -521,7 +520,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - `tools/list` returns exactly 6 tools with writes off and 9 with writes on; no tool reads a path, runs a command or proxies another server.
   - A `remote-peer` or `status-client` key gets 403 on `/mcp`.
   - Claude-card test: after a server restart a tool call from a Claude-card key returns the constant "Not bound" error; after `a2a_hello` it works.
-  - agy test: after a server restart a `tools/call` from an `antigravity@` key carrying a registered `conversation_id` works without `a2a_hello`; an unknown `conversation_id` is registered per [api 5.4.1][api] (decision 5 in section 6).
+  - agy test: after a server restart a `tools/call` from an `antigravity@` key carrying a registered `conversation_id` works without `a2a_hello`; an unknown `conversation_id` is registered per [api 5.4.1][api] (D30).
   - Result frame test: a body containing ANSI escapes, a 100 KiB part and text that claims approval comes back stripped, truncated, flagged and inside `untrusted: true`; the notice is byte-identical to the source constant.
   - `a2a_inbox` never lists held tasks; it reports only the held count; each listed task increments `offer_count`.
   - `a2a_respond` rules: `working` on `SUBMITTED` confirms; any other state confirms and moves; `canceled` and `auth_required` not offered; non-bound caller refused.
@@ -537,7 +536,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Handle grammar (`<harness>@<machine>/<session-name>`), name derivation (lowercase, `[a-z0-9._-]`, 48 characters, fallback to 8 characters of the harness session id), collision suffix of 4 hex characters, names never reused for another session, resume or `clear` of the same harness session returns the same handle, no working directory or path stored.
   - Claude path: `POST /sessions` from the `SessionStart` hook, then `a2a_hello(handle)` binds `Mcp-Session-Id`.
   - agy path (verified design, api 5.4.1): bind to `_meta["antigravity.google/conversation_id"]` on each `tools/call`; map it to the `harness_session_id` from the agy hook (`conversationId`); sub-invocations group under the parent by `root_conversation_id` and record `parent_conversation_id`; `Mcp-Session-Id` is never used for agy identity; `/clear` gives a new conversation and so a new handle.
-  - Unseen-conversation registration: an unknown `conversation_id` arriving on a `local-harness` key is registered as a new session under that key's card on its first `tools/call` **[design, confirm in section 6, mandatory if BP11 shows no `SessionStart` on `/clear`]**.
+  - Unseen-conversation registration (D30, accepted): an unknown agy `conversation_id` on a `local-harness` key auto-registers a handle `antigravity@<host>/<first 8 chars>` on its first `tools/call`, grouped under the handle of its `root_conversation_id` when known; a later `SessionStart` name becomes an alias; every registration is logged; never done for other key scopes.
   - Liveness states `listening`, `active` (15 min), `registered`, `ended`.
   - `_meta` ids are read only on requests that passed the `local-harness` check (and at S2 the tailnet check), and only accepted when they belong to the key's card.
 - Acceptance:
@@ -586,16 +585,17 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Owner-pid watch ends the listener within a few seconds of `kill -9` of the parent (scratch parent).
   - Live, USER: an idle interactive session starts a turn from a stub release with latency under 10 s (SP1 T1 criterion); `claude --version` is at or above 2.1.290.
 
-#### S1-AGY: agy hooks, `AGENTS.md` rule, `a2a_wait`
+#### S1-AGY: agy hooks, `injectSteps` inbox instruction, `a2a_wait`
 - Goal: agy surfaces pending tasks at its next model call and checks the inbox at session start; no idle wake (accepted, D9).
-- Scope: `bin/a2a-agy-session`, `bin/a2a-agy-pending`, the agy `hooks.json`, the `AGENTS.md` snippet of api 11.2. Script, hook-entry and `AGENTS.md`-rule locations follow BP12 and the **agy install targets** decision in section 6 item 10 (a USER decision that blocks this stream; the api 11.2 sketch is not binding).
-- Spec: api 11.2, 5.4.1, 4.5; D9; R1, R6.
-- Inputs: S1-ID, S1-WAKE (`a2a-agy-pending` calls `GET /wake/pending`), SP2A, SP3; section 6 item 10.
+- Scope: `bin/a2a-agy-session`, `bin/a2a-agy-pending` and the agy hook entries. Decided (D26 to D28): the entries go in the user-level `~/.gemini/config/hooks.json`; the inbox instruction comes from the `SessionStart` hook's `injectSteps` (handle, pending count, "check a2a_inbox now") and **no `AGENTS.md` is written**; the scripts are copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink and the hook entries reference `.../current/bin/...`.
+- Spec: api 11.2, 11.0, 5.4.1, 4.5; D9, D26, D27, D28; R1, R6.
+- Inputs: S1-ID, S1-WAKE (`a2a-agy-pending` calls `GET /wake/pending`), SP2A, SP3 (including P8, whether agy reads the user-level hooks file in all workspaces).
 - Deliverables:
-  - `a2a-agy-session`: reads `conversationId`, calls `/sessions` (card `antigravity@<machine>`), prints `injectSteps` with a constant message and the handle.
-  - `a2a-agy-pending`: `GET /wake/pending?session=...&announce=1` with a 2 s limit; prints `injectSteps` only when `announce` is true; exits 0 on every failure.
+  - `a2a-agy-session`: reads `conversationId`, calls `/sessions` (card `antigravity@<machine>`), prints `injectSteps` with a constant message, the handle, the pending count and "check a2a_inbox now".
+  - `a2a-agy-pending`: `GET /wake/pending?session=...&announce=1` with a 2 s limit; prints `injectSteps` only when `announce` is true; exits 0 on every failure. It is the backstop if `SessionStart` does not fire (SP2 A3, BP11).
+  - Both scripts exit fast and silently (exit 0, no output) when the server is unreachable or the workspace root has an opt-out marker **[proposal: `.a2a-optout`]** (D26).
   - Hook set has `SessionStart` and `PreInvocation` only; no `Stop` hook ships.
-  - If SP3 fails (BP13) the `PreInvocation` hook is dropped and the `AGENTS.md` rule, `a2a_inbox` and `a2a_wait` carry the load.
+  - If SP3 fails (BP13) the `PreInvocation` hook is dropped and the `SessionStart` `injectSteps` instruction, `a2a_inbox` and `a2a_wait` carry the load.
 - Acceptance:
   - Script failure matrix (SP3 P5): non-zero exit, invalid server JSON, empty body, 2 s timeout and server down all produce exit 0 and no output.
   - Output is byte-constant apart from one validated integer and the validated handle.
@@ -605,17 +605,19 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 #### S1-INST: installer `a2a-coord install --claude --agy`
 - Goal: one host-side command configures both harnesses, safely and reversibly, only when the user runs it.
 - Scope: `src/coordination/cli/install/`; runs on the host (via `uv run` **[proposal]**, packaging unverified), not through the admin socket.
-- Spec: api 11.0, 8.2; D16, D24; R1, R8.
-- Inputs: S1-CLAUDE, S1-AGY, S1-ADMIN; BP9 (C9) and BP12 (A8); the section 6 item 10 decision on agy install targets (USER, blocks this stream).
+- Spec: api 11.0, 8.2; D16, D24, D26, D27, D28, D34; R1, R8.
+- Inputs: S1-CLAUDE, S1-AGY, S1-ADMIN; BP9 (C9) and BP12 (A8). The former section 6 item 10 and item 9 questions are decided (D26 to D28, D34).
 - Deliverables:
   - `--server <url>` (`http://127.0.0.1:8120` at S1, the tailnet URL of core in production).
-  - `--claude`: hooks of api 11.1, the `a2a` MCP entry with `Authorization: Bearer ${A2A_API_KEY}` (or the BP9 fallback), `claude --version` check against 2.1.290.
-  - `--agy`: the `a2a` entry in the unmanaged plugin-scoped `.agents/plugins/coordination/mcp_config.json` (`url` plus `headers.Authorization` with the literal key, mode 0600) at the BP12 location; agy hooks; the `AGENTS.md` rule. The hook-entry file, the `AGENTS.md` target and the script location are the three parts of the section 6 item 10 decision (the user's answer is an installer input, not a default).
-  - Symlink and git guard: the installer never writes through a symlink into another repository. It resolves every target, refuses when the `AGENTS.md` target resolves outside `$HOME` config or into a git work tree, and prints the resolved path in the dry run (see the verified doppelganger symlink in section 1.5).
+  - Script install (D28): copy the scripts from the plugin `bin/` to `~/.local/share/a2a-coord/<version>/bin/`, point the `current` symlink at it, reference `.../current/bin/...` from both harnesses' hooks; upgrade switches the symlink; uninstall removes the directory; `--dev` link mode **[proposal]**.
+  - `--claude`: hooks of api 11.1 (the hook scripts read `~/.config/a2a-coord/api-key` directly), the `a2a` MCP entry with `Authorization: Bearer ${A2A_API_KEY}` (or, if C9 shows no env expansion, the literal key written into the unmanaged user-scope `~/.claude.json`), `claude --version` check against 2.1.290. Key delivery (D34): the 0600 `~/.config/a2a-coord/api-key` is the single source, one non-secret chezmoi-managed shell-rc line exports `A2A_API_KEY` from it if readable; a GUI-launched Claude may not see the variable (hooks are unaffected; MCP needs the fallback).
+  - `--agy`: the `a2a` entry in the unmanaged plugin-scoped `.agents/plugins/coordination/mcp_config.json` (`url` plus `headers.Authorization` with the literal key, mode 0600) at the BP12 location; the agy hook entries in the user-level `~/.gemini/config/hooks.json` (D26; exists, not chezmoi-managed; backed up and written after a printed diff). **No `AGENTS.md` is ever written** (D27).
+  - `install --rotate-key` (D34): rewrites the one key file, plus the `~/.claude.json` fallback copy if it is in use.
+  - Symlink and git guard (kept as a general safety rule, D27): the installer never writes through a symlink into another repository. It resolves every target, refuses when a target resolves outside the intended config directory or into a git work tree, and prints the resolved path in the dry run (see the verified doppelganger symlink of `~/.gemini/config/AGENTS.md` in section 1.5). The `current` symlink it creates itself is the only exception.
   - Chezmoi-directory guard: the installer refuses any target inside a chezmoi-managed directory for the literal-key file.
   - For each target `chezmoi source-path <target>` first: managed files are edited in the chezmoi source (a template stays a template), then `chezmoi apply` for that target; unmanaged files after a printed diff and confirmation.
   - Default is dry run with a unified diff; `--apply` writes; entries carry a marker; `--uninstall` removes exactly what was added.
-  - The key comes from a named environment variable or file path, is never printed and is written only to the 0600 file. The shell-startup line that sources a 0600 env file is a chezmoi-managed edit **[design, not decided, section 6]**.
+  - The key comes from a named environment variable or file path, is never printed and is written only to the 0600 files named above. The one shell-startup export line is a chezmoi-managed, non-secret edit (D34).
 - Acceptance:
   - Dry run changes nothing (file hashes before and after).
   - Second `--apply` changes nothing; `--uninstall` restores the pre-install state byte for byte.
@@ -623,7 +625,9 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - A fixture key string never appears in any file under the chezmoi source or in any chezmoi-managed target (`rg` over both).
   - The agy file has mode 0600; `~/.gemini/config/mcp_config.json` is untouched; nothing is written into `~/.agents` until BP12 names the location.
   - BP12 location check: the chosen location returns "not managed" from `chezmoi source-path` for both the file and its parent; the installer refuses any target inside a chezmoi-managed directory (test with a managed-directory fixture).
-  - Symlink test: a fixture `AGENTS.md` that is a symlink into a git work tree outside the scratch `HOME` is refused, nothing is written, and the dry run prints the resolved path.
+  - Symlink test: a fixture target that is a symlink into a git work tree outside the scratch `HOME` is refused, nothing is written, and the dry run prints the resolved path.
+  - No-`AGENTS.md` test (D27): after `install --claude --agy` on a scratch `HOME`, no file named `AGENTS.md` or `CLAUDE.md` was created or modified anywhere.
+  - Script install test (D28): the version directory and `current` symlink exist, hooks reference `.../current/bin/...`, an upgrade switches the symlink, `--uninstall` removes the directory and the hook entries.
   - Static test: no code path executes an `agy` binary or any `-p` flag; the only subprocess to a harness is `claude --version`.
   - Whether agy actually loads the written file is shown by USER or AGY in their own session (the installer never starts agy).
 
@@ -720,7 +724,7 @@ The same image runs with `A2A_ENV=live`, `A2A_DEPLOY_HOST=core`, `A2A_EXPOSURE_S
 | S2-TS | `tailscale serve`, L1 tailnet identity binding | USER installs; CC implements and runs L1 stub | sonnet | M, 6-10 | R12 | L1, BP18 |
 | S2-ONBOARD | per-machine keys, installer on alyx and mac | USER | sonnet (helper) | M, 4-8 | R8 | BP9, BP12 |
 | S2-WAKE | cross-host wake, L4 | USER and CC | sonnet | M, 4-8 | R12 | L4, BP22 |
-| S2-STREAM (optional) | streaming and push | CC | sonnet | L, 12-20 | R9 | user need |
+| S2-STREAM (optional, unscheduled) | streaming and push, deferred until a real peer needs them (D35) | CC | sonnet | L, 12-20 | R9 | a real peer's need |
 | S2-GATE | S2 exit gate | USER | sonnet | S, 3-5 | R13 | all |
 
 #### S2-DEPLOY: deploy on core
@@ -773,7 +777,7 @@ The same image runs with `A2A_ENV=live`, `A2A_DEPLOY_HOST=core`, `A2A_EXPOSURE_S
 - Goal: only if a remote peer needs it. [api 3.3.1][api] assigns the work to S2, but also says it is not worth doing before a peer needs it.
 - Scope: own status-event fan-out for `SendStreamingMessage` and `SubscribeToTask` driven by the service layer (SP5 D11 recorded the fit); `A2A_PUSH_ENABLED=1` with the Fernet key and the SSRF screen; keep-alive events well under 100 s for the tunnel (design, unverified).
 - Acceptance: card flags flip only when the operations work (S3-CARD test); push tests of S1-A2A rerun with the flag on; streaming survives a reverse-proxy buffering test.
-- Decision needed from the user: do it at S2 or defer (section 6). **[proposal]** defer until a peer asks.
+- Decided (D35, 2026-11-05): deferred until a real peer needs streaming or push. Cards declare `streaming: false` and `pushNotifications: false`. This stream stays optional and unscheduled; it is not in any wave.
 
 #### S2-GATE: S2 exit gate
 - Checklist:
@@ -888,6 +892,7 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
   - S2 exit still holding
   - **[proposal]** L1 recorded
   - `ss -ltn` on core shows no 8121 and stage `s2`
+  - GL-IMPORT, `admin-apply` and the GL-RETIRE code are built, fixture-tested and in FG's scope (D36): parser strictness, server re-validation, credential scan, idempotency, rollback, TTY deletion preconditions, and tolerance of post-freeze appended messages
 - **FG: the one final verification gate** for the server body of work, on **opus** (highest available tier; Fable is not in the subscription), per the user rule (CLAUDE.md "Claude Code subagent model rule"); verify `message.model` in the transcript before attributing it. A fresh-context adversarial review of the whole server against [AGENTS.md][agentsmd] Security invariants and api 9, with `jev_judge` on the diff when Jev is on (user rule). FG findings are closed before the go. Low-Quota Protocol: with Jev `on` and quota under 20%, ask the user before running it.
 - Then the user's explicit go; then the user creates the route (S3-CF).
 - Owner: USER signs off; CC prepares evidence. Passing the gate is the condition for the user to create the route; it is not the route.
@@ -905,28 +910,27 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
 - Acceptance: results in `docs/research/s3-exit-<date>.md` **[proposal]**; the user signs off S3. This node, not S3-CF or BP20, leads to the user's go-live declaration.
 
 ### 4.5 GL: go-live migration
-Starts only after the S3 exit gate and the user's declaration (D14). Antigravity may use the frozen channel for research until the freeze instant the user sets on go-live day. The source files live on alyx; the store lives on core ([gl 7][golive]).
+Decision 36 (2026-11-05) sets the timing. GL-IMPORT, and the GL-RETIRE code, are built during S2 and S3 against copies of the channel files, so they are ready when S3 exits. The real go-live steps still start only after the S3 exit gate and the user's declaration (D14): GL-REHEARSE, the user's go, GL-APPLY, GL-RETIRE. Antigravity may use the frozen channel for research until the freeze instant the user sets on go-live day. The source files live on alyx; the store lives on core ([gl 7][golive]).
 
 | ID | what | owner | tier | size, hours | risks | gates and branch points |
 | --- | --- | --- | --- | --- | --- | --- |
-| GL-IMPORT | importer and fixtures only: parser, plan, apply and verify code, rollback code | CC | sonnet | L, 16-24 | R4 | BP23 |
-| GL-REHEARSE | dress rehearsal on a scratch volume and runbook dry run | CC; USER approves | sonnet | M, 6-10 | none | GL-IMPORT |
-| GL-APPLY | the real import: freeze record, snapshot, apply, verify | USER with CC | sonnet; the FG-GL review on opus | S, 4-6 | R4 | FG-GL, the user's explicit go ([gl 2][golive]) |
-| GL-RETIRE | tar backup, typed deletion, watcher retirement | CC; USER on TTY | sonnet | M, 6-10 | none | GL-APPLY |
+| GL-IMPORT | importer and fixtures only: parser, plan, apply and verify code, rollback code; built during S2 and S3 against copies of the channel files (D36) | CC | sonnet | L, 16-24 | R4 | BP23; inside FG's scope |
+| GL-REHEARSE | dress rehearsal on a scratch volume and runbook dry run, after S3 exit | CC; USER approves | sonnet | M, 6-10 | none | GL-IMPORT, S3-EXIT |
+| GL-APPLY | the real import: freeze record, snapshot, apply, verify | USER with CC | sonnet | S, 4-6 | R4 | GL-REHEARSE, the user's explicit go ([gl 2][golive]) |
+| GL-RETIRE | tar backup, typed deletion, watcher retirement (code built with GL-IMPORT, run at go-live) | CC; USER on TTY | sonnet | M, 6-10 | none | GL-APPLY; inside FG's scope |
 
-Chain: GL-IMPORT, then GL-REHEARSE, then FG-GL, then GL-APPLY, then GL-RETIRE. The rehearsal runs before the real volume is written ([gl 2, 12][golive]).
+Chain: GL-IMPORT during S2 and S3 (before S3-GATE), then after S3 exit GL-REHEARSE, the user's go, GL-APPLY, GL-RETIRE. The rehearsal runs before the real volume is written ([gl 2, 12][golive]).
 
-**FG-GL (the final gate for the go-live body of work)** **[proposal]**: the importer writes to the production store and GL-RETIRE deletes the user's files, so this body of work gets its own single verification gate rather than being left to the server's FG (which closes at S3-GATE, before GL code exists).
-- Runs on opus (highest available tier), per the user rule, with `jev_judge` in parallel when Jev is available. With Jev `on` and quota under 20%, ask the user first.
-- Sits after GL-REHEARSE and before GL-APPLY.
-- Scope:
-  - parser strictness
-  - server re-validation of every record
-  - the credential scan
-  - idempotency
-  - rollback
-  - the TTY deletion preconditions of GL-RETIRE
-- Alternative if the user takes decision 14 (section 6 item 14) and the importer is built before S3-GATE: GL-IMPORT and GL-RETIRE go into FG's scope instead, and FG-GL is dropped. This plan stands on the first option until the user says otherwise.
+**No separate go-live gate (D36).** The earlier FG-GL proposal is removed. The importer writes to the production store and GL-RETIRE deletes the user's files, so the importer, `admin-apply` and the retirement code fall inside the scope of the one final gate, FG at S3-GATE (section 4.4), together with the server:
+- parser strictness
+- server re-validation of every record
+- the credential scan
+- idempotency
+- rollback
+- the TTY deletion preconditions of GL-RETIRE
+- tolerance of messages appended after the freeze by Antigravity's research use (D14 exception)
+
+The dry run is rerun at go-live on the live channel files, and its report is compared with the numbers re-measured then ([gl 10, 14][golive]); that is a runbook step, not a gate.
 
 #### GL-IMPORT: `a2a-coord import-channels`
 - Goal: a one-time, idempotent, reviewable importer for the two channel files (as `COMPLETED` tasks that never reach a session). This stream builds the importer and its fixtures only; it does not run against the real volume (that is GL-APPLY).
@@ -968,21 +972,23 @@ Chain: GL-IMPORT, then GL-REHEARSE, then FG-GL, then GL-APPLY, then GL-RETIRE. T
   - Verification reads back over HTTP and checks counts per context, per author and per conversation, every body hash, every task `COMPLETED` with `coord.origin == "import"`, and compares to the numbers re-measured at go-live (2026-11-04 baseline: 51 + 65 + 3 = 119 tasks, 116 without the archive region, [gl 10.2][golive]).
   - Wake canary: a parked listener on a throwaway handle sees no 200 during the apply; wake budget counters do not move.
   - Imported tasks are visible to `local-harness` keys only and are never listed by `a2a_inbox`.
-- Branch: BP23 (timestamps). Open points for the user are in section 6 (freeze instant, `ROLE_AGENT`, machine name, turns archive).
-- Timing **[proposal, needs the user's OK]**: [gl 1][golive] says the importer is written at go-live. Building and rehearsing it during S2 and S3 idle time would shorten the end-to-end schedule without touching any host; the real run still waits for the S3 exit.
+- Branch: BP23 (timestamps). Open points for the user are in section 6 (item 15: freeze instant, `ROLE_AGENT`, machine name, turns archive).
+- Timing (D36, decided): built during S2 and S3 against copies of the channel files, so it needs no host change and is ready at S3 exit; the real run still waits for the S3 exit and the user's go. Hot files (`app.py`, migrations) are shared with S3-LISTEN and S3-LIMITS, so it runs in its own worktree (section 5.5).
+- Tolerance (D14, D36): Antigravity may append research messages after the copies are taken. The parser treats late blocks like any other (same fence grammar), and fixtures include a file with blocks appended after the plan was made (the plan hash then no longer matches, so the dry run is rerun and a new plan taken).
 
 #### GL-REHEARSE: dress rehearsal
 - Goal: no surprise on go-live day.
 - Spec: [gl 12, 14][golive].
 - Deliverables: copy the two real files read-only into a scratch directory, run the full dry run and apply against a scratch volume, run the verify list, drop the volume; walk the runbook of [gl 14][golive] with the user; inspect mac and core for their own channel copies, watcher scripts and state files (only alyx-wsl has been inspected, [gl 15][golive] point 6).
 - Acceptance: dry-run numbers match the re-measured file counts; verify passes on the scratch store; the wake canary passes; the mac and core inspection result is written down.
-- Runs against a scratch volume only; nothing touches the real store (the real apply is GL-APPLY, after FG-GL).
+- Runs against a scratch volume only; nothing touches the real store (the real apply is GL-APPLY, after the user's go).
+- Runs after S3 exit, on fresh copies of the live channel files (so it includes whatever Antigravity appended since the copies GL-IMPORT was built against).
 
 #### GL-APPLY: the real import
 - Goal: the one real `--apply` on the production store, in the order [gl 14][golive] sets, with the rollback anchor taken first.
 - Spec: [gl 2, 13, 14][golive]; D7, D14, D15.
 - Owner: USER with CC (CC prepares commands and reads output; the user gives the go). Tier sonnet. Hours moved from GL-IMPORT so the GL roll-up total is unchanged.
-- Inputs: GL-REHEARSE passed, FG-GL findings closed, S3-EXIT signed off, the user's declaration of go-live, the user's open-point answers (section 6 item 15).
+- Inputs: GL-REHEARSE passed, FG findings (which cover the importer, D36) closed, S3-EXIT signed off, the user's declaration of go-live, the user's open-point answers (section 6 item 15).
 - Steps, in order:
   - The user records the freeze instant and the sha256 of both channel files in the run manifest.
   - Any running watcher is stopped ([gl 11][golive]).
@@ -1053,12 +1059,12 @@ Chain: GL-IMPORT, then GL-REHEARSE, then FG-GL, then GL-APPLY, then GL-RETIRE. T
 ### 5.1 What can run concurrently
 - S0: SP5 needs no user time; start it first and run it beside everything. Claude chain (SP1 then SP2C) and agy chain (SP2A, SP3, then SP4 in its own session) run in parallel with each other.
 - S1 after S1-SCAF: STORE, OBS and the TEST skeleton together; AUTH and STATE once the `api_keys` and `task_index` schema exist; then ADMIN, A2A and MCP in parallel; ID after the minimal `a2a_hello`; WAKE after ID; CLAUDE and AGY in parallel; INST, SEC and DOC close the stage. LT-SRV is not part of S1: it follows D13 (built after S1) and starts on S1 exit plus the user's go (W11).
-- S2 is sequential and USER-bound. In S3, CARD, PEER and LISTEN run in parallel after BP19, then FUZZ. GL-IMPORT is technically independent of S2 and S3 (timing proposal in GL-IMPORT).
+- S2 is sequential and USER-bound. In S3, CARD, PEER and LISTEN run in parallel after BP19, then FUZZ. GL-IMPORT runs during S2 and S3 (D36), in its own worktree beside them, and must finish before S3-GATE so FG covers it.
 
 ### 5.2 Critical path
 - S0: S0-SCAF to S0-SP1 to S0-SP2C to S0-RES, plus the passive overnight leg of SP1. SP5 (8-12 h) can run beside the whole chain and does not extend it unless it fails.
 - S1: S1-SCAF, S1-STORE, S1-STATE, S1-MCP, S1-ID, S1-WAKE, S1-CLAUDE, S1-INST, S1-DOC, S1-GATE (S1-DOC follows S1-INST in the DAG and S1-GATE needs it). Sum of the stream estimates on this chain: 98 to 152 h. Everything else fits beside it.
-- Whole project: S0, then S1 chain, then S2 (sequential, user-bound), then S3 (BP19, S3-LISTEN, S3-FUZZ, S3-GATE, route, S3-EXIT), then GL (GL-IMPORT, GL-REHEARSE, FG-GL, GL-APPLY, GL-RETIRE). User availability for TTY steps, Tailscale install, the route and the typed deletions is the main schedule risk, not agent hours.
+- Whole project: S0, then S1 chain, then S2 (sequential, user-bound), then S3 (BP19, S3-LISTEN, S3-FUZZ, S3-GATE, route, S3-EXIT), then GL (GL-REHEARSE, the user's go, GL-APPLY, GL-RETIRE). GL-IMPORT is built beside S2 and S3 (D36), so it adds nothing to the critical path unless it is still unfinished at S3-GATE; the S3 critical path now includes GL-IMPORT's finish as a precondition of S3-GATE. User availability for TTY steps, Tailscale install, the route and the typed deletions is the main schedule risk, not agent hours.
 
 ### 5.3 Suggested waves
 | wave | streams | who | notes |
@@ -1073,16 +1079,16 @@ Chain: GL-IMPORT, then GL-REHEARSE, then FG-GL, then GL-APPLY, then GL-RETIRE. T
 | W6 | S1-INST, S1-SEC (suite), S1-DOC; opus review of S1-SEC; then S1-GATE | sonnet subagents, opus reviewer; USER with CC and AGY for the gate | live sessions at the gate |
 | W7 | S2-DEPLOY, S2-TS, S2-ONBOARD, S2-WAKE, S2-GATE | USER on core and workstations; CC drafts | sequential |
 | W8 | after BP19: S3-LISTEN, S3-LIMITS, S3-CARD, S3-PEER; then S3-FUZZ | sonnet subagents; opus review of the fuzz | all on alyx or in a scratch container, never on core |
-| W9 | S3-GATE with FG; user go; S3-CF; S3-EXIT | FG on opus; USER | FG per the user rule |
-| W10 | GL-IMPORT (if not built earlier), GL-REHEARSE, FG-GL, GL-APPLY, GL-RETIRE | CC; FG-GL on opus; USER on TTY and for the apply go | |
+| W7b | GL-IMPORT (and the GL-RETIRE code), beside S2 and the S3 build, against copies of the channel files | one sonnet subagent in its own worktree | D36; must be done before S3-GATE |
+| W9 | S3-GATE with FG (server and importer together); user go; S3-CF; S3-EXIT | FG on opus; USER | FG per the user rule |
+| W10 | GL-REHEARSE, the user's go, GL-APPLY, GL-RETIRE | CC; USER on TTY and for the apply go | no separate gate (D36) |
 | W11 | LT-SRV and LT-ADP | CC in the cognitive-engine session for the adapter; USER go for status intake | on S1 exit and the user's go (D13) |
 
 ### 5.4 Claude Code subagents, Antigravity and the user
 - **Claude Code subagents (sonnet)**: one subagent per server stream, with a written brief first (stream section of this plan, files it owns, interface contract from S1-SCAF, acceptance tests, "do not touch files outside your scope"). Run at most three or four at once **[proposal]** so the orchestrator can review each diff. The orchestrator checks idle subagents before spawning, and reuses only subagents that were spawned on sonnet. Pass `model` explicitly on every Agent call.
 - **opus**: only S1-SEC review, S3-FUZZ review, LT-ADP leak and sbx review, and subtle debugging if SP5 D3 or S1-STORE busy errors survive the fallbacks. Run `jev_judge` in parallel with each when Jev is available. When unsure whether a task needs opus, ask the user (user rule).
 - **Final gates on opus** (highest available tier, per the user rule), one per body of work:
-  - FG at S3-GATE for the server.
-  - FG-GL before GL-APPLY for the go-live importer and retirement (section 4.5).
+  - FG at S3-GATE for the server and the go-live importer and retirement code together (D36; the separate FG-GL gate is removed, section 4.5).
   - With Jev `on` and quota under 20%, ask the user before any opus escalation (Low-Quota Protocol).
 - **Antigravity**: every agy-side spike and live check (S0-SP2A, S0-SP3, S0-SP4, the agy leg of S1-AGY and S1-GATE) runs in the user's own agy session. CC prepares files and reads logs; it never starts agy.
 - **User**: starts Claude test sessions and presses Esc; runs agy sessions; every typed step on a real TTY (`key create`, `review`, `retire-channels`); installs Tailscale; creates the route; gives each go.
@@ -1095,29 +1101,34 @@ Chain: GL-IMPORT, then GL-REHEARSE, then FG-GL, then GL-APPLY, then GL-RETIRE. T
 - Branch naming **[proposal]**: topic branches `feat/coordination-<stream>` off `feat/coordination`, merged by the user's word. [AGENTS.md][agentsmd] says no commits or branch switches unless the user asks, so this needs the user's go at S1.
 
 ## 6. Decisions still needed from the user
-Nothing in the plan is waiting on a decision today ([plan 7][plan]). The items below are the ones this plan found, with when each starts to block. The default in the last column is a **[proposal]**, never applied without the user.
+Nothing in the plan is waiting on a decision today ([plan 7][plan]). Decisions 25 to 36 (2026-11-05) closed the items numbered 2, 4, 5, 6, 7, 8, 9, 10, 11 and 14 of the earlier list (summary below the table). The items that remain are later decisions or defaults, with when each starts to block. The default in the last column is a **[proposal]**, never applied without the user. The numbers are kept from the earlier list so references stay valid.
 
 | # | decision | needed by | blocks | source | default if the user is silent |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Lift planning-only (the go for S1) | after S0-RES | S1-SCAF onwards | D1, [spk 11][spikes] | stay planning-only |
-| 2 | Host changes each spike needs (hook entries, MCP config, the user-level `~/.agents/plugins/` test in A8) | per spike, before S0 | S0 | spk 1 | run only spikes that need no host change |
 | 3 | S3 listener: dedicated loopback port 8121 or Host-based fallback (BP19) | before S3-LISTEN starts | S3-LISTEN, S3-LIMITS, S3-CF | plan 7 item 1, api 8.4.1 | Host-based design of api 8.4.1 stands (tunnel to 8120); 8121 only on the user's explicit choice. Note: 8121 is the recommendation |
-| 4 | Card routing falls back from `listening` to `active` (needed because agy never listens) | before S1-STATE | S1-STATE routing | api 12.2 point 17 | accept the fallback |
-| 5 | Unseen-conversation registration: register an unknown agy `conversation_id` on its first `tools/call` | before S1-ID (mandatory if BP11 shows no `SessionStart` on `/clear`) | S1-ID | api 5.4.1 | accept |
-| 6 | Card discovery with several cards: `?agent=` plus a `300` for the unqualified request | before S1-A2A | S1-A2A | api 12.2 point 3 | accept; give strict clients the `?agent=` URL |
-| 7 | Public card unauthenticated (A2A convention) versus key-gated | before S1-A2A | S1-A2A, S3-CARD | api 12.2 point 4 | unauthenticated |
-| 8 | `A2A-Version` strictness: missing header is unsupported | before S1-A2A | S1-A2A | api 12.2 point 14 | strict |
-| 9 | Installer detail: how `A2A_API_KEY` reaches the Claude environment (a 0600 file sourced by one chezmoi-managed shell line) | before S1-INST; depends on BP9 | S1-INST | api 11.0 | the design in api 11.0 |
-| 10 | **agy install targets** (USER decision, three parts):<br>- where the hook entries go: per-workspace `.agents/hooks.json` (api 11.2 sketch) or user-level `~/.gemini/config/hooks.json` (exists, unmanaged, verified)<br>- where the `AGENTS.md` rule goes. On alyx `~/.gemini/config/AGENTS.md` is a symlink into the git-tracked `doppelganger/.agents/user-AGENTS.md`, shared with Claude Code's `~/.claude/CLAUDE.md` (verified); writing there changes Claude's global instructions and commit-tracks the change in another repository<br>- where the scripts live: api 11.2 sketches `~/.agents/bin/...`, but A8 has not shown `~/.agents` is safe, and api 1.4 lists only `bin/a2a-register` and `bin/a2a-listen` | before S1-AGY and S1-INST (after A8) | S1-AGY, S1-INST | api 11.2, 11.0, spk A8, D16 | no default for the hook entries or the `AGENTS.md` rule: S1-AGY and S1-INST wait for the answer. Scripts default (**[proposal]**) to the plugin `bin/` with hooks referencing them there |
-| 11 | S2 streaming and push: build at S2 or defer until a peer needs it | before S2-STREAM | S2-STREAM only | api 3.3.1 | defer |
 | 12 | Which test peer completes the S3 exit evidence (a script on another host, a second machine) | before S3-EXIT | S3-EXIT | plan 5 S3 | a script run from a host that is not core or a workstation |
 | 13 | Status extras: `a2a_runs` tool (drop or keep); `--allow-from` versus the tailnet binding for `status-client` keys; whether the binding applies to `status-client` keys; Q1 to Q11 for cognitive-engine | before LT-SRV and LT-ADP | LT | api 12.2 point 10, st 2, 13, 14 | keep `a2a_runs`; no `--allow-from`; binding not applied until decided |
-| 14 | Build GL-IMPORT early (during S2 and S3) instead of at go-live. If yes, the importer and GL-RETIRE fall inside FG's scope instead of a separate FG-GL (section 4.5) | before GL-IMPORT | schedule only | gl 1 | after S3 exit, with FG-GL before GL-APPLY |
-| 15 | Go-live open points: freeze instant (set on go-live day), `ROLE_AGENT` versus `ROLE_USER` for imported messages, machine name in handles (`alyx` versus host `alyx-wsl`), turns archive left in the tar, backup retention, the three `handoff/` prompts | go-live day (role and machine name before GL-IMPORT) | GL | gl 15 | `ROLE_AGENT`, `alyx`, archive left, user keeps the tar |
+| 15 | Go-live open points: freeze instant (set on go-live day), `ROLE_AGENT` versus `ROLE_USER` for imported messages, machine name in handles (`alyx` versus host `alyx-wsl`), turns archive left in the tar, backup retention, the three `handoff/` prompts | go-live day (role and machine name before GL-IMPORT, which now starts during S2, D36) | GL | gl 15 | `ROLE_AGENT`, `alyx`, archive left, user keeps the tar |
 | 16 | Postgres from S1 if SP5 shows SQLite is unfit | only if BP15 reaches that fallback | S1-STORE | spk 8, D4 | stay on SQLite |
 | 17 | Spec amendments owed after spikes (api 7.5 hook shape, api 1.6 start-up rule for the 8121 variant, spk results naming) | after the owning spike or decision | docs only | this plan | list them in S0-RES and S3-GATE, apply with the user's go |
 | 18 | Remaining design defaults in api 1.5 (TTLs, quotas, 15 min `active` window) | tuned after S1-GATE | none | api 12.2 point 7 | keep the starting values |
 | 19 | Remaining design questions: peer handles for remote peers, handle spoofing within one key (bind code), extension URI | when a need appears | none | api 12.2 points 11, 12, 13 | leave as specified |
+
+Closed by decisions 25 to 36 (2026-11-05), with where each landed:
+
+| earlier item | closed by | resolution | where |
+| --- | --- | --- | --- |
+| 2 host changes each spike needs | D25 | "borrow and put back": back up, harness CLI, project scope first, restore and verify, `chezmoi diff` clean, agy-side changes only by agy or the user, fresh sessions | [spk 1][spikes] |
+| 4 card routing fallback | D29 | parked listener, then newest `active` session (15 min), then card-level queue after the offer TTL; first `a2a_inbox` caller claims | [api 5.2][api] |
+| 5 unseen-conversation registration | D30 | accepted: auto-register `antigravity@<host>/<first 8 chars>` on first `tools/call` of a `local-harness` key, grouped by `root_conversation_id`, later name is an alias, logged, never for other scopes | [api 5.4.1][api] |
+| 6 card discovery | D31 | a path per card (`/agents/<card>/.well-known/agent-card.json`), root front-desk card; `?agent=` and `300` dropped | [api 3.2][api] |
+| 7 public or key-gated card | D32 | front-desk card public and generic; member cards, listing, extended cards need any valid API key | [api 3.2][api] |
+| 8 `A2A-Version` strictness | D33 | strict; missing or `0.3` returns `VersionNotSupported` with a message to send `1.0` | [api 3.3][api] |
+| 9 Claude key delivery | D34 | `~/.config/a2a-coord/api-key` (0600, unmanaged) as the single source, one non-secret chezmoi shell line exports `A2A_API_KEY`, `~/.claude.json` literal fallback if SP2 C9 shows no header expansion; `install --rotate-key` | [api 11.0][api] |
+| 10 agy install targets | D26, D27, D28 | hooks in user-level `~/.gemini/config/hooks.json` with an opt-out marker; inbox instruction from `SessionStart` `injectSteps`, never an `AGENTS.md`; scripts copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink | [api 11.0, 11.2][api] |
+| 11 streaming and push | D35 | deferred until a real peer needs them; flags stay false; S2-STREAM unscheduled | [api 3.3.1][api] |
+| 14 build GL-IMPORT early | D36 | built during S2 and S3; one final gate (FG) for server and importer; separate FG-GL removed | section 4.5 |
 
 ## 7. Traceability
 ### 7.1 Decisions to workstreams
@@ -1147,6 +1158,18 @@ Nothing in the plan is waiting on a decision today ([plan 7][plan]). The items b
 | D22 60 s `SendMessage` cap | S1-A2A, S3-CF (L3), S3-CARD |
 | D23 production on core, portable image | S1-SCAF, S2-DEPLOY, S2-TS, S2-WAKE, LT-ADP |
 | D24 API keys and client storage | S1-AUTH, S1-ADMIN, S1-INST, S0-SP2C (C9), S0-SP2A (A8) |
+| D25 spike host changes, "borrow and put back" | all S0 spikes (ground rule, [spk 1][spikes]) |
+| D26 agy hooks in user-level `~/.gemini/config/hooks.json` | S1-AGY, S1-INST, S0-SP3 (P8) |
+| D27 agy inbox via `SessionStart` `injectSteps`, no `AGENTS.md` | S1-AGY, S1-INST, S0-SP2A (A3) |
+| D28 hook scripts under `~/.local/share/a2a-coord/<version>/bin/` | S1-INST, S1-CLAUDE, S1-AGY |
+| D29 card routing order | S1-STATE |
+| D30 unseen-conversation registration | S1-ID |
+| D31 card discovery per path, front-desk card | S1-A2A, S3-CARD |
+| D32 card access (front desk public, members need a key) | S1-A2A, S1-AUTH, S3-CARD |
+| D33 `A2A-Version` strict | S1-A2A, S1-TEST (TCK) |
+| D34 Claude key delivery | S1-INST, S1-CLAUDE, S0-SP2C (C9) |
+| D35 streaming and push deferred | S1-A2A (flags false), S2-STREAM (unscheduled), S3-CARD |
+| D36 go-live importer built during S2 and S3, one FG | GL-IMPORT, S3-GATE (FG), GL-REHEARSE, GL-APPLY, GL-RETIRE |
 
 ### 7.2 Spikes and later checks to the workstreams they gate
 | spike or check | gates | if it fails |
@@ -1173,12 +1196,13 @@ Hours are focused work for the owner named in the workstream, including its own 
 | S1 | SCAF 6-10, STORE 16-24, AUTH 10-16, ADMIN 12-18, STATE 14-22, A2A 16-24, MCP 12-18, ID 8-12, WAKE 12-18, CLAUDE 6-10, AGY 6-10, INST 12-18, SEC 10-16, OBS 4-6, TEST 14-22, DOC 6-10, GATE 6-10 | 170-264 | opus review time beyond the hours shown in S1-SEC |
 | S2 | DEPLOY 6-10, TS 6-10, ONBOARD 4-8, WAKE 4-8, GATE 3-5 | 23-41 | S2-STREAM (12-20, optional), the user's Tailscale install time |
 | S3 | LISTEN 8-14, LIMITS 8-12, CARD 3-5, PEER 8-12, FUZZ 12-20, CF 4-8, GATE 6-10, EXIT 2-4 | 51-85 | building the unchosen BP19 variant |
-| GL | IMPORT 16-24, REHEARSE 6-10, APPLY 4-6, RETIRE 6-10 | 32-50 | FG-GL review time |
+| GL | IMPORT 16-24 (built during S2 and S3, D36), REHEARSE 6-10, APPLY 4-6, RETIRE 6-10 | 32-50 | the importer's share of the FG review time (the separate FG-GL review is removed) |
 | LT | SRV 8-12, ADP 10-16 | 18-28 | the cognitive-engine session's own review time |
 | total | all of the above (using the rounded S0 figure) | 325-515 | |
 
 Assumptions behind the numbers:
 
+- Decision 36 moves GL-IMPORT's hours into the S2 and S3 window and removes the separate FG-GL review; the GL row total and the project total are unchanged (the FG-GL review time was never counted).
 - Estimates are **[proposal]**, made from the spec sizes and the spike estimates in [spikes.md][spikes] (SP1 about 4 h active, SP2 about 1 day plus 2 h, SP3 about 1.5 h, SP4 about 2 h, SP5 1 to 1.5 days, SP6 about 2 h); they were not measured.
 - Unit tests ship inside each stream; S1-TEST covers only the cross-cutting layers (TCK, e2e, scripted peers, CI).
 - Each S1 stream is done by one sonnet subagent with a written brief and an orchestrator diff review; review time is inside the range.

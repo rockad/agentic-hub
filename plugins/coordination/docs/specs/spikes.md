@@ -18,7 +18,15 @@ Evidence behind this plan:
 Rules for every spike:
 
 - **Throwaway code only inside the spike.** It lives in a scratch directory outside every git repo, `~/scratch/a2a-spikes/<spike-id>/`. Nothing from it is committed to `main` or to `feat/coordination`. Only the written result is kept.
-- **No change to the user's real configuration.** Hooks go in a scratch project's own settings (`.claude/settings.local.json` for Claude Code, `.agents/hooks.json` for agy in a scratch workspace). The user-level files `~/.claude/settings.json`, `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json` are not touched. If agy turns out to need a user-level MCP entry for a spike, the user adds it and removes it, and that is stated in the result.
+- **Host changes: "borrow and put back" (decision 25, 2026-11-05).** A spike may change host configuration, under these rules:
+  - Back up every file the spike touches before the first edit.
+  - Add test entries through the harness's own CLI (`claude mcp add`, `agy mcp add`), not by hand-editing JSON, wherever the CLI does the job.
+  - Prefer project-scoped configuration: Claude `.claude/settings.local.json` in a scratch directory, an agy scratch workspace.
+  - Write user-level files (`~/.claude/settings.json`, `~/.gemini/config/hooks.json`, `~/.gemini/config/mcp_config.json`) only when unavoidable, and say so in the result.
+  - Remove the entries afterwards and verify the file matches the backup byte for byte; for chezmoi-managed files `chezmoi diff` must also be clean.
+  - agy-side changes are made only by agy itself or the user. A Claude Code helper never writes agy's files and never starts agy.
+  - Spike sessions are fresh sessions, started after the configuration edits (a running session does not pick up changed hooks or MCP entries reliably).
+  - The result file lists each touched file, the backup location, and the restore check.
 - **Spike port `18120`, loopback only**, so a spike never collides with the future `:8120`, with 8100 to 8110, or with 11434. The stub accepts one fixed throwaway API key (`spike-token`) and never a real credential.
 - **Nothing launches, drives or wraps agy** (DDR-003). Every agy spike is run by the user in their own interactive agy session, or by agy itself inside that session at the user's request. No `agy -p`, no PTY, no tmux, no `agentapi`. A Claude Code session may prepare files and read logs for an agy spike; it never starts agy.
 - **Claude Code test sessions are started by the user** in a terminal tab, interactive CLI only. No `claude -p`, no PTY driver. A helper session may run the stub and tail its logs.
@@ -193,11 +201,11 @@ Uses the shared stub and the SP1 scratch project, with the stub registered as an
 - **C6, two sessions.** Two concurrent Claude sessions with different handles, then with the same requested name. Record that ids and bindings do not cross, and what the stub sees on a name collision.
 - **C7, hook order (HOOK-ORDER).** Configure two `SessionStart` hooks, the registration hook (`POST /sessions`, with a deliberate 2 s delay in variant B) and the `asyncRewake` listener. Over 10 session starts, log the start and end timestamps of each from the stub. Record whether they run in parallel or in listed order, and how often the listener's first `/wake/listen` reaches the stub before the registration does (this decides whether the 15 s retry on `410 unregistered` in server-api.md 7.1 is needed).
 - **C8, MCP tool timeout (MCP-TOOL-TIMEOUT).** The model calls the stub's blocking `a2a_wait(seconds)` with 30, 120 and 240 s. Record for each whether the result arrives, whether progress or an error is shown, whether the connection or the session survives a timeout, and the effective limit if one is hit. Also check whether an `MCP_TOOL_TIMEOUT`-style setting exists in the installed version's docs.
-- **C9, header environment expansion (decision 24).** Register the stub with `headers: {"Authorization": "Bearer ${A2A_API_KEY}"}` in the scratch project's MCP config and export `A2A_API_KEY=spike-token` in the environment of the Claude Code session. Record whether the stub receives `Authorization: Bearer spike-token` (expanded) or the literal `Bearer ${A2A_API_KEY}`, on every request (`initialize`, `tools/list`, `tools/call`, `DELETE`), and what Claude Code shows on a 401. Repeat with the variable unset to record the failure mode. This is **unverified** today. If expansion does not work, a key cannot be kept in the environment for the MCP entry; the fallback is a user-chosen mechanism (a wrapper or a headers helper), never a literal key in a chezmoi-managed file.
+- **C9, header environment expansion (decision 24).** Register the stub with `headers: {"Authorization": "Bearer ${A2A_API_KEY}"}` in the scratch project's MCP config and export `A2A_API_KEY=spike-token` in the environment of the Claude Code session. Record whether the stub receives `Authorization: Bearer spike-token` (expanded) or the literal `Bearer ${A2A_API_KEY}`, on every request (`initialize`, `tools/list`, `tools/call`, `DELETE`), and what Claude Code shows on a 401. Repeat with the variable unset to record the failure mode. This is **unverified** today. If expansion does not work, the fallback is decided (decision 34): the installer writes the literal key into the user-scope MCP config (`~/.claude.json`, unmanaged), never into a chezmoi-managed file. Also record whether a GUI-launched Claude sees `A2A_API_KEY` (the shell-rc export may not reach it; hooks are unaffected because they read `~/.config/a2a-coord/api-key` directly).
 
 ### Method, agy half (run in the user's own session)
 
-The user opens their own interactive agy in a scratch trusted workspace. Files are prepared by a helper session beforehand: a scratch `.agents/hooks.json` (the CLI reads it, verified in t1b section 4) and the stub MCP entry. agy's own MCP config location for a workspace-scoped entry is not in the evidence (see open points); if only the user-level `mcp_config.json` works, the user adds the entry for the test and removes it after.
+The user opens their own interactive agy in a scratch trusted workspace. Files are prepared by a helper session beforehand: a scratch `.agents/hooks.json` (the CLI reads it, verified in t1b section 4) and the stub MCP entry, added through `agy mcp add` by agy or the user (decision 25). agy's own MCP config location for a workspace-scoped entry is not in the evidence (see open points); if only the user-level `mcp_config.json` works, the user (or agy) adds the entry for the test, backs the file up first, and restores it afterwards.
 
 - **A1, session id.** After agy calls any stub tool, read the stub log. Record whether an `Mcp-Session-Id` is issued and echoed back, how many MCP connections agy opens (per process, per conversation, per call), `clientInfo`, and whether any `_meta` or header carries the conversation id.
   - **Fully answered for agy, 2026-11-04** [verified on the wire] ([A6 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md) sections 5 and 6, and [A4 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md)):
@@ -277,10 +285,10 @@ Record, with a stated fallback if negative (they do not block S1 by failing, but
 
 - Handle name not available from the harness: use `<card>/<first 8 chars of the session id>` and let `a2a_hello(handle, name=...)` set a readable alias.
 - `Mcp-Session-Id` not stable or not sent (agy): carry the handle explicitly in every write tool (`as_handle`), validated server-side against `/sessions`, and keep the hook-injected handle in context. Read tools stay unbound.
-- Injected handle not seen by the model: put the handle in the always-loaded `AGENTS.md` rule instead (a rule that says "call `a2a_hello`; your handle is returned by the `/sessions` registration, read it from the error text").
+- Injected handle not seen by the model: the handle and the "check a2a_inbox now" line are the `SessionStart` `injectSteps` content (decision 27); no `AGENTS.md` is ever written. If injection does not reach the model, the server's unbound-call error carries the instruction ("call `a2a_hello`") and agy binds by `conversation_id` anyway (server-api.md 5.4.1).
 - A6 fails (agy cannot send a custom `Authorization` header): no safe in-plan fallback. Options for the user:
   - a separate loopback-only MCP shim that adds the header (it does not launch or wrap agy, so DDR-003 is untouched), evaluated as a candidate
-  - agy gets no `/mcp` and relies on the hooks and the `AGENTS.md` rule alone
+  - agy gets no `/mcp` and relies on the hooks alone
 
   Either option changes decision 9 or 11 and goes back to the user.
 - C7 shows hooks run in order, registration first: drop the 410 retry from the listener. If parallel: keep it.
@@ -317,6 +325,7 @@ Run in the same user-owned agy session and scratch workspace as SP2-agy, after S
   Record for each: does the model call still happen, does the user see an error, is the turn blocked.
 - **P6, timeout setting.** Confirm the 30 s default by running a 35 s sleep once with no `timeout` set. Record what happens.
 - **P7, stub text.** Check that the wake wording is understood and not mistaken for an instruction from the user. Record the verbatim model reply.
+- **P8, user-level hooks file in all workspaces (decision 26).** The shipped agy hook entries live in the user-level `~/.gemini/config/hooks.json` (exists, not chezmoi-managed, verified), not in per-workspace `.agents/hooks.json`. Under "borrow and put back" (decision 25), back that file up, add the test `SessionStart` and `PreInvocation` entries, and start fresh agy sessions in at least three unrelated workspaces, one of them untrusted. Record whether the hooks run in each (the A5 trust gate may apply to workspace hooks only), and whether a workspace opt-out marker is honoured: the hook script checks for `.a2a-optout` in the workspace root and exits at once and silently [proposal for the marker name]. Also record that an unreachable server makes the hook exit fast (within the P5 timings) and print nothing. Restore the file and verify it matches the backup. agy edits are made by agy or the user.
 
 ### Pass and fail
 
@@ -348,7 +357,7 @@ About 1.5 h.
 
 - `ephemeralMessage` not seen: try `userMessage` or `systemMessage` types; if none reach the model, drop the hook.
 - Hook fires on every tool call and cost is real: dedupe with the state file, or throttle to one server call per 10 s.
-- A failure mode blocks the turn and cannot be avoided: do not ship the hook; agy gets the `AGENTS.md` rule to check the inbox at session start, the `a2a_inbox` tool and `a2a_wait`. The asymmetry grows but nothing breaks.
+- A failure mode blocks the turn and cannot be avoided: do not ship the `PreInvocation` hook; agy keeps the `SessionStart` `injectSteps` inbox instruction (decision 27, no `AGENTS.md`), the `a2a_inbox` tool and `a2a_wait`. The asymmetry grows but nothing breaks.
 
 ## 7. SP4: agy held `Stop` park (spike only, never shipped without a user decision)
 
@@ -587,7 +596,7 @@ What a failure does:
 - SP2 failure for one harness reopens decision 6 for that harness only. Card-level addressing remains.
 - SP2 A6 failure (agy cannot send a bearer header) stops S1 until the user decides between decisions 9 and 11 for agy.
 - SP1 T11 failure falls back to a command hook for `UserPromptSubmit`. With that fallback recorded in the spec it counts as passed ("failed with fallback"), so it does not block S1.
-- SP3 failure removes the agy hook from the plan. It does not block S1 (the `AGENTS.md` rule, `a2a_inbox` and `a2a_wait` remain).
+- SP3 failure removes the agy hook from the plan. It does not block S1 (the `SessionStart` `injectSteps` instruction, `a2a_inbox` and `a2a_wait` remain).
 - SP5 failure picks the listed fallback. Moving the starting engine to Postgres needs the user's confirmation.
 
 What the gate does not cover (these are gates of later stages, not S1):

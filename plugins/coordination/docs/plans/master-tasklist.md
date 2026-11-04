@@ -132,8 +132,10 @@ Roadmap and gates: [`consolidated-bridge-v2-plan.md`](file:///home/rockad/projec
 
 - [ ] **S0 Spikes** ([`spikes.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md)):
   - [ ] Claude Code `asyncRewake` wake with the `sh`+`curl` listener (Claude Code >= 2.1.290, reported).
-  - [ ] Handle binding: `SessionStart` `POST /sessions`, context injection, `a2a_hello(handle)` (unverified).
-  - [ ] agy: `url` MCP entry (`serverUrl` is the accepted legacy key), `SessionStart` and `PreInvocation` `injectSteps`.
+  - [ ] Handle binding, Claude Code half: `SessionStart` `POST /sessions`, context injection, `a2a_hello(handle)` (unverified, SP2 C-half, including C9 header env expansion).
+  - [x] Handle binding, agy half (2026-11-04): SP2 A1 and A4 identity checks PASS, verified on the wire ([A4 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md)). Binds to `_meta["antigravity.google/conversation_id"]`; `Mcp-Session-Id` is per process.
+  - [x] SP2 A6, agy `Authorization` header (2026-11-04): PASS, verified on the wire; env-var interpolation verified unsupported ([A6 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md)).
+  - [ ] agy: still open: SP2 A8 (plugin config location), A2 (`injectSteps`), A3 (`SessionStart` on resume and `/clear`), the A4 10-session compliance count, and SP3 (`PreInvocation`).
   - [ ] agy held-`Stop` park (spike only, not shipped).
   - [ ] a2a-python `DatabaseTaskStore` on SQLite with WAL and `busy_timeout`; A2A and `/mcp` in one process.
   - [ ] Record results and the go or no-go on binding and wake in docs/research/spike-results-<date>.md, linked here.

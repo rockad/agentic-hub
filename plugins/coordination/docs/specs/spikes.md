@@ -200,13 +200,21 @@ Uses the shared stub and the SP1 scratch project, with the stub registered as an
 The user opens their own interactive agy in a scratch trusted workspace. Files are prepared by a helper session beforehand: a scratch `.agents/hooks.json` (the CLI reads it, verified in t1b section 4) and the stub MCP entry. agy's own MCP config location for a workspace-scoped entry is not in the evidence (see open points); if only the user-level `mcp_config.json` works, the user adds the entry for the test and removes it after.
 
 - **A1, session id.** After agy calls any stub tool, read the stub log. Record whether an `Mcp-Session-Id` is issued and echoed back, how many MCP connections agy opens (per process, per conversation, per call), `clientInfo`, and whether any `_meta` or header carries the conversation id.
-  - **Answered for presence, 2026-11-04** (A6 run and follow-up, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md), sections 5.2 and 6): `params._meta["antigravity.google/conversation_id"]` was present on 3 of 3 `tools/call` requests, with `antigravity.google/root_conversation_id` and `antigravity.google/artifacts_dir`, and absent on `tools/list` and the notifications [verified on the wire]. `Mcp-Session-Id` is process-scoped by the Language Server architecture (one client session per process) [reported by Antigravity; not shown by a two-conversation wire comparison].
-  - Still open, moved to A4: per-conversation distinctness (two conversations in one process; the earlier "parallel background invocation" had its own `Mcp-Session-Id` equal to its own `conversation_id`, which looks like a test artifact or a separate process), stability across an agy restart and resume (partly verified: same conversation across turns and a daemon restart only), and whether a background or sub-invocation's `conversation_id` differs from its `root_conversation_id`. Consequence for binding: server-api.md 5.4.1.
+  - **Fully answered for agy, 2026-11-04** [verified on the wire] ([A6 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md) sections 5 and 6, and [A4 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md)):
+    - `params._meta["antigravity.google/conversation_id"]` is present on `tools/call` (3 of 3 in the A6 run, every call in the A4 run), with `antigravity.google/root_conversation_id` and `antigravity.google/artifacts_dir`, and absent on `tools/list` and the notifications.
+    - `Mcp-Session-Id` is process-scoped: one agy process shares one across conversations (A4 T1), separate processes get separate ones (T2), and a restart and resume gets a new one (T3).
+    - Consequence for binding: server-api.md 5.4.1.
 - **A2, injectSteps.** A `SessionStart` hook logs its stdin (`conversationId`, `workspacePaths` and others) and returns `injectSteps` with the handle and the `a2a_hello` instruction. Try each item type that is documented (`systemMessage`, `userMessage`, `ephemeralMessage`). Record which the model sees, and whether it is still visible five turns later.
 - **A3, resume.** Quit and resume the same conversation. Record whether `SessionStart` fires again and whether the handle is still in context.
 - **A4, compliance and multi-conversation.** Same 10-session count as C5. Open a second conversation in the same agy process if the product allows it, and record whether it shares the MCP connection (which would make binding per process, not per conversation). Two follow-up checks moved here from the A6 run (its "parallel background invocation" is not a demonstrated second conversation in one process, [results section 6](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md)):
   - Distinctness: with two conversations in the same agy process, call a tool in each and compare `Mcp-Session-Id` and `_meta["antigravity.google/conversation_id"]` (and `root_conversation_id`) on each `tools/call`. Also start a background or sub-invocation and record whether its `conversation_id` differs from its `root_conversation_id`.
   - Resume: restart agy, resume one conversation, call a tool, and compare its `conversation_id` with the one before the restart.
+  - **Result (2026-11-04), identity part: PASS [verified on the wire]** per Antigravity's run, [`spike-results-2026-11-04-sp2-a4.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md), reviewed by Claude Code (section 5 there):
+    - T1: one agy process shares one `Mcp-Session-Id` across conversations (`/clear` starts a new conversation in the same process), while `conversation_id` differs.
+    - T2: separate processes get separate `Mcp-Session-Id` and `conversation_id` values.
+    - T3: after a full exit (`DELETE /mcp` seen) and `agy --conversation <id>` resume, `conversation_id` and `root_conversation_id` are the same, with a new `Mcp-Session-Id` and a new PID. Caveat: the pre-restart row came from a subagent call; stability still holds because the post-resume calls carry exactly the resumed id.
+    - T4: subagent calls carry their own `conversation_id`, plus `root_conversation_id` and `parent_conversation_id` equal to the parent's.
+  - Not covered by that run: the 10-session hook-compliance count (whether the model follows the injected `a2a_hello` instruction), which this step also asks for. It stays open, with A2.
 - **A5, trust gate.** Confirm the hook runs only in the trusted scratch workspace (reported by zb-ss), and record what happens in an untrusted one.
 - **A6, Authorization header.** Evidence gathered 2026-11-04 (Claude Code, read-only):
   - verified: agy 1.5.0 `agy mcp add --help` documents `--header "Authorization: Bearer TOKEN"` (repeatable `-H/--header`) for http servers
@@ -233,7 +241,7 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
 Must pass (gate):
 
 - Claude Code: C1 and C2 pass (handle arrives in context; one stable `Mcp-Session-Id` per session across at least 5 calls). C3 either keeps the binding across `/compact` and resume, or shows a clean way to re-bind (the unbound-call error). C5: at least 8 of 10 bind unprompted and 10 of 10 bind after the error message.
-- agy: A1 shows a stable per-connection id, or a documented fallback is chosen (below). A2 shows at least one injectSteps type reaches the model and the model calls `a2a_hello`. A4: at least 8 of 10 bind after the injected instruction or the error message.
+- agy: A1 shows a stable per-conversation id (met 2026-11-04: `_meta["antigravity.google/conversation_id"]`, verified on the wire; `Mcp-Session-Id` is per process and is not the key). A2 shows at least one injectSteps type reaches the model and the model calls `a2a_hello`. A4: at least 8 of 10 bind after the injected instruction or the error message.
 - agy A6: agy sends the configured `Authorization: Bearer` header on every `/mcp` request, and a request without it is refused with 401. This is a hard gate: if it fails, decision 9 (agy uses MCP at `:8120/mcp`) and decision 11 (loopback still needs an API key) cannot both hold, and S1 does not start until the user decides.
 - Binding is unambiguous: two concurrent sessions never share a binding (C6).
 - C7: the result states whether the two `SessionStart` hooks run in parallel or in order, so the listener retry rule is either kept or removed on evidence.
@@ -245,7 +253,7 @@ Record, with a stated fallback if negative (they do not block S1 by failing, but
 
 - C9: whether Claude Code expands `${A2A_API_KEY}` in MCP header values.
 - A8: whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and the `~/.agents` collision check.
-- A4 follow-ups (distinctness of `conversation_id` across two conversations in one agy process, and stability across an agy restart and resume); the binding by `conversation_id` depends on them.
+- A4 identity checks are done (verified 2026-11-04): distinctness, resume stability and sub-invocation ids. Only the A4 10-session hook-compliance count remains open.
 
 ### Record
 

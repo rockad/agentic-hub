@@ -1,6 +1,6 @@
 # coordination
 
-An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side coding-agent sessions exchange tasks. Today that means Claude Code and Google Antigravity (`agy`) on one machine. Later it means remote agents connecting over HTTPS.
+An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side coding-agent sessions exchange tasks. That means Claude Code and Google Antigravity (`agy`) on the user's workstations (alyx, mac), later also remote agents connecting over HTTPS. It is a portable image; production runs on `core`, which is always on, so tasks wait there while the workstations are shut down.
 
 ## Status
 
@@ -9,8 +9,8 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 - Branch: `feat/coordination` in the `agentic-hub` repository.
 - Decisions of 2026-11-04 are recorded in the plans under [`docs/plans/`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/). Start with the consolidated plan.
   - 13 binding decisions from the `/clarify` session.
-  - 9 more (decisions 14 to 22) from the `/cplain` session: go-live after S3, admin access inside the container, one harness installer through chezmoi, per-machine tokens with a Tailscale identity check, per-peer remote tokens, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, and a 60 s cap on blocking `SendMessage`.
-  - Nothing is waiting on a user decision except the S3 hostname confirmation and spike outcomes (plan section 7).
+  - 11 more (decisions 14 to 24) from later the same day: go-live after S3, admin access inside the container, one harness installer, per-machine API keys with a Tailscale identity check, per-peer remote keys, human-only quarantine release, the Cloudflare Tunnel on core as the public front door, research clones deleted, a 60 s cap on blocking `SendMessage`, production on core (a portable image; dev and spikes on alyx), and service-issued API keys that never enter chezmoi-managed files.
+  - Nothing is waiting on a user decision. What remains is spike outcomes and one user action: a Cloudflare Access deny-all (or service-token-only) policy on `a2a.bigrockad.com` before the service ever runs on core's port 8120, because the tunnel route already exists (plan section 7, Risk 13).
 
 ## What it is
 
@@ -28,7 +28,7 @@ One server process, one SQLite database, several doors.
 ## Architecture
 
 ```
-                         host: alyx (S1: 127.0.0.1 only)
+            host: alyx for S1 dev (127.0.0.1 only); core in production (S2, S3)
 
   +-----------------------+                         +-----------------------------+
   | Claude Code session   |   MCP /mcp  ----------> |                             |
@@ -48,8 +48,9 @@ One server process, one SQLite database, several doors.
   |  off by default)      |                         |   volume a2a-data -> /data  |
   +-----------------------+                         +--------------+--------------+
                                                                    |
-        S2: tailnet (tailscale serve): alyx, mac, core             |  /a2a/v1 only
-        S3: public HTTPS via Cloudflare Tunnel on core ------------+  for remote peers
+        S2: workstations alyx, mac over the tailnet                |  /a2a/v1 only
+            (tailscale serve on core)                              |  for remote peers
+        S3: public HTTPS, cloudflared on core -> localhost:8120 ---+  (remote-peer scope)
                                                                       (remote-peer scope)
   cognitive-engine model sessions (sbx) must never reach :8120.
 ```
@@ -58,19 +59,21 @@ Notes on the diagram:
 
 - Everyone except the server uses HTTP. Only the server touches SQLite.
 - Postgres later means changing the SQLAlchemy URL, nothing else.
-- Every request carries a scoped bearer token, loopback included.
+- Every request carries a scoped bearer API key, loopback included.
   - `local-harness`: `/mcp`, `/wake/listen`, `/sessions`, `/a2a/v1`.
   - `remote-peer`: `/a2a/v1` only.
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
-- Admin commands (`token new|list|revoke`, `review`) run inside the container: `docker compose exec -it coordination a2a-coord ...`, over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin token scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
-- Harness setup is one installer, `a2a-coord install --claude --agy`. It edits chezmoi-managed dotfiles through chezmoi, never the targets, and nothing in it launches, drives or wraps agy.
+- Admin commands (`key create|list|rotate|revoke`, `review`) run inside the container, on whichever host runs it (core in production: `ssh core`, then `docker compose exec -it coordination a2a-coord ...`), over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin API-key scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
+- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code keeps its key in the environment (`A2A_API_KEY`); agy's key is a literal in an unmanaged, mode-0600, plugin-scoped `.agents/plugins/coordination/mcp_config.json`. Chezmoi-managed files never hold keys.
+- Harness setup is one installer, `a2a-coord install --claude --agy`. It configures the non-secret parts through chezmoi where the files are chezmoi-managed, never writing the targets, and nothing in it launches, drives or wraps agy.
 
 ### Exposure stages
 
-- **S1, localhost.** `127.0.0.1:8120` on alyx. Gate: S0 spikes done.
-- **S2, tailnet.** `tailscale serve` for own machines (alyx, mac, core), one `local-harness` token per machine, and the server checks the Tailscale identity matches the machine the token was issued for. Gate: tokens and scopes live, cross-host wake works.
-- **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core, with an ingress rule for a hostname like `a2a.bigrockad.com` forwarding over the tailnet to `alyx:8120`; only `/a2a/v1` and the card are routed. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own token. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **S1, dev on alyx.** `127.0.0.1:8120` only. Gate: S0 spikes done.
+- **S2, production on core.** `tailscale serve` on core; every workstation (alyx, mac) reaches core over the tailnet from day one, with one `local-harness` API key per harness per machine. The server checks the Tailscale identity matches the machine the key was issued for, for all harness keys including alyx's. Hooks on alyx and mac long-poll core over the tailnet (wake latency and tailnet dependency are risks). Gate: API keys and scopes live, cross-host wake works.
+- **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core; the route `a2a.bigrockad.com` to core's `localhost:8120` was created on 2026-11-04 (verified: it returns 502 through Cloudflare, nothing listens yet). Only `/a2a/v1` and the card are to be routed. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own API key, delivered out of band. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **The public route exists before the S3 gates are met.** Anything bound to core:8120 is internet-reachable at once. Until the S3 gate passes, the hostname must sit behind a Cloudflare Access deny-all (or service-token-only) policy, and the service must never be started on core's 8120 without it. S2 workstation traffic goes over the tailnet, not through the public hostname.
 - **Go-live migration** (import and deletion of the old file channel) comes after S3.
 
 `tailscale`, `cloudflared` and `caddy` are not installed on alyx today. The user's Cloudflare Tunnel runs on core (reported by the user).
@@ -106,7 +109,7 @@ All links are absolute `file://` links.
 
 ### Start here
 
-- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 22 decisions of 2026-11-04 (13 from `/clarify`, 9 from `/cplain`), and the S0-S3 roadmap.
+- [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 24 decisions of 2026-11-04 (13 from `/clarify`, 11 from later the same day), and the S0-S3 roadmap.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 
 ### Plans

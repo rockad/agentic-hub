@@ -179,14 +179,14 @@ Reply-to resolution:
 
 - Terminal `COMPLETED` tasks are not offered by `a2a_inbox` (which lists SUBMITTED and queued items only). A2A forbids restarting a terminal task, so a stray `SendMessage` with an imported `task_id` fails by protocol.
 - The apply path writes through the server's admin path directly into the task store. It does not publish queue events, does not touch the wake logic, and does not count against the 20/h wake budget.
-- Imported tasks carry `metadata.coord.origin = "import"` (the trust field from decision 10; server-api.md 5.3 defines the value and 3.3.3 the visibility rule). They are visible to `local-harness` tokens only. The `remote-peer` and `status-client` scopes never see them, because the old channel discusses internal paths, plans and unreleased work.
+- Imported tasks carry `metadata.coord.origin = "import"` (the trust field from decision 10; server-api.md 5.3 defines the value and 3.3.3 the visibility rule). They are visible to `local-harness` API keys only. The `remote-peer` and `status-client` scopes never see them, because the old channel discusses internal paths, plans and unreleased work.
 - Imported tasks are exempt from any TTL or retention sweep the server later adds.
 - Bodies reach a model only through tool results, framed as untrusted data like any other body. They are never placed in a wake stub or in injected context.
 
 ## 7. Import safety
 
-- The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `token new` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin token scope. No token scope grants it, including `local-harness`. Docker access on the host is the credential.
-- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -` (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one process owns SQLite) holds. No bind mount of `~/.agents` into the container is needed.
+- The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `key create` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin API-key scope. No API-key scope grants it, including `local-harness`. Docker access on the host that runs the container is the credential.
+- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on core (decision 23), so the command is `ssh core docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on alyx (`~/.agents`), so parse, plan, tar backup and deletion happen on alyx; the store, `/data/imports/<run_id>/` and `/data/backups/` are on core's volume (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one process owns SQLite) holds. No bind mount of `~/.agents` into the container is needed.
 - The server re-validates every record from the bundle: recomputes the uuid5 ids, recomputes `content_sha256` from the text Part, checks `state == COMPLETED`, checks `coord.origin == "import"`. A bundle that disagrees with itself is rejected whole.
 - Credential scan on every `inner` (same four patterns plus the generic `Bearer <long token>` form). A match aborts with the line number and never prints the matched text.
 - Hard limits: block under 1 MiB, file under 16 MiB, at most 10,000 blocks per run. The current data is far below all of them.
@@ -342,7 +342,7 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 - Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full restore of `/data/backups/pre-import-<run_id>.db` is the heavy alternative.
 - Files (after deletion): extract the tar back over `$HOME` with `tar -C "$HOME" -xzf <tar> --keep-old-files`, so an existing file is never overwritten. Then re-run the dry-run, which must again report the same hashes.
 - Both: restore files first, roll the store back, then re-import from a fresh plan. Idempotency makes this safe to repeat.
-- Rollback never touches live tasks, tokens or sessions.
+- Rollback never touches live tasks, API keys or sessions.
 
 ## 14. Runbook (go-live day)
 
@@ -364,9 +364,9 @@ Not resolvable from the evidence, in rough priority:
 - 2. Turns archive. Import it with a second, guess-based parser (year inferred as 2026, no ids), or leave it as a plain file in the tar. Default here is leave it.
 - 3. Role for imported messages. `ROLE_AGENT` for all (recommended) or `ROLE_USER` for the sender side. Needs user confirmation.
 - 4. Machine name in handles. Decisions say `alyx`, the host name is `alyx-wsl`. Profile setting; confirm.
-- 5. Closed by decision 15 (2026-11-04, /cplain): admin path is `docker compose exec -it` over an in-container Unix socket, no TCP, no token scope. Defined in server-api.md 3.7.
+- 5. Closed by decision 15 (2026-11-04, /cplain): admin path is `docker compose exec -it` over an in-container Unix socket, no TCP, no API key scope. Defined in server-api.md 3.7.
 - 6. Other machines. Only alyx-wsl was inspected. Whether the Mac or core hold their own copies of the channel files, watcher scripts or state files was not checked. Closer to go-live this matters more, since mac and core will be tailnet peers by then (S2).
 - 7. Does `DatabaseTaskStore` let the importer set its own created and updated timestamps? Not confirmed in the audit. If it does not, ordering and dates come from `metadata.coord.import.seq` and `begin_ts`, and the store's own timestamps will show the import time. Needs a spike on a scratch store.
-- 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness tokens only (server-api.md 5.3 and 3.3.3).
+- 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness API keys only (server-api.md 5.3 and 3.3.3).
 - 9. Retention of the backup tar. The tool never deletes it; how long to keep it is the user's call.
 - 10. Whether to keep the three `handoff/` prompts. They are untouched by this plan and backed up.

@@ -19,7 +19,7 @@ Rules for every spike:
 
 - **Throwaway code only inside the spike.** It lives in a scratch directory outside every git repo, `~/scratch/a2a-spikes/<spike-id>/`. Nothing from it is committed to `main` or to `feat/coordination`. Only the written result is kept.
 - **No change to the user's real configuration.** Hooks go in a scratch project's own settings (`.claude/settings.local.json` for Claude Code, `.agents/hooks.json` for agy in a scratch workspace). The user-level files `~/.claude/settings.json`, `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json` are not touched. If agy turns out to need a user-level MCP entry for a spike, the user adds it and removes it, and that is stated in the result.
-- **Spike port `18120`, loopback only**, so a spike never collides with the future `:8120`, with 8100 to 8110, or with 11434. The stub accepts one fixed throwaway token (`spike-token`) and never a real credential.
+- **Spike port `18120`, loopback only**, so a spike never collides with the future `:8120`, with 8100 to 8110, or with 11434. The stub accepts one fixed throwaway API key (`spike-token`) and never a real credential.
 - **Nothing launches, drives or wraps agy** (DDR-003). Every agy spike is run by the user in their own interactive agy session, or by agy itself inside that session at the user's request. No `agy -p`, no PTY, no tmux, no `agentapi`. A Claude Code session may prepare files and read logs for an agy spike; it never starts agy.
 - **Claude Code test sessions are started by the user** in a terminal tab, interactive CLI only. No `claude -p`, no PTY driver. A helper session may run the stub and tail its logs.
 - **Decision 9 already approves shipping the agy `SessionStart` and `PreInvocation` hooks.** Spikes install them only in a scratch workspace; the user applies them to real config (host-hygiene rule). Only the held-`Stop` park (SP4) needs a further user decision before it could ship.
@@ -193,6 +193,7 @@ Uses the shared stub and the SP1 scratch project, with the stub registered as an
 - **C6, two sessions.** Two concurrent Claude sessions with different handles, then with the same requested name. Record that ids and bindings do not cross, and what the stub sees on a name collision.
 - **C7, hook order (HOOK-ORDER).** Configure two `SessionStart` hooks, the registration hook (`POST /sessions`, with a deliberate 2 s delay in variant B) and the `asyncRewake` listener. Over 10 session starts, log the start and end timestamps of each from the stub. Record whether they run in parallel or in listed order, and how often the listener's first `/wake/listen` reaches the stub before the registration does (this decides whether the 15 s retry on `410 unregistered` in server-api.md 7.1 is needed).
 - **C8, MCP tool timeout (MCP-TOOL-TIMEOUT).** The model calls the stub's blocking `a2a_wait(seconds)` with 30, 120 and 240 s. Record for each whether the result arrives, whether progress or an error is shown, whether the connection or the session survives a timeout, and the effective limit if one is hit. Also check whether an `MCP_TOOL_TIMEOUT`-style setting exists in the installed version's docs.
+- **C9, header environment expansion (decision 24).** Register the stub with `headers: {"Authorization": "Bearer ${A2A_API_KEY}"}` in the scratch project's MCP config and export `A2A_API_KEY=spike-token` in the environment of the Claude Code session. Record whether the stub receives `Authorization: Bearer spike-token` (expanded) or the literal `Bearer ${A2A_API_KEY}`, on every request (`initialize`, `tools/list`, `tools/call`, `DELETE`), and what Claude Code shows on a 401. Repeat with the variable unset to record the failure mode. This is **unverified** today. If expansion does not work, a key cannot be kept in the environment for the MCP entry; the fallback is a user-chosen mechanism (a wrapper or a headers helper), never a literal key in a chezmoi-managed file.
 
 ### Method, agy half (run in the user's own session)
 
@@ -209,16 +210,20 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
   - verified: the user's `~/.gemini/config/mcp_config.json` already has an entry (`obsidian`) with `serverUrl` plus a `headers` object holding an `Authorization` key (key names checked only, value not read)
   - reported: third-party guides show the same `serverUrl` + `headers` shape and say `httpUrl` is the older key
   - verified: agy's `mcp_servers.md` (line 66) documents `url` as the key and says the legacy key `serverUrl` is also accepted; examples in this plan use `url`. The `obsidian` entry above predates that and uses `serverUrl`.
-  - still unverified, and what this step now tests: that the header is sent on every request of a streamable-HTTP session; whether `headers` values support environment-variable interpolation (otherwise the token sits in plain text in `mcp_config.json`, as obsidian's does today); and whether agy's `/mcp` view shows a 401 clearly
-  Why the interpolation answer matters beyond the spike (decision 16): the installer `a2a-coord install --claude --agy` writes this entry through chezmoi, and chezmoi source is committed to the dotfiles repository. `~/.gemini/config/mcp_config.json` is managed as the template `private_mcp_config.json.tmpl` (verified with `chezmoi source-path` on 2026-11-04, contents not read). If interpolation worked, the entry would hold only `Bearer ${A2A_TOKEN}`. It does not (see the Result below, reported, live confirmation pending), so the token is a literal in the rendered file. Rule: the installer writes it through a chezmoi template function that reads a secret source (password manager, keyring or an encrypted file), never as a literal in the chezmoi source repository. The choice of secret backend is an open point for the user (plan section 7). The installer itself is not part of any spike and does not exist yet.
-  Configure the stub entry with `agy mcp add --header "Authorization: Bearer spike-token" a2a-stub http://127.0.0.1:<stub-port>/mcp`, or edit `mcp_config.json` with the same `headers` shape. Also try a value of `Bearer ${A2A_TOKEN}` with `A2A_TOKEN` exported in the agy session's environment, and record whether it is expanded. The stub rejects any `/mcp` request lacking `Authorization: Bearer spike-token` with 401. Record that agy sends the header on every request (`initialize`, `tools/list`, `tools/call`, session-closing `DELETE`), and what agy shows the user and the model on a 401 (run once with the header removed). If agy cannot send a custom header, record that decisions 9 and 11 conflict for agy and stop: the plan needs a user decision. A token in the URL is not an acceptable fallback.
+  - still unverified, and what this step now tests: that the header is sent on every request of a streamable-HTTP session; whether `headers` values support environment-variable interpolation (otherwise the API key sits in plain text in `mcp_config.json`, as obsidian's does today); and whether agy's `/mcp` view shows a 401 clearly
+  Why the interpolation answer matters beyond the spike (decisions 16 and 24): chezmoi source is committed to the dotfiles repository, and `~/.gemini/config/mcp_config.json` is managed as the template `private_mcp_config.json.tmpl` (verified with `chezmoi source-path` on 2026-11-04, contents not read). If interpolation worked, an entry could hold only `Bearer ${A2A_API_KEY}`. It does not (see the Result below, reported, live confirmation pending), so the agy key has to be a literal somewhere. Decision 24: that place is an unmanaged, plugin-scoped `.agents/plugins/coordination/mcp_config.json` (mode 0600) outside chezmoi, and chezmoi-managed files, `~/.gemini/config/mcp_config.json` included, never hold keys and are not edited for keys. Whether agy loads that file is step A8. The installer itself is not part of any spike and does not exist yet.
+  Configure the stub entry with `agy mcp add --header "Authorization: Bearer spike-token" a2a-stub http://127.0.0.1:<stub-port>/mcp`, or edit `mcp_config.json` with the same `headers` shape. Also try a value of `Bearer ${A2A_API_KEY}` with `A2A_API_KEY` exported in the agy session's environment, and record whether it is expanded. The stub rejects any `/mcp` request lacking `Authorization: Bearer spike-token` with 401. Record that agy sends the header on every request (`initialize`, `tools/list`, `tools/call`, session-closing `DELETE`), and what agy shows the user and the model on a 401 (run once with the header removed). If agy cannot send a custom header, record that decisions 9 and 11 conflict for agy and stop: the plan needs a user decision. An API key in the URL is not an acceptable fallback.
   - **Result (2026-11-04): PASS** per Antigravity's run, [`spike-results-2026-11-04-sp2-a6.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md). agy sent `Authorization: Bearer spike-token` on every request that reached the stub after the first probe: server discover, `initialize`, the `GET` SSE stream, `notifications/*`, `tools/list`, `tools/call` and the closing `DELETE` [verified, wire log]; a request without the header got 401.
   - Claude Code's review of that report, which qualifies it:
     - Q1 is overstated: agy's `mcp_servers.md` documents `url` as the key (`serverUrl` legacy) and does not mention `headers`. Header support is documented only in `agy mcp add --help`; the `McpServerSpec` struct names come from binary strings, not documentation.
-    - Q3 ("sent literally", no env expansion) is not shown in the wire log. A follow-up live run with `Bearer ${A2A_TOKEN}` exported was requested. Until then it is reported, not verified.
+    - Q3 ("sent literally", no env expansion) is not shown in the wire log. A follow-up live run with `Bearer ${A2A_API_KEY}` exported was requested. Until then it is reported, not verified.
     - The origin of the first unauthenticated `ping` in the wire log is unclear (agy probe, or the stub's own check).
   - Hard-gate status: the header gate is met on the evidence of the wire log. The env-var and documentation caveats do not change the gate.
 - **A7, MCP tool timeout.** Same as C8 for agy: blocking `a2a_wait(seconds)` at 30, 120 and 240 s. Record the result, any error shown, and the effective limit.
+- **A8, plugin-scoped MCP config location and the `~/.agents` collision (decision 24).** Question: where can the installer put the agy key so that it is outside chezmoi and agy still loads it?
+  - Method: in a scratch location, place a plugin-scoped `.agents/plugins/coordination/mcp_config.json` (mode 0600) holding the stub entry with the literal key. Try both a workspace-level placement (inside the scratch workspace) and a user-level placement (`~/.agents/plugins/coordination/`, created for the test and removed after). Record which one agy loads, and what `/mcp` shows for each. Reported by the A6 run: workspace MCP is supported only inside plugin bundles (`plugin.json` beside `mcp_config.json`); whether a user-level plugin directory exists is [unverified].
+  - Collision check: `~/.agents` also holds the frozen bridge channel files (decision 14 keeps them untouched, with Antigravity's research exception). Record whether agy reads or scans `~/.agents` for anything else (hooks, rules), whether a `plugins/` subdirectory there is inert to the frozen channel's watcher (`watch-bridge-coordination.sh`, which counts files in `~/.agents` `handoff/`), and that the test left no file behind.
+  - Pass: a placement is found that agy loads, is outside chezmoi, and does not disturb `~/.agents`. Fallback if none: a non-chezmoi include that agy reads, chosen by the user. Nothing launches, drives or wraps agy; the user or agy itself runs this in its own session.
 
 ### Pass and fail
 
@@ -226,12 +231,18 @@ Must pass (gate):
 
 - Claude Code: C1 and C2 pass (handle arrives in context; one stable `Mcp-Session-Id` per session across at least 5 calls). C3 either keeps the binding across `/compact` and resume, or shows a clean way to re-bind (the unbound-call error). C5: at least 8 of 10 bind unprompted and 10 of 10 bind after the error message.
 - agy: A1 shows a stable per-connection id, or a documented fallback is chosen (below). A2 shows at least one injectSteps type reaches the model and the model calls `a2a_hello`. A4: at least 8 of 10 bind after the injected instruction or the error message.
-- agy A6: agy sends the configured `Authorization: Bearer` header on every `/mcp` request, and a request without it is refused with 401. This is a hard gate: if it fails, decision 9 (agy uses MCP at `:8120/mcp`) and decision 11 (loopback still needs a token) cannot both hold, and S1 does not start until the user decides.
+- agy A6: agy sends the configured `Authorization: Bearer` header on every `/mcp` request, and a request without it is refused with 401. This is a hard gate: if it fails, decision 9 (agy uses MCP at `:8120/mcp`) and decision 11 (loopback still needs an API key) cannot both hold, and S1 does not start until the user decides.
 - Binding is unambiguous: two concurrent sessions never share a binding (C6).
 - C7: the result states whether the two `SessionStart` hooks run in parallel or in order, so the listener retry rule is either kept or removed on evidence.
 - C8 and A7: the effective MCP tool timeout is recorded for both harnesses and `a2a_wait`'s default is shown to sit inside it (or lowered to fit).
 
 Record only: A3 resume behaviour, C4 restart behaviour, A5 trust behaviour, session-name availability.
+
+Record, with a stated fallback if negative (they do not block S1 by failing, but they decide how keys are stored, decision 24):
+
+- C9: whether Claude Code expands `${A2A_API_KEY}` in MCP header values.
+- A8: whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and the `~/.agents` collision check.
+- The live confirmation that agy does not expand env vars in `headers` (A6 Q3, reported only so far).
 
 ### Record
 
@@ -239,7 +250,7 @@ Record only: A3 resume behaviour, C4 restart behaviour, A5 trust behaviour, sess
 - The `Mcp-Session-Id` lifecycle table per event.
 - The count for C5 and A4.
 - The A6 header result, the C7 ordering result and the C8 and A7 timeout limits.
-- A statement that binding is an assertion by a token holder, not authentication of a particular session. Every holder of a local-harness token can claim any local handle; the spec has to say that this is accepted.
+- A statement that binding is an assertion by an API key holder, not authentication of a particular session. Every holder of a local-harness API key can claim any local handle; the spec has to say that this is accepted.
 
 ### Runner
 
@@ -398,7 +409,7 @@ Does `a2a-python` (1.3.0 or later) with `DatabaseTaskStore` on SQLite hold up un
 
 - Decision 4 puts all state in one SQLite file owned by one process, with the promise that Postgres is "a SQLAlchemy URL change" later.
 - The audit verified there is no WAL, busy-timeout or `PRAGMA` handling anywhere in the SDK (t1c), and that cluster mode is only about five weeks old. We are choosing not to depend on cluster mode, so the plain store must be shown sufficient.
-- Our own tables (sessions, tokens hashes, wake budgets, quarantine records) sit in the same file, and we need to know they coexist with the SDK's migrations.
+- Our own tables (sessions, API keys hashes, wake budgets, quarantine records) sit in the same file, and we need to know they coexist with the SDK's migrations.
 
 ### Method
 
@@ -419,7 +430,7 @@ Steps:
   - a held task stored with state `TASK_STATE_INPUT_REQUIRED` plus metadata `coord.hold="quarantine"` (QUARANTINED is our extension, not an A2A state; the sender sees INPUT_REQUIRED). Confirm `interrupted_task_timeout` does not auto-release it (server-api 6.1, 10)
   - `context_id` generated per (originator, recipient card) pair
   - confirm what `ListTasks` can filter by, and whether we need a side index table for handle lookups
-- **D5, owner scoping.** Using the SDK's owner resolver, check that a task created under one token's owner is invisible to another token through `GetTask`, `ListTasks` and `CancelTask`. This is what keeps a remote-peer token from reading local tasks.
+- **D5, owner scoping.** Using the SDK's owner resolver, check that a task created under one API key's owner is invisible to another API key through `GetTask`, `ListTasks` and `CancelTask`. This is what keeps a remote-peer API key from reading local tasks.
 - **D6, migrations.** Run the SDK's migration CLI against an empty database, again (it must be a no-op), and from the oldest shipped revision with data present. Check what happens when the database is newer than the code. Check how `create_table` style setup in the store interacts with Alembic. Check that our own tables can have their own migration history in the same file without clashing with the SDK's version table.
 - **D7, backup and restore.** While D2 load runs, take a backup with `sqlite3 .backup` (or `VACUUM INTO`), then restore it to a fresh volume and run `PRAGMA integrity_check` and row counts. Also show that copying only the `.db` file during load is not safe, so the backup procedure is written down correctly.
 - **D8, crash.** `kill -9` the container mid-load, restart it. Check no committed task is lost or corrupt, WAL recovery is clean, and tasks left in an "offered" state are re-offered after restart.
@@ -493,7 +504,7 @@ Reuse the SP1 scratch project and stub. Cross-session messaging needs Claude Cod
 - **X1, self post.** From the SP1 listener, on a 200, post the interlink-shaped frame to the socket after the auth line, then exit 0. Record whether an idle session starts a turn, with what framing, and the latency.
 - **X2, frame shape.** Try the documented auth line alone, then the frame from interlink's source. Record the minimum that works and any acknowledgement the socket returns.
 - **X3, `crossSessionInbound`.** Run the session in default, `acceptEdits`, `plan` and `bypassPermissions` modes. Record whether the message is accepted, held for approval or refused in each, and where the setting lives.
-- **X4, sender identity.** Check the listener (a child of the hook) is accepted as an "own child". Also try a post from an unrelated host process with the token to see whether the token alone is enough.
+- **X4, sender identity.** Check the listener (a child of the hook) is accepted as an "own child". Also try a post from an unrelated host process with the API key to see whether the API key alone is enough.
 - **X5, no hook timeout.** Confirm the listener can run past the `asyncRewake` timeout if it is not the thing waking the session (it is not required to exit 2).
 
 ### Pass and fail
@@ -544,7 +555,7 @@ User time needed in total: about one afternoon (agy sessions), plus short sittin
 
 ## 11. S1 entry gate
 
-S1 (the real server on `127.0.0.1:8120`, tokens, `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status`) may be started once:
+S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status`) may be started once:
 
 - SP1 passed
 - SP2 passed
@@ -570,7 +581,7 @@ What a failure does:
 
 What the gate does not cover (these are gates of later stages, not S1):
 
-- S2 (tailnet): tokens and scopes live, cross-host wake works, and the tailnet identity check of decision 17 (section 13). The version check on mac and core happens here.
+- S2 (tailnet): API keys and scopes live, cross-host wake works, and the tailnet identity check of decision 17 (section 13). The version check on mac and core happens here.
 - S3 (public HTTPS, the Cloudflare Tunnel on core, decision 20): quarantine live, rate limits, the fuzz pass, an honest card, an explicit user go, and the tunnel checks in section 13.
 - The cognitive-engine status client (decision 13): built after S1 on the user's go.
 
@@ -585,16 +596,19 @@ What the gate does not cover (these are gates of later stages, not S1):
 
 ## 13. Later-stage checks (not part of the S1 gate)
 
-Decisions 17 and 20 (2026-11-04, `/cplain`) rest on mechanisms nobody has tested. They gate S2 and S3, not S1, so they are not SP-numbered spikes inside the S0 plan. They run when the stage starts, in scratch, with the same ground rules as section 1. All are **unverified** today.
+Decisions 17, 20 and 23 (2026-11-04) rest on mechanisms nobody has tested. They gate S2 and S3, not S1, so they are not SP-numbered spikes inside the S0 plan. They run when the stage starts, in scratch, with the same ground rules as section 1. In production the service runs on core (decision 23), so these checks run against a stub on core. All are **unverified** today.
 
-- **L1, tailnet identity at the server (S2, decision 17).** Question: what identity does a request carry when it reaches the server through `tailscale serve`, and can the server tell the user's machines apart?
-  - Method: stub behind `tailscale serve` on alyx, called from mac and core. Log every header and the source address. Record whether a user login header is present (`Tailscale-User-Login` is reported for `tailscale serve`; not read by us), whether any node identity is available, and whether a source-address lookup (the local Tailscale API) returns the node name.
-  - Pass: the server can bind a token to one machine (a node name), or the user accepts a user-level check instead. If only a user login is available, the check cannot distinguish mac from core, and decision 17 needs the user's input before S2.
+- **L1, tailnet identity at the server (S2, decisions 17 and 23).** Question: what identity does a request carry when it reaches the server through `tailscale serve` on core, and can the server tell the user's machines apart, alyx included?
+  - Method: stub behind `tailscale serve` on core, called from alyx and mac. Log every header and the source address. Record whether a user login header is present (`Tailscale-User-Login` is reported for `tailscale serve`; not read by us), whether any node identity is available, and whether a source-address lookup (the local Tailscale API on core) returns the node name.
+  - Pass: the server can bind an API key to one machine (a node name), or the user accepts a user-level check instead. If only a user login is available, the check cannot distinguish alyx from mac, and decision 17 needs the user's input before S2.
   - Also record: which header names a client can forge when it reaches the server some other way (it must not be able to).
-- **L2, `CF-Connecting-IP` through the tunnel (S3, decision 20).** Question: does the real client address reach the server, and can the server trust it only for tunnel traffic?
-  - Method: a scratch cloudflared ingress rule (the user adds it) to the stub over the tailnet. Record the `Host` the stub sees, whether `CF-Connecting-IP` arrives unchanged after the `tailscale serve` hop, and what the stub sees as the TCP peer.
-  - Pass: `CF-Connecting-IP` arrives unchanged, and the tunnel's node identity (from L1) lets the server believe it only for tunnel traffic. Otherwise per-IP limits fall back to the token only.
+- **L2, `CF-Connecting-IP` from `cloudflared` on the same host (S3, decisions 20 and 23).** Question: does the real client address reach the server, and can the server believe it only for tunnel traffic when `tailscale serve` traffic also arrives from core's loopback?
+  - Method: use the existing route `a2a.bigrockad.com` to `localhost:8120` on core, with the stub on 8120 and the Cloudflare Access policy limited to a Cloudflare Access service token the test uses (the user manages the policy; the stub never runs on 8120 with the route open to the internet, plan Risk 13). Record the `Host` the stub sees, the `CF-Connecting-IP` it receives, and the TCP peer. Send the same request through `tailscale serve` with a forged `CF-Connecting-IP` and with `Host: a2a.bigrockad.com`, and record what the stub can use to tell the two paths apart.
+  - Pass: `CF-Connecting-IP` arrives from `cloudflared` as the real client address, and the server can believe it only for tunnel traffic (by `Host` per server-api.md 8.4.1, or by a stronger signal found here). If the two paths cannot be told apart well enough, record the second-loopback-port option for `cloudflared` (it changes the route target and needs the user's approval) or fall back to per-key limits only.
 - **L3, Cloudflare timeout and path routing (S3, decisions 20 and 22).** Question: what is the real request timeout on the user's plan, and can the ingress rule restrict paths?
   - Method: a stub endpoint that holds a request for 30, 60, 90 and 120 s; a request to a path outside `/a2a/v1` and the card.
   - Pass: a 60 s hold succeeds, the observed limit is recorded (about 100 s is reported), and the unrouted path is refused by the ingress or by the server (`404`).
-- **Not a spike, a user step:** the hostname (example `a2a.bigrockad.com`) is confirmed before the ingress rule is written (plan section 7).
+- **L4, wake over the tailnet (S2, decision 23).** Question: what wake latency and failure behaviour does a long-poll from alyx or mac to core show over Tailscale?
+  - Method: the SP1 listener against a stub on core. Record time from task creation to the wake line, behaviour across a tailnet interruption (kill the link for 30 s and 5 min), and whether 900 s rounds survive idle NAT or relay paths.
+  - Pass: latency recorded; after an interruption the listener re-parks without a loop (plan Risk 12).
+- **Hostname:** `a2a.bigrockad.com` is decided (the user created the route on 2026-11-04). The Cloudflare Access deny-all (or service-token-only) policy is the user's action before any of L2 or L3 runs, and before the service first runs on core's 8120 (plan Risk 13).

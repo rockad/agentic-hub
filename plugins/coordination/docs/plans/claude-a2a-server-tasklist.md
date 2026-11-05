@@ -61,7 +61,7 @@ All resolved in DDR-004 decisions 1-36 ([`consolidated-bridge-v2-plan.md`](conso
   - [x] Apply verification fixes (3 low findings skipped with reasons and recorded in runbook section 6.3)
 - [x] **P4: Cleanup check**: no `a2a-spike-*` containers, volumes or images, no `a2a-stub` in `~/.claude.json`, nothing on 18120-18129, no spike code in the repo. Known residuals: an inert empty `projects` entry for the sp2c scratch path in `~/.claude.json`, and empty `/tmp/err.*` and `/tmp/x.out` files.
 - [x] **P5: Commit** spike results and runbooks on `feat/coordination-s0`, rebased onto the new `feat/coordination`.
-- [ ] **P6: Stacked PRs** on `rockad/agentic-hub`:
+- [x] **P6: Stacked PRs** on `rockad/agentic-hub`, both merged into `main` on 2026-11-05. From then on, docs work commits and pushes directly to `main` until consolidation ends (user direction, 2026-11-05).
   - [x] `feat/coordination` → `main`: [#15](https://github.com/rockad/agentic-hub/pull/15), rebased onto `origin/main` and dropping the stray `e320efc` clarify commit, which is kept as `backup/clarify-e320efc`
-  - [ ] `feat/coordination-s0` → `feat/coordination`
+  - [x] `feat/coordination-s0` → `feat/coordination`: [#16](https://github.com/rockad/agentic-hub/pull/16), retargeted to `main` before merge
 - [ ] **P7: Hand-off**: the user and Antigravity run SP1, SP2 (both halves), SP3 and SP4 from the runbooks.

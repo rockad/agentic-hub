@@ -45,10 +45,23 @@ Owner: Claude Code (session `agents-bridge-52`). Scope: research and planning on
 - [x] **T5: Channel note** (message 1, 2026-11-04T14:22) to Antigravity in [`bridge-v2-coordination-channel.md`](file:///home/rockad/.agents/bridge-v2-coordination-channel.md) (one append).
 - [x] **T6: Final verification** on the highest available tier (`opus`; `message.model` confirmed `claude-opus-5-5`). 13 findings; 12 applied (exit-code semantics, DDR-002/003 impact listed in DDR-004, Risk 3 section reference, GongRzhe license, mgcrea patterns vs limits, port-check attribution, spawn count, labels, a2a-go verdict, formatting). One skipped: it cited the retired Fable rule. Then commit.
 
-## Open decisions for the user (blocking implementation, not research)
+## Open decisions for the user
 
-- Lift the "zero daemons" and "planning only" rules for this component?
-- Home: `agents-bridge` or `agentic-hub/plugins/coordination`?
-- Language: Python (`a2a-python`) or TypeScript/Bun (`a2a-js`)?
-- Antigravity side: hooks allowed, or MCP tools only?
-- ACP: keep as a future carrier or drop?
+All resolved in DDR-004 decisions 1-36 ([`consolidated-bridge-v2-plan.md`](consolidated-bridge-v2-plan.md)).
+
+## S0 spikes and stacked PRs (2026-11-05)
+
+- [x] **P1: Implementation plan** ([`implementation-plan.md`](implementation-plan.md)), committed `963d3b0`; decisions 25-36 committed `420bc27`.
+- [x] **P2: Branch** `feat/coordination-s0` from `420bc27`.
+- [x] **P3: Spike workflow** `wf_bf52f70a-49b` (relaunched after the 5-hour limit killed the first run):
+  - [x] S0-SCAF stub on 127.0.0.1:18120, SP1 offline listener test, C9 header check ([results](../research/spike-results-2026-11-05-s0-scaf-sp2-c9.md))
+  - [x] SP5 SQLite/WAL stress (D1-D12): PASS with four wrappers, one open defect for S1 (session reuse across keys) ([results](../research/spike-results-2026-11-05-sp5.md))
+  - [x] Runbooks for SP1, SP2, SP3 and SP4 ([runbooks](../research/spike-runbooks-2026-11-05.md))
+  - [x] Opus verification pass
+  - [x] Apply verification fixes (3 low findings skipped with reasons and recorded in runbook section 6.3)
+- [x] **P4: Cleanup check**: no `a2a-spike-*` containers, volumes or images, no `a2a-stub` in `~/.claude.json`, nothing on 18120-18129, no spike code in the repo. Known residuals: an inert empty `projects` entry for the sp2c scratch path in `~/.claude.json`, and empty `/tmp/err.*` and `/tmp/x.out` files.
+- [x] **P5: Commit** spike results and runbooks on `feat/coordination-s0`, rebased onto the new `feat/coordination`.
+- [ ] **P6: Stacked PRs** on `rockad/agentic-hub`:
+  - [x] `feat/coordination` → `main`: [#15](https://github.com/rockad/agentic-hub/pull/15), rebased onto `origin/main` and dropping the stray `e320efc` clarify commit, which is kept as `backup/clarify-e320efc`
+  - [ ] `feat/coordination-s0` → `feat/coordination`
+- [ ] **P7: Hand-off**: the user and Antigravity run SP1, SP2 (both halves), SP3 and SP4 from the runbooks.

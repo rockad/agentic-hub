@@ -269,16 +269,24 @@ After printing the markdown analysis, **ALWAYS invoke the harness-appropriate in
 >   - `3. Option C: <Analogy Name> (<Formal Tech Anchor>)`
 > Never emit bare option names without the `Option X:` prefix, and never reorder options in the selection tool.
 
+> [!IMPORTANT]
+> **Mandatory Question Counter Prefix (`[Question N of Total]`)**:
+> Harness interactive question widgets (such as Google Antigravity) compute their UI badge (`Question 1/1`) solely from the single-element tool call array (`questions.length`). Because `clarify` deliberately runs single-question turns to preserve markdown trade-off depth, the UI's native pager badge always shows `1/1`.
+> **To ensure the user always sees their exact progress through the clarification session**, agents MUST ALWAYS prefix the question string with the explicit fork counter:
+> - Format: `"[Question N of Total] <Question text>"` (or `"[Fork N of Total] <Question text>"`)
+> - In Antigravity: `"question": "[Question 5 of 9] Which cross-harness title write-back strategy should ax adopt?"`
+> - In Claude Code & OpenCode: Also set `"header": "Fork 5/9"` (or `"Q5/9: Strategy"`).
+
 #### A. Google Antigravity (`ask_question`)
 
-Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
+Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 
 **Mode A (Standard Architecture):**
 ```json
 ask_question({
   "questions": [
     {
-      "question": "Which data model should we use for record tagging?",
+      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
       "options": [
         "(Recommended) Option A: M:N join table",
         "Option B: Denormalized JSONB array",
@@ -295,7 +303,7 @@ ask_question({
 ask_question({
   "questions": [
     {
-      "question": "How should we organize user tags on records?",
+      "question": "[Question 1 of 5] How should we organize user tags on records?",
       "options": [
         "(Recommended) Option A: The Digital Sticky Tag (M:N Join Table)",
         "Option B: The Direct Sharpie Label (Denormalized JSONB)",
@@ -324,8 +332,8 @@ Uses `AskUserQuestion` with concise `header`, `label`, `description`, and `"mult
 AskUserQuestion({
   "questions": [
     {
-      "header": "Tag Model",
-      "question": "Which data model should we use for record tagging?",
+      "header": "Fork 1/5",
+      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
       "multiSelect": false,
       "options": [
         {
@@ -354,8 +362,8 @@ AskUserQuestion({
 AskUserQuestion({
   "questions": [
     {
-      "header": "Tag Storage",
-      "question": "How should we organize user tags on records?",
+      "header": "Fork 1/5",
+      "question": "[Question 1 of 5] How should we organize user tags on records?",
       "multiSelect": false,
       "options": [
         {
@@ -388,8 +396,8 @@ Uses `question` following standard option schema with `Option A:` labels:
 question({
   "questions": [
     {
-      "header": "Tag Model",
-      "question": "Which data model should we use for record tagging?",
+      "header": "Fork 1/5",
+      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
       "options": [
         {
           "label": "Option A: M:N join table (Recommended)",
@@ -414,8 +422,8 @@ question({
 question({
   "questions": [
     {
-      "header": "Tag Storage",
-      "question": "How should we organize user tags on records?",
+      "header": "Fork 1/5",
+      "question": "[Question 1 of 5] How should we organize user tags on records?",
       "options": [
         {
           "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
@@ -558,6 +566,7 @@ Once the user approves:
 
 - **Cross-Harness Tool Names**: Antigravity uses `ask_question`, Claude Code uses `AskUserQuestion`, OpenCode uses `question`. Adapt dynamically without crashing if a specific tool is absent.
 - **Single Question per Call**: One question per call is this skill's protocol, even if the underlying tool schema permits multi-question arrays. A batch turns the session back into an overwhelming questionnaire.
+- **UI "Question 1/1" Widget Counter Override via Prefix**: Harness question dialogs (such as Google Antigravity) compute their badge strictly from the single-turn array length (`1/1`). To ensure the user always sees their exact progress through the session (e.g. Question 5 of 9), the agent MUST prepend `[Question N of Total]` (e.g. `[Question 5 of 9]`) to the `question` argument in `ask_question`, and set `header: "Fork N/Total"` in Claude Code and OpenCode.
 - **Option Naming & Ordering in Selection**: Every option in the interactive selection tool MUST be named `Option A: <name>`, `Option B: <name>` in the exact sequence they appeared in prose. The UI numbers them (`1.`, `2.`, `3.`), rendering `1. Option A: <name> (Recommended)`, `2. Option B: <name>`, etc. Always make Option A the recommended path so that the recommendation is first without breaking letter ordering.
 - **Plain Mode Dual Anchoring**: In Plain English mode, always format option names as `Option X: <Analogy Name> (<Formal Tech Anchor>)` to preserve both conversational intuition and engineering clarity in the picker UI.
 - **Door Type Classification**: One-Way Doors (Tattoos) are expensive or destructive to undo (database storage engine, primary key schema, public API shape, distributed protocol). Two-Way Doors (Stickers) are cheap to change (cache TTL, batch chunk size, retry count, UI label phrasing). Make this distinction explicit in Plain Mode.

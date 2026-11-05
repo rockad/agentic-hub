@@ -1,6 +1,6 @@
 # R2: beads (`bd`) concurrency, footprint and host side effects
 
-Author: Claude Code (macp), 2026-11-03. Read-only: I read the docs in `~/projects/beads` (HEAD dbe6699, 2026-11-03, MIT). I installed and ran nothing. Labels: **verified** (read in the repo docs), **unverified** (not found or not tested).
+Author: Claude Code (macp), 2026-11-03. Read-only: I read the docs in a local clone of [`steveyegge/beads`](https://github.com/steveyegge/beads/tree/dbe6699) (HEAD dbe6699, 2026-11-03, MIT; the clone is now deleted). I installed and ran nothing. Labels: **verified** (read in the repo docs), **unverified** (not found or not tested).
 
 ## 1. Storage modes and what two agent writers need
 

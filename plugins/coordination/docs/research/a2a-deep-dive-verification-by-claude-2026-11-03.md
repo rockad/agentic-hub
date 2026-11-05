@@ -1,6 +1,6 @@
-# Verification of the A2A deep-dive (Antigravity) against ~/projects/A2A, and R8 candidate terms check
+# Verification of the A2A deep-dive (Antigravity) against the A2A spec repository (a2aproject/A2A at 4735f48), and R8 candidate terms check
 
-Author: Claude Code (macp), 2026-11-03. Read-only. Source checked: `~/projects/A2A` (HEAD 4735f48, 2026-10-30; spec 1.0.1): `specification/a2a.proto` and `docs/specification.md`. Labels: **verified** (read in the repo by me), **partly** (true but incomplete), **overstated**, **unverified**.
+Author: Claude Code (macp), 2026-11-03. Read-only. Source checked: [`a2aproject/A2A`](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) (a local clone at the time, HEAD 4735f48, 2026-10-30; spec 1.0.1; the clone is now deleted): [`specification/a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto) and [`docs/specification.md`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/docs/specification.md). Labels: **verified** (read in the repo by me), **partly** (true but incomplete), **overstated**, **unverified**.
 
 ## Part 1: verification of `a2a-deep-dive-side-by-side-coordination.md`
 

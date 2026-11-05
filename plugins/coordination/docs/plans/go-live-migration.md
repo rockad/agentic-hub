@@ -2,12 +2,20 @@
 
 Status: PLANNING ONLY. Written 2026-11-04. Nothing in this document is built, and nothing in `~/.agents` was modified while writing it (read-only inspection).
 
-Scope: implements decision 7 of the 2026-11-04 /clarify session. The file channels are frozen now. After go-live, a one-time migration imports them into the coordination store, the originals are backed up, and the channel files are deleted.
+Scope: implements decision 7 of the 2026-11-04 /clarify session, with the timing and exception set by decision 14 of the same day's /cplain session. The file channels are frozen. **Go-live is after S3 (the public stage)**, not after S1. Until then the channel stays frozen with one exception: Antigravity may still use it for research on this work. After S3, a one-time migration imports them into the coordination store, a tar backup of the originals is taken, and the channel files are deleted.
+
+Build timing (decision 36, 2026-11-05): the importer (GL-IMPORT) is built during S2 and S3 against copies of the channel files, so it is ready when S3 exits. The S3 final gate (FG) covers the server and the importer together; there is no separate go-live gate. After S3 exit the order is: dress rehearsal (GL-REHEARSE), the user's go, the real import (GL-APPLY), then retirement (GL-RETIRE). Because Antigravity may append research messages after the copies were taken (decision 14), the importer must tolerate messages appended after the freeze, and the dry run is rerun at go-live on the live files.
+
+Timing consequences (decision 14):
+
+- The server is live at S1, S2 and S3 before this migration runs. The migration is the last step of the roadmap, not an S1 follow-on.
+- The channel files can grow between now and go-live, because Antigravity may append research blocks. Every number in section 10.2 is a 2026-11-04 measurement and must be re-measured at go-live. The parser treats those late blocks like any other (same fence grammar, section 4).
+- Late Antigravity appends are expected, not "post-freeze appends". The freeze instant for the import (section 2, open point 1) is therefore the start of go-live day, when the user tells Antigravity to stop.
 
 Related documents:
 
 - [Evidence synthesis](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md)
-- [Old plan with DDR-001 to DDR-004](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
+- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
 - [Master tasklist](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/master-tasklist.md)
 - [a2a-python and bridges audit (TaskStore, DatabaseTaskStore)](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md)
 
@@ -27,9 +35,9 @@ Evidence labels used below:
 
 ## 2. Preconditions (the go-live gate for this migration)
 
-- Server running at S1 (127.0.0.1:8120 on alyx) with the spikes done and the store on the `a2a-data` volume.
-- The channel stays frozen: no agent appends to either file. The last write seen on 2026-11-04 was the final block of the coordination channel (conversation `01VA3JtCyASmfR8Q7Vcvehe7`, message 1, 14:22:23+02:00) `[verified]`.
-- The user records the exact freeze instant in the run manifest (open point 1). Blocks that begin after it are reported as post-freeze appends.
+- The S3 exit gate has passed (decision 14) and the user declares go-live. The server runs with the spikes done and the store on the `a2a-data` volume; the import goes through the in-container admin socket (section 7).
+- Between 2026-11-04 and go-live the channel is frozen for everyone except Antigravity's research use (decision 14). On go-live day the user stops that too. The last write seen on 2026-11-04 was the final block of the coordination channel (conversation `01VA3JtCyASmfR8Q7Vcvehe7`, message 1, 14:22:23+02:00) `[verified]`; later blocks are expected.
+- The user records the exact freeze instant in the run manifest (open point 1). Blocks that begin after it are reported as post-freeze appends. Blocks between 2026-11-04 and the freeze instant are ordinary imported content.
 - No watcher is running (section 11). A running watcher is only a warning, but a stale one should be stopped before deletion.
 - Explicit user go for the apply step, and a second explicit go (typed, on a real TTY) for the deletion step.
 - Dress rehearsal done on a scratch store (section 12) before touching the real volume.
@@ -123,7 +131,7 @@ Algorithm, per file:
 
 ## 6. Mapping to A2A objects
 
-A2A objects follow `a2a.proto` (`Task`, `TaskStatus`, `Message`, `Part`, `Role`) `[verified]` against `/home/rockad/projects/A2A/specification/a2a.proto`. The handle and card names follow decision 6.
+A2A objects follow `a2a.proto` (`Task`, `TaskStatus`, `Message`, `Part`, `Role`) `[verified]` against [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto) at commit `4735f48`. The handle and card names follow decision 6.
 
 ### 6.1 Identity
 
@@ -173,14 +181,14 @@ Reply-to resolution:
 
 - Terminal `COMPLETED` tasks are not offered by `a2a_inbox` (which lists SUBMITTED and queued items only). A2A forbids restarting a terminal task, so a stray `SendMessage` with an imported `task_id` fails by protocol.
 - The apply path writes through the server's admin path directly into the task store. It does not publish queue events, does not touch the wake logic, and does not count against the 20/h wake budget.
-- Imported tasks carry `metadata.coord.origin = "import"` (the trust field from decision 10; server-api.md 5.3 defines the value and 3.3.3 the visibility rule). They are visible to `local-harness` tokens only. The `remote-peer` and `status-client` scopes never see them, because the old channel discusses internal paths, plans and unreleased work.
+- Imported tasks carry `metadata.coord.origin = "import"` (the trust field from decision 10; server-api.md 5.3 defines the value and 3.3.3 the visibility rule). They are visible to `local-harness` API keys only. The `remote-peer` and `status-client` scopes never see them, because the old channel discusses internal paths, plans and unreleased work.
 - Imported tasks are exempt from any TTL or retention sweep the server later adds.
 - Bodies reach a model only through tool results, framed as untrusted data like any other body. They are never placed in a wake stub or in injected context.
 
 ## 7. Import safety
 
-- The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `token new` and `review`). No token scope grants it, including `local-harness`.
-- Recommended packaging `[unverified]`: the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -` (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until the plan's open decision 3 settles it). `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one process owns SQLite) holds. No bind mount of `~/.agents` into the container is needed. Open point 5 covers the admin socket.
+- The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `key create` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin API-key scope. No API-key scope grants it, including `local-harness`. Docker access on the host that runs the container is the credential.
+- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on core (decision 23), so the command is `ssh core docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on alyx (`~/.agents`), so parse, plan, tar backup and deletion happen on alyx; the store, `/data/imports/<run_id>/` and `/data/backups/` are on core's volume (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one process owns SQLite) holds. No bind mount of `~/.agents` into the container is needed.
 - The server re-validates every record from the bundle: recomputes the uuid5 ids, recomputes `content_sha256` from the text Part, checks `state == COMPLETED`, checks `coord.origin == "import"`. A bundle that disagrees with itself is rejected whole.
 - Credential scan on every `inner` (same four patterns plus the generic `Bearer <long token>` form). A match aborts with the line number and never prints the matched text.
 - Hard limits: block under 1 MiB, file under 16 MiB, at most 10,000 blocks per run. The current data is far below all of them.
@@ -336,11 +344,12 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 - Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full restore of `/data/backups/pre-import-<run_id>.db` is the heavy alternative.
 - Files (after deletion): extract the tar back over `$HOME` with `tar -C "$HOME" -xzf <tar> --keep-old-files`, so an existing file is never overwritten. Then re-run the dry-run, which must again report the same hashes.
 - Both: restore files first, roll the store back, then re-import from a fresh plan. Idempotency makes this safe to repeat.
-- Rollback never touches live tasks, tokens or sessions.
+- Rollback never touches live tasks, API keys or sessions.
 
 ## 14. Runbook (go-live day)
 
-- Confirm the channel is frozen. Record the freeze instant and the sha256 of both files.
+- Confirm the S3 exit gate has passed and the user has declared go-live (decision 14).
+- Confirm the channel is frozen, including Antigravity's research use, which stops now. Record the freeze instant and the sha256 of both files.
 - Stop any watcher still running (section 11).
 - Dry-run. Read the report. Compare against the section 10.2 numbers. Resolve every error and every ambiguous reply-to.
 - User go. Take the pre-apply store snapshot. Apply with the plan id. Let the automatic verify finish.
@@ -353,13 +362,13 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 
 Not resolvable from the evidence, in rough priority:
 
-- 1. Freeze instant. The decision says "frozen now" without a time. The last write is 2026-11-04T14:22:23+02:00 `[verified]`. The user (or the first dry-run) should fix the instant so post-freeze appends can be flagged.
+- 1. Freeze instant. The decision says "frozen now" without a time, and decision 14 allows Antigravity research appends until go-live. The last write seen is 2026-11-04T14:22:23+02:00 `[verified]` and is no longer the last write that will exist. The user fixes the instant on go-live day (when Antigravity stops) so that only appends after it are flagged.
 - 2. Turns archive. Import it with a second, guess-based parser (year inferred as 2026, no ids), or leave it as a plain file in the tar. Default here is leave it.
 - 3. Role for imported messages. `ROLE_AGENT` for all (recommended) or `ROLE_USER` for the sender side. Needs user confirmation.
 - 4. Machine name in handles. Decisions say `alyx`, the host name is `alyx-wsl`. Profile setting; confirm.
-- 5. Admin path. How `a2a-coord` talks to the single-owner server for `token new`, `review`, `admin-apply` (in-container Unix socket recommended, no TCP, no token scope). This document assumes it exists; the server spec must define it.
-- 6. Other machines. Only alyx-wsl was inspected. Whether the Mac or core hold their own copies of the channel files, watcher scripts or state files was not checked.
+- 5. Closed by decision 15 (2026-11-04, /cplain): admin path is `docker compose exec -it` over an in-container Unix socket, no TCP, no API key scope. Defined in server-api.md 3.7.
+- 6. Other machines. Only alyx-wsl was inspected. Whether the Mac or core hold their own copies of the channel files, watcher scripts or state files was not checked. Closer to go-live this matters more, since mac and core will be tailnet peers by then (S2).
 - 7. Does `DatabaseTaskStore` let the importer set its own created and updated timestamps? Not confirmed in the audit. If it does not, ordering and dates come from `metadata.coord.import.seq` and `begin_ts`, and the store's own timestamps will show the import time. Needs a spike on a scratch store.
-- 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness tokens only (server-api.md 5.3 and 3.3.3).
+- 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness API keys only (server-api.md 5.3 and 3.3.3).
 - 9. Retention of the backup tar. The tool never deletes it; how long to keep it is the user's call.
 - 10. Whether to keep the three `handoff/` prompts. They are untouched by this plan and backed up.

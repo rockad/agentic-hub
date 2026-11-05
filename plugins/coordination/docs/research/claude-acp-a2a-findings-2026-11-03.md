@@ -2,7 +2,7 @@
 
 Author: Claude Code (macp), 2026-11-03. Research only; nothing installed or run. Evidence labels: **verified** (I read the source myself), **reported** (a search result or a peer said so; not read in full by me), **unverified** (no source found).
 
-## 1. What ACP is for, from its own docs (verified, ~/projects/agent-client-protocol, HEAD dc011f0)
+## 1. What ACP is for, from its own docs (verified, [`agentclientprotocol/agent-client-protocol`](https://github.com/agentclientprotocol/agent-client-protocol/tree/dc011f0) at HEAD dc011f0; the local clone is now deleted)
 
 - Architecture page: "the editor boots the agent sub-process on demand, and all communication happens over stdin/stdout"; "ACP works when you're using a code editor to talk to a model you trust". A client drives an agent. It is not a peer-to-peer protocol.
 - Remote transport (Streamable HTTP and WebSocket) is an RFD proposal; a Transports Working Group was just formed. Today ACP is stdio only.
@@ -25,7 +25,7 @@ Author: Claude Code (macp), 2026-11-03. Research only; nothing installed or run.
 - Two peers (Claude Code and Antigravity) would each have to be both ACP agent and ACP client, or sit behind a router that is the client of both. The router is then the coordinator, which conflicts with "no master, no dependent" unless it is deliberately neutral.
 - I found no source showing two interactive sessions exchanging turns over ACP (unverified, searched).
 
-## 4. A2A (verified, ~/projects/A2A, spec 1.0.1)
+## 4. A2A (verified, a2aproject/A2A at 4735f48, spec 1.0.1)
 
 - Task delegation between independent agent services over HTTP; Agent Card for discovery; task states SUBMITTED, WORKING, INPUT_REQUIRED, AUTH_REQUIRED, COMPLETED, CANCELED, FAILED, REJECTED. No concept of local resource slots or file leases.
 - Fit for a single host is weak; the state vocabulary and the card idea are reusable as principles (the user's stated preference was "ACP with A2A in mind (principles)", relayed).
@@ -38,8 +38,8 @@ Author: Claude Code (macp), 2026-11-03. Research only; nothing installed or run.
 
 ## 6. Sources
 
-- ACP docs and RFDs: ~/projects/agent-client-protocol (docs/get-started/architecture.mdx, docs/rfds/*, docs/updates.mdx).
-- A2A: ~/projects/A2A (specification/a2a.proto, CHANGELOG.md).
+- ACP docs and RFDs: [`agentclientprotocol/agent-client-protocol` at dc011f0](https://github.com/agentclientprotocol/agent-client-protocol/tree/dc011f0) (`docs/get-started/architecture.mdx`, `docs/rfds/*`, `docs/updates.mdx`).
+- A2A: [`a2aproject/A2A` at 4735f48](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) ([`specification/a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto), [`CHANGELOG.md`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/CHANGELOG.md)).
 - Zed claude-agent-acp: https://github.com/zed-industries/claude-agent-acp (read via fetch).
 - ACP agents list: https://agentclientprotocol.com/overview/agents (read via fetch; Claude, Gemini CLI, OpenCode listed; Antigravity absent from that page).
 - OpenCode ACP docs: https://opencode.ai/v2/docs/cli/acp/ and issue https://github.com/anomalyco/opencode/issues/8931 (seen in search results).

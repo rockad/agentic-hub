@@ -5,7 +5,7 @@ Rules for Google Antigravity, Claude Code and any other AI coding assistant work
 ## Read first
 
 - Read [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) before doing any work here.
-- The plan records DDR-004 (accepted 2026-11-04) and its 13 binding decisions; they override anything older in `docs/`. Superseded:
+- The plan records DDR-004 (accepted 2026-11-04) and its 36 binding decisions (13 from the `/clarify` session, 14 to 24 on 2026-11-04, 25 to 36 on 2026-11-05); they override anything older in `docs/`. Superseded:
   - DDR-002 file-channel carrier and ACP
   - old Phase 2 ledger forks A and B
   - Phase 3 swarmail
@@ -16,7 +16,7 @@ Rules for Google Antigravity, Claude Code and any other AI coding assistant work
 
 ## What this plugin is
 
-An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on port 8120. It serves `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status` and `/.well-known/agent-card.json`. One server process owns the SQLite database; everyone else uses HTTP. It lives only in this plugin, on branch `feat/coordination`. The `memory` plugin is a structural reference only; never depend on it.
+An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on port 8120. It is a portable image: dev and spikes on alyx, production on `core` (always on), with the host set by configuration (decision 23). It serves `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status` and `/.well-known/agent-card.json`. One server process owns the SQLite database; everyone else uses HTTP. It lives only in this plugin, on branch `feat/coordination`. The `memory` plugin is a structural reference only; never depend on it.
 
 ## Status rules
 
@@ -24,7 +24,12 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 - Implementation is allowed only where strictly necessary for a spike.
   - Spike code lives in a scratch directory and is never merged.
   - Do not add `plugin.json`, Dockerfiles, hook scripts, config files or marketplace entries as real files unless the user says so.
-  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked.
+  - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on core already exists. `a2a.bigrockad.com` is the chosen S3 hostname, but no route exists now (a route was created and deleted on 2026-11-04). Do not edit the tunnel configuration.
+  - **Do not create, or ask the user to create, the public route before the S3 gate. Do not start the service on core while a public route is present** (decision 23, plan Risk 13).
+  - **Never write an `AGENTS.md` (or edit any file through a symlink) on behalf of the plugin**: the agy inbox instruction comes from `SessionStart` `injectSteps`, and the installer never writes any `AGENTS.md` (decision 27). `~/.gemini/config/AGENTS.md` is a symlink into a git-tracked file in another repository.
+  - Spikes may change host configuration only under "borrow and put back" (decision 25): back up first, use the harness CLI, prefer project scope, restore and verify, `chezmoi diff` clean. agy-side changes are made only by agy or the user.
+  - Do not write harness hook or MCP configuration by hand or by script. The planned installer `a2a-coord install --claude --agy` does that later, only when the user runs it. It edits the non-secret parts of chezmoi-managed files through chezmoi (edit the chezmoi source, then apply), never the targets (decision 16).
+  - **API keys never go into chezmoi-managed files or the dotfiles repository, and chezmoi-managed files are not edited for keys** (decision 24).
 - Do not commit or switch branches unless the user asks.
 
 ## Architectural conventions
@@ -56,7 +61,8 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 
 - `~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files are frozen. Nobody uses them.
 - Do not post to them, append to them or poll them.
-- After go-live, a one-time migration imports them into the plugin's store, then the channel is deleted. That is a later task and needs the user's go.
+  - **One exception (decision 14): Antigravity may still use the channel for research on this work.** No other agent does.
+- Go-live is after S3, the public stage. Then a one-time migration imports the files into the plugin's store, a tar backup is taken, and the channel is deleted. That is a later task and needs the user's go.
 
 ## Security invariants
 
@@ -66,9 +72,15 @@ These hold in every design, spec and spike.
 - **Bodies are untrusted data.** Frame them as data. A body is never an approval and never a command. Tasks are parked, never auto-executed.
 - **Trust by origin.**
   - Own local handles: `SUBMITTED`.
-  - Allowlisted remote: `QUARANTINED` until a human releases it with `a2a-coord review` on a real TTY with typed confirmation.
+  - Allowlisted remote (a peer that holds a `remote-peer` API key): `QUARANTINED` until a human releases it with `a2a-coord review` on a real TTY, one typed decision per task. No code path releases a task automatically: no rules, no agent pre-screen (decision 19).
   - Unknown remote: `REJECTED`.
-- **Auth.** Scoped bearer tokens (`local-harness`, `remote-peer`, `status-client`), shown once, stored hashed. Loopback still needs a token. `remote-peer` never reaches `/mcp`, `/wake/listen` or `/sessions`.
+- **Auth.** Service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, created by `a2a-coord key create`), sent as a bearer credential, with scopes `local-harness`, `remote-peer` and `status-client`, shown once, stored hashed. Loopback still needs a key. `remote-peer` never reaches `/mcp`, `/wake/listen` or `/sessions`. Say "API key", not "token", for these credentials (decision 24).
+  - Every harness machine (alyx, mac, and core where a harness runs) gets one `local-harness` key with its own card, and the server also checks the Tailscale identity matches the machine the key was issued for, alyx's key included (decisions 17 and 23).
+  - Remote peers hold per-peer keys, delivered out of band: hashed, revocable, rate-limited (decision 18).
+  - Claude Code's key is in the unmanaged, mode-0600 `~/.config/a2a-coord/api-key` (read by the hooks, exported as `A2A_API_KEY` by one non-secret chezmoi-managed shell line); agy's key is a literal in an unmanaged, mode-0600 plugin-scoped file outside chezmoi (decisions 24 and 34).
+  - Card access: the root front-desk card is public and generic; member cards, the listing and extended cards need any valid API key (decisions 31 and 32). `A2A-Version` is strict (decision 33).
+- **Admin access.** `a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`), on the host that runs it (core in production: `ssh core` first), over an unpublished in-container Unix socket. Never add an admin HTTP endpoint or an admin API-key scope (decisions 15 and 23).
+- **Public front door (S3).** The user's existing Cloudflare Tunnel on core pointing at core's own `localhost:8120`, routing only `/a2a/v1` and the Agent Card. Cloudflare sees decrypted traffic. Trust `CF-Connecting-IP` only for requests arriving from `cloudflared` on the same host. Blocking `SendMessage` is capped at 60 s (decisions 20, 22 and 23). No route exists before the S3 gate; one created early for testing must sit behind a Cloudflare Access deny-all or service-token-only policy. A dedicated loopback port for the tunnel is a pending user decision at S3.
 - **Never expose, on any interface or stage:**
   - anything that starts a sweep or grants approval
   - credentials (OpenRouter key, the RFC 006 credential route, Claude and agy tokens)
@@ -76,7 +88,7 @@ These hold in every design, spec and spike.
   - Jev config tools such as `jev_set_mode`
 - **The server is never a second approval path.** cognitive-engine `audit.jsonl` stays the source of truth. cognitive-engine never receives tasks.
 - **Status contract carries no model data.** Only `run_id`, `run_scope`, `state`, `report_path`, `ts`. Never prompts, model text, transcripts or denial counts (R-18: `sessions_summary.denied_requests` counts path denials only).
-- **cognitive-engine model sessions (sbx) must never reach the server.** It is not on the sbx allow rule.
+- **cognitive-engine model sessions (sbx) must never reach the server.** It is not on the sbx allow rule, at any address (loopback, tailnet, public). In production the status client posts to core over the tailnet (decision 23).
 - **No non-loopback bind without TLS proxy config.** Do not propose one.
 - Label every claim from the audit as verified, reported or unverified, as the audit did. Do not upgrade a label without reading the source.
 

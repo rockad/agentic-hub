@@ -227,3 +227,33 @@ Scratch files kept under `/home/rockad/scratch/a2a-spikes/`:
 - SP2 interactive part must confirm `${A2A_API_KEY}` expansion in an interactive session for `tools/call` and `DELETE`, in project scope after approval, and with a GUI-launched Claude.
 - Choose one spelling for the wake headers (`X-Session` or `X-Coord-Session`) in the spec.
 - Make sure the real `/mcp` answers `server/discover` with a plain error rather than a 5xx or a dropped connection.
+
+## 6. Stub patches for the user-run spikes (runbook 0.6, applied 2026-11-05)
+
+All three patches are in `/home/rockad/scratch/a2a-spikes/stub/stub.py` (scratch only).
+
+- **Patch 1, `POST /wake/pending` (SP1 T11):** verified.
+  - Each request logs a `wake_pending_body` event with the first 4 KB of the body, the `Content-Type` and the header names. The bearer value is never logged (`rg -c spike-token log/stub.jsonl` returns 0).
+  - The answer depends on `ctl/wake-pending-mode`:
+    - `hso` is the default and returns 200 with `hookSpecificOutput`.
+    - `flat`, `sysmsg`, `empty`, `plain` and `bad` return 200 with the body given in runbook 0.6. `plain` and `bad` are sent as `text/plain`.
+    - `e500` returns 500.
+    - `slow` answers as `hso` after 8.0 s.
+- **Patch 2, binding key (SP2 A4):** verified.
+  - `tools/call` binds on `params._meta["antigravity.google/conversation_id"]` when it is present, and falls back to `Mcp-Session-Id` otherwise.
+  - `a2a_hello` logs `bind` with `key`, `key_kind` and `handle`. An unbound `a2a_inbox` logs `unbound`.
+  - Curl test on one `Mcp-Session-Id`:
+    - conversation A unbound, then `a2a_inbox` returns the error
+    - `a2a_hello` binds A
+    - `a2a_inbox` for A succeeds
+    - conversation B on the same `Mcp-Session-Id` is still unbound
+  - Claude's path, keyed on `Mcp-Session-Id`, is unchanged; the self-test M2 still passes.
+- **Patch 3, `POST /sessions/end`:** verified. It returns 200 `{"ok":true}` and logs `session_end`.
+- **Regression:** verified. `selftest.sh` with `A2A_STUB_WAKE_BUDGET=3` passes every case it ran before the patch.
+- **Helper prep for the SP2 agy half:** done.
+  - Baselines from runbook 0.4 are in `runlogs/`.
+  - `lib.sh` (0.5) is written.
+  - AGY-SETUP (3.2) wrote the scripts, which pass `sh -n` and shellcheck, and the staged hooks and plugin candidates, whose JSON is valid and whose `mcp_config.json` files are mode 0600.
+  - The fake-stdin hook run with the stub down printed `{}` and exited 0.
+  - `agy-inject-mode` is `none`.
+- **Rule slip:** the helper ran `agy --version` (it returned 1.5.1) while recording tool versions. Runbook 0.1 forbids the helper to probe agy in any way. No other agy process was started, driven or touched.

@@ -8,16 +8,19 @@ An agent-provider-agnostic hub for AI skills, plugins, and MCP integrations. Bui
 agentic-hub/
 ├── .claude-plugin/       # Claude Code plugin registry manifest
 │   └── marketplace.json
+├── docs/                 # Repo-wide reviews, live backlog (docs/backlog.md), research evidence
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)
 │   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
 │   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration
 │   ├── local-transcribe/ # Local Russian/English audio/video transcription & call recorder
-│   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
-│       ├── servers/lookup/ # Resident SQLite FTS5 search engine & extractors
-│       ├── skills/       # memory, lookup, recall
-│       └── docker-compose.yml # Dual-service daemon stack for recall & lookup
+│   ├── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
+│   │   ├── servers/lookup/ # Resident SQLite FTS5 search engine & extractors
+│   │   ├── skills/       # memory, lookup, recall
+│   │   └── docker-compose.yml # Dual-service daemon stack for recall & lookup
+│   └── subagents/        # Specialised engineering, QA, research and operations subagents
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR

@@ -57,7 +57,7 @@ This document keeps the labels where a conclusion depends on them. The full evid
 | What | For | Why |
 |---|---|---|
 | Claude inbox socket wake (`CLAUDE_CODE_MESSAGING_SOCKET`) from an `async: true` hook (the plan's SP6) | coordination Claude wake | Removes the `asyncRewake` timeout and the Esc re-arm gap; keeps stub-only text |
-| Claude plugin monitors (new SP7) | coordination Claude wake | A session-long background process whose output reaches Claude; no hook timeout at all |
+| Claude plugin monitors (new SP7) | coordination Claude wake | A session-long background process whose output reaches Claude; no hook timeout at all. Unverified: whether its output starts a turn in an idle session. SP7 must test that first. |
 | `codex queue` stub wake | Codex as a peer | A durable native queue that runs only when the thread is idle; drives no TUI |
 | OpenCode V2 plugin `session.synthetic` with `delivery: "queue"` | OpenCode as a peer | Documented, durable, in-process self-wake |
 
@@ -89,7 +89,8 @@ OpenRig, vibe-kanban (shutting down), OpenUI, Claude agent teams as a substrate,
    - it ignores `CLAUDE_CODE_SUBAGENT_MODEL`
    - it misses plugin-scoped agents
    - the OpenCode adapter never fires (wrong tool name and wrong argument field in V2)
-   - Codex fails open on `ask`
+
+   A future Codex adapter must return `deny`, because Codex fails open on `ask`.
 4. **The handle format is unreconciled**: the spike used `name#sid8`, the spec forbids `#`.
 5. **`server-api.md` section 11.2 has the agy hooks.json shape wrong.**
 6. **Jev and memory exist twice** (agentic-hub and cognitive-engine) with the same names and the same `~/.config/jev/` files. Retirement (RFC 005) has not started.
@@ -141,8 +142,8 @@ Every candidate was measured against these. They come from your own documents (`
   - The S1 backlog from the spikes is written down. S1 has not started.
 - Documentation has drifted:
   - The coordination README still says "next step: S0".
-  - The root README and AGENTS.md trees omit coordination and subagents.
-  - AGENTS.md points at a `plugins/jev/opencode/` that does not exist.
+  - The root README and AGENTS.md trees now list coordination and subagents (fixed 2026-11-07), but they still omit the mcp-toggle, celi5 and cplain skills.
+  - README and AGENTS.md still point at a `plugins/jev/opencode/` that does not exist.
   - `marketplace.json` `updated_at` is 2026-10-07.
 
 ### ax (v0.8.4)
@@ -156,13 +157,16 @@ Every candidate was measured against these. They come from your own documents (`
 ### cognitive-engine
 
 - Only Track 1 (Jev and the adapters) is on `main`.
-- A merge queue of nine stacked PRs is open:
+- Eleven PRs are open. Nine are in the merge queue, mostly stacked:
   - #4 and #18: guard fixes, including the PR #3 remediation
   - #8: Track 2
+  - #9: conformance runner
+  - #10: SMB sources
   - #5 and #6: Track 3
   - #7: removes the hand-relayed handoff
   - #11: RFC 006
-  - #12 and #13 (BuildSlot) have no slot yet
+
+  Two more have no slot yet: #12 (Argon hardening) and #13 (BuildSlot).
 - The bridge between Claude and Antigravity is a hand-relayed markdown file. It gives fixed "Orchestrator" and "Builder" roles, which conflicts with symmetric agency, and its Turn 4 is stale.
 - RFC 005 plans to retire agentic-hub's `plugins/jev` and `plugins/memory`. Its target marketplace keeps four plugins and drops coordination and subagents.
 
@@ -183,7 +187,7 @@ Why no native feature replaces it:
   - it is plain text, not durable, and has no task states or quarantine
   - across machines it is relayed through Anthropic and needs both sessions on Remote Control
   - a container cannot reach the host socket
-- **Claude agent teams** are a fixed lead with teammates that die with the session. Teammates self-claim work, which is auto-execution. The tmux mode uses `send-keys`.
+- **Claude agent teams** are a fixed lead with teammates that die with the session. Teammates self-claim work, which is auto-execution. The tmux mode uses `send-keys` (reported in GitHub issues, and consistent with CHANGELOG 2.1.183).
 - **Claude Channels** are still a research preview:
   - each launch needs a development-channel flag
   - idle sessions reportedly drop events
@@ -197,7 +201,7 @@ What to take:
 | Harness | Best compliant wake | Status |
 |---|---|---|
 | Claude Code | today: `asyncRewake` long-poll (SP1 passed). Better: an `async: true` hook that keeps one listener alive and posts the stub to the session's own inbox socket (SP6). Alternative: a plugin monitor (SP7). | SP6 and SP7 are spikes. Vary the stub (carry the count) or the native duplicate filter drops repeats. |
-| Antigravity (agy) | none while idle. `SessionStart` and `PreInvocation` `injectSteps` surface the count at the next model call. The human is the wake, now reachable by phone through `--remote-control`. | As planned. The held `Stop` park stays spike-only. |
+| Antigravity (agy) | none while idle. `SessionStart` and `PreInvocation` `injectSteps` surface the count at the next model call. The human is the wake: ntfy tells them an A2A task arrived, and `--remote-control` lets them answer from a phone. Remote Control does not notify on external events itself. | As planned. The held `Stop` park stays spike-only. |
 | Codex | `codex queue --thread <id>` with the constant stub. The daemon parks it and runs it only when the thread is idle. | Spike, then your decision: it is an external process enqueueing into the thread, though it drives no TUI. |
 | OpenCode | an in-process V2 plugin holding one long-poll for the whole OpenCode service, then `session.synthetic(..., delivery: "queue")` with the stub; or `instructions.entry.put` for a no-turn notice | Spike, pinned version (`experimental.idle` may change). Only worth it on a ChatGPT or Copilot plan (section 5). |
 | Copilot CLI | `sessionStart` stub; `agentStop` block with the stub (30 s timeout, 8-block cap); `/every` as a paid fallback | Feasible; terms are permissive. |
@@ -218,9 +222,10 @@ Reconcile the handle grammar first (section 7, item 4).
 - Gemini CLI
 - Copilot CLI
 - Codex (`bearer_token_env_var`)
-- OpenCode (headers)
 
-agy cannot expand variables, as already planned around.
+OpenCode supports headers, but whether it expands variables in them is unverified; read the key from a 0600 file. agy cannot expand variables, as already planned around.
+
+**Listener caveat (Claude).** An idle, unattached `claude --bg` session's process may be stopped after about an hour, which kills its `asyncRewake` or monitor listener. The server's "recipient not listening" badge must cover this.
 
 **Borrow from OpenRig** (concepts only):
 
@@ -239,11 +244,11 @@ History: beads was evaluated on 2026-11-03 as the coordination ledger and **supe
 
 | Option | Ready query | Atomic claim | Auth | Host writes | Licence | Verdict |
 |---|---|---|---|---|---|---|
-| beads (`bd`) | yes, in SQL, with explain | yes: compare-and-set plus 5-minute lease, heartbeat, reclaim | MCP: stdio, none. HTTP: shared secret, no scopes | plain `bd init` writes `AGENTS.md` through symlinks and auto-commits with `--no-verify`; `--stealth` avoids it | MIT | **trial (stealth) or borrow the model** |
+| beads (`bd`) | yes, in SQL, with explain | compare-and-set plus 5-minute lease, heartbeat, reclaim. Strictly atomic only in server mode; in embedded mode run one writer at a time | MCP: stdio, none. HTTP: shared secret, no scopes | plain `bd init` writes `AGENTS.md` through symlinks and auto-commits with `--no-verify`; `--stealth` avoids it | MIT | **trial (stealth) or borrow the model** |
 | Kanzo | via filter (`status:todo -is:waiting -is:human`); `next_task` is atomic | only via `next_task`; no assignee, no lease | **none**; HTTP `/mcp` and `/api/*` are on by default | none | AGPL-3.0 | **trial (stdio, HTTP off) or skip** |
 | Claude agent teams' task list | implicit (pending, unowned, unblocked) | file lock | n/a | runtime-owned, undocumented schema | n/a | **borrow the model** |
-| Gitea issue dependencies | `/issues/{i}/dependencies` and `/blocks` (reported) | no | your Gitea tokens | none | MIT | **borrow**: extend the gitea plugin read-only |
-| GitHub Issues (`gh` ≥ 2.94 `--blocked-by`) | yes | no | GitHub | none | n/a | mirror only, for `/delegate` work |
+| Gitea issue dependencies | `/issues/{i}/dependencies` and `/blocks` (reported); ready computed client-side | no | your Gitea tokens | none | your own instance | **adopt as read-only tools** in the gitea plugin. The sweep rated it "adopt as the backlog". Here it stays a source, not the coordination backlog, because it has no claims or leases. |
+| GitHub Issues (`gh` ≥ 2.94 `--blocked-by`) | none native; computed client-side (reported) | no | GitHub | none | n/a | mirror only, for `/delegate` work |
 | vibe-kanban | client-side only | n/a | none | writes `AGENTS.md` and agent configs | Apache-2.0 | **skip** (sunsetting) |
 | Taskmaster AI | yes | n/a | n/a | n/a | MIT + Commons Clause | **skip** (rider) |
 | Codex message board, agent graph | in development | n/a | n/a | n/a | n/a | watch |
@@ -370,7 +375,7 @@ Rules:
 | skip | Snyk Agent Scan | Uploads tool descriptions and runs servers from your config |
 | skip | Schemathesis | No JSON-RPC support |
 
-**Note on the Gemini CLI A2A client.** It can call A2A agents and makes a convenient interop test client. It speaks the 0.3 SDK and sends no `A2A-Version` header, so the server's strict version check (decision 33) will reject it.
+**Note on the Gemini CLI A2A client.** It can call A2A agents, but it speaks the 0.3 SDK and sends no `A2A-Version` header (found by grep). Decision 33's strict version check would therefore likely reject it; this is unverified on the wire. It is usable as an interop test client only with that check relaxed for tests.
 
 ### G8. Reports and status pages
 
@@ -392,7 +397,7 @@ Rules:
 | Terms on automating it | native features fine; third-party use of the plan credentials forbidden | FAQ: third-party wrapping unsupported, names Claude Code and OpenCode | no restriction found (unverified) | depends on the provider; Claude Agent provider collides with Anthropic's Agent SDK note | OAuth piggybacking banned; wrapping with an API key allowed | automation sanctioned (`-p`, SDK, ACP) |
 | Idle wake | `asyncRewake` (proven); inbox socket and plugin monitors (spikes) | none | `codex queue` (spike) | V2 plugin synthetic (spike) | none | `agentStop` block, `/every` |
 | Surfacing hooks | `SessionStart`, `UserPromptSubmit` | `SessionStart`, `PreInvocation` `injectSteps` | `SessionStart`, `UserPromptSubmit` | `instructions.entry.put` | `SessionStart`, `BeforeAgent` | `sessionStart` |
-| MCP bearer from env | yes | no (literal in a 0600 file) | yes | yes | yes | yes |
+| MCP bearer from env | yes | no (literal in a 0600 file) | yes | headers yes; env expansion unverified | yes | yes |
 | Native multi-agent | subagents, agent teams (lead-based) | subagents, teamwork preview (lead-based) | subagents, agent roles; message board in development | subagents, background | subagents, remote A2A subagents | custom agents, `/delegate` to cloud |
 | In ax today | yes | yes (best support) | launch only | launch, history, title (direct DB write) | via TOML; alias bug | via TOML |
 | Recommended role | peer (now) | peer (now) | candidate peer, if you hold a ChatGPT plan | candidate peer, only on ChatGPT or Copilot | skip on your plan | ax harness; candidate peer |
@@ -403,7 +408,7 @@ Rules:
 
 - agy uses `~/.gemini/config/` and `~/.gemini/antigravity-cli/`.
 - Gemini CLI uses `~/.gemini/settings.json`, `GEMINI.md`, `tmp/` and `agents/`.
-- Both load skills from `~/.agents/skills`.
+- Gemini CLI loads skills from `~/.agents/skills` and `<workspace>/.agents/skills` (verified). agy reportedly loads the workspace `.agents/skills`, so a workspace skill probably loads in both.
 
 ---
 
@@ -420,6 +425,7 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
 - HTTP `/mcp` and `/api/*` are **on by default**, with no auth. Any local process that sends no `Origin` can read and write.
 - `POST /api/update` downloads an installer and pipes it to `sh`, also without auth. The stdio server re-execs itself when its binary changes.
 - The server instructions tell agents to update the board unprompted. That is in tension with "parked".
+- Projects are keyed by `owner/repo` with the host dropped. A Gitea repo and a GitHub repo with the same owner and name collide, which matters because your repos are on Gitea.
 - If trialled:
   - stdio only, `mcp_http = false`, no share, join or service
   - deny `delete_task`
@@ -436,7 +442,8 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
   - leases with heartbeat and reclaim
   - `row_lock` stops silent merges of conflicting claims
   - SSE event stream with a cursor contract
-- Dolt is now the only backend; SQLite was removed. Embedded mode is single-writer.
+- Dolt is now the only backend; SQLite survives only as a migration bridge.
+- Embedded mode is single-writer, and `bd serve` refuses it because claims there are not strictly atomic. Across machines, conflicting claims surface later as Dolt merge conflicts.
 - Plain `bd init` writes `AGENTS.md` **through symlinks**, installs Claude, Codex and Cursor config, and auto-commits with `--no-verify`. `bd setup gemini` writes `~/.gemini/settings.json` globally. Never run either.
 - A compliant trial:
 
@@ -548,6 +555,9 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
   - `conversation_summaries.db` for coordination
   - rules and `AGENTS.md`
 - **Caveat:** the official pages could not be fetched from this session. Re-read the live FAQ before S1, since plan Risk 5 is still open.
+- **Two reported risks to check in A8 and SP3**, either of which would break a plugin-only install:
+  - plugin hooks' inject and veto outputs may be ignored
+  - external hook commands may need listing in `trusted_hooks.json`
 
 ### Codex
 
@@ -581,6 +591,7 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
   - a durable session inbox with `queue` or `steer`, and `resume:false`
   - no-turn instruction entries
   - a password-protected local API
+- **If it becomes a peer**, take tasks under tighter permissions (`ask` on shell and edit), or through a dedicated restricted agent. The default Build agent has broad tool access. Use `delivery: "queue"`, never `steer`, and keep OpenTunnel remote pairing off.
 - **Fix ax's title sync.** It writes a projection in an event-sourced store; use the API instead.
 - **Fix the Jev adapter** (G5).
 
@@ -604,6 +615,8 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
 - **Session control.** `--session-id`, `--resume` and `--continue`.
 - **Hooks** close to Claude's.
 - **Watch out:** it reads repository-level `.claude/settings.json` hooks and `.claude/agents`, so repository-scoped Claude hooks fire twice. Keep coordination hooks user-scoped, with a separate `~/.copilot/hooks` target.
+- **Fail-open risk:** a command hook that times out fails open, even `preToolUse` (30 s default). A Jev guard on Copilot would inherit that.
+- Spike the wake before building a peer.
 - GitHub Issues and `/delegate` suit GitHub-hosted repos only. Your Gitea repos do not fit.
 
 ### Other tools from the sweep
@@ -658,7 +671,7 @@ All verified in source unless marked.
    - Same plugin and server names, the same 12 tool names, the same `~/.config/jev/` files.
    - Installing both gives two `PreToolUse` guards and a name clash.
    - RFC 005 Phase A (deprecation notices) has not started.
-   - The two copies are drifting: Argon changes landed in both.
+   - The two copies are drifting. Argon tiers landed in the hub (`ae8b851`), and Argon hardening is open in cognitive-engine PR #12.
    - RFC 005's target marketplace drops coordination and subagents.
 7. **Jev hard-codes Recall on `:8110`** (`telemetry.ts:65`). RFC 003 moves memory to `:8105` and RFC 005 retires `:8110`, so Jev's recall read will fail silently after migration.
 8. **Memory binds to all interfaces.** `plugins/memory/docker-compose.yml` publishes 8110 and 8100 with no host IP, so they bind 0.0.0.0 without auth. The README says 127.0.0.1.
@@ -668,9 +681,9 @@ All verified in source unless marked.
 12. **Stale documentation:**
     - the coordination README status, branch and `DatabaseTaskStore` lines
     - plan §7 still calls C9 unverified
-    - root README and AGENTS.md trees miss coordination, subagents and mcp-toggle
+    - root README and AGENTS.md miss the mcp-toggle, celi5 and cplain skills (coordination and subagents were added 2026-11-07)
     - `plugins/jev/opencode/` does not exist
-    - the jev README hook path is wrong (`./claude/hooks.json`)
+    - the jev README says the hooks are at `hooks/hooks.json`; the real path is `./claude/hooks.json`
     - the jev version mismatch (2.3.0 against 2.0.0 in `package.json`)
     - ax CHANGELOG and tags
 13. **Doc links in coordination point at `/home/rockad/...`.** They resolve only on alyx.
@@ -690,7 +703,7 @@ Ordered by dependency. Nothing here needs to happen urgently.
    - fix `server-api.md` 11.2 to agy's named-group flat form
    - scope the `Stop` scan
    - refresh the README status
-   - correct the agent-teams claim in `bridge-v2-ecosystem-analysis.md`
+   - correct `bridge-v2-ecosystem-analysis.md`: line 71 (agent teams), and lines 59 to 61 and 87 to 96 (beads storage, the `mcp_agent_mail_rust` pairing)
 4. **cognitive-engine:**
    - record the coordination contract and the sbx exclusion in RFC 001/004
    - land PR #4 (guard)
@@ -698,7 +711,7 @@ Ordered by dependency. Nothing here needs to happen urgently.
    - fix the OpenCode adapter (`subagent`, `event.input.prompt`)
    - add `CLAUDE_CODE_SUBAGENT_MODEL` and plugin-agent resolution to the guard
 5. **agentic-hub housekeeping:**
-   - root README and AGENTS.md trees
+   - list the missing skills in README and AGENTS.md
    - jev README path and version
    - remove the `plugins/jev/opencode/` references
    - bind memory to 127.0.0.1
@@ -777,7 +790,13 @@ To other coordination research:
 
 ## 11. Method and evidence
 
-**How the review ran.** Seventeen research agents, run in parallel through workflows, each answered one question:
+**How the review ran.** Seventeen research agents ran, mostly in parallel through workflows:
+
+- Two early surveys of ax and cognitive-engine fed the first note and are not kept separately.
+- Fifteen produced the kept evidence reports.
+- A final agent fact-checked this document against them.
+
+Each answered one question:
 
 - source deep-reads of Kanzo, OpenRig, OpenUI, beads and vibe-kanban
 - official docs, changelog and source for each harness

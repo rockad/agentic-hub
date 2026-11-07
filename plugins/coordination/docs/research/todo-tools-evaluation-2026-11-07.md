@@ -1,5 +1,14 @@
 # TODO tools evaluation: Kanzo, OpenUI, OpenRig against coordination, ax and cognitive-engine
 
+> [!NOTE]
+> **Superseded on 2026-11-07** by the repo-wide [adoption review](file:///home/rockad/projects/agentic-hub/docs/adoption-review-2026-11.md). That review re-checked this note against source and lists the corrections in its section 10. The main ones:
+>
+> - Kanzo's HTTP `/mcp` is on by default and Kanzo has no assignee model.
+> - RFC 001 names no Harness² port.
+> - The PR #3 fixes are in open PR #4.
+>
+> `TODO.md` moved to [`docs/backlog.md`](file:///home/rockad/projects/agentic-hub/docs/backlog.md). This note is kept as history.
+
 Author: Claude Code, 2026-11-07. Read-only analysis. It covers the three tools in [`TODO.md`](file:///home/rockad/projects/agentic-hub/TODO.md), checked against:
 
 - this plugin (`plugins/coordination`, A2A server, planning plus S0 spikes)

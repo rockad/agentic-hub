@@ -11,16 +11,19 @@ This file provides guidance to Google Antigravity (CLI and IDE), Claude Code, an
 
 ```
 agentic-hub/
+├── docs/                 # Repo-wide reviews, live backlog (docs/backlog.md, replaces TODO.md), research evidence
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)
 │   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
 │   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # Jev routing, scoring, model ceiling guard, and automated task execution
 │   ├── local-transcribe/ # Local Russian/English speech transcription and call recording
-│   └── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
-│       ├── servers/lookup/ # Relocated FTS5 search engine & extractors
-│       ├── skills/       # memory, lookup, recall
-│       └── docker-compose.yml # Resident daemon compose stack
+│   ├── memory/           # Unified session memory umbrella wrapping Recall (:8110) & Lookup (:8100)
+│   │   ├── servers/lookup/ # Relocated FTS5 search engine & extractors
+│   │   ├── skills/       # memory, lookup, recall
+│   │   └── docker-compose.yml # Resident daemon compose stack
+│   └── subagents/        # Specialised engineering, QA, research and operations subagents
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── markdown-convert/ # Document to Markdown converter

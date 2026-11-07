@@ -67,7 +67,7 @@ Terms:
         |  routes: /mcp  /a2a/v1  /wake/*  /sessions  /status  /.well-known/...    |
         |  service layer: routing, state machine, quarantine, offers, wake budget  |
         |  memory: listener table, MCP session bindings                            |
-        |  a2a-python DatabaseTaskStore + our own tables (same SQLite file)        |
+        |  CoordTaskStore (SDK VersionedDatabaseTaskStore) + our tables, one file  |
         |  admin socket /run/a2a/admin.sock  <--  a2a-coord (runs inside container)|
         +-----------+-------------------------------------------------------------+
                     | SQLite, WAL
@@ -86,7 +86,12 @@ Terms:
 Engine rules [design]:
 
 - URL `sqlite+aiosqlite:////data/a2a.db`, from `A2A_DB_URL`.
-- Small pool, because there is one writer process. Writes from our own tables and from `DatabaseTaskStore` go through the same engine.
+- **The plain `DatabaseTaskStore` is not sufficient** [verified, SP5, 2026-11-05, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)]. Under a same-task race it lost 300 of 300 updates and double-took 300 of 300 tasks, and `busy_timeout=0` failed 1499 of 2000 saves. SP5 passed with four wrappers of ours, which this spec requires:
+  - Write engine: a single connection (`pool_size=1`) whose every write transaction starts with `BEGIN IMMEDIATE`, plus a separate read engine. Writes from our own tables and from the task store go through the write engine.
+  - Compare-and-swap transitions through the SDK `VersionedDatabaseTaskStore`, with a version row seeded when the task is created. Every state change (`a2a_inbox` take, `a2a_respond`, `CancelTask`) goes through this one path. A direct store write must never be mixed with the executor path for the same task: SP5 showed a terminal state overwritten (final state `WORKING` after a direct `COMPLETED` write).
+  - `CoordTaskStore`, a `TaskStore` subclass that writes the task and our `task_index` row in one transaction, and implements index-based visibility and a visibility-aware `ListTasks` (handle lookup uses the `task_index` side table, SP5 D4).
+  - A custom `RequestHandler` for parked tasks (about 100 lines, 11 methods): `SendMessage` creates the task and returns it, `GetTask`, `ListTasks` and `CancelTask` go to our service layer, streaming and push raise the SDK's unsupported errors. The SDK `DefaultRequestHandler` needs an `AgentExecutor` and is not used (SP5 D11).
+- Postgres by URL change: schema, visibility and migrations passed (SP5 D10, record only); our SQLite compare-and-swap does **not** carry over (259 of 300 lost), so a Postgres move needs the versioned store with a seeded version row and its own concurrency test. Decision 4's "Postgres only by URL change" holds for the schema, not for the write path.
 - Moving to Postgres later is a change of `A2A_DB_URL` only [D4]. Anything that cannot survive that change (SQLite-specific SQL in our own tables) is not allowed; our tables use SQLAlchemy Core.
 - The database lives on a Docker named volume. It must not live on a bind mount from a Windows path under `/mnt/c`, because WAL needs working shared memory and file locking [unverified for this host; standard SQLite guidance].
 - Backups use `sqlite3 .backup` (or a volume snapshot taken with the process stopped). Copying `a2a.db` alone while WAL is active loses recent commits.
@@ -215,7 +220,7 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_WORKING_TTL_H` | `24` [design] | WORKING task of an ended session expires to FAILED |
 | `A2A_SESSION_IDLE_TTL_H` | `12` [design] | session with no authenticated call is marked ended |
 | `A2A_MAX_BODY_BYTES` | `65536` [design] | request body cap |
-| `A2A_MAX_WAIT_S` | `240` [design] | cap for the MCP tool `a2a_wait` (local sessions only) |
+| `A2A_MAX_WAIT_S` | `50` [verified fit, SP2 C8 and A7; was `240`] | cap for the MCP tool `a2a_wait` (local sessions only); Claude Code's per-call limit is 60 s and agy's is 180 s (4.5) |
 | `A2A_SEND_BLOCK_MAX_S` | `60` [D22] | cap for a blocking `SendMessage` on `/a2a/v1`; below Cloudflare's reported ~100 s timeout. Not raised above 60 without the user |
 | `A2A_PUSH_ENABLED` | `0` | enables push delivery (section 3.3.4) |
 | `A2A_PUSH_ALLOW_HOSTS` | empty | exact hostnames allowed as push targets |
@@ -420,6 +425,12 @@ When `A2A_PUSH_ENABLED=1`:
 - Auth: local-harness API key only. A remote-peer or status-client API key gets `403` here [D11].
 - Implementation [design, unverified]: the official `mcp` Python SDK's streamable-HTTP app mounted into the same Starlette application, behind the same middleware. Compatibility with the `a2a-python` Starlette app is untested (spikes.md SP5 D12).
 - Stateful sessions are required. The server issues `Mcp-Session-Id` at `initialize` and keeps `mcp_session_id -> (key_id, handle)` in memory. The recall server runs `FASTMCP_STATELESS_HTTP=true` [verified, memory plugin compose]; this server must not.
+- Findings from SP5 D12 [verified, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)] that the server must implement:
+  - **Mount form.** Extract the routes of `mcp.streamable_http_app(streamable_http_path="/mcp", ...)` into the same Starlette route list as the A2A routes and enter `mcp.session_manager.run()` in the application lifespan. `Mount("/mcp", ...)` answered a 307 and then 404. The `mcp` app's own DNS-rebinding protection is switched off because our middleware does the Host and Origin checks.
+  - **`server/discover` must advertise only the stateful protocol versions** (`2025-11-25`, `2025-06-18`, `2025-03-26`). The `mcp` 2.3.0 default advertises only the sessionless `2026-07-28`, so a discover-first client gets no `Mcp-Session-Id` and `a2a_hello` never binds. Claude Code 2.1.318 and 2.1.319 and agy both open with `server/discover` and fall back to `initialize` on an ordinary error [verified on the wire, S0 scaffolding and SP2], so `/mcp` answers it with the override, never with a 5xx or a dropped connection.
+  - **Bind `Mcp-Session-Id` to the API key.** A request with key B's token and key A's session id was accepted and ran with A's binding. The server keeps `mcp_session_id -> (key_id, handle)` itself and rejects a mismatch with `403`.
+  - **Graceful stop.** A plain `uvicorn` does not stop while `/wake/listen` requests are parked (`docker stop` ends in SIGKILL, exit 137). Use a `uvicorn.Server` subclass whose `handle_exit` first answers every parked listener with `503 Retry-After`.
+  - **Client facts** [verified, SP2 Claude half, Claude Code 2.1.319]: one `Mcp-Session-Id` per client session, stable across calls, `/compact`, `/clear` and a 67 minute idle gap; a new one after `--resume`; no `DELETE` on exit (so the server cannot count on one); after a server restart the client gets a 404, re-initializes and re-sends the call on its own, and the binding is gone.
 - Binding by `a2a_hello` (section 5.4). A tool that needs identity and finds no binding returns an error with a constant text: "Not bound. Call a2a_hello." The server restarting loses bindings, so this error is the normal recovery path.
 - Fallback if a client cannot hold a session id [design]: every identity-bound tool also accepts an optional `handle` argument. The server accepts it only if the handle is registered under the calling API key's card. Weaker (the model supplies it) but the card check still holds.
 - Write tools exist only when `A2A_ALLOW_WRITES=1` [D5]. The tool list a client sees differs by flag, so a client reconnecting after the flag changes sees the new list.
@@ -454,16 +465,19 @@ Response `200` (existing) or `201` (new):
 
 Rules [design]:
 
+- A valid `local-harness` API key is required on `POST /sessions` and `POST /sessions/end`, with no exception [verified gap, SP2: the spike stub accepted unauthenticated registrations, so a session that could never bind looked registered].
 - `card` must equal the API key's card; otherwise `403`.
+- Name hint source [verified, SP2 C1, Claude Code 2.1.319]: the Claude `SessionStart` hook stdin carries `session_title` (the `--name` value) when a name is set, and no name key otherwise. `a2a-register` sends `session_title` as `name_hint`, and an empty hint falls back to the session id (below).
 - Name derivation: `name_hint` lowercased and reduced to `[a-z0-9._-]`, at most 48 characters; empty hint falls back to the first 8 characters of `harness_session_id`.
-- Uniqueness: if the name already exists under the card for a different `harness_session_id`, in any state, the server appends `-` plus 4 hex characters of the session id. Names are never reused for a different session, so a task orphaned by an ended session can never be picked up by a new one that happens to choose the same name.
-- Resume or `clear` of the same harness session returns the same handle.
+- Uniqueness: if the name already exists under the card for a different `harness_session_id`, in any state, the server appends `-` plus 4 hex characters of the session id. Names are never reused for a different session, so a task orphaned by an ended session can never be picked up by a new one that happens to choose the same name. This server-side rule is what prevents the SP2 C6 failure (two live sessions started with the same `--name` shared one handle because the stub took the handle from the hook and never made it unique) [verified in the stub, rule untested in a real server]. `a2a-register` must use the handle the server returns and never compose one itself, and `a2a_hello` (5.4) refuses a handle that another live registration holds.
+- `/clear` creates a new `session_id` [verified, SP1 T9 and SP2 C3], so it registers a new session and a new handle; the old session id's registration and parked listener are orphaned and expire by the liveness rules (5.5). `--resume` keeps the `session_id` and the handle but gets a new `Mcp-Session-Id`, so the binding must be redone (5.4). `/compact` keeps both.
+- Resume of the same harness session returns the same handle.
 - No working directory, hostname beyond the card, process id or file path is accepted or stored. Less data held, less to leak at S3.
 - Refreshing updates `last_seen_at`.
 
 `GET /sessions` lists sessions: `{"sessions":[{"handle","card","liveness","registered_at","last_seen_at","pending"}]}`. `liveness` is `listening`, `active`, `registered` or `ended` (5.5). local-harness API keys see all cards on the server (own machines only).
 
-`POST /sessions/end` with `{"handle": "..."}` or `{"card": "...", "harness_session_id": "..."}` marks the session ended and closes its parked listener with `410`. Called by the SessionEnd hook (1.5 s budget in Claude Code [verified, t1b section 4]) and best-effort by the listener script when its owner process dies.
+`POST /sessions/end` with `{"handle": "..."}` or `{"card": "...", "harness_session_id": "..."}` marks the session ended and closes its parked listener with `410`. Called by the SessionEnd hook (1.5 s budget in Claude Code [verified, t1b section 4]) and best-effort by the listener script when its owner process dies. Neither is reliable [verified, SP1 and SP2]: Claude Code sends no MCP `DELETE` on exit, the listener's owner is killed with the session, and `/clear` and `--resume` end nothing. Liveness therefore rests on the parked listener (its connection closes within about a second when the owner dies, SP1 T7) and `last_seen_at` with a TTL, never on this call (5.5). No process id is stored, as above.
 
 Errors: `400` invalid body, `401`, `403`, `429`.
 
@@ -614,14 +628,17 @@ Input: `{"task_id": "uuid", "history_length": 20}`. Output: one task in the 4.3 
 
 ### 4.5 `a2a_wait` (read)
 
-Input: `{"timeout_seconds": 30, "task_ids": ["uuid"]}`. `timeout_seconds` 1 to `A2A_MAX_WAIT_S`; `task_ids` optional, to wait for changes on tasks the caller opened.
+Input: `{"timeout_seconds": 30, "task_ids": ["uuid"]}`. `timeout_seconds` 1 to `A2A_MAX_WAIT_S` (default 50, see below); `task_ids` optional, to wait for changes on tasks the caller opened.
 
 Output: the same shape as `a2a_inbox` when something is wakeable or a watched task changed state; otherwise `{"timed_out": true}`.
 
 Notes:
 
 - This is the agy substitute for a wake [D9]: an explicit blocking call. It is not a background mechanism.
-- The effective timeout of an MCP tool call in Claude Code and agy is not documented in the audit. The default of 30 s keeps well inside any plausible limit. Settled by spikes.md SP2 C8 (Claude Code) and A7 (agy).
+- Effective limits of one blocking MCP tool call:
+  - Claude Code 2.1.319: **60 s** per call by default [verified, SP2 C8, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)]. Setting `MCP_TOOL_TIMEOUT` (milliseconds, the 300000 used in the test) raised it [verified, C8b]. A call that runs past 120 s is moved to the background: the model gets a "moved to the background as task ..." result, and the real result arrives later as a `<task-notification>` that starts a new turn on its own. That notification is lost if the session exits [verified].
+  - agy 1.5.1: **180 s**, then agy sends `notifications/cancelled` and reports "timed out after 3m0s: context deadline exceeded"; the same `Mcp-Session-Id` is reused afterwards [verified, SP2 A7, 2026-11-05, agy session notes; the agy results file is pending].
+- Consequence: `A2A_MAX_WAIT_S` defaults to **50** (inside the 60 s default of Claude Code). The installer may raise it only together with a matching `MCP_TOOL_TIMEOUT` for the server; never above 170 (agy's cap) without a separate per-harness limit. The earlier default of 240 was above both limits and is withdrawn.
 
 ### 4.6 `a2a_peers` (read)
 
@@ -656,7 +673,7 @@ Input:
     "data":         {"type": "object", "description": "Optional structured payload, at most 16 KiB serialised"},
     "task_id":      {"type": "string", "description": "Continue an existing task you can see"},
     "context_id":   {"type": "string"},
-    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 240, "default": 0}
+    "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 50, "default": 0}
   },
   "required": ["to", "text"],
   "additionalProperties": false
@@ -747,14 +764,22 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
 
 The `coord` key sits inside `metadata` Structs. The extension itself is declared in the card as an `AgentExtension` with a placeholder URI `urn:agentic-hub:coordination:v1` (not resolvable; open point 13), `required: false`. Clients that ignore it still see a valid A2A task.
 
-### 5.4 Session binding chain (unverified end to end) [D6]
+### 5.4 Session binding chain (verified for Claude Code, SP2 2026-11-06; agy half pending) [D6]
 
 1. SessionStart hook runs `a2a-register`, which calls `POST /sessions` with the harness session id and a name hint.
 2. The hook injects the returned handle into the model context (Claude `additionalContext`, agy `injectSteps`).
 3. The model's first MCP call is `a2a_hello(handle)`, which ties `Mcp-Session-Id` to the handle.
 4. From then on `/mcp` calls carry the identity. The wake listener and the pending-count hooks identify by `harness_session_id`, which the server maps to the same handle.
 
-Steps 1 to 3 have not been run against real clients. Settled by spikes.md SP2 (section 12).
+Claude Code, steps 1 to 4 [verified, SP2 C1 to C7, Claude Code 2.1.319, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)]:
+
+- The hook gets `session_id` and (when named) `session_title` on stdin, injects the handle through `additionalContext`, and the model binds with `a2a_hello` unprompted: 10 of 10 launches that reached a tool call. One further launch failed with a 401 before any tool call, cause unverified, not reproduced on rerun.
+- The a2a tools are deferred in Claude Code, so the model's first step is a `ToolSearch`; the injected handle line is what makes it bind afterwards.
+- The binding survives `/compact`, `/clear`, a subagent call and a 67 minute idle gap. It is lost on `--resume` (new `Mcp-Session-Id`) and on a server restart (404, re-initialize). In both cases the unbound-call error carries the instruction and the model followed it by calling `a2a_hello` again. Keep the constant error text "Not bound. Call a2a_hello." exactly.
+- The registration hook and the listener hook run **in parallel**: in 5 of 5 sessions with a 2 s delayed registration the first `/wake/listen` reached the server about 2.1 s before the registration. The 15 s retry on `410 unregistered` (7.1) is therefore required, not optional.
+- Binding is an assertion by an API key holder, not authentication of a session. `a2a_hello(handle)` lets any holder of the key claim any handle, and nothing here tells two sessions with the same key apart other than by the handle they assert.
+
+Steps 1 to 3 for agy are covered by 5.4.1.
 
 #### 5.4.1 agy: bind to the conversation id, not to `Mcp-Session-Id` [D6, SP2 A1 and A4]
 
@@ -777,7 +802,7 @@ Rule for agy sessions (unconditional; the identity checks passed):
 - **Never trust `conversation_id`, `root_conversation_id` or `parent_conversation_id` from an API key that is not `local-harness`.** The values are client-supplied. The server reads them only on requests that passed the `local-harness` scope check (and, at S2 and S3, the tailnet identity check), and only accepts ids that belong to the calling API key's card. A `remote-peer` or `status-client` request never has its `_meta` interpreted. Like all binding, this is an assertion by an API key holder, not authentication of a session (spikes.md SP2 Record).
 - The explicit `as_handle` argument on write tools is not needed for agy. It stays in the design as the fallback for clients that give no conversation id (3.4), if it exists there for other reasons.
 
-Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stays, pending the SP2 Claude half (C1 to C6).
+Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stays; the SP2 Claude half (C1 to C9) passed with the changes recorded in 3.4, 3.5, 4.5 and 7.1.
 
 ### 5.5 Liveness
 
@@ -785,6 +810,8 @@ Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stay
 - `active`: any authenticated call from the session (including a PreInvocation pending check) in the last 15 minutes [design].
 - `registered`: known and not ended.
 - `ended`: `POST /sessions/end`, an idle expiry of `A2A_SESSION_IDLE_TTL_H`, or `410` served to its listener.
+
+Orphans [verified, SP1 T9 and SP2 C3]: `/clear` gives the conversation a new `session_id`, so the old id keeps a registration and, until its owner exits, a parked listener that nobody will ever answer usefully; `--resume` leaves a stale `Mcp-Session-Id`. The server does not guess which older session a new one replaces: a session whose listener has closed drops from `listening` at once, and every orphaned registration expires by the idle TTL. A listener that is still parked for an orphaned session keeps being answered under 7.2 until its owner exits.
 
 agy never reaches `listening` while the Stop-park stays a spike [D9]; for agy, `active` is the best state and routing prefers it.
 
@@ -925,6 +952,8 @@ Request headers:
 
 No body. The server resolves the session to a handle under the API key's card.
 
+Header spelling [decided 2026-11-07, closes the S0 follow-up]: the spec's `X-Coord-*` names are canonical. The spikes used the short spellings `X-Session`, `X-Wait` and `X-Again` (the SP1 listener sent them on all 188 requests [verified]) and the spike stub accepted both. The real server accepts only `X-Coord-*`; the shipped `a2a-listen` sends only those. Nothing in either harness depends on the spelling.
+
 Responses:
 
 | status | meaning | body and headers | client action [D8] |
@@ -943,7 +972,14 @@ Rules:
 - The 200 body is an integer only. The server never sends free text on the wake path. The stub wording lives in the client script, so the injection surface is a constant string with one validated number in it [D8, D10].
 - Round length: the server holds the request up to the requested wait (at most 900 s) and answers `408` at the end. Any proxy in front of `/wake/listen` (the S2 `tailscale serve` front) must allow a read timeout above 930 s [reported, t1b section 5.1]. `/wake/*` is local-harness only and is never routed through the S3 Cloudflare Tunnel, whose timeout is about 100 s (8.4) [D20].
 - Latency target on a wakeable task arriving while a listener is parked: the response is written immediately; the rest is the client's.
-- `410 unregistered` right after `SessionStart` can be a race between the registration hook and the listener hook (both are SessionStart hooks). The client retries a `410 unregistered` for the first 15 seconds before treating it as final [design, settled by spikes.md SP2 C7].
+- `410 unregistered` right after `SessionStart` is a race between the registration hook and the listener hook: both are SessionStart hooks and they run in parallel [verified, SP2 C7: the first park preceded the registration by about 2.1 s in 5 of 5 sessions with a 2 s delayed registration]. The client retries a `410 unregistered` for the first 15 seconds before treating it as final. Required.
+- Observed client behaviour that this protocol relies on [verified, SP1, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp1.md)]:
+  - `exit 2` from an `asyncRewake` hook wakes an idle Claude Code session (release to turn start 0.4 s; after 10 h 39 m of idle with 900 s rounds, 0.3 s). The wake text reaches the model as a user-role `task-notification` plus a `system-reminder` that calls it a "Stop hook blocking error" labelled with the hook that spawned the listener.
+  - The hook timeout is enforced with SIGTERM, silently, and nothing re-arms the listener until the next `Stop` or `SessionStart`. A timeout of 604800 s is accepted.
+  - `Stop` does not fire after Esc, so a session whose woken or running turn is interrupted has no listener until the user's next turn ends. See 11.1 for the re-arm from `UserPromptSubmit`.
+  - There is no cap on consecutive `Stop` continuations (11 in a row, no tool and with a tool). Loop control is the server's wake budget (7.3), not the client's.
+  - A wake that arrives during a permission prompt or a running tool is queued by the harness and delivered afterwards (a new turn after a prompt; merged into the running turn in bypass mode).
+  - `/clear` creates a new `session_id` (5.5 orphans).
 
 ### 7.2 One listener per handle [D8]
 
@@ -1298,7 +1334,7 @@ Rules:
 
 ### 11.1 Claude Code
 
-Plugin hooks (`hooks/hooks.json`), sketch [reported, derived from the t1b section 5.1 sketch and the switchboard config]:
+Plugin hooks (`hooks/hooks.json`), sketch [derived from the t1b section 5.1 sketch and the switchboard config; the SessionStart, Stop and UserPromptSubmit-http shapes ran on Claude Code 2.1.318 and 2.1.319 in SP1 and SP2 with scratch equivalents, verified; the added UserPromptSubmit listener entry is design, unverified]:
 
 ```json
 {
@@ -1307,7 +1343,7 @@ Plugin hooks (`hooks/hooks.json`), sketch [reported, derived from the t1b sectio
       {"matcher": "startup|resume|clear|compact",
        "hooks": [{"type": "command", "timeout": 10,
                   "command": "~/.local/share/a2a-coord/current/bin/a2a-register start"}]},
-      {"matcher": "startup|resume",
+      {"matcher": "startup|resume|clear",
        "hooks": [{"type": "command", "asyncRewake": true, "timeout": 604800,
                   "command": "~/.local/share/a2a-coord/current/bin/a2a-listen"}]}
     ],
@@ -1318,7 +1354,9 @@ Plugin hooks (`hooks/hooks.json`), sketch [reported, derived from the t1b sectio
     "UserPromptSubmit": [
       {"hooks": [{"type": "http", "url": "http://127.0.0.1:8120/wake/pending", "timeout": 5,
                   "headers": {"Authorization": "Bearer $A2A_API_KEY"},
-                  "allowedEnvVars": ["A2A_API_KEY"]}]}
+                  "allowedEnvVars": ["A2A_API_KEY"]},
+                 {"type": "command", "asyncRewake": true, "timeout": 604800,
+                  "command": "~/.local/share/a2a-coord/current/bin/a2a-listen"}]}
     ],
     "SessionEnd": [
       {"hooks": [{"type": "command", "timeout": 2,
@@ -1345,7 +1383,10 @@ Behaviour of `a2a-register` [design]:
 Behaviour of `a2a-listen` [D8]: POSIX `sh` plus `curl`, no other runtime.
 
 - Reads stdin JSON: `hook_event_name`, `session_id`, and `source` for SessionStart.
-- Exits 0 at once when `CLAUDE_CODE_SESSION_ATTENDED=0`, when the event is not `Stop` or SessionStart with source `startup` or `resume`, or when `session_id` fails `^[A-Za-z0-9_-]+$` [reported, switchboard guards].
+- Exits 0 at once when `CLAUDE_CODE_SESSION_ATTENDED=0`, when the event is not `Stop`, `UserPromptSubmit` or SessionStart with source `startup`, `resume` or `clear`, or when `session_id` fails `^[A-Za-z0-9_-]+$` [guards verified in SP1 T9 and the offline test; `CLAUDE_CODE_SESSION_ATTENDED=0` is the marker of a non-interactive or background session, which is also why a background job cannot run the listener live].
+  - `clear` is in because `/clear` creates a new `session_id` [verified, SP1 T9], and that session needs its own listener. `compact` is not: it keeps the `session_id` and its listener.
+  - The `UserPromptSubmit` entry is the re-arm after Esc [design, unverified]: `Stop` does not fire after Esc [verified, SP1 T5], so without it a session whose turn was interrupted has no listener until its next turn ends. A second listener for the same handle is harmless (newest wins, the older gets 409 and exits, verified for the user-turn case in SP1 T3). Whether `asyncRewake` is honoured on `UserPromptSubmit` is a spike item before S1 relies on it.
+  - The owner process is `$CLAUDE_PID` [verified, SP1 Gate 0, equals the `claude` pid]. `$PPID` is wrong: it is the hook's `sh -c` wrapper, which lives as long as the listener, so an owner watch on it never sees Claude die. Fall back to `$PPID` only when `CLAUDE_PID` is absent or not numeric.
 - Loops while the owner process is alive, one round at a time:
 
 ```sh
@@ -1367,7 +1408,7 @@ claude mcp add --transport http a2a http://127.0.0.1:8120/mcp \
   --header "Authorization: Bearer ${A2A_API_KEY}"
 ```
 
-The literal expansion above would store the key in Claude's config. Use a project or plugin `.mcp.json` whose header value references the environment variable `A2A_API_KEY`, so the key stays in the environment and the entry holds no secret [D24]. **Environment expansion in MCP header values is [unverified] for the installed Claude Code**; it is tested in the SP2 Claude half (spikes.md C9). If it does not work, the fallback is a `headersHelper`-style or wrapper mechanism chosen by the user, never a literal key in a chezmoi-managed file:
+The literal expansion above would store the key in Claude's config. Use a project or plugin `.mcp.json` whose header value references the environment variable `A2A_API_KEY`, so the key stays in the environment and the entry holds no secret [D24]. **Environment expansion in MCP header values** [verified, Claude Code 2.1.318 CLI health check and 2.1.319 interactive, [SP2 results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)]: `${A2A_API_KEY}` is expanded on every request, including `tools/call`, for a project-scope `.mcp.json` entry after approval, when the variable is exported by the shell that launched Claude. With the variable unset the literal text `Bearer ${A2A_API_KEY}` is sent, the server answers 401, and the client shows "Server rejected the configured Authorization header (HTTP 401)" without naming the variable (only `claude mcp list` prints `Missing environment variables`), so the installer's checks and `a2a-register` should say so when `A2A_API_KEY` is absent. A GUI-launched Claude (desktop app, IDE extension) seeing a variable exported only in shell rc files is [unverified]; until it is tested, the fallback below stays available for such harnesses, never a literal key in a chezmoi-managed file. Other facts for the installer [verified]: `claude mcp add` needs the name and URL before `-H` (it is variadic); a project-scope entry is not connected until approved, and 2.1.319 stores that approval in `<project>/.claude/settings.local.json` (`enabledMcpjsonServers`), not in `~/.claude.json`; the CLI never sends an MCP `DELETE` on exit. If expansion fails for a harness, the fallback is a `headersHelper`-style or wrapper mechanism chosen by the user:
 
 ```json
 {"mcpServers": {"a2a": {"type": "http", "url": "http://127.0.0.1:8120/mcp",
@@ -1426,8 +1467,9 @@ Nothing in this configuration launches, drives or wraps agy [D9, DDR-003].
 
 Carried from the audit [t1b section 7, synthesis section 7]:
 
-- Whether `asyncRewake` wakes count toward Claude Code's 8-continuation Stop cap.
-- The `timeout` ceiling for `asyncRewake` on the installed Claude Code (604800 is reported to work in config; behaviour at expiry is SIGTERM).
+- ~~Whether `asyncRewake` wakes count toward Claude Code's 8-continuation Stop cap.~~ Settled, SP1 T6: no cap seen in 11 consecutive wake turns; loop control is the server's wake budget (7.3).
+- ~~The `timeout` ceiling for `asyncRewake` on the installed Claude Code.~~ Settled, SP1 T4: 604800 is accepted, a 900 s round survived 10 h 39 m idle, expiry is a silent SIGTERM.
+- Whether `asyncRewake` is honoured on a `UserPromptSubmit` command hook (the re-arm after Esc, 11.1). Open, spike before S1.
 - agy: maximum Stop-hook timeout; whether a held Stop blocks typing; whether Stop fires per turn or per conversation; whether SessionStart fires on resume; whether a background command's completion wakes an idle agy.
 - Inbox socket (`CLAUDE_CODE_MESSAGING_SOCKET`) frame shape and `crossSessionInbound` behaviour. A later spike candidate [D8]; Channels are not used [D8].
 - SQLite under the real write pattern (server plus WAL) with concurrent hooks, in this container.
@@ -1449,6 +1491,8 @@ All of these are defined as spikes in [spikes.md](file:///home/rockad/projects/a
 | whether Claude Code expands `${A2A_API_KEY}` in MCP header values [D24] | SP2 C9 |
 | whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and whether `~/.agents` collides with the frozen bridge folder [D24] | SP2 A8 |
 | for the agy binding by `conversation_id` (5.4.1): per-conversation distinctness in one agy process, stability across an agy restart and resume, and whether a background or sub-invocation's `conversation_id` differs from its `root_conversation_id` | SP2 A4 |
+
+Status after SP1, SP2 Claude half and SP5 (2026-11-05 and 06): settled and folded into this spec are `A2A-SDK-FIT`, `MCP-MOUNT` (SP5, with the four wrappers in 1.2 and the findings in 3.4), `SESSION-BINDING` for Claude Code, `HOOK-ORDER` (parallel, retry required), `HOOK-HTTP-SHAPE` (only `hookSpecificOutput.additionalContext` is accepted; a body that is not JSON, a 500, a timeout and an unset key all let the prompt proceed), `MCP-TOOL-TIMEOUT` for Claude Code (60 s), the session display name (`session_title`), `${A2A_API_KEY}` expansion in project scope, and the `/clear`, `--resume` and `/compact` behaviour. Still open: the agy half of SP2 (A2, A3, A4 compliance count, A5, A8), SP3, SP4, and the GUI-launched Claude test.
 
 ### 12.2 Open points I could not resolve from the evidence
 

@@ -584,6 +584,15 @@ S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/lis
 - SP4 recorded
 - the results file is written and linked from the master tasklist
 
+Gate status (2026-11-07):
+
+- SP1: **passed** (decision 8 go), [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp1.md).
+- SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A3, A4 compliance, A5, A7 write-up and A8 **open**. SP2 is not passed until the agy half is.
+- SP3: **open**.
+- SP4: **open** (record only).
+- SP5: **passed with four wrappers** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)); one defect to fix in S1 (session id bound to the API key).
+- Added by SP1: a spike item for `asyncRewake` on a `UserPromptSubmit` command hook (the re-arm after Esc), not yet a numbered spike; decide whether it blocks S1 or is built and tested inside S1.
+
 Definitions:
 
 - **Passed**: every "must pass" criterion of that spike is met on alyx, with logs in the results file. "Record only" items are written down but do not block.

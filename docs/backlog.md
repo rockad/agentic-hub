@@ -46,6 +46,7 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 - [ ] Remove or rename the `"gemini"` → Antigravity alias in `src/core/harness.rs:38`.
 - [ ] Shell-quote the branch name in the "New Worktree Tab" palette command.
 - [ ] Parse `--resume <id>` for Claude tabs. Today the id lands in the initial prompt.
+- [ ] Bind Claude session ids to tabs. The `Stop` hook only looks ids up in agy's database, so Claude tabs never get `@conversation_id`.
 - [ ] Update CHANGELOG (0.8.x) and start tagging releases.
 
 ### plugins/coordination
@@ -73,12 +74,22 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
   - read `event.input.prompt`
   - update the restart guidance (`opencode reload`)
 - [ ] Jev Recall URL: stop hard-coding `:8110` (`telemetry.ts:65`) before RFC 005 retires it.
+- [ ] Give native lookup a staging port. It and the legacy lookup both want 8100 during migration (unverified clash).
+- [ ] Jev OpenCode tier map: replace the `~anthropic/...-latest` OpenRouter slugs (pay-per-token) with `openai/...` or `github-copilot/...` models if OpenCode runs on a subscription. Never `claude-agent/*`.
+- [ ] agy guard: check whether a model set in `define_subagent` front matter bypasses the `invoke_subagent` guard.
+- [ ] Defence in depth: have the user's installer add a native Claude deny rule `Agent(model:opus)`.
+- [ ] Any future Codex adapter must return `deny` (Codex fails open on `ask`). Any Copilot guard fails open on hook timeout.
+
+### plugins/coordination (cross-repo)
+
+- [ ] `status-client.md` cites `packages/harness2/README.md`, `session_runner.py` and `sbx_session.py`, which do not exist on cognitive-engine `main`. Re-point the citations once Track 3 merges.
 
 ### agentic-hub
 
 - [x] Root README and AGENTS.md trees: add `docs/`, coordination and subagents (2026-11-07).
 - [ ] Root README and AGENTS.md: add the mcp-toggle skill. Remove the references to `plugins/jev/opencode/`, which does not exist.
-- [ ] Jev README: hook path `./claude/hooks.json`. Align the `package.json` version with `plugin.json`.
+- [ ] Jev README: it says hooks are at `hooks/hooks.json`; the real path is `./claude/hooks.json`. Align the `package.json` version (2.0.0) with `plugin.json` (2.3.0).
+- [ ] Coordination docs link to `/home/rockad/...`, which resolves only on alyx. Consider repo-relative links.
 - [ ] Memory compose: bind 8110 and 8100 to `127.0.0.1`.
 - [ ] RFC 005 Phase A deprecation notices on `plugins/jev` and `plugins/memory`, once the scope decision above is made.
 
@@ -100,6 +111,9 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 - [ ] ax: Codex history (`state_5.sqlite`) and `codex resume`.
 - [ ] ax: OpenCode title sync through `PATCH /api/session/:id`. Honour `OPENCODE_DB`.
 - [ ] ax: keep Claude `teammateMode` in-process. Skip panes without `@harness` when snapshotting.
+- [ ] ax: register worktrees made outside ax through Claude's `WorktreeCreate` and `WorktreeRemove` hooks.
+- [ ] ax: restore re-runs only allowlisted commands and asks before anything else (the cmux idea).
+- [ ] ax: read-only discovery of Claude sessions it did not launch (`claude agents --json`, reported).
 
 ## Later: after S1 runs
 
@@ -120,7 +134,10 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
   - `git worktree lock --reason` as the lease
 - [ ] Commit trailers `A2A-Task:` and `Session:` (Jev `commit.ts`).
 - [ ] Gitea plugin: read-only issue dependency tools plus a ready query.
-- [ ] Third peer spike, depending on the decision above: `codex queue` stub wake, or an OpenCode V2 plugin wake.
+- [ ] Third peer spike, depending on the decision above, one of:
+  - `codex queue` stub wake
+  - OpenCode V2 plugin wake (restricted task-taking agent, `delivery: "queue"`)
+  - Copilot `agentStop` stub wake
 - [ ] Move the cognitive-engine bridge onto coordination.
 - [ ] S3 gate: smugglex against the staging tunnel; `mcp-scanner` static on the `/mcp` tool list.
 

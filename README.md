@@ -40,7 +40,6 @@ agentic-hub/
 - **What it does**: System 1 decision engine providing fast probabilistic routing, task evaluation, quality gate enforcement, thinking effort governance, and free-tier coprocessor offloading.
 - **Key Features**:
   - **MCP Server (`jev-mcp`)**: Exposes decision tools (`jev_route`, `jev_judge`, `jev_score`, `jev_dispatch`, `jev_agent_free`, `jev_execute_free`, `jev_set_mode`, `jev_get_mode`, `jev_quota`, `jev_select_model`).
-  - **OpenCode Integration**: OpenCode V2 plugin (`plugins/jev/opencode/`) providing automatic cost-tiered model selection, model swapping, and expensive tier approval flows.
   - **Claude Code Integration**: Lifecycle hooks (`plugins/jev/claude/`) enforcing session model ceiling governance and Jev task routing advice.
   - **Router & Free Models**: Uses OpenRouter Decisions API (`~typesafe/jev-latest`) for ~800ms scoring/judging and offloads to `openrouter/free` models for zero-cost generation.
   - **Quality Gates & Commits**: Includes `commit` (`plugins/jev/scripts/commit.ts`) semantic commit generator with `jev_judge` quality gate verification.
@@ -83,6 +82,8 @@ agentic-hub/
 
 ### Standalone Skills
 - **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.
+- **`skills/cplain`**: Plain-English variant of `clarify` (no jargon, intuitive mental models).
+- **`skills/celi5`**: "Explain like I'm five" variant of `clarify`.
 - **`skills/markdown-convert`**: Convert PDFs, Office documents, and `.eml` emails to Markdown sidecar files with offline OCR fallback.
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.

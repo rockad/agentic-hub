@@ -25,8 +25,11 @@ agentic-hub/
 │   │   └── docker-compose.yml # Resident daemon compose stack
 │   └── subagents/        # Specialised engineering, QA, research and operations subagents
 ├── skills/               # Standalone agent skills
+│   ├── celi5/            # Plain-English (explain like I'm five) variant of clarify
 │   ├── clarify/          # Interactive design clarification skill
+│   ├── cplain/           # Plain-English variant of clarify
 │   ├── markdown-convert/ # Document to Markdown converter
+│   ├── mcp-toggle/       # Toggle on-demand MCP plugins to save context tokens
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   └── skills-doctor/    # Skills installation repair utility
@@ -61,7 +64,6 @@ agentic-hub/
   - Universal Shared Global: `~/.agents/agents/` across all harnesses (local workspace agents take precedence).
 - **Dynamic Semantic Batch Dispatch (`jev_batch_dispatch`)**: Routes multi-task DAG workstreams dynamically using OpenRouter Decisions API (`~typesafe/jev-latest`), falling back to local description keyword scoring if offline or timed out. Configurable via `routing.strategy` (`"router"` | `"keyword"`) in `config.json`.
 - **MCP Server (`jev-mcp`)**: Exposes decision tools (`jev_route`, `jev_judge`, `jev_score`, `jev_dispatch`, `jev_batch_dispatch`, `jev_agent_free`, `jev_execute_free`, `jev_execute_free_guarded`, `jev_set_mode`, `jev_get_mode`, `jev_quota`, `jev_select_model`).
-- **OpenCode Integration**: OpenCode V2 plugin (`plugins/jev/opencode/`) provides cost-tiered model selection, automatic model swapping, free-tier delegation, and approval flows for expensive model tiers.
 - **Router & Free Models**:
   - Router/Judge: OpenRouter Decisions API (`~typesafe/jev-latest`).
   - Free Execution: `openrouter/free` pool (`google/gemma-4-31b-it:free`, `cohere/north-mini-code:free`, `nvidia/nemotron-3.5-lightning:free`).

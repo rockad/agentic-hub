@@ -225,9 +225,8 @@ plugins/jev
 │   ├── index.ts             # Main MCP server entrypoint
 │   ├── shared.ts            # Shared types and helpers across harnesses
 │   └── tracing.ts           # OpenTelemetry and span logging
-├── opencode/                # OpenCode V2 plugin adapters
 ├── claude/                  # Claude Code hook adapter (hook.ts entry, logic.ts decisions)
-├── hooks/hooks.json         # Claude Code hook registration
+│   └── hooks.json           # Claude Code hook registration
 ├── scripts/
 │   ├── commit.ts            # Semantic commit generation pipeline
 │   ├── commit.sh            # Shell wrapper for commit.ts
@@ -388,7 +387,7 @@ Install from this repository's Claude Code marketplace (`.claude-plugin/marketpl
 Put the key where the hooks and the MCP server both find it: `~/.config/jev/env` with
 `JEV_OPENROUTER_API_KEY=...`. `bun` must be on `PATH`.
 
-The plugin brings the `jev_*` MCP tools and four hooks (`hooks/hooks.json` → `claude/hook.ts`).
+The plugin brings the `jev_*` MCP tools and four hooks (`claude/hooks.json` → `claude/hook.ts`).
 The hooks act only in mode `on`. In `on-demand` and `off` they stay silent, and the MCP tools
 remain callable on request.
 

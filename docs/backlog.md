@@ -18,12 +18,12 @@ Status markers:
 
 From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 
-- [?] **Port 8120 owner.** Coordination's A2A server and cognitive-engine's Harness² both claim `127.0.0.1:8120`. Pick one to move. Keep 8121 free for the proposed S3 listener.
+- [x] **Port 8120 owner.** Decided 2026-11-08: Harness² moves to 8125; coordination keeps 8120; 8121 stays free for the S3 listener. Record it in the coordination docs, and change the default in cognitive-engine #5 when it is restacked. See [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md).
 - [?] **Backlog approach.** Build "S1b" (a ready-work backlog inside the A2A server) directly, or first trial beads (stealth mode) or Kanzo (stdio only) for two weeks.
 - [?] **Third coordination peer.** Codex or OpenCode needs a ChatGPT plan; OpenCode or Copilot CLI needs a Copilot plan. Without one, stay at Claude Code plus agy.
 - [?] **`codex queue` stub wake for Codex.** Is it allowed under the "no external driver" stance?
 - [?] **DDR-003a.** Extend never-launch, never-drive to Google-account-authenticated Gemini CLI?
-- [?] **RFC 005 scope.** cognitive-engine's split leaves agentic-hub with four plugins and drops coordination and subagents. Accept that, or amend RFC 005?
+- [x] **RFC 005 scope.** Decided 2026-11-08: amend RFC 005 so agentic-hub keeps coordination and subagents; only `jev` and `memory` retire. The edit rides on a cognitive-engine docs PR (#7 or #11).
 - [?] **cognitive-engine roles.** Replace the fixed Orchestrator and Builder roles with symmetric peers once the bridge moves onto A2A?
 - [?] **Blocked research hosts.** Allow these in the environment's network settings to re-check the remaining unverified points:
   - `antigravity.google`
@@ -33,11 +33,15 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
   - `geminicli.com`
   - `discuss.ai.google.dev`
 
+## Order of work
+
+**Coordination (`plugins/coordination`, S0 close and S1) comes before the cognitive-engine PR queue.** The full sequence, decisions and workstreams are in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md). Sections below marked "after coordination S1" wait for it. The owner still has points to clarify before this plan starts, and cognitive-engine work resumes with a `/clarify` pass on Phase 2.
+
 ## Now: documentation and small fixes
 
 ### ax
 
-- [ ] Make `ensure_hook_installed` safe:
+- [ ] Make `ensure_hook_installed` safe. **Prerequisite for coordination's agy hooks**, which live in the file it can wipe:
   - refuse invalid JSON instead of starting from `{}`
   - back up before writing
   - write atomically
@@ -47,28 +51,32 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 - [ ] Shell-quote the branch name in the "New Worktree Tab" palette command.
 - [ ] Parse `--resume <id>` for Claude tabs. Today the id lands in the initial prompt.
 - [ ] Bind Claude session ids to tabs. The `Stop` hook only looks ids up in agy's database, so Claude tabs never get `@conversation_id`.
-- [ ] Update CHANGELOG (0.8.x) and start tagging releases.
+- [ ] Update CHANGELOG (stops at 0.7.0; tags already exist up to v0.8.4).
 
 ### plugins/coordination
 
-- [ ] Reconcile the handle grammar. The spike used `name#sid8`; the spec regex forbids `#`.
+- [ ] Decide the handle grammar and record it. The spike used `name#sid8`; the spec (`server-api.md:472`) forbids `#` and appends `-` plus 4 hex on collision. Record why `#sid8` was rejected, or adopt it. **Needs your decision.**
 - [ ] Fix `server-api.md` 11.2 to agy's named-group flat hooks.json form.
-- [ ] Scope the "no `Stop` entry" scan (`implementation-plan.md:602`) to coordination's own group.
+- [ ] State explicitly that the "no `Stop` entry" scan (`implementation-plan.md:602`) covers coordination's own group only, since ax adds a `Stop` entry to the user-level file.
 - [ ] Refresh the README status, the branch name and the `DatabaseTaskStore` line. Fix the plan §7 C9 label.
 - [ ] Correct `bridge-v2-ecosystem-analysis.md`:
   - line 71: agy cannot join Claude agent teams
   - beads storage is Dolt
   - the `mcp_agent_mail_rust` pairing is excluded
 
-### cognitive-engine
+### cognitive-engine (after coordination S1; order and decisions in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md))
 
+- [ ] Advisory CI workflow on `main` (`tsc`, `bun test`, `pytest`), after #4 and #18 and before the restacks.
+- [ ] Restack #5, #7, #8 and their children with `rebase --onto main` and a `range-diff` comment. Merge parents without squash.
+- [ ] Review: slice #5 and #8 for `@Doc-Cr` with an Opus pre-pass; the owner reads #7.
+- [ ] Merge #13 (BuildSlot) after #5 and #6. Link the spec at `plugins/coordination/docs/specs/buildslot-spec.md`.
+- [ ] Change the Harness² port default to 8125 in #5 (decision 2026-11-08).
+- [ ] Amend RFC 005 to keep coordination and subagents.
 - [ ] Record the coordination status-client contract and "sbx never reaches the coordination server" in RFC 001/004.
-- [ ] Land PR #4 (Workflow guard).
-- [ ] `hook.ts`: activate in `on-demand` as well as `on`.
-- [ ] Jev guard:
+- [ ] Land PR #4 (Workflow guard). It also fixes `hook.ts` activation in `on-demand` and `plugin:agent` lookup (verified 2026-11-08).
+- [ ] Jev guard (not covered by PR #4):
   - read `CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`
-  - resolve plugin and managed agent definitions, or fail closed
-  - handle `plugin:agent` names
+  - resolve managed agent definitions, or fail closed
 - [ ] OpenCode adapter:
   - delegation tool `subagent`, not `task`
   - read `event.input.prompt`
@@ -87,10 +95,16 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 ### agentic-hub
 
 - [x] Root README and AGENTS.md trees: add `docs/`, coordination and subagents (2026-11-07).
-- [ ] Root README and AGENTS.md: add the mcp-toggle skill. Remove the references to `plugins/jev/opencode/`, which does not exist.
-- [ ] Jev README: it says hooks are at `hooks/hooks.json`; the real path is `./claude/hooks.json`. Align the `package.json` version (2.0.0) with `plugin.json` (2.3.0).
+- [x] Root README and AGENTS.md: add the celi5, cplain and mcp-toggle skills (README already had mcp-toggle). Remove the references to `plugins/jev/opencode/`, which does not exist (2026-11-08, uncommitted).
+- [x] Jev README: hooks path is `./claude/hooks.json`; removed the missing `opencode/` tree entry. `package.json` version aligned to `plugin.json` (2.3.0) (2026-11-08, uncommitted).
 - [ ] Coordination docs link to `/home/rockad/...`, which resolves only on alyx. Consider repo-relative links.
-- [ ] Memory compose: bind 8110 and 8100 to `127.0.0.1`.
+- [ ] Subagents plugin for Claude Code, Antigravity and Codex (decided 2026-11-08; closes the subagents half of issue #13):
+  - canonical source in `plugins/subagents/src/`
+  - `scripts/build-agents.ts` with a `--check` drift test
+  - verify the Codex agent TOML schema before emitting `codex/agents/*.toml`
+  - update the plugin README and the Claude marketplace entry
+  - reply to `@Doc-Cr` on issue #13
+- [x] Memory compose: bind 8110 and 8100 to `127.0.0.1` (2026-11-08, uncommitted). Takes effect after `docker compose up -d`; check that nothing reaches these ports from another host first.
 - [ ] RFC 005 Phase A deprecation notices on `plugins/jev` and `plugins/memory`, once the scope decision above is made.
 
 ## Next: alongside coordination S1

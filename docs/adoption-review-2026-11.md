@@ -124,7 +124,7 @@ Every candidate was measured against these. They come from your own documents (`
 6. **Stub-only wake.** Wake text is a constant ("N pending, call a2a_inbox"); bodies arrive only as tool results.
 7. **An API key on every request**, loopback included; scoped keys; no public bind without TLS.
 8. **Never write `AGENTS.md`**, never write through a symlink (decision 27).
-9. **Harness config changes only through the user-run installer and chezmoi** (decision 16). No tool edits `~/.claude.json`, `~/.tmux.conf` or `~/.codex/config.toml` behind your back.
+9. **Harness config changes only through the user-run installer and chezmoi** (decision 16). No tool edits `~/.claude.json`, `~/.tmux.conf` or `~/.codex/config.toml` behind your back. Two existing or recommended items sit in tension with this and must go through the user-run installer: ax rewriting `~/.gemini/config/hooks.json` on every attach, and the Claude `Notification` and `WorktreeCreate` hooks recommended for ax in section 4 (G3).
 10. **Permissive licences.** No vendor riders, no Commons Clause. AGPL is acceptable only as a separate, unmodified process.
 
 ---
@@ -142,8 +142,8 @@ Every candidate was measured against these. They come from your own documents (`
   - The S1 backlog from the spikes is written down. S1 has not started.
 - Documentation has drifted:
   - The coordination README still says "next step: S0".
-  - The root README and AGENTS.md trees now list coordination and subagents (fixed 2026-11-07), but they still omit the mcp-toggle, celi5 and cplain skills.
-  - README and AGENTS.md still point at a `plugins/jev/opencode/` that does not exist.
+  - The root README and AGENTS.md trees list coordination and subagents (fixed 2026-11-07). At review time the README omitted celi5 and cplain, and AGENTS.md omitted celi5, cplain and mcp-toggle (fixed 2026-11-08, uncommitted).
+  - README and AGENTS.md pointed at a `plugins/jev/opencode/` that does not exist (references removed 2026-11-08, uncommitted).
   - `marketplace.json` `updated_at` is 2026-10-07.
 
 ### ax (v0.8.4)
@@ -152,7 +152,7 @@ Every candidate was measured against these. They come from your own documents (`
 - Launches agy, claude, opencode, codex and custom TOML harnesses as plain interactive processes, one per tab.
 - Keeps a tab-to-conversation registry, layout snapshots, restore, two-way title sync and a statusline.
 - No messaging, no MCP, no `send-keys`: verified by grep, so it is DDR-003-clean.
-- The CHANGELOG stops at 0.7.0, and there are no tags.
+- The CHANGELOG stops at 0.7.0. Tags exist (15, up to v0.8.4).
 
 ### cognitive-engine
 
@@ -632,7 +632,7 @@ Each card states the verdict and the decisive facts. The full reasoning is in th
 | cmux | borrow ideas | notification rings, jump to unread, trusted-only restore; GPL and BUSL, macOS only; its socket can send input (don't copy) |
 | agent-deck | borrow ideas | hook-reported status, usage windows, global conversation search, worktree fork hooks; its "conductor" is master/subordinate |
 | ccmanager | borrow one idea | copy session files into a new worktree so the conversation continues |
-| Gitea issue dependencies | borrow | extend the gitea plugin with read-only dependency tools and a ready query |
+| Gitea issue dependencies | adopt (read-only) | extend the gitea plugin with read-only dependency tools and a ready query; a source, not the coordination backlog |
 | MCP Inspector | dev only | ≥ 0.14.1, loopback only |
 | Crystal/Nimbalyst, Sculptor, Conductor, Zellij plugins | skip | GUI or macOS-only, or a different multiplexer |
 | agy-hud | skip | reads agy's OAuth token (terms risk) |
@@ -658,15 +658,15 @@ All verified in source unless marked.
    - Coordination's agy hooks (decision 26) and possibly Jev's will live in this file.
    - Fix: refuse to touch invalid JSON, back up, write atomically, preserve order.
    - Spike restore checks must compare with `jq -S`, not bytes.
-3. **Jev guard gaps.** See G5. On cognitive-engine `main` the PR #3 remediation is missing. The open PR #4 contains the `Workflow` matcher and `workflow-guard.ts`. `hook.ts` still only activates in mode `on`, while RFC 002 says `on` and `on-demand`.
-4. **The handle grammar is unreconciled.**
+3. **Jev guard gaps.** See G5. On cognitive-engine `main` the PR #3 remediation is missing, and `hook.ts` only activates in mode `on` while RFC 002 says `on` and `on-demand`. The open PR #4 contains the `Workflow` matcher and `workflow-guard.ts`, and also fixes the `on-demand` activation and `plugin:agent` lookup (verified 2026-11-08). It does not fix `CLAUDE_CODE_SUBAGENT_MODEL` or the OpenCode adapter.
+4. **The handle grammar has no recorded decision.**
    - The SP2 spike adopted `claude-code@alyx/<name>#<sid8>`.
-   - `server-api.md` still uses `^[a-z0-9][a-z0-9._-]{0,47}$`, which forbids `#`, and appends `-` plus 4 hex on collision.
-   - The 2026-11-07 spec fold-in did not settle this.
+   - `server-api.md` (line 472) takes a different position: `^[a-z0-9][a-z0-9._-]{0,47}$`, which forbids `#`, with the server appending `-` plus 4 hex on collision.
+   - The 2026-11-07 spec fold-in did not record why the `#sid8` form was rejected. Either record that or adopt it.
 5. **`server-api.md` section 11.2 shows the agy hooks.json shape wrong.**
    - It shows a top-level `"hooks"` key with Claude-style nesting.
    - agy uses named groups in flat form for `SessionStart`, `PreInvocation` and `Stop`.
-   - Also, `implementation-plan.md:602`'s "no `Stop` entry" scan would fail on the user-level file because of ax's entry. Scope the scan to coordination's own group.
+   - Also, `implementation-plan.md:602`'s "no `Stop` entry" scan refers to the shipped `hooks.json`. Say explicitly that this means coordination's own group, because ax adds a `Stop` entry to the user-level file.
 6. **Jev and memory exist twice.**
    - Same plugin and server names, the same 12 tool names, the same `~/.config/jev/` files.
    - Installing both gives two `PreToolUse` guards and a name clash.
@@ -681,7 +681,7 @@ All verified in source unless marked.
 12. **Stale documentation:**
     - the coordination README status, branch and `DatabaseTaskStore` lines
     - plan §7 still calls C9 unverified
-    - root README and AGENTS.md miss the mcp-toggle, celi5 and cplain skills (coordination and subagents were added 2026-11-07)
+    - the README missed celi5 and cplain, and AGENTS.md also missed mcp-toggle (coordination and subagents were added 2026-11-07)
     - `plugins/jev/opencode/` does not exist
     - the jev README says the hooks are at `hooks/hooks.json`; the real path is `./claude/hooks.json`
     - the jev version mismatch (2.3.0 against 2.0.0 in `package.json`)
@@ -706,10 +706,9 @@ Ordered by dependency. Nothing here needs to happen urgently.
    - correct `bridge-v2-ecosystem-analysis.md`: line 71 (agent teams), and lines 59 to 61 and 87 to 96 (beads storage, the `mcp_agent_mail_rust` pairing)
 4. **cognitive-engine:**
    - record the coordination contract and the sbx exclusion in RFC 001/004
-   - land PR #4 (guard)
-   - fix `hook.ts` to also activate in `on-demand`
+   - land PR #4 (guard; it also fixes `on-demand` activation and `plugin:agent` lookup)
    - fix the OpenCode adapter (`subagent`, `event.input.prompt`)
-   - add `CLAUDE_CODE_SUBAGENT_MODEL` and plugin-agent resolution to the guard
+   - make the guard read `CLAUDE_CODE_SUBAGENT_MODEL`
 5. **agentic-hub housekeeping:**
    - list the missing skills in README and AGENTS.md
    - jev README path and version
@@ -790,7 +789,7 @@ To other coordination research:
 
 ## 11. Method and evidence
 
-**How the review ran.** Seventeen research agents ran, mostly in parallel through workflows:
+**How the review ran.** Eighteen research agents ran, mostly in parallel through workflows:
 
 - Two early surveys of ax and cognitive-engine fed the first note and are not kept separately.
 - Fifteen produced the kept evidence reports.
@@ -813,3 +812,5 @@ External repositories were cloned shallow into a scratch area and never built or
 - Several vendor sites were unreachable (section 9, item 8). Claims that rely on them are marked reported or unverified.
 - GitHub API access was limited to the three attached repositories, so star counts and some release pages were not checked.
 - No tool was run, so behavioural claims (wake latency, races) remain to be measured in spikes.
+
+**Re-verification 2026-11-08.** An independent Opus pass re-checked the locally verifiable claims in section 7 and the documentation-drift claims against source (ax at `eabe619`). Every high-stakes problem held. It corrected the ax tags, the mcp-toggle scope, the PR #4 coverage, the handle-grammar framing, the Gitea-dependencies label, the agent count and the `Stop` scan wording, all applied above.

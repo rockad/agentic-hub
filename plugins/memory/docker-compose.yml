@@ -15,7 +15,7 @@ services:
       - --path
       - /mcp
     ports:
-      - "${RECALL_PORT:-8110}:8000"
+      - "127.0.0.1:${RECALL_PORT:-8110}:8000"
     environment:
       BASIC_MEMORY_PROJECT_ROOT: /app/data
       BASIC_MEMORY_DEFAULT_PROJECT: ${RECALL_PROJECT:-corpus}
@@ -43,7 +43,7 @@ services:
       dockerfile: Dockerfile
     image: lookup:local
     ports:
-      - "${LOOKUP_PORT:-8100}:8100"
+      - "127.0.0.1:${LOOKUP_PORT:-8100}:8100"
     command:
       - mcp
       - --http

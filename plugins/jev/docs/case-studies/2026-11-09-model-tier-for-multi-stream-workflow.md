@@ -317,6 +317,14 @@ Where things are:
 - Jev's decision log: `~/.config/jev/claude_decisions.jsonl`; mode config `~/.config/jev/config.json` (mode `on` for all harnesses on 2026-11-09).
 - Source session transcript (large JSONL, search with `rg`, never print whole): `/home/rockad/.claude/projects/-home-rockad-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694.jsonl`. Workflow script and journal: `/home/rockad/.claude/projects/-home-rockad-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694/workflows/scripts/fold-postgres-and-clarify-decisions-wf_461d006e-32d.js` and `.../subagents/workflows/wf_461d006e-32d/journal.jsonl`.
 
+Where the fixes go (verified 2026-11-09 against `cognitive-engine` `origin/main` at `9fd9af1` after a fetch; confirmed by the owner of the cognitive-engine plan):
+
+- The code citations in this document are to the frozen `agentic-hub` copy (Jev 2.3.0, final, pr-plan decision 14). The same defects are present on `cognitive-engine` `origin/main`, `packages/jev`: the keyword substring rule at `src/tools/dispatch.ts:360` (and `core/heuristics.ts:73-76`, `core/governance.ts:376`), `jev_batch_dispatch` at `src/tools/dispatch.ts:49`, the hard-coded `invoke_subagent` at `src/tools/dispatch.ts:190-193` and `:385` (finding 4.12). The ceiling clamp exists there (`dispatch.ts:182-183`, `clampTierToSessionCeiling`), so the 4.4 contradiction is specific to the Claude adapter path.
+- Commits `9d5a9bc` (workflow guard, effort threshold) and `12b77c6` (ceiling for inheriting subagents) are on `cognitive-engine` `origin/main` (merged as #18); they do not fix 4.4 or 4.14. The workflow-guard work covers the 5.8 design check only.
+- The fixes (5.1 to 5.11, handoff items 1 to 6) are the advisor port of pr-plan decision 15 in `cognitive-engine` `packages/jev` (2.4.0); do not implement them in `agentic-hub`. De-duplicate against RFC 006 before adding items.
+- This document stays in `agentic-hub` until the advisor-port branch lands, then it moves to `cognitive-engine` docs with the jev 2.4.0 packaging PR, leaving a pointer here (decision of the plan owner, 2026-11-09). The RFC 005 Phase A notice keeps the wording "relocating to cognitive-engine".
+- Correction of an earlier version of this analysis: an interim check against an un-fetched local `main` wrongly concluded that the substring rule and the batch tool were absent from `cognitive-engine` and that `9d5a9bc` was not on `main`. Both statements were wrong; the fetched `origin/main` shows the opposite.
+
 What is settled (verified):
 
 - Jev mode was `on` (aggressive) and no `jev_*` tool call was made anywhere in the session; the stage tiers were the assistant's own call under the standing rule, not Jev's.

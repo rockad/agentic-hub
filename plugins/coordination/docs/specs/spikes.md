@@ -182,14 +182,14 @@ Decision 6 proposes this chain, flagged unverified: a `SessionStart` hook posts 
 
 ### Why it matters
 
-- Per-session addressing (`claude-code@alyx/<session-name>`) is the core of decision 6. Without binding, only card-level addressing (newest live listener) is possible.
+- Per-session addressing (`claude-code@alyx/<name>#<sid8>`, decision of 2026-11-09, server-api 5.1) is the core of decision 6. Without binding, only card-level addressing (newest live listener) is possible.
 - The wake listener knows the harness session id from hook stdin. The MCP side knows only `Mcp-Session-Id`. The handle is the only join key, and it travels through the model.
 
 ### Method, Claude Code half
 
 Uses the shared stub and the SP1 scratch project, with the stub registered as an MCP server (streamable HTTP, `http://127.0.0.1:18120/mcp`) in the scratch project's own MCP config.
 
-- **C1, stdin and context.** In the `SessionStart` hook, log the full stdin JSON (all keys). Record whether any session name exists there or in the environment. Return `additionalContext` carrying a proposed handle `claude-code@alyx/<name-or-short-id>` and the instruction to call `a2a_hello`. Ask the model to quote its context to confirm it arrived.
+- **C1, stdin and context.** In the `SessionStart` hook, log the full stdin JSON (all keys). Record whether any session name exists there or in the environment. Return `additionalContext` carrying a proposed handle (the handle grammar is now `<card>/<name>#<sid8>`, decision of 2026-11-09, server-api 5.1; the session-name hint source recorded here is `session_title`) and the instruction to call `a2a_hello`. Ask the model to quote its context to confirm it arrived.
 - **C2, one id per session.** The model calls `a2a_hello`, then `a2a_inbox` five times. Check the stub saw one `Mcp-Session-Id` throughout, and that `a2a_hello` bound to it.
 - **C3, lifecycle.** Check whether the `Mcp-Session-Id` is unchanged after each event below. Record whether `SessionStart` fires on each, with which `source`, and whether the handle is still in context afterwards.
   - `/compact`
@@ -200,6 +200,7 @@ Uses the shared stub and the SP1 scratch project, with the stub registered as an
 - **C4, server restart.** Restart the stub mid-session. Record how the client reacts (404 then re-`initialize`, or an error shown to the model) and whether the next tool call arrives with a new id and no binding.
 - **C5, compliance.** In 10 fresh sessions, count how many call `a2a_hello` unprompted before any other `a2a_*` tool. The stub answers any call from an unbound id with an error that says "call a2a_hello(handle)"; count how many then recover.
 - **C6, two sessions.** Two concurrent Claude sessions with different handles, then with the same requested name. Record that ids and bindings do not cross, and what the stub sees on a name collision.
+  - **Handle format now refers to the decision of 2026-11-09 (server-api 5.1, 3.5):** `<name>#<sid8>`, `#` plus the first 8 hex characters of the session id always present, so the same-name case no longer shares a handle. Evidence: pair 3 of the SP2 Claude half passed with `claude-code@alyx/<name>#<first 8 of session_id>` ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md), Pair 3). That results file is a historical record and is not edited; the spec changes it lists (name at most 39 characters, lowercase) are applied in server-api 5.1.
 - **C7, hook order (HOOK-ORDER).** Configure two `SessionStart` hooks, the registration hook (`POST /sessions`, with a deliberate 2 s delay in variant B) and the `asyncRewake` listener. Over 10 session starts, log the start and end timestamps of each from the stub. Record whether they run in parallel or in listed order, and how often the listener's first `/wake/listen` reaches the stub before the registration does (this decides whether the 15 s retry on `410 unregistered` in server-api.md 7.1 is needed).
 - **C8, MCP tool timeout (MCP-TOOL-TIMEOUT).** The model calls the stub's blocking `a2a_wait(seconds)` with 30, 120 and 240 s. Record for each whether the result arrives, whether progress or an error is shown, whether the connection or the session survives a timeout, and the effective limit if one is hit. Also check whether an `MCP_TOOL_TIMEOUT`-style setting exists in the installed version's docs.
 - **C9, header environment expansion (decision 24).** Register the stub with `headers: {"Authorization": "Bearer ${A2A_API_KEY}"}` in the scratch project's MCP config and export `A2A_API_KEY=spike-token` in the environment of the Claude Code session. Record whether the stub receives `Authorization: Bearer spike-token` (expanded) or the literal `Bearer ${A2A_API_KEY}`, on every request (`initialize`, `tools/list`, `tools/call`, `DELETE`), and what Claude Code shows on a 401. Repeat with the variable unset to record the failure mode. This is **unverified** today. If expansion does not work, the fallback is decided (decision 34): the installer writes the literal key into the user-scope MCP config (`~/.claude.json`, unmanaged), never into a chezmoi-managed file. Also record whether a GUI-launched Claude sees `A2A_API_KEY` (the shell-rc export may not reach it; hooks are unaffected because they read `~/.config/a2a-coord/api-key` directly).
@@ -302,7 +303,7 @@ Record, with a stated fallback if negative (they do not block S1 by failing, but
 
 ### Fallback if it fails
 
-- Handle name not available from the harness: use `<card>/<first 8 chars of the session id>` and let `a2a_hello(handle, name=...)` set a readable alias.
+- Handle name not available from the harness: the unnamed-session form is [design, open] (server-api 3.5): either `<card>/<first 8 chars of the session id>` with no suffix (the SP2 Claude half note) or the always-present `#<sid8>` suffix with a default name. `a2a_hello(name=...)` supplies a name hint; the server derives the handle.
 - `Mcp-Session-Id` not stable or not sent (agy): carry the handle explicitly in every write tool (`as_handle`), validated server-side against `/sessions`, and keep the hook-injected handle in context. Read tools stay unbound.
 - Injected handle not seen by the model: the handle and the "check a2a_inbox now" line are the `SessionStart` `injectSteps` content (decision 27); no `AGENTS.md` is ever written. If injection does not reach the model, the server's unbound-call error carries the instruction ("call `a2a_hello`") and agy binds by `conversation_id` anyway (server-api.md 5.4.1).
 - A6 fails (agy cannot send a custom `Authorization` header): no safe in-plan fallback. Options for the user:
@@ -560,6 +561,13 @@ Steps (SP5 ids kept):
 - **D7, backup and restore (R12, R14).** While D2 load runs, take the dump with the real sidecar, run once with `docker compose --profile backup run --rm dump`, so the sidecar, its `dump_ro` role and its secret are tested. The dump is in custom format (`-Fc`, R12; the format is decided, no longer open), named `a2a-<UTC timestamp>.dump`. Verify the file with `pg_restore --list` (the check the sidecar runs before it writes the `last_ok` stamp), restore it with `pg_restore` into a fresh Postgres container and volume of the same pinned image, and check integrity: the restore completes without error, row counts per table match the counts taken at dump time, and the SDK migration CLI reports the restored database at head. This is the same restore test as SP5 D7 for the nightly dump [D-B]. Up to about one day of loss is accepted; WAL archiving and point-in-time restore are not adopted, and a host-installed Postgres is not adopted. In production the nightly dump is written by the same sidecar into `/media/media2/backup/a2a/` on core and collected by a second restic job (R9: its own script, user-crontab line and tag `a2a-dumps`); the schedule, retention, `last_ok`, `dump_age_h`, the role-creation init script and the restic job are S1-BKP, S1-PG and S2-DEPLOY work and are not spiked here (the restic path is no longer [unverified]: R9 makes it a new job, checked in S2-DEPLOY).
 - **D8, crash.** Under D2 load, `kill -9` the server container and restart it, and separately restart the Postgres container. Check no acked write is lost (acked creates, completions and cancels all present, as SP5 D8 counted them), that tasks left in an "offered" state are re-offered after the server restart, and record how the server's connection pool behaves while Postgres is down and after it returns.
 
+- **Separator check (added 2026-11-09, handle grammar decision `name#sid8`).** Run handles with `#` and with `~` (for example `claude-code@alyx/c6-same#3f2a9c1d` and `claude-code@alyx/c6-same~3f2a9c1d`) through every place a handle travels:
+  - URL use: `coord.to` in the JSON-RPC path and in the REST path, and percent-encoding wherever a handle appears in a URL (query strings such as `GET /wake/pending`, a path segment if one is ever used). `#` starts a URL fragment and is never sent to the server unless encoded as `%23`.
+  - Shell use: `curl` in the hook scripts (`a2a-register`, `a2a-listen`, `a2a-agy-session`, `a2a-agy-pending`) with and without quoting, and the `a2a_send` tool argument.
+  - JSON: the handle as a string value and as an object key, round-tripped.
+  - Storage: the handle as a database key (Postgres primary or unique key, `task_index.to_handle`, `sessions.handle`).
+  - Pass: `#` works everywhere (with the percent-encoding and quoting rules written down), or `~` is adopted as the separator. Record the choice. If `~` is adopted, the regex, every example and the hook templates in server-api change together; if both fail somewhere, stop and ask the user.
+
 Not re-run: D4, D5, D6, D11 and D12 passed on Postgres by URL change in SP5 D10 and are not repeated here [verified]. D9 (filesystem) is retired with SQLite.
 
 ### Pass and fail
@@ -570,6 +578,7 @@ Same numbers as SP5. Must pass (gate):
 - D3: 0 lost updates and 0 double takes.
 - D7: the `-Fc` dump written by the sidecar (backup profile, `dump_ro`) passes `pg_restore --list`, and the `pg_restore` restore passes the integrity check with consistent counts.
 - D8: 0 lost acked writes after `kill -9` of the server and after a restart of the Postgres container.
+- Separator check: `#` works everywhere in the list above, or `~` is adopted. The choice is recorded either way.
 
 ### Record
 
@@ -578,6 +587,7 @@ Same numbers as SP5. Must pass (gate):
 - A latency table and error counts for D2, including the steady-state own-table writes and the deadlock count.
 - The sidecar run, the `dump_ro` role statements, the `pg_restore --list` check and the `pg_restore` command sequence that worked (the dump format is `-Fc`, R12).
 - Any SDK behaviour that needs a wrapper of ours.
+- The separator check result: per place (URL, shell, JSON, storage) for `#` and `~`, and the separator adopted.
 
 ### Runner
 
@@ -713,7 +723,7 @@ What the gate does not cover (these are gates of later stages, not S1):
 
 - Where agy reads MCP server entries from for a workspace-scoped test. `~/.gemini/config/mcp_config.json` exists on alyx (verified by listing the directory, content not read), and the plugin layout `.agents/plugins/<name>/mcp_config.json` is reported by zb-ss. Which form accepts `url` (legacy `serverUrl`) for a scratch workspace is unverified; the A6 run found standalone `.agents/mcp_config.json` undocumented and workspace MCP supported only inside plugin bundles (reported).
 - Whether the user's existing Lookup server runs stateful or stateless MCP over HTTP. Recall is stateless (verified in compose); Lookup is not in the evidence.
-- Where Claude Code gets a human session name for `claude-code@alyx/<session-name>`. SP2 C1 records what hook input contains; the fallback is a short session-id suffix.
+- Where Claude Code gets a human session name for `claude-code@alyx/<name>#<sid8>`. Answered by SP2 C1: `session_title` on `SessionStart` stdin when a name is set. For an unnamed session the form is [design, open] (server-api 3.5).
 - The exact `DatabaseTaskStore` constructor, extras names and migration CLI invocation. The audit lists them only by name; SP5 reads the source first.
 - The real `asyncRewake` timeout ceiling. The JS timer limit of about 2,147,483 s was verified in zb-ss source; whether Claude Code applies it to hooks is unverified until SP1 T4.
 - Whether the SP5 workload size (10 times a realistic rate) is realistic. The realistic rate is itself a guess (a handful of sessions, tasks per minute); revisit if S2 adds more machines.

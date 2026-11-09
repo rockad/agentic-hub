@@ -112,6 +112,7 @@ All links are absolute `file://` links.
 
 ### Start here
 
+- [`docs/plans/pickup-handoff.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/pickup-handoff.md): for a new session (Antigravity or another Claude Code session) taking over: state, next actions in order, process and repository rules.
 - [`docs/plans/consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 36 decisions of 2026-11-04 and 2026-11-05 (13 from `/clarify`, 11 later on 2026-11-04, 12 on 2026-11-05), and the S0-S3 roadmap.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 

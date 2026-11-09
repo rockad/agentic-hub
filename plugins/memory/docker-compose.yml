@@ -41,7 +41,7 @@ services:
     build:
       context: ./servers/lookup
       dockerfile: Dockerfile
-    image: lookup:local
+    image: ghcr.io/rockad/lookup:${LOOKUP_VERSION:-latest}
     ports:
       - "127.0.0.1:${LOOKUP_PORT:-8100}:8100"
     command:

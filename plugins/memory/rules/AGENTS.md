@@ -9,7 +9,7 @@ The `memory` plugin coordinates durable memory and full-text transcript search a
 1. **Recall (`http://127.0.0.1:8110/mcp`)**:
    - Manages durable entities, projects, and structured session memory notes.
    - Primary state note: `session-memory:<workspace>` (with `session-handoff:<workspace>` mirrored for full backward compatibility).
-   - Backed by Basic Memory (`ghcr.io/basicmachines-co/basic-memory:0.23.2`) with hybrid vector + reranker search.
+   - Backed by Basic Memory (`ghcr.io/basicmachines-co/basic-memory:0.24.1`) with hybrid vector + reranker search.
 
 2. **Lookup (`http://127.0.0.1:8100/mcp`)**:
    - Indexes session transcripts (`~/.gemini/antigravity-cli/brain/`), OpenCode session logs (`~/.local/share/opencode/`), repository documents, and knowledge archives.

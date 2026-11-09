@@ -2,7 +2,7 @@ name: memory
 
 services:
   recall:
-    image: ghcr.io/basicmachines-co/basic-memory:0.23.2
+    image: ghcr.io/basicmachines-co/basic-memory:${BASIC_MEMORY_TAG:-0.24.1}
     command:
       - basic-memory
       - mcp

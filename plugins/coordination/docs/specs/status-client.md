@@ -88,7 +88,7 @@ curl -sS -m 3 -X POST http://127.0.0.1:8120/status \
 
 ### Response
 
-The response carries an acknowledgement and one numeric operational field, `dump_age_h` (hours since the last good database dump, [server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 3.6, round-2 decision R5, 2026-11-09). A status client may display it and a stale flag (older than 36 h). Nothing else: no pending messages, no instructions, no text a model could mistake for a command.
+The response carries an acknowledgement and one numeric operational field, `dump_age_h` (hours since the last good database dump, [server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 3.6, round-2 decision R5, 2026-11-09). A status client may display it and a stale flag (older than 36 h). Before the first successful dump the field is `null` (round-3 decision R12, 2026-11-09, default applied by the assistant; the user may veto), so a client must accept `null` and show it as "no dump yet"; a mis-set `backup` compose profile (R14) shows up as a stale value, or as `null` if no dump has ever succeeded. Nothing else: no pending messages, no instructions, no text a model could mistake for a command.
 
 ```json
 { "ok": true, "run_id": "h2s1-20261104T141207Z-3f9a", "applied": true }

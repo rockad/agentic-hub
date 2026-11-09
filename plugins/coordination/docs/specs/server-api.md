@@ -1,6 +1,6 @@
 # Coordination server: API and behaviour specification
 
-Status: PLANNING SPEC, draft 1 (2026-11-04). Nothing here is built. Snippets are illustrative and are not files to copy. Revised 2026-11-09 after the user's `/clarify` decisions D-A to D-J: the starting database is Postgres in the compose project (1.2), the S3 tunnel targets the dedicated port 8121 (8.4.1), remote-peer keys may address handles inside `cards_allowed` (5.2), and open points 10, 11 and 12 are resolved (12.3). Revised again 2026-11-09 after the second `/clarify` round R1 to R8: the handle-guess counter (5.2), the database secret files, the image pin and the dump sidecar with its retention and `dump_age_h` (1.2, 1.4, 1.5, 3.6), the SP5b failure rule (12.1) and the 8121 public listener starting at stage s2, loopback only (1.4, 1.6, 8.4.1).
+Status: PLANNING SPEC, draft 1 (2026-11-04). Nothing here is built. Snippets are illustrative and are not files to copy. Revised 2026-11-09 after the user's `/clarify` decisions D-A to D-J: the starting database is Postgres in the compose project (1.2), the S3 tunnel targets the dedicated port 8121 (8.4.1), remote-peer keys may address handles inside `cards_allowed` (5.2), and open points 10, 11 and 12 are resolved (12.3). Revised again 2026-11-09 after the second `/clarify` round R1 to R8: the handle-guess counter (5.2), the database secret files, the image pin and the dump sidecar with its retention and `dump_age_h` (1.2, 1.4, 1.5, 3.6), the SP5b failure rule (12.1) and the 8121 public listener starting at stage s2, loopback only (1.4, 1.6, 8.4.1). Revised a third time on 2026-11-09 after the `/clarify` round R9 to R14: the dump directory `/media/media2/backup/a2a/` and a second restic job (1.2), the guess counter numbers and its audit event (5.2, 1.3), the read-only `dump_ro` role (1.2, 1.4), the `-Fc` dump format with the `pg_restore --list` check before `last_ok` (1.2), the deliberate stage flip with `a2a-coord expose check` (1.6, 8.3, 8.4.1, 9) and the `backup` compose profile (1.2, 1.4).
 
 Home: `agentic-hub/plugins/coordination` (branch `feat/coordination`). This document is the contract for the server process. Client hook scripts, the `a2a-coord` CLI and the cognitive-engine adapter are specified only as far as they touch the server.
 
@@ -24,6 +24,7 @@ Labels used on claims:
 - `[D1]` to `[D36]`: a binding decision the user made on 2026-11-04 or 2026-11-05 (`[D1]` to `[D13]` in the `/clarify` session, `[D14]` to `[D24]` later on 2026-11-04, `[D25]` to `[D36]` on 2026-11-05). The list is in the plan, section 3.
 - `[D-A]` to `[D-J]`: binding decisions the user made on 2026-11-09 in a later `/clarify` session. The letters are the labels of that session: D-A and D-B storage and its operation, D-C agy health check, D-D S1 entry gate, D-E spike A8c, D-F S3 listener, D-G and D-H peer handles and their protection, D-I `a2a_runs`, D-J extension URI.
 - `[R1]` to `[R8]`: binding decisions the user made on 2026-11-09 in a second `/clarify` round, building on D-A to D-J. R1 handle existence visibility and the guess counter (refines D-H), R2 database password files, R3 Postgres image pinning, R4 dump scheduling, R5 dump retention and the failure notice, R6 the `/data` volume and the pre-import dump, R7 SP5b failure handling, R8 the 8121 listener timing (refines D-F).
+- `[R9]` to `[R14]`: binding decisions the user made on 2026-11-09 in a third `/clarify` round. R9 dump location and the restic hand-off (replaces the R4 and R6 path `/srv/a2a-dumps` and the R4 "the existing restic job collects it"), R10 the guess counter policy (completes R1), R11 the `dump_ro` role (refines R4), R12 the dump format, file names and the pre-`last_ok` check (refines R4 and R5), R13 the exposure stage flip (refines R8), R14 the `backup` compose profile (refines R4).
 - Naming (decision 24): "API key" is the credential issued by `a2a-coord key create`. The older word "token" meant the same thing; it is retired for these credentials. "Bearer" stays for the HTTP scheme (`Authorization: Bearer <api-key>`).
 - `[design]`: a proposal made by this spec to fill a gap. Not user-decided; each is a candidate for review. Numeric defaults marked `[design]` are starting values, not measurements.
 
@@ -103,20 +104,28 @@ Engine rules [design]:
 - Our tables use SQLAlchemy Core and no engine-specific SQL beyond what the Alembic streams (1.3) emit.
 - Postgres runs in the same compose project as the server [D-B]:
   - Image pinned by exact tag plus a recorded digest, both chosen when SP5b runs, and the same image runs in S1, S2 and S3 [R3]. No major-only tag and no `latest`. No version number is fixed in this spec (SP5 D10 happened to run 17.11; that is a record, not the pin). An upgrade is a deliberate change: `pg_dump`, upgrade, restore test.
-  - Named volume `a2a-pgdata`. No published port: the database is reachable only on the compose network, by the server (and by the dump sidecar, below).
+  - Named volume `a2a-pgdata`. No published port: the database is reachable only on the compose network, by the server (and by the dump sidecar as `dump_ro`, below).
   - Password from a secret file, mode 0600, kept outside the repo, never from a committed file [R2]:
     - Postgres reads it through `POSTGRES_PASSWORD_FILE`.
     - The server reads it through `A2A_DB_PASSWORD_FILE` and composes its SQLAlchemy connection at start-up. `A2A_DB_URL` carries no password.
     - There is no password environment variable and no `trust` authentication.
   - Healthcheck with `pg_isready`; the server container starts after the database reports healthy.
   - A host-installed Postgres is not adopted. WAL archiving and point-in-time restore are not adopted.
-- Backup [D-B, R4, R5, R6]: a nightly `pg_dump`, written by a dump sidecar container in the same compose project, into a host directory on `core` that the existing restic backup route on `core` collects. Up to about one day of loss is accepted. The restore is tested the way SP5 D7 tested the SQLite backup (restore into a scratch database, integrity and row-count check); the Postgres version of that test is SP5b D7 [design for the exact check]. Copying the data directory of the running container is not a backup.
-  - Sidecar [R4]: runs `pg_dump` nightly, about 02:00 [design default], and writes dated files into `/srv/a2a-dumps` [design for the path]. It needs only the `pg_dump` tooling and read access to the database; its credential is also a secret file, and whether it reuses `a2a_db_password` or has its own read-only role is [design], open. No systemd timer on `core` (it would need root on `core`), and the server process does not run the dump.
-  - Restic [R4]: adding `/srv/a2a-dumps` to the existing restic job is [unverified] and is part of task S1-BKP.
-  - Retention [R5, design defaults]: 14 daily dumps and 3 monthly dumps (the first dump of each of the last 3 months). After each successful dump the sidecar writes a `last_ok` timestamp file in the same directory.
-  - Failure notice [R5]: the server mounts the dump directory read-only, reads `last_ok` and reports `dump_age_h` in `/status` (3.6). A dump older than 36 h is flagged stale and the status client shows it. If the server is down, the restic job's own log is the second check.
+- Backup [D-B, R4, R5, R6, R9, R11, R12, R14]: a nightly `pg_dump`, written by a dump sidecar container in the same compose project, into the user-owned host directory `/media/media2/backup/a2a/` on `core` [R9], next to `/media/media2/backup/gitea/` where the nightly Gitea backup already lands. A second small restic job sends that directory to Google Drive (Restic, below) [R9]. Up to about one day of loss is accepted. The restore is tested the way SP5 D7 tested the SQLite backup (restore into a scratch database, integrity and row-count check); the Postgres version of that test is SP5b D7, which restores with `pg_restore` [R12] [design for the exact check]. Copying the data directory of the running container is not a backup.
+  - Sidecar [R4, R14]: runs `pg_dump` nightly, about 02:00 [design default], and writes dated files into `/media/media2/backup/a2a/` [R9]. It needs only the `pg_dump` and `pg_restore` tooling and read access to the database. No systemd timer on `core` (it would need root on `core`), and the server process does not run the dump. The sidecar is a compose service defined from S1 with `profiles: ["backup"]`, so it does not start by default (S1 dev on alyx) [R14]. At S2 on core the stack runs with `COMPOSE_PROFILES=backup`. SP5b D7 runs it once with `docker compose --profile backup run --rm dump`, so the real sidecar is what gets tested. A mis-set profile (backups silently off) is caught by the `dump_age_h` stale flag (stale when older than 36 h, R5).
+  - Database role [R11]: the sidecar connects as a separate read-only role, `dump_ro` (`CREATE ROLE dump_ro LOGIN; GRANT pg_read_all_data TO dump_ro`), with its own secret file (for example `secrets/pg_dump_password`, mode 0600, outside the repo, value never shown), mounted only into the sidecar. The server's role and secret (`a2a_db_password`) are never in the sidecar, and the `dump_ro` secret is never in the server. The role is created by a Postgres init script on the first initialisation of the data volume; a volume that already exists needs a one-off migration step, and how that step is run is [design], open. How the init script gets the `dump_ro` password without the secret file being mounted into the Postgres service is also [design], open (R11 fixes the role and the mount rule, not that mechanism).
+  - Format and names [R12]: `pg_dump` custom format (`-Fc`). Nightly files are named `a2a-<UTC timestamp>.dump`; the go-live snapshot is named `pre-import-<run_id>.dump`. Before the sidecar writes `last_ok` it verifies the new file with `pg_restore --list`; a failed verification means no `last_ok` update (so `dump_age_h` keeps growing and the stale flag catches it). The exact UTC timestamp format is [design].
+  - Restic [R9]: the existing job is `/media/media2/knowledge-archive/ops/restic-backup.sh`, run from the user's crontab at 05:30 [verified read-only on core, 2026-11-09]. It is single-source (`SRC=/media/media2/knowledge-archive`, tag `knowledge-archive`, it aborts if `SRC` is not a git repo, and `forget --keep-last 3 --prune` is scoped to its tag), so it cannot simply be extended; the earlier "adding the path to the existing job is [unverified]" is closed. A second small restic job is added instead:
+    - its own script, for example `a2a-restic-backup.sh`, in the same style as the existing one [design for the name]
+    - its own line in the user's crontab, about 05:45 [design]
+    - its own tag, `a2a-dumps`, and tag-scoped retention, for example `forget --keep-last 3 --prune --tag a2a-dumps` [design]
+    - whether it uses the same restic repository on Drive or its own is [design], open
+    - the installer never edits `core`'s crontab: it prints the script and the crontab line for the user to install
+  - Other facts [verified read-only on core, 2026-11-09]: `rsnapshot` covers only `/etc`, `/usr/local` and `/home` into `/media/media2/backup/rsnapshot/`, not this directory. `media1` and `media2` are two partitions of one disk, so there is no disk redundancy and the Drive copy is the offsite copy. `core` runs Docker 29.7.2 and the user is in the `docker` group.
+  - Retention [R5, design defaults]: 14 daily dumps and 3 monthly dumps (the first dump of each of the last 3 months). The daily prune never deletes `pre-import-*` files [R12, default applied by the assistant; the user may veto]. After each successful and verified dump the sidecar writes a `last_ok` timestamp file in the same directory.
+  - Failure notice [R5, R12]: the server mounts the dump directory read-only, reads `last_ok` and reports `dump_age_h` in `/status` (3.6). A dump older than 36 h is flagged stale and the status client shows it. `dump_age_h` is `null` before the first successful dump [R12, default applied by the assistant; the user may veto]. If the server is down, the restic job's own log is the second check.
   - `a2a-data` stays for go-live import run artefacts only (`/data/imports/<run_id>/`). It is not part of the backup scope [R6].
-  - Pre-import snapshot [R6]: the go-live pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>` in the same `/srv/a2a-dumps` directory, so restic collects it; the host-side importer runs it through the compose stack (go-live-migration.md 13.1). Pruning of `pre-import-*` files is kept with the monthly dumps or manual [design]; whether the sidecar's daily pruning skips them is [design], open.
+  - Pre-import snapshot [R6, R9, R12]: the go-live pre-apply snapshot is a `pg_dump -Fc` named `pre-import-<run_id>.dump` in the same `/media/media2/backup/a2a/` directory, so the second restic job collects it; the host-side importer runs it through the compose stack (go-live-migration.md 13.1). It is never pruned by the daily prune [R12]; removing old ones is manual.
 
 ### 1.3 Tables
 
@@ -146,7 +155,7 @@ Rules:
   - registration
   - wake sent
   - hold entered, release and deny
-  - handle-guess limit tripped for a remote-peer API key (5.2) [R1]
+  - handle-guess limit tripped for a remote-peer API key (5.2): event `handle_probe_limited`, one row per trip, fields `key_id` and `window_count` [R1, R10]
   - state transition, with the actor
 - Task content (messages, artifacts, history) lives only in the SDK `tasks` table.
 - Retention [design]: terminal tasks purged after `A2A_RETAIN_DAYS` (default 30); remote REJECTED tasks after 24 h; `audit` is kept until the user prunes it.
@@ -160,7 +169,7 @@ Proposed tree (illustrative):
 ```
 plugins/coordination/
   plugin.json                      # name, version, description, skills if any
-  docker-compose.yml               # three services (server, postgres, dump sidecar), two named volumes, one secret, one host dump directory
+  docker-compose.yml               # three services (server, postgres, dump sidecar in the `backup` profile), two named volumes, two secrets, one host dump directory
   hooks/hooks.json                 # Claude Code plugin hooks (section 11)
   bin/a2a-register  bin/a2a-listen # sh + curl; no other runtime
   servers/coordination/
@@ -199,7 +208,7 @@ services:
     volumes:
       - a2a-data:/data                          # run artefacts only (go-live import runs, go-live-migration.md), not the database
       - ./config:/config:ro
-      - /srv/a2a-dumps:/dumps:ro                # read-only: the server only reads last_ok for dump_age_h in /status [R5]; path is [design]
+      - /media/media2/backup/a2a:/dumps:ro      # read-only: the server only reads last_ok for dump_age_h in /status [R5]; host path on core [R9]
     read_only: true
     tmpfs: ["/tmp", "/run/a2a"]
     cap_drop: [ALL]
@@ -224,21 +233,24 @@ services:
       test: ["CMD-SHELL", "pg_isready -U coordination -d coordination"]
       interval: 10s
     restart: unless-stopped
-  a2a-dump:                                     # dump sidecar [R4]; no systemd timer on core, and the server process does not run the dump
-    image: postgres:<exact-tag>@sha256:<digest> # [design] the same pinned image, so pg_dump matches the server's version; only its pg_dump tooling is used
-    # no "ports:" key; needs only pg_dump tooling and read access to the database [R4]
+  dump:                                         # dump sidecar [R4, R14]; no systemd timer on core, and the server process does not run the dump
+    image: postgres:<exact-tag>@sha256:<digest> # [design] the same pinned image, so pg_dump and pg_restore match the server's version; only its tooling is used
+    profiles: ["backup"]                        # does not start by default (S1 dev on alyx); at S2 on core the stack runs with COMPOSE_PROFILES=backup; SP5b D7 runs it once with "docker compose --profile backup run --rm dump" [R14]
+    # no "ports:" key; connects as the read-only role dump_ro [R11]
     depends_on:
       postgres:
         condition: service_healthy
     secrets:
-      - a2a_db_password                         # [design] or a separate read-only role with its own secret file
+      - a2a_pg_dump_password                    # the dump_ro secret, mounted only here; a2a_db_password (the server's role) is never in this service [R11]; secret name is [design]
     volumes:
-      - /srv/a2a-dumps:/dumps                   # host directory on core, collected by the existing restic job (S1-BKP, [unverified]) [R4]; path is [design]
-    # loop [design]: about 02:00 nightly pg_dump to a dated file in /dumps; keep 14 daily and 3 monthly [R5]; then write /dumps/last_ok
+      - /media/media2/backup/a2a:/dumps         # user-owned host directory on core, collected by the second restic job (tag a2a-dumps) [R9]
+    # loop [design]: about 02:00 nightly pg_dump -Fc to /dumps/a2a-<UTC timestamp>.dump; pg_restore --list on the new file; only if it passes keep 14 daily and 3 monthly (never pre-import-*.dump) and write /dumps/last_ok [R5, R12]
     restart: unless-stopped
 secrets:
   a2a_db_password:
-    file: <path outside the repo>/a2a_db_password   # mode 0600, outside the repo; never committed, value never shown [R2]; path is [design]
+    file: <path outside the repo>/a2a_db_password   # mode 0600, outside the repo; never committed, value never shown [R2]; path is [design]; mounted into postgres and the server only
+  a2a_pg_dump_password:
+    file: <path outside the repo>/pg_dump_password  # the dump_ro password; mode 0600, outside the repo; never committed, value never shown [R11]; path is [design]; mounted into the dump sidecar only
 volumes:
   a2a-data:
   a2a-pgdata:
@@ -266,13 +278,14 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_PUBLIC_LISTEN` | `0.0.0.0:8121` in container, started at `A2A_EXPOSURE_STAGE=s2` and `s3`, not at `s1` [R8] | public listener (published on host loopback only; the tunnel route, created only at the S3 go, is what exposes it): `remote-peer` keys only, only `/a2a/v1` and the public Agent Card; the only listener that trusts `CF-Connecting-IP` (8.4.1) [D-F, design for the variable name] |
 | `A2A_DB_URL` | `postgresql+asyncpg://coordination@postgres:5432/coordination` [design for user and database names] | SQLAlchemy URL of the Postgres service in the compose project, no password in it [D-A, D-B] |
 | `A2A_DB_PASSWORD_FILE` | `/run/secrets/a2a_db_password` | secret file holding the database password (mode 0600 on the host, outside the repo; never logged); the server reads it and composes its SQLAlchemy connection at start-up. The Postgres service reads the same file through `POSTGRES_PASSWORD_FILE`. There is no password environment variable and no `trust` authentication [D-B, R2; design for the variable name and the mechanism] |
-| `A2A_DUMP_LAST_OK_FILE` | `/dumps/last_ok` [design for the variable name and the path] | the `last_ok` timestamp file the dump sidecar writes, on a read-only mount; the server derives `dump_age_h` from it for `/status` (3.6); older than 36 h is stale [R5] |
+| `A2A_DUMP_LAST_OK_FILE` | `/dumps/last_ok` [design for the variable name and the path] | the `last_ok` timestamp file the dump sidecar writes, on a read-only mount of the host directory `/media/media2/backup/a2a/` [R9]; the server derives `dump_age_h` from it for `/status` (3.6); older than 36 h is stale [R5]; `null` before the first successful dump [R12]; `last_ok` is written only after `pg_restore --list` passes on the new file [R12] |
+| `COMPOSE_PROFILES` | unset at `s1`; `backup` at S2 on core | a Docker Compose variable, not a server variable: `backup` starts the dump sidecar service (1.2, 1.4) [R14]. A mis-set profile is caught by the `dump_age_h` stale flag |
 | `A2A_PUBLIC_URL` | `http://127.0.0.1:8120` | origin written into card interfaces; must be `https://` at S2 (the tailnet name) and S3 (`https://a2a.bigrockad.com`) |
 | `A2A_DEPLOY_HOST` | `alyx` | label of the host that runs the container (`alyx` for S1, `core` in production); shown in `status` and `audit`; never used for a trust decision [D23] |
 | `A2A_ENV` | `dev` | `dev` or `live`; must equal the `<env>` part of every accepted API key (`a2ak_<env>_...`), so a dev key never works on production [D24, design] |
-| `A2A_EXPOSURE_STAGE` | `s1` | `s1`, `s2` or `s3`; drives start-up checks (1.6) |
+| `A2A_EXPOSURE_STAGE` | `s1` | `s1`, `s2` or `s3`; drives start-up checks (1.6). The flip to `s3` is a deliberate human step set in the compose environment, with a restart, after `a2a-coord expose check` passes (1.6) [R13]; there is no runtime admin command for it and the stage is not derived from other configuration |
 | `A2A_ALLOW_WRITES` | `0` | registers the MCP write tools [D5] |
-| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name of core, at S3 also `a2a.bigrockad.com`, which arrives through the tunnel on the public listener (8.4.1). The public hostname is refused unless `A2A_EXPOSURE_STAGE` is `s3` (1.6). The S2 public-listener tests reach port 8121 on loopback, so their `Host` value (`127.0.0.1:8121`) is listed at `s2` [R8, design] |
+| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name of core, at S3 also `a2a.bigrockad.com`, which arrives through the tunnel on the public listener (8.4.1). The public hostname is refused unless `A2A_EXPOSURE_STAGE` is `s3` (1.6). The S2 public-listener tests reach port 8121 on loopback, so their `Host` value (`127.0.0.1:8121`) is listed at `s2` [R8, design]; the S2 loopback tests of the 8121 listener send `Host: 127.0.0.1:8121` [R13, default applied by the assistant; the user may veto] |
 | `A2A_ALLOWED_ORIGINS` | empty | accepted `Origin` values; empty means any request with an `Origin` header is refused |
 | `A2A_TRUSTED_PROXY_IPS` | empty | peers whose `X-Forwarded-*` headers are honoured |
 | `A2A_CARDS_FILE` | `/config/cards.yaml` | non-secret card definitions |
@@ -310,6 +323,15 @@ The process exits non-zero, with a one-line reason, if any of these hold:
 - `A2A_PUSH_ENABLED=1` and `A2A_PUSH_ENC_KEY` is unset.
 - The cards file is missing, invalid, or defines a card id that does not match `^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$`.
 - More than one worker is configured.
+
+Stage flip to `s3` [R13]. The flip is a deliberate human step. There is no runtime admin command for it, and the stage is never derived from other configuration. The order is:
+
+1. The user runs the read-only command `a2a-coord expose check` (8.3). It prints the S3 gate list (quarantine live, rate limits live, fuzz report green, honest card, extension URI fixed, and the other gate items of section 9) and exits non-zero if any item is not met.
+2. The user sets `A2A_EXPOSURE_STAGE=s3` (and the public host in `A2A_ALLOWED_HOSTS` and `A2A_PUBLIC_URL`) in the compose environment and restarts the stack.
+3. The start-up checks above for `s3` run, and the server refuses to start if a condition fails.
+4. The user then creates the Cloudflare Tunnel route to `127.0.0.1:8121` (8.4.1). This stays a separate human step after the server is up at `s3`; `expose check` does not create it.
+
+How `expose check` evaluates the items that need evidence outside the server (the fuzz report, the extension URI) is [design], open.
 
 ## 2. Endpoint map [D5]
 
@@ -449,7 +471,7 @@ Quotas for remote peers [design]:
 
 - At most 20 held tasks per peer; over that, `429` with `Retry-After`.
 - Per-peer `SendMessage` rate: 10 per minute. At S3 a per-client-IP limit applies as well, keyed on the address from `CF-Connecting-IP` under the trust rule in 8.4 [D18, D20].
-- Handle-guess counter [R1]: a separate per-API-key rate limit on "not available" responses, with an audit row when it trips (5.2).
+- Handle-guess counter [R1, R10]: a separate per-API-key limit, 10 "not available" answers within 60 s; while tripped, a handle-addressed `SendMessage` from that key gets `429` with `Retry-After: 60`; one `handle_probe_limited` audit row per trip (5.2).
 - Body caps as in 3.3.
 
 #### 3.3.3 Visibility and extended card
@@ -567,7 +589,7 @@ Specified now, built after S1 in the cognitive-engine adapter package, off by de
 ```
 
 - Schema, responses, storage and idempotency: see [status-client.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/status-client.md) sections 4 to 7 (authoritative). This section keeps only the scope and enable-flag rules, and the one response field below.
-- Response field `dump_age_h` [R5]: the response also reports the age, in hours, of the last successful database dump, derived by the server from the `last_ok` timestamp file the dump sidecar writes (read-only mount, `A2A_DUMP_LAST_OK_FILE`, 1.2). It is a number, not free text. Older than 36 h is flagged stale, and the status client shows it. Before the first dump completes there is no `last_ok`; what `dump_age_h` then holds (absent or null, shown stale) is [design], open. If the server is down, the restic job's own log is the second check.
+- Response field `dump_age_h` [R5]: the response also reports the age, in hours, of the last successful database dump, derived by the server from the `last_ok` timestamp file the dump sidecar writes (read-only mount, `A2A_DUMP_LAST_OK_FILE`, 1.2). It is a number, not free text. Older than 36 h is flagged stale, and the status client shows it. `last_ok` is written only after the new dump passes `pg_restore --list` [R12]. Before the first successful dump there is no `last_ok` and `dump_age_h` is `null` [R12, default applied by the assistant; the user may veto]; how a status client shows `null` (it is not a number, so it needs its own display) is [design]. A mis-set `backup` compose profile (backups silently off, R14) shows up the same way, as a `null` or a stale value. If the server is down, the restic job's own log is the second check.
 - Never accepted: prompts, model text, transcripts, any free-text field, denial counts. `sessions_summary.denied_requests` counts path denials only (R-18) and must not be forwarded as "denied" [D13, t2 section 3].
 - Effects: never create tasks, never wake a session, never feed any approval path. The read side is the optional MCP read tool `a2a_runs` (section 4).
 - State mapping, for reference [t2 section 1]:
@@ -811,7 +833,7 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
   - The wake for a queued card task goes to the single newest parked listener of the card.
   - This resolves the former open point 17.
 - Remote peers may address a card or a handle [D-G, reverses the earlier "cards only" rule]. Every remote-peer key may set `coord.to` to a handle, but only a handle whose card is in the key's `cards_allowed`. An unknown handle, an ended handle and a handle outside `cards_allowed` all return the same error [D-H]: a REJECTED task with the same constant "not available" message, error class and response shape, built before any lookup result is used so the paths do not differ by more than that [design for the construction; no further timing hint is required]. The handle list is never returned to a remote-peer key (3.3.3, `GET /sessions` is not in its scope). Inside `cards_allowed`, whether a handle exists is visible to a peer by a successful send (a held task): accepted by the user 2026-11-09, mitigated by the guess counter [R1, refines D-H]. The peer holds a key from the allowlist [D18], so the exposure stays limited to peers holding a remote-peer key, not the open internet. Ended handles return "not available" (confirmed, unchanged), and the flag `A2A_ADVERTISE_HANDLES_TO_PEERS` stays dropped (3.3.3). A task sent to a handle is still held for a human release [D19]. A malformed `coord.to` (not matching the handle format in 5.1) is refused with `InvalidParams`.
-- Guess counter [R1]: every "not available" answer counts against a per-API-key rate limit, separate from the 10 per minute `SendMessage` rate (3.3.2). When the limit trips, the server writes an `audit` row (guess detection) with the key id and `peer_id` and no handle text, and answers the key's further sends with `429` and `Retry-After` whatever the outcome, so the limit itself is not an existence oracle [design for the response]. The limit value and the window are [design], open: R1 fixes the mechanism, not the numbers.
+- Guess counter [R1, R10]: every "not available" answer counts against a per-API-key limit, separate from the 10 per minute `SendMessage` rate (3.3.2). The counter trips at 10 "not available" answers within 60 s for one key. While it is tripped, any handle-addressed `SendMessage` from that key gets `429` with `Retry-After: 60`, whatever the outcome, so the limit itself is not an existence oracle [design for the response]. The server writes one `audit` row per trip, event `handle_probe_limited`, with the fields `key_id` and `window_count` and no handle text (1.3). The counter clears by itself after 60 s without further misses. There is no key quarantine and no human release. Card-addressed sends are not covered by this counter [design for the reading of "handle-addressed"].
 - Symmetric agency: either side can open tasks to the other. A Claude session sending to antigravity and an antigravity session sending to Claude use the same tools and the same path.
 - A sender may continue a task it can see by `task_id`; routing then follows the task's existing binding.
 
@@ -1129,7 +1151,7 @@ When there is nothing to announce it returns `{}` with status 200. The string is
 Notes [design]:
 
 - The allowlist of decision 10 is the set of peers that hold a `remote-peer` API key [D18]; no separate peer registry exists. The `cards_allowed` list on the API key says which cards that peer may address. A valid remote-peer API key whose list does not include the addressed card is the "unknown remote" case and gets a REJECTED task. A request with no valid API key never reaches that logic (`401`).
-- Remote-peer API keys may address handles whose card is in their `cards_allowed`, with a uniform "not available" error for unknown, ended and disallowed handles, a per-key rate limit on those answers with an audit row when it trips, and never receive a handle list (5.2) [D-G, D-H, R1]. They can never see other peers' tasks.
+- Remote-peer API keys may address handles whose card is in their `cards_allowed`, with a uniform "not available" error for unknown, ended and disallowed handles, a per-key rate limit on those answers (10 within 60 s, then `429` with `Retry-After: 60`) with a `handle_probe_limited` audit row when it trips, and never receive a handle list (5.2) [D-G, D-H, R1, R10]. They can never see other peers' tasks.
 - Quarantine is the backstop, not the gate: an API key holder's tasks are still held for a human [D18, D19]. mTLS per peer is optional and later [D18]; where it would terminate behind Cloudflare is [unverified] and not planned now.
 - `local-harness` is "own harness", not "same machine". At S2 one API key is issued per harness per machine, with its own card (`claude-code@alyx`, `claude-code@mac`, `antigravity@core` and so on), and its tasks are `origin: local` [D17, D23]. Origin `local` requires both the key and, at S2 and S3, the matching Tailscale identity (2.1 check 7). This replaces the earlier assumption that own-machine harnesses simply use the scope.
 - The `status-client` key of the cognitive-engine adapter and the `remote-peer` keys are held like any other key (8.2). The status client posts to core over the tailnet [D23]; a remote peer receives its key out of band, never through the service [D24].
@@ -1172,7 +1194,8 @@ Credentials are service-issued API keys, like Claude API keys.
 | `a2a-coord review release <task-id>` | release to `SUBMITTED` after typed confirmation |
 | `a2a-coord review deny <task-id>` | reject, reason `denied_by_human` |
 | `a2a-coord status` | sessions, listeners, pending, budgets, stale offers, schema (additions [design]) |
-| `a2a-coord install --claude --agy` | host-side installer, not an admin-socket command (11.0) [D16] |
+| `a2a-coord expose check` | read-only: print the S3 gate list (quarantine live, rate limits live, fuzz report green, honest card, extension URI fixed, and the other gate items of section 9) and exit non-zero if any item is not met. It changes nothing and does not flip the stage or create the tunnel route; the flip is a manual compose edit and restart (1.6) [R13]. Whether it needs a TTY is [design] |
+| `a2a-coord install --claude --agy` | host-side installer, not an admin-socket command (11.0) [D16]; the installer never edits `core`'s crontab, it prints the second restic script and its crontab line for the user (1.2) [R9]; whether that is this command or a separate core-side step is [design], open |
 
 `key create` takes `--tailnet-node <node>` for `local-harness` keys; at S2 and S3 it is required for every harness key, alyx's included [D17, D23]. `--tailnet-login <login>` is the user-level alternative if only a login is available (spikes.md section 13, L1) [design for the second flag].
 
@@ -1209,6 +1232,8 @@ Rules until the S3 gate passes (plan Risk 13, historical and mitigated):
 - If a route is created early for testing, it sits behind a Cloudflare Access deny-all or service-token-only policy.
 - As a second layer the server refuses the public `Host` unless `A2A_EXPOSURE_STAGE` is `s3` (1.6).
 - S2 workstation traffic goes over the tailnet through `tailscale serve`, not the public hostname, so Cloudflare sees none of it.
+- The move from S2 to S3 follows the stage flip of 1.6 [R13], in this order: the user runs `a2a-coord expose check` (read-only, exits non-zero if any S3 gate item is not met), then sets `A2A_EXPOSURE_STAGE=s3` and the public host in the compose environment and restarts the stack, then the server's `s3` start-up checks pass or the server refuses to start, and only then the user creates the Cloudflare Tunnel route to `127.0.0.1:8121`. There is no runtime admin command for the flip, and the stage is not derived from other configuration.
+- S2 loopback tests of the 8121 listener send `Host: 127.0.0.1:8121` [R13, default applied by the assistant; the user may veto].
 
 **Decided design [D-F] (user, 2026-11-09): a dedicated loopback port for the tunnel.**
 
@@ -1308,7 +1333,7 @@ Trust and auth:
 - API keys are stored hashed, shown once, compared in constant time, revocable with immediate effect.
 - Handles are routing labels, not credentials (5.1). Sessions sharing one API key can claim each other's handles (accepted, no bind code) [D-H].
 - A remote-peer key gets the same "not available" error for an unknown handle, an ended handle and a handle outside its `cards_allowed`, and never receives a handle list [D-H]. A handle that exists inside a card in its `cards_allowed` yields a held task; the user accepted that visibility on 2026-11-09, mitigated by the guess counter [R1]. Test: the enumeration oracle check sends handle guesses with a remote-peer key and asserts that disallowed and non-existent handles give byte-identical response bodies, the same status and the same error class, and no handle appears in any response or card to that key.
-- Guess counter [R1]. Test: with one remote-peer key, send more "not available" handle guesses than the per-key limit inside its window and assert that the limit trips (`429` with `Retry-After`), that an `audit` row for the trip exists and holds no handle text, that a second remote-peer key is unaffected, and that the trip does not change the bodies of the earlier "not available" answers.
+- Guess counter [R1]. Test: with one remote-peer key, send more "not available" handle guesses than the per-key limit inside its window and assert that the limit trips at the 10th "not available" answer within 60 s [R10] (a handle-addressed send then gets `429` with `Retry-After: 60`), that exactly one `handle_probe_limited` `audit` row exists for the trip, holding `key_id` and `window_count` and no handle text, that a second remote-peer key is unaffected, that the counter clears by itself after 60 s without further misses (no key quarantine, no human release), and that the trip does not change the bodies of the earlier "not available" answers.
 - The Agent Card declares only the auth that is enforced and only the capabilities that are on (3.2).
 
 cognitive-engine boundary [D13]:
@@ -1337,13 +1362,17 @@ S2 gate checks, public listener [R8]. The 8121 listener runs from s2 on host loo
 - oversized and malformed bodies, malformed `Host`, repeated or conflicting headers
 - public-listener rules: only `remote-peer` keys, only `/a2a/v1` and the public Agent Card, `404` with no body elsewhere (8.4.1)
 - quarantine live, rate limits live, honest card
-- handle enumeration oracle: unknown, ended and disallowed handles are indistinguishable to a remote-peer key, repeated "not available" answers trip the guess counter and write an audit row [R1], and no handle list is reachable through port 8121 [D-H]
-- guess counter: the per-key limit on "not available" answers trips and writes its audit row (the test above) [R1]
+- handle enumeration oracle: unknown, ended and disallowed handles are indistinguishable to a remote-peer key, repeated "not available" answers trip the guess counter and write an audit row [R1, R10], and no handle list is reachable through port 8121 [D-H]
+- guess counter: 10 "not available" answers within 60 s trip the per-key limit, a handle-addressed send then gets `429` with `Retry-After: 60`, one `handle_probe_limited` audit row is written with `key_id` and `window_count`, and the counter clears after 60 s (the test above) [R1, R10]
+- backup (SP5b D7 and the S2 deploy): `docker compose --profile backup run --rm dump` writes `a2a-<UTC timestamp>.dump` into `/media/media2/backup/a2a/`, `pg_restore --list` passes before `last_ok` is written, `pg_restore` into a scratch database passes the integrity and row-count check, and `dump_age_h` is `null` before the first dump and under 36 h after it [R9, R11, R12, R14]
+- the sidecar reaches Postgres as `dump_ro` only: the server's secret file is not mounted in the sidecar and the `dump_ro` secret file is not mounted in the server [R11]
 - the sbx isolation test covers port 8121 as well as 8120 [R1]
 
-S3 gate checks [R8]: the gate keeps the tunnel route and the explicit user go.
+S3 gate checks [R8, R13]: the gate keeps the tunnel route and the explicit user go. The user runs `a2a-coord expose check` (read-only) before the flip; it prints this gate list and exits non-zero if any item is not met (1.6, 8.3). The flip itself is the human procedure of 1.6 (set `A2A_EXPOSURE_STAGE=s3` and the public host in the compose environment, restart, the `s3` start-up checks pass), and the route comes after it.
 
-- the Cloudflare Tunnel route to `localhost:8121` is created, and only on the user's explicit go
+- the S2 gate items above are met and recorded: quarantine live, rate limits live, fuzz report green, honest card (the items `a2a-coord expose check` lists) [R13]
+- the stack starts at `A2A_EXPOSURE_STAGE=s3`: the server's start-up checks for `s3` (1.6) did not refuse to start [R13]
+- the Cloudflare Tunnel route to `127.0.0.1:8121` is created, after the flip and only on the user's explicit go [R13]
 - the checks that need the real tunnel: whether `CF-Connecting-IP` arrives unchanged from `cloudflared`, the Cloudflare timeout, path restriction in the ingress rule (8.4.1, spikes.md section 13) [unverified until then]
 - the extension URI is chosen and published before the public card goes live (12.2 point 13) [D-J]
 
@@ -1353,7 +1382,7 @@ From t1c section 7 plus items this spec adds. SDK facts are `[verified]` there.
 
 From the audit:
 
-- Postgres engine setup and its operation: seeded version row, image pinned by exact tag plus digest, secret-file password, nightly `pg_dump` by the dump sidecar into `/srv/a2a-dumps` with retention, `last_ok` and `dump_age_h`, a tested restore, tested with concurrent writers (1.2, SP5b) [D-A, D-B, D-D, R2 to R6].
+- Postgres engine setup and its operation: seeded version row, image pinned by exact tag plus digest, secret-file password, nightly `pg_dump -Fc` by the dump sidecar (the `backup` compose profile, read-only role `dump_ro`) into `/media/media2/backup/a2a/` with retention, `pg_restore --list` before `last_ok`, `dump_age_h`, a second restic job to Drive, a tested `pg_restore` restore, tested with concurrent writers (1.2, SP5b) [D-A, D-B, D-D, R2 to R6, R9 to R12, R14].
 - Inbound auth middleware, and matching `securitySchemes` and `securityRequirements` on the card (the SDK builds a `ServerCallContext` from the Starlette request but authenticates nothing).
 - Push URL SSRF policy: pass `validate_push_notification_url` always, and add our resolve-and-pin screen (3.3.4).
 - The wake endpoint and per-session listener table (section 7). Nothing in any candidate wakes a live idle harness; this is our own design.
@@ -1570,7 +1599,7 @@ Carried from the audit [t1b section 7, synthesis section 7]:
 - Whether `asyncRewake` is honoured on a `UserPromptSubmit` command hook (the re-arm after Esc, 11.1). Open; runs inside S1, not before it, with its own exit test [D-D].
 - agy: maximum Stop-hook timeout; whether a held Stop blocks typing; whether Stop fires per turn or per conversation; ~~whether SessionStart fires on resume~~ (settled, SP2 A3: it does not; it does after `/clear`); whether a background command's completion wakes an idle agy.
 - Inbox socket (`CLAUDE_CODE_MESSAGING_SOCKET`) frame shape and `crossSessionInbound` behaviour. A later spike candidate [D8]; Channels are not used [D8].
-- ~~SQLite under the real write pattern (server plus WAL) with concurrent hooks, in this container.~~ Replaced by SP5b on Postgres (D-D): the S1 entry gate is SP1, SP2, SP3, SP4 (record only) and SP5b, the SP5 rerun on Postgres: D3 lost-update test on the versioned store, D7 `pg_dump` backup and restore integrity check, D8 `kill -9` of the server and a restart of the Postgres container with zero lost acked writes, and the D2 load mix including the steady-state session-register and budget-counter writes that SP5 skipped. Pass criteria are the SP5 numbers: 0 lost updates, 0 lost acked writes, p99 write under 200 ms. SP5 (SQLite) stays in the record as passed but no longer gates. SP5b runs on alyx; no load test on core is planned (core is a Raspberry Pi 5 Model B, 4 cores at 2.4 GHz, 8 GB RAM, Debian 12 aarch64 [verified over ssh, 2026-11-09]; the user states speed is not a concern). If SP5b fails its pass criteria: up to two revise-and-rerun cycles (wrapper tuning, isolation level, the seeded version row, a Postgres setting), then S1 storage work stops and the user is asked; there is no automatic fallback to SQLite [R7]. SP5b also records the Postgres image tag and digest that the compose file then pins (1.2) [R3].
+- ~~SQLite under the real write pattern (server plus WAL) with concurrent hooks, in this container.~~ Replaced by SP5b on Postgres (D-D): the S1 entry gate is SP1, SP2, SP3, SP4 (record only) and SP5b, the SP5 rerun on Postgres: D3 lost-update test on the versioned store, D7 `pg_dump -Fc` backup and `pg_restore` restore integrity check, run through the real sidecar with `docker compose --profile backup run --rm dump` [R12, R14], D8 `kill -9` of the server and a restart of the Postgres container with zero lost acked writes, and the D2 load mix including the steady-state session-register and budget-counter writes that SP5 skipped. Pass criteria are the SP5 numbers: 0 lost updates, 0 lost acked writes, p99 write under 200 ms. SP5 (SQLite) stays in the record as passed but no longer gates. SP5b runs on alyx; no load test on core is planned (core is a Raspberry Pi 5 Model B, 4 cores at 2.4 GHz, 8 GB RAM, Debian 12 aarch64 [verified over ssh, 2026-11-09]; the user states speed is not a concern). If SP5b fails its pass criteria: up to two revise-and-rerun cycles (wrapper tuning, isolation level, the seeded version row, a Postgres setting), then S1 storage work stops and the user is asked; there is no automatic fallback to SQLite [R7]. SP5b also records the Postgres image tag and digest that the compose file then pins (1.2) [R3].
 
 Added by this spec:
 
@@ -1638,7 +1667,16 @@ Resolved by the decisions of 2026-11-09 (second `/clarify` round, R1 to R8):
 - Handle existence visibility (refines D-H): [R1]. A handle that exists inside a card in the key's `cards_allowed` yields a held task, while an unknown, ended or disallowed handle yields the uniform "not available" REJECTED task. The accepted-risk wording is "accepted by the user 2026-11-09, mitigated by the guess counter": a per-API-key rate limit on "not available" answers with an audit row when it trips (5.2). `A2A_ADVERTISE_HANDLES_TO_PEERS` stays dropped; the sbx isolation test covers 8121 as well as 8120 (9).
 - Database password: [R2]. Secret file, mode 0600, outside the repo; `POSTGRES_PASSWORD_FILE` for Postgres, `A2A_DB_PASSWORD_FILE` for the server, no password in `A2A_DB_URL`, no password environment variable, no `trust` authentication (1.2, 1.5).
 - Image pinning: [R3]. Exact tag plus recorded digest chosen at SP5b, the same image in S1, S2 and S3, deliberate upgrades only (1.2).
-- Dump scheduling, retention and failure notice: [R4, R5]. A dump sidecar in the compose project writes nightly `pg_dump` files to `/srv/a2a-dumps`, 14 daily and 3 monthly, with `last_ok`; the server reports `dump_age_h` in `/status`, stale after 36 h (1.2, 3.6). Adding the directory to the existing restic job is [unverified] and part of S1-BKP.
-- `/data` volume and pre-import dump: [R6]. `a2a-data` holds go-live import run artefacts only, outside the backup scope; the pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>` in `/srv/a2a-dumps` (1.2, go-live-migration.md 13.1).
+- Dump scheduling, retention and failure notice: [R4, R5], with the path and format replaced by R9 and R12 below. A dump sidecar in the compose project writes nightly `pg_dump` files, 14 daily and 3 monthly, with `last_ok`; the server reports `dump_age_h` in `/status`, stale after 36 h (1.2, 3.6).
+- `/data` volume and pre-import dump: [R6]. `a2a-data` holds go-live import run artefacts only, outside the backup scope; the pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>.dump` in `/media/media2/backup/a2a/` [R9, R12] (1.2, go-live-migration.md 13.1).
 - SP5b failure: [R7]. Up to two revise-and-rerun cycles, then stop and ask the user; no automatic fallback to SQLite (12.1).
 - 8121 listener timing (refines D-F): [R8]. Started from s2, host loopback only, remote-peer rules active; the exposure gate is the tunnel route, created only at the S3 go (1.4, 1.6, 8.4.1, 9).
+
+Resolved by the decisions of 2026-11-09 (third `/clarify` round, R9 to R14):
+
+- Dump location and restic hand-off: [R9]. Dumps go to `/media/media2/backup/a2a/` on core, replacing `/srv/a2a-dumps` everywhere (the pre-import dump too). The existing restic job is single-source and cannot be extended, so a second small restic job is added: its own script, its own user-crontab line (about 05:45, [design]), tag `a2a-dumps`, tag-scoped retention ([design]); the repository on Drive (same or its own) is [design], open. The installer never edits core's crontab and prints the script and the crontab line. The earlier "[unverified]" on adding the path to the existing job is closed (1.2).
+- Guess counter policy: [R10], completes R1. 10 "not available" answers within 60 s per API key trip it; while tripped, handle-addressed `SendMessage` gets `429` with `Retry-After: 60`; one `handle_probe_limited` audit row per trip with `key_id` and `window_count`; it clears by itself after 60 s without further misses; no key quarantine and no human release (1.3, 5.2, 9).
+- Dump role: [R11], refines R4. Separate read-only role `dump_ro` with its own secret file mounted only into the sidecar; created by a Postgres init script on first initialisation of the data volume; an existing volume needs a one-off migration step whose mechanism is [design] (1.2, 1.4).
+- Dump format: [R12], refines R4 and R5. `-Fc`; `a2a-<UTC timestamp>.dump` and `pre-import-<run_id>.dump`; `pg_restore --list` before `last_ok`; SP5b D7 restores with `pg_restore`. Defaults applied by the assistant, the user may veto: the daily prune never deletes `pre-import-*` files, and `dump_age_h` is `null` before the first successful dump (1.2, 3.6).
+- Exposure stage flip: [R13], refines R8. `a2a-coord expose check` (read-only, prints the S3 gate list, non-zero exit on any unmet item), then the user sets `A2A_EXPOSURE_STAGE=s3` and the public host and restarts, the server's `s3` start-up checks refuse to start if a condition fails, then the user creates the tunnel route to `127.0.0.1:8121`. No runtime admin command; the stage is not derived. Default applied by the assistant, the user may veto: S2 loopback tests of 8121 send `Host: 127.0.0.1:8121` (1.6, 8.3, 8.4.1, 9).
+- Backup compose profile: [R14], refines R4. The dump service (`dump`) is defined from S1 with `profiles: ["backup"]`; `COMPOSE_PROFILES=backup` at S2 on core; SP5b D7 runs `docker compose --profile backup run --rm dump`; a mis-set profile is caught by the `dump_age_h` stale flag (1.2, 1.4, 1.5).

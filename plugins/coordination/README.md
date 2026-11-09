@@ -75,6 +75,7 @@ Notes on the diagram:
 - **S1, dev on alyx.** `127.0.0.1:8120` only. Gate: S0 spikes done.
 - **S2, production on core.** `tailscale serve` on core; every workstation (alyx, mac) reaches core over the tailnet from day one, with one `local-harness` API key per harness per machine. The server checks the Tailscale identity matches the machine the key was issued for, for all harness keys including alyx's. Hooks on alyx and mac long-poll core over the tailnet (wake latency and tailnet dependency are risks). Gate: API keys and scopes live, cross-host wake works.
 - **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on core; the chosen hostname is `a2a.bigrockad.com`, but no route exists now (one was created and deleted on 2026-11-04; the hostname no longer resolves). The route is created only at S3, after the gate passes and on the user's explicit go. Only `/a2a/v1` and the card are to be routed. Decided 2026-11-09: the tunnel targets a dedicated loopback port (`localhost:8121`) that the server treats as the public listener, while 8120 stays tailnet-only. The server starts that listener from stage s2, on host loopback only, so its rules are tested before S3; the tunnel route is the exposure gate. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own API key, delivered out of band. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
+- **S3 procedure** (decided 2026-11-09, R13): the flip to `A2A_EXPOSURE_STAGE=s3` is a deliberate human step, in this order. (1) The user runs the read-only `a2a-coord expose check`, which prints the S3 gate list and exits non-zero if any item is not met. (2) The user sets `A2A_EXPOSURE_STAGE=s3` and the public host in the compose environment and restarts the stack. (3) The server's `s3` start-up checks refuse to start if a condition fails. (4) The user then creates the Cloudflare Tunnel route to `127.0.0.1:8121`. There is no runtime admin command for the flip, and the stage is not derived from other configuration.
 - **Rule:** never create the public route before the S3 gate and the user's explicit go. The 8121 listener itself runs from stage s2 on host loopback only, so nothing reaches it from outside until the route exists. If a route is created early for testing, it must sit behind a Cloudflare Access deny-all or service-token-only policy. S2 workstation traffic goes over the tailnet, not through the public hostname.
 - **Go-live migration** (import and deletion of the old file channel) comes after S3.
 
@@ -87,7 +88,7 @@ Illustrative. Nothing below exists yet except `docs/`. The single illustrative l
 ```
 plugins/coordination/
 ├── plugin.json
-├── docker-compose.yml            # service a2a-coord, volume a2a-data -> /data, port 8120
+├── docker-compose.yml            # services server, postgres and dump (profile backup); a2a-data for import artefacts; ports 8120 and 8121
 ├── README.md
 ├── AGENTS.md
 ├── servers/

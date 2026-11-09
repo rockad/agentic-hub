@@ -35,12 +35,12 @@ Evidence labels used below:
 
 ## 2. Preconditions (the go-live gate for this migration)
 
-- The S3 exit gate has passed (decision 14) and the user declares go-live. The server runs with the spikes done and the store on the `a2a-data` volume; the import goes through the in-container admin socket (section 7).
+- The S3 exit gate has passed (decision 14) and the user declares go-live. The server runs with the spikes done and the store in the compose project's Postgres service (named volume `a2a-pgdata`, user decision 2026-11-09 D-A, replacing the earlier SQLite file on `a2a-data`); the import goes through the in-container admin socket (section 7).
 - Between 2026-11-04 and go-live the channel is frozen for everyone except Antigravity's research use (decision 14). On go-live day the user stops that too. The last write seen on 2026-11-04 was the final block of the coordination channel (conversation `01VA3JtCyASmfR8Q7Vcvehe7`, message 1, 14:22:23+02:00) `[verified]`; later blocks are expected.
 - The user records the exact freeze instant in the run manifest (open point 1). Blocks that begin after it are reported as post-freeze appends. Blocks between 2026-11-04 and the freeze instant are ordinary imported content.
 - No watcher is running (section 11). A running watcher is only a warning, but a stale one should be stopped before deletion.
 - Explicit user go for the apply step, and a second explicit go (typed, on a real TTY) for the deletion step.
-- Dress rehearsal done on a scratch store (section 12) before touching the real volume.
+- Dress rehearsal done on a scratch store (section 12) before touching the real database.
 
 ## 3. Inventory and scope
 
@@ -306,7 +306,7 @@ References that will dangle once the channel files are deleted (annotate as hist
 - Synthetic fixtures only. Real channel files stay out of the repo, since they contain internal paths and plans.
 - Unit fixtures, one per quirk in section 4: end fence without reply-to, 30-second timestamp gap, non-monotonic timestamps, comma `reply-to`, cross-file reply-to, number gap, key collision across files, indented archive region with a deeper-indented fake fence, nested begin, unterminated block, stray text, mismatched end, CRLF, NUL, oversize block, credential-like string.
 - Property tests: parse then render then re-parse is stable; applying twice inserts zero the second time; any one-byte change in a block produces a conflict.
-- Dress rehearsal: copy the two real files read-only into a scratch directory, run the full dry-run and apply against a scratch volume, check the section 10.3 list, then drop the scratch volume.
+- Dress rehearsal: copy the two real files read-only into a scratch directory, run the full dry-run and apply against a scratch Postgres database (a scratch compose project with its own volume), check the section 10.3 list, then drop the scratch database and its volume.
 - Wake canary on the scratch server: park a listener on a throwaway handle, run the apply, expect no 200 on the listener (it must stay in 408 rounds).
 - Run only the real store after the user's go.
 
@@ -314,7 +314,7 @@ References that will dangle once the channel files are deleted (annotate as hist
 
 ### 13.1 Backup before deletion
 
-- Pre-apply store snapshot: SQLite online backup of the store file to `/data/backups/pre-import-<run_id>.db` (backup API or `VACUUM INTO`, safe with WAL while the server runs). It is the rollback anchor for the store.
+- Pre-apply store snapshot: a `pg_dump` of the coordination database, taken while the server runs, to `/data/backups/pre-import-<run_id>.dump` [design: where the dump is written, since `pg_dump` runs in the Postgres service and `/data` belongs to the server container, is open]. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly `pg_dump` restore is (server-api.md 1.2, D-B). The nightly dump itself goes to the existing encrypted backup route on `core` and is not this snapshot.
 - Source backup: a tar of exactly the following, taken after verification and before deletion:
   - the two in-scope channel files
   - `cognitive-engine-bridge-turns-archive-2026-10.md`

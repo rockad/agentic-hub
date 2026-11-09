@@ -1,6 +1,6 @@
 # Coordination server: API and behaviour specification
 
-Status: PLANNING SPEC, draft 1 (2026-11-04). Nothing here is built. Snippets are illustrative and are not files to copy.
+Status: PLANNING SPEC, draft 1 (2026-11-04). Nothing here is built. Snippets are illustrative and are not files to copy. Revised 2026-11-09 after the user's `/clarify` decisions D-A to D-J: the starting database is Postgres in the compose project (1.2), the S3 tunnel targets the dedicated port 8121 (8.4.1), remote-peer keys may address handles inside `cards_allowed` (5.2), and open points 10, 11 and 12 are resolved (12.3).
 
 Home: `agentic-hub/plugins/coordination` (branch `feat/coordination`). This document is the contract for the server process. Client hook scripts, the `a2a-coord` CLI and the cognitive-engine adapter are specified only as far as they touch the server.
 
@@ -22,6 +22,7 @@ Labels used on claims:
 - `[reported]`: a project README, PR text or the audit's own report; not reproduced.
 - `[unverified]`: inference, or not documented anywhere we read. Needs a spike.
 - `[D1]` to `[D36]`: a binding decision the user made on 2026-11-04 or 2026-11-05 (`[D1]` to `[D13]` in the `/clarify` session, `[D14]` to `[D24]` later on 2026-11-04, `[D25]` to `[D36]` on 2026-11-05). The list is in the plan, section 3.
+- `[D-A]` to `[D-J]`: binding decisions the user made on 2026-11-09 in a later `/clarify` session. The letters are the labels of that session: D-A and D-B storage and its operation, D-C agy health check, D-D S1 entry gate, D-E spike A8c, D-F S3 listener, D-G and D-H peer handles and their protection, D-I `a2a_runs`, D-J extension URI.
 - Naming (decision 24): "API key" is the credential issued by `a2a-coord key create`. The older word "token" meant the same thing; it is retired for these credentials. "Bearer" stays for the HTTP scheme (`Authorization: Bearer <api-key>`).
 - `[design]`: a proposal made by this spec to fill a gap. Not user-decided; each is a candidate for review. Numeric defaults marked `[design]` are starting values, not measurements.
 
@@ -48,7 +49,7 @@ Terms:
 
 - One server process, Python on `a2a-python` (`a2a-sdk` pinned to an exact 1.3.x release, minimum 1.3.0) [D3], managed with `uv`, shipped as a Docker image.
 - One ASGI application (Starlette, which `a2a-python` already targets [verified]) run by one `uvicorn` worker. Exactly one worker is a requirement, not a default: the parked-listener table, MCP session bindings and rate-limit counters are in process memory [design].
-- Everything else is a client of that process over HTTP: hook scripts, the MCP clients inside Claude Code and agy, remote peers, the cognitive-engine adapter. No other process opens the database file [D4].
+- Everything else is a client of that process over HTTP: hook scripts, the MCP clients inside Claude Code and agy, remote peers, the cognitive-engine adapter. No other process opens the database [D4]. The database is now a second compose service (Postgres, 1.2) [D-A]; the server stays ONE process because the parked wake listeners live in its memory, so the single-server-process rule is unchanged.
 - `a2a-python` cluster mode (versioned CAS store plus DB event stream, about five weeks old, verified in code, maturity unproven) is not used. It exists to let several processes share one DB; decision 4 removes that need.
 - MCP is served by this same process at `/mcp`, in-process, calling the same service layer as `/a2a/v1` [D5]. It does not call itself over HTTP.
 
@@ -60,41 +61,52 @@ Terms:
         +-----------+-----------+------------------+------------------------+
                     |  S1 127.0.0.1:8120 (dev, alyx)
                     |  S2 tailscale serve on core (workstations over the tailnet)
-                    |  S3 cloudflared on core -> core localhost:8120
+                    |  S3 cloudflared on core -> core localhost:8121 (public listener, 8.4.1)
         +-----------v-------------------------------------------------------------+
         | coordination container: one process, one uvicorn worker                  |
         |  middleware: Host/Origin -> bearer auth -> scope check -> rate limit     |
         |  routes: /mcp  /a2a/v1  /wake/*  /sessions  /status  /.well-known/...    |
         |  service layer: routing, state machine, quarantine, offers, wake budget  |
         |  memory: listener table, MCP session bindings                            |
-        |  CoordTaskStore (SDK VersionedDatabaseTaskStore) + our tables, one file  |
+        |  CoordTaskStore (SDK VersionedDatabaseTaskStore) + our tables, Postgres  |
         |  admin socket /run/a2a/admin.sock  <--  a2a-coord (runs inside container)|
         +-----------+-------------------------------------------------------------+
-                    | SQLite, WAL
-              named volume a2a-data mounted at /data
+                    | postgresql+asyncpg, compose network only (no published port)
+        +-----------v-------------------------------------------------------------+
+        | postgres container, named volume a2a-pgdata                              |
+        +-------------------------------------------------------------------------+
 ```
 
-### 1.2 SQLite configuration [D4]
+### 1.2 Postgres storage [D-A] [D-B]
 
-`a2a-python` has no WAL or busy-timeout handling [verified: `rg WAL|busy|check_same_thread` over `src` and `tests` found nothing]. The server sets these on every connection through a SQLAlchemy `connect` event on the async engine [design]:
+Decision (user, 2026-11-09, `/clarify`): the starting engine is Postgres in the compose project from S1. This reverses the starting engine of decision 4 (SQLite). The SDK `VersionedDatabaseTaskStore` with a version row seeded at task creation, `CoordTaskStore`, the custom parked-task `RequestHandler`, the `task_index` side table and our tables on SQLAlchemy Core all stay [D-A].
 
-- `PRAGMA journal_mode=WAL`
-- `PRAGMA busy_timeout=5000`
-- `PRAGMA synchronous=NORMAL`
-- `PRAGMA foreign_keys=ON`
+Record of why SQLite would have been enough [verified, SP5 on SQLite, 2026-11-05, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)]. The user chose Postgres anyway:
+
+- About 23 write transactions per second at 10x the assumed realistic load, p99 write 17 to 35 ms.
+- Single-connection write ceiling about 430 saves per second.
+- 0 committed tasks lost after `kill -9` (3 kills under load).
+- Tripwires that would have forced a move: more than one writer process, a network filesystem, a failover need, about 100x load.
+
+Retired by D-A [verified in SP5 as the SQLite-only part]: the single-connection `BEGIN IMMEDIATE` write engine, the SQLite pragmas and WAL, the filesystem caveat for the data volume (a bind mount from `/mnt/c`, 9p), the language "Postgres by URL change" (Postgres is now the default engine) and `sqlite3 .backup`. The SP5 SQLite results stay in the record: they explain why a wrapper of ours exists (the plain store lost updates) and which numbers the Postgres rerun has to match (SP5b, D-D).
 
 Engine rules [design]:
 
-- URL `sqlite+aiosqlite:////data/a2a.db`, from `A2A_DB_URL`.
-- **The plain `DatabaseTaskStore` is not sufficient** [verified, SP5, 2026-11-05, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)]. Under a same-task race it lost 300 of 300 updates and double-took 300 of 300 tasks, and `busy_timeout=0` failed 1499 of 2000 saves. SP5 passed with four wrappers of ours, which this spec requires:
-  - Write engine: a single connection (`pool_size=1`) whose every write transaction starts with `BEGIN IMMEDIATE`, plus a separate read engine. Writes from our own tables and from the task store go through the write engine.
+- URL form `postgresql+asyncpg://...`, from `A2A_DB_URL` (default and password handling in 1.5). The password never appears in the URL, in the compose file or in the environment: it is a Docker secret file (below).
+- **The plain `DatabaseTaskStore` is not sufficient** [verified, SP5 on SQLite, 2026-11-05]. Under a same-task race it lost 300 of 300 updates and double-took 300 of 300 tasks; on Postgres the plain get/save lost 299 of 300 (SP5 D10). SP5 on SQLite passed with four wrappers of ours; with D-A three remain, and this spec requires them:
   - Compare-and-swap transitions through the SDK `VersionedDatabaseTaskStore`, with a version row seeded when the task is created. Every state change (`a2a_inbox` take, `a2a_respond`, `CancelTask`) goes through this one path. A direct store write must never be mixed with the executor path for the same task: SP5 showed a terminal state overwritten (final state `WORKING` after a direct `COMPLETED` write).
   - `CoordTaskStore`, a `TaskStore` subclass that writes the task and our `task_index` row in one transaction, and implements index-based visibility and a visibility-aware `ListTasks` (handle lookup uses the `task_index` side table, SP5 D4).
   - A custom `RequestHandler` for parked tasks (about 100 lines, 11 methods): `SendMessage` creates the task and returns it, `GetTask`, `ListTasks` and `CancelTask` go to our service layer, streaming and push raise the SDK's unsupported errors. The SDK `DefaultRequestHandler` needs an `AgentExecutor` and is not used (SP5 D11).
-- Postgres by URL change: schema, visibility and migrations passed (SP5 D10, record only); our SQLite compare-and-swap does **not** carry over (259 of 300 lost), so a Postgres move needs the versioned store with a seeded version row and its own concurrency test. Decision 4's "Postgres only by URL change" holds for the schema, not for the write path.
-- Moving to Postgres later is a change of `A2A_DB_URL` only [D4]. Anything that cannot survive that change (SQLite-specific SQL in our own tables) is not allowed; our tables use SQLAlchemy Core.
-- The database lives on a Docker named volume. It must not live on a bind mount from a Windows path under `/mnt/c`, because WAL needs working shared memory and file locking [unverified for this host; standard SQLite guidance].
-- Backups use `sqlite3 .backup` (or a volume snapshot taken with the process stopped). Copying `a2a.db` alone while WAL is active loses recent commits.
+- The version row is inserted in the same transaction as the task at creation. Without it the SP5 D2 mix on Postgres ran with 22 retried deadlocks and transition p99 1031 ms; with it there was no new deadlock and transition p99 was 13.8 ms [verified, SP5 D10]. Our SQLite single-transaction compare-and-swap does not carry over to Postgres (259 of 300 lost) and is not used.
+- What SP5 verified on Postgres (D10, 2026-11-05) [verified]: D4, D5 and D6 passed by URL change (schema, visibility, migrations), and D3 with the seeded versioned store lost 0 of 300 updates and double-took 0 of 300 tasks. **Not run on Postgres:** stress, backup and crash. The D2 mix ran for 3 minutes, not 10, and without the steady-state session-register and budget-counter writes. These gaps are closed by SP5b before S1 (D-D, 12.1).
+- Our tables use SQLAlchemy Core and no engine-specific SQL beyond what the Alembic streams (1.3) emit.
+- Postgres runs in the same compose project as the server [D-B]:
+  - Image pinned by tag, chosen when SP5b runs. No major version number is fixed in this spec.
+  - Named volume `a2a-pgdata`. No published port: the database is reachable only on the compose network, by the server.
+  - Password from a Docker secret file, never from the environment or a committed file.
+  - Healthcheck with `pg_isready`; the server container starts after the database reports healthy.
+  - A host-installed Postgres is not adopted. WAL archiving and point-in-time restore are not adopted.
+- Backup [D-B]: a nightly `pg_dump` into the existing encrypted backup route on `core`. Up to about one day of loss is accepted. The restore is tested the way SP5 D7 tested the SQLite backup (restore into a scratch database, integrity and row-count check); the Postgres version of that test is SP5b D7 [design for the exact check]. Copying the data directory of the running container is not a backup.
 
 ### 1.3 Tables
 
@@ -137,7 +149,7 @@ Proposed tree (illustrative):
 ```
 plugins/coordination/
   plugin.json                      # name, version, description, skills if any
-  docker-compose.yml               # one service, one named volume
+  docker-compose.yml               # two services (server, postgres), one named volume, one secret
   hooks/hooks.json                 # Claude Code plugin hooks (section 11)
   bin/a2a-register  bin/a2a-listen # sh + curl; no other runtime
   servers/coordination/
@@ -157,16 +169,23 @@ services:
     build: ./servers/coordination
     image: coordination:local
     init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
-      - "127.0.0.1:${A2A_PORT:-8120}:8120"      # every stage: host loopback only (tailscale serve and cloudflared both reach it there)
+      - "127.0.0.1:${A2A_PORT:-8120}:8120"      # every stage: host loopback only; tailnet listener (tailscale serve reaches it here)
+      - "127.0.0.1:${A2A_PUBLIC_PORT:-8121}:8121"  # S3 public listener, host loopback only; the Cloudflare Tunnel targets it (8.4.1) [D-F]; the server opens this listener only when A2A_EXPOSURE_STAGE is s3 [design], so nothing listens there before the S3 gate
+    secrets:
+      - a2a_db_password
     environment:
+      A2A_DB_URL: ${A2A_DB_URL:-postgresql+asyncpg://coordination@postgres:5432/coordination}   # no password in the URL [D-B]
       A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://127.0.0.1:8120}
       A2A_DEPLOY_HOST: ${A2A_DEPLOY_HOST:-alyx}   # "core" in production; a label, never a trust input
       A2A_ENV: ${A2A_ENV:-dev}                    # "live" in production; must match the key prefix a2ak_<env>_
       A2A_EXPOSURE_STAGE: ${A2A_EXPOSURE_STAGE:-s1}
       A2A_ALLOW_WRITES: ${A2A_ALLOW_WRITES:-0}
     volumes:
-      - a2a-data:/data
+      - a2a-data:/data                          # run artefacts only (go-live import runs, go-live-migration.md), not the database
       - ./config:/config:ro
     read_only: true
     tmpfs: ["/tmp", "/run/a2a"]
@@ -177,8 +196,27 @@ services:
       test: ["CMD", "python3", "-m", "coordination.healthcheck"]
       interval: 30s
     restart: unless-stopped
+  postgres:
+    image: postgres:<tag>                       # pinned by tag, chosen when SP5b runs [D-B]; no major version fixed here
+    # no "ports:" key: reachable only on the compose network [D-B]
+    environment:
+      POSTGRES_USER: coordination
+      POSTGRES_DB: coordination
+      POSTGRES_PASSWORD_FILE: /run/secrets/a2a_db_password
+    secrets:
+      - a2a_db_password
+    volumes:
+      - a2a-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coordination -d coordination"]
+      interval: 10s
+    restart: unless-stopped
+secrets:
+  a2a_db_password:
+    file: ./secrets/a2a_db_password             # untracked file, mode 0600; never committed, value never shown
 volumes:
   a2a-data:
+  a2a-pgdata:
 ```
 
 Container rules [design]:
@@ -187,7 +225,7 @@ Container rules [design]:
 - Dependencies installed with `uv sync --frozen`. `uv.lock` is committed. Tests run in the build stage.
 - Run as a non-root user. The image creates `/data` owned by that user, so a fresh named volume inherits the ownership on first mount.
 - Root filesystem read-only; writable only `/data`, `/tmp`, `/run/a2a`.
-- Port `8120` inside and outside. 8100 to 8110 and 11434 are taken or reserved [verified, `t2` section 4]. `:8120` was seen free on alyx-wsl on 2026-11-04 with `ss -ltn` [reported by the synthesis; checked by that session, not the cognitive-engine one]. On core, nothing listened on 8120 on 2026-11-04 [verified by Claude Code: the Cloudflare route returned 502]. The image contains no host name; where it runs is configuration (`A2A_PUBLIC_URL`, `A2A_DEPLOY_HOST`) [D23].
+- Port `8120` inside and outside (tailnet listener), and `8121` inside and outside for the S3 public listener [D-F]. 8100 to 8110 and 11434 are taken or reserved [verified, `t2` section 4]. `:8120` was seen free on alyx-wsl on 2026-11-04 with `ss -ltn` [reported by the synthesis; checked by that session, not the cognitive-engine one]. On core, nothing listened on 8120 on 2026-11-04 [verified by Claude Code: the Cloudflare route returned 502]. The image contains no host name; where it runs is configuration (`A2A_PUBLIC_URL`, `A2A_DEPLOY_HOST`) [D23].
 - The container is not attached to any sbx network and is not on the sbx one-host allow rule [D13].
 - On SIGTERM the server answers parked listeners with `503` and `Retry-After: 5` so scripts back off instead of seeing a reset.
 
@@ -198,17 +236,19 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | variable | default | meaning |
 | --- | --- | --- |
 | `A2A_PORT` | `8120` | host port for the compose mapping |
-| `A2A_LISTEN` | `0.0.0.0:8120` in container | listen address inside the container |
-| `A2A_DB_URL` | `sqlite+aiosqlite:////data/a2a.db` | SQLAlchemy URL [D4] |
+| `A2A_PUBLIC_PORT` | `8121` | host loopback port for the S3 public listener in the compose mapping; the Cloudflare Tunnel targets it (8.4.1) [D-F] |
+| `A2A_LISTEN` | `0.0.0.0:8120` in container | listen address inside the container for the tailnet listener (every scope) |
+| `A2A_PUBLIC_LISTEN` | `0.0.0.0:8121` in container, opened only at `A2A_EXPOSURE_STAGE=s3` | public listener: `remote-peer` keys only, only `/a2a/v1` and the public Agent Card; the only listener that trusts `CF-Connecting-IP` (8.4.1) [D-F, design for the variable name] |
+| `A2A_DB_URL` | `postgresql+asyncpg://coordination@postgres:5432/coordination` [design for user and database names] | SQLAlchemy URL of the Postgres service in the compose project, no password in it [D-A, D-B] |
+| `A2A_DB_PASSWORD_FILE` | `/run/secrets/a2a_db_password` | Docker secret file holding the database password (secret, never logged); the server adds it to the connection when it starts [D-B, design for the variable name and the mechanism] |
 | `A2A_PUBLIC_URL` | `http://127.0.0.1:8120` | origin written into card interfaces; must be `https://` at S2 (the tailnet name) and S3 (`https://a2a.bigrockad.com`) |
 | `A2A_DEPLOY_HOST` | `alyx` | label of the host that runs the container (`alyx` for S1, `core` in production); shown in `status` and `audit`; never used for a trust decision [D23] |
 | `A2A_ENV` | `dev` | `dev` or `live`; must equal the `<env>` part of every accepted API key (`a2ak_<env>_...`), so a dev key never works on production [D24, design] |
 | `A2A_EXPOSURE_STAGE` | `s1` | `s1`, `s2` or `s3`; drives start-up checks (1.6) |
 | `A2A_ALLOW_WRITES` | `0` | registers the MCP write tools [D5] |
-| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name of core, at S3 also `a2a.bigrockad.com`, which arrives through the tunnel (8.4.1). The public hostname is refused unless `A2A_EXPOSURE_STAGE` is `s3` (1.6) |
+| `A2A_ALLOWED_HOSTS` | `127.0.0.1:8120,localhost:8120` | accepted `Host` values; at S2 the tailnet name of core, at S3 also `a2a.bigrockad.com`, which arrives through the tunnel on the public listener (8.4.1). The public hostname is refused unless `A2A_EXPOSURE_STAGE` is `s3` (1.6) |
 | `A2A_ALLOWED_ORIGINS` | empty | accepted `Origin` values; empty means any request with an `Origin` header is refused |
 | `A2A_TRUSTED_PROXY_IPS` | empty | peers whose `X-Forwarded-*` headers are honoured |
-| `A2A_TUNNEL_HOSTS` | empty | S3: `Host` values that mean "arrived through `cloudflared` on this host" (`a2a.bigrockad.com`). `CF-Connecting-IP` is believed only when `Host` is in this list and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on these hosts [D20, D23]; required at `s3` in the `Host`-based fallback only. Not needed if the user chooses the dedicated loopback port (`8121`) for the tunnel at S3 (8.4.1, pending user decision) |
 | `A2A_CARDS_FILE` | `/config/cards.yaml` | non-secret card definitions |
 | `A2A_KEY_PEPPER` | unset | optional HMAC key for API key hashing (secret) |
 | `A2A_WAKE_ROUND_S` | `900` | maximum long-poll round [D8] |
@@ -237,7 +277,7 @@ The process exits non-zero, with a one-line reason, if any of these hold:
 - The database schema is newer than the code knows.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_PUBLIC_URL` is not `https://`.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_TRUSTED_PROXY_IPS` is empty. This is the "refuse non-loopback bind without TLS proxy config" rule [D11]. Inside a container the listen address is `0.0.0.0` by necessity, so the check keys on stage and public URL, and the compose port mapping stays `127.0.0.1:` for every stage; the tailnet hop is `tailscale serve` on the host, and TLS for the public hostname ends at Cloudflare [D20].
-- `A2A_EXPOSURE_STAGE` is `s3` and `A2A_TUNNEL_HOSTS` is empty (without it the server cannot tell requests that came through the tunnel from `tailscale serve` traffic, which also arrives on core's loopback).
+- `A2A_EXPOSURE_STAGE` is `s3` and the public listener (`A2A_PUBLIC_LISTEN`, port 8121) is not enabled, or `A2A_EXPOSURE_STAGE` is not `s3` and it is enabled. The server tells tunnel traffic from `tailscale serve` traffic by the listener it arrived on, not by `Host` [D-F].
 - `A2A_EXPOSURE_STAGE` is not `s3` and `A2A_ALLOWED_HOSTS` contains the public hostname (`a2a.bigrockad.com`). No route exists now (a route was created and deleted on 2026-11-04, plan Risk 13), but before S3 the server refuses to accept that `Host` at all. This is a safety layer for a route created early by mistake.
 - The `A2A_ENV` value is not `dev` or `live`.
 - `A2A_EXPOSURE_STAGE` is `s2` or `s3` and `A2A_ENFORCE_TAILNET_IDENTITY` is `0`.
@@ -320,7 +360,7 @@ Bindings [D5]:
 Request rules:
 
 - `A2A-Version: 1.0` is required [D33]. A missing header, or `0.3`, is an unsupported version, not an assumed 0.3: the server serves 1.0 only and the SDK v0.3 compatibility layer stays off. Error `VersionNotSupportedError` (-32009), with a message that tells the client to send `A2A-Version: 1.0`. Our MCP tools and hook scripts always send the header. The TCK is expected to confirm the reading; the spec reading itself is from the former open point 14 and has not been re-verified.
-- `tenant` must equal a defined card id. For `remote-peer` API keys a tenant outside the API key's `cards_allowed` yields a REJECTED task (3.3.2), identical for "card does not exist" and "not allowed", so peers cannot probe card names.
+- `tenant` must equal a defined card id. For `remote-peer` API keys a tenant outside the API key's `cards_allowed` yields a REJECTED task (3.3.2), identical for "card does not exist" and "not allowed", so peers cannot probe card names. The same holds for handles [D-G, D-H]: a `coord.to` handle that does not exist, is ended, or belongs to a card outside the key's `cards_allowed` yields the same REJECTED task with the same constant "not available" status message and response shape (5.2).
 - Content types accepted in message parts: `text/plain` and `application/json`. Others: `ContentTypeNotSupportedError` (-32005).
 - Limits [design]: at most 8 parts per message, 32 KiB per text part, 200 messages per task history.
 - `message_id` is the idempotency key. A repeated `message_id` in the same context returns the existing task instead of creating another [design].
@@ -363,8 +403,8 @@ Processing [design, except where tagged]:
 2. Resolve addressing (section 5.2): handle or card.
 3. Apply the trust-by-origin rule [D10]:
    - origin `local` (own-harness API key) creates a task in `SUBMITTED`.
-   - origin `remote`, peer holds a `remote-peer` API key (the allowlist, [D18]) whose `cards_allowed` includes the tenant: task in the internal state `QUARANTINED`, reported on the wire as `TASK_STATE_INPUT_REQUIRED` with `coord.hold = "quarantine"` and a constant status message.
-   - origin `remote`, peer not allowed for the tenant (or the card is unknown): task in `REJECTED`, stored 24 h, counted against the peer's quota.
+   - origin `remote`, peer holds a `remote-peer` API key (the allowlist, [D18]) whose `cards_allowed` includes the tenant (and, when `coord.to` names a handle, the handle's card [D-G]): task in the internal state `QUARANTINED`, reported on the wire as `TASK_STATE_INPUT_REQUIRED` with `coord.hold = "quarantine"` and a constant status message.
+   - origin `remote`, peer not allowed for the tenant (or the card is unknown, or the addressed handle is unknown, ended or outside `cards_allowed` [D-H]): task in `REJECTED`, stored 24 h, counted against the peer's quota. The reasons are indistinguishable on the wire.
 4. If `message.task_id` is set, the message continues that task (6.4). Terminal tasks answer `UnsupportedOperationError` (-32004) [verified, spec 3.1.1].
 5. Return the Task.
 
@@ -398,7 +438,7 @@ Visibility [design]:
 `GetExtendedAgentCard` [design]:
 
 - local-harness API key: the card plus one extension entry whose `params` holds the live sessions of that card (`handle`, `liveness`). This is how `a2a_peers` data is exposed on the A2A side.
-- remote-peer API key: the card, with no session list unless `A2A_ADVERTISE_HANDLES_TO_PEERS=1`. Default off; peers address cards.
+- remote-peer API key: the card, with no session list, never [D-H]. Handle names are not advertised to peers; a peer that holds a handle out of band may address it within its `cards_allowed` (5.2) [D-G]. The earlier optional flag `A2A_ADVERTISE_HANDLES_TO_PEERS` is dropped.
 
 #### 3.3.4 Push notification configuration (SSRF screening on)
 
@@ -519,7 +559,7 @@ Admin access [D15]:
 
 - The `a2a-coord` admin commands (`key create`, `key list`, `key rotate`, `key revoke`, `review ...`, `status`, `card check`) run inside the container: `docker compose exec -it coordination a2a-coord ...`.
 - They run on whichever host runs the container [D23]. In production that is core: `ssh core`, then the `docker compose exec -it` command, from a shell on core. A workstation never reaches the admin socket over the network; the SSH session to core is the only remote path, and Docker access on core is the credential.
-- They talk to the running server over an in-container Unix domain socket `/run/a2a/admin.sock` (`A2A_ADMIN_SOCKET`, mode 0600, on tmpfs, never published on any port). The server process stays the only one that touches SQLite [D4].
+- They talk to the running server over an in-container Unix domain socket `/run/a2a/admin.sock` (`A2A_ADMIN_SOCKET`, mode 0600, on tmpfs, never published on any port). The server process stays the only one that opens the database [D4, D-A].
 - **There is no admin HTTP endpoint and no admin API-key scope.** No route under any prefix, no `/admin`, no scope that grants admin rights, at any stage. The three scopes in 8.1 are the only ones.
 - The credential is the ability to run a command inside the container, which already implies control of the host's Docker. Docker access on the host is the credential [D15].
 - `review` requires a TTY. `-it` is therefore part of the command; without a TTY the command refuses (8.3). `key create` and `key rotate` need one as well, so a secret is printed only to a terminal.
@@ -658,7 +698,7 @@ Only handle names and liveness. No paths, no working directory, no pending count
 
 ### 4.7 `a2a_runs` (read)
 
-Input: `{"limit": 10}`. Output: the last status reports (`run_id`, `run_scope`, `state`, `report_path`, `ts`), framed as data. Empty list while `A2A_STATUS_ENABLED=0`. This tool is an addition of this spec [design]; decision 13 defines only the write side.
+Input: `{"limit": 10}`. Output: the last status reports (`run_id`, `run_scope`, `state`, `report_path`, `ts`), framed as data. Empty list while `A2A_STATUS_ENABLED=0`. This tool is an addition of this spec [design]; decision 13 defines only the write side. It is kept [D-I]: read-only and scoped to the caller.
 
 ### 4.8 `a2a_send` (write)
 
@@ -731,7 +771,7 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
   - Defined at S1: `claude-code@alyx` and `antigravity@alyx`.
   - Later: the same two harnesses on `mac` and `core`.
 - Handle: `<card-id>/<session-name>`, session name `^[a-z0-9][a-z0-9._-]{0,47}$`.
-- Handles are routing labels, not credentials. Sessions that share an API key are mutually trusted by construction: any of them could call `a2a_hello` with another's handle. The card check stops a Claude API key from taking an `antigravity@alyx/...` handle; it does not separate two Claude sessions. If that ever matters, add a bind code issued at registration and returned only to the hook (open point 12).
+- Handles are routing labels, not credentials. Sessions that share an API key are mutually trusted by construction: any of them could call `a2a_hello` with another's handle. The card check stops a Claude API key from taking an `antigravity@alyx/...` handle; it does not separate two Claude sessions. This is accepted, with no bind code [D-H, resolved in 12.3]; a bind code issued at registration and returned only to the hook remains the fix if it ever matters.
 
 ### 5.2 Routing rules
 
@@ -742,7 +782,7 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
   - Otherwise, or when the offer to that session is not confirmed before the offer TTL expires (`A2A_REOFFER_AFTER_S`), the task becomes a card-level queue entry. Any live session of that card sees it in `a2a_inbox` (`addressed_to: "card"`), and **the first session to call `a2a_inbox` claims it**.
   - The wake for a queued card task goes to the single newest parked listener of the card.
   - This resolves the former open point 17.
-- Remote peers address cards only [design]. A remote-peer request carrying `coord.to` is refused with `InvalidParams` (not silently downgraded).
+- Remote peers may address a card or a handle [D-G, reverses the earlier "cards only" rule]. Every remote-peer key may set `coord.to` to a handle, but only a handle whose card is in the key's `cards_allowed`. An unknown handle, an ended handle and a handle outside `cards_allowed` all return the same error [D-H]: a REJECTED task with the same constant "not available" message, error class and response shape, built before any lookup result is used so the paths do not differ by more than that [design for the construction; no further timing hint is required]. The handle list is never returned to a remote-peer key (3.3.3, `GET /sessions` is not in its scope). Inside `cards_allowed`, whether a handle exists is visible to a peer by a successful send (a held task); the peer holds a key from the allowlist [D18], so the exposure is limited to those peers, not the open internet. A task sent to a handle is still held for a human release [D19]. A malformed `coord.to` (not matching the handle format in 5.1) is refused with `InvalidParams`.
 - Symmetric agency: either side can open tasks to the other. A Claude session sending to antigravity and an antigravity session sending to Claude use the same tools and the same path.
 - A sender may continue a task it can see by `task_id`; routing then follows the task's existing binding.
 
@@ -751,7 +791,7 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
 | our concept | A2A field | rule |
 | --- | --- | --- |
 | card | `AgentCard`, `AgentInterface.tenant` | tenant equals the card id [design] |
-| addressed handle | `SendMessageRequest.metadata.coord.to` and `Message.metadata.coord.to` | only local-harness senders may set it |
+| addressed handle | `SendMessageRequest.metadata.coord.to` and `Message.metadata.coord.to` | local-harness senders, and remote-peer senders within their `cards_allowed` [D-G]; unknown and disallowed handles return the same error [D-H] |
 | sender identity | none supplied by client | server-derived from the API key (and handle); stored in `Task.metadata.coord.from` |
 | conversation | `context_id` | server generates when absent; one context belongs to one (originator, recipient card) pair; a `context_id` owned by someone else is answered as not found |
 | origin kind | `Task.metadata.coord.origin` | `local`, `remote` or `import`; server-set |
@@ -1060,7 +1100,7 @@ When there is nothing to announce it returns `{}` with status 200. The string is
 Notes [design]:
 
 - The allowlist of decision 10 is the set of peers that hold a `remote-peer` API key [D18]; no separate peer registry exists. The `cards_allowed` list on the API key says which cards that peer may address. A valid remote-peer API key whose list does not include the addressed card is the "unknown remote" case and gets a REJECTED task. A request with no valid API key never reaches that logic (`401`).
-- Remote-peer API keys can never address handles (5.2) and can never see other peers' tasks.
+- Remote-peer API keys may address handles whose card is in their `cards_allowed`, with a uniform "not available" error for unknown and disallowed handles, and never receive a handle list (5.2) [D-G, D-H]. They can never see other peers' tasks.
 - Quarantine is the backstop, not the gate: an API key holder's tasks are still held for a human [D18, D19]. mTLS per peer is optional and later [D18]; where it would terminate behind Cloudflare is [unverified] and not planned now.
 - `local-harness` is "own harness", not "same machine". At S2 one API key is issued per harness per machine, with its own card (`claude-code@alyx`, `claude-code@mac`, `antigravity@core` and so on), and its tasks are `origin: local` [D17, D23]. Origin `local` requires both the key and, at S2 and S3, the matching Tailscale identity (2.1 check 7). This replaces the earlier assumption that own-machine harnesses simply use the scope.
 - The `status-client` key of the cognitive-engine adapter and the `remote-peer` keys are held like any other key (8.2). The status client posts to core over the tailnet [D23]; a remote peer receives its key out of band, never through the service [D24].
@@ -1135,27 +1175,27 @@ Topology [D20, D23]: the chosen hostname is `a2a.bigrockad.com` on the user's ex
 
 Rules until the S3 gate passes (plan Risk 13, historical and mitigated):
 
-- Never create the route, and never let anything listen where it would point, before the S3 gate.
+- Never create the route, and never let anything listen where it would point (port 8121), before the S3 gate.
 - If a route is created early for testing, it sits behind a Cloudflare Access deny-all or service-token-only policy.
 - As a second layer the server refuses the public `Host` unless `A2A_EXPOSURE_STAGE` is `s3` (1.6).
 - S2 workstation traffic goes over the tailnet through `tailscale serve`, not the public hostname, so Cloudflare sees none of it.
 
-**Pending user decision at S3 (recommended, not decided): a dedicated loopback port for the tunnel.**
+**Decided design [D-F] (user, 2026-11-09): a dedicated loopback port for the tunnel.**
 
-- Design: the tunnel targets `localhost:8121`. The server treats 8121 as the public listener: only `remote-peer` keys are accepted, only `/a2a/v1` and the Agent Card are served, and `CF-Connecting-IP` is trusted only on that port. Port 8120 stays tailnet-only (reached through `tailscale serve`), serves every scope, and never trusts `CF-Connecting-IP`.
-- Why: the two paths then differ by listener, not by a client-controlled `Host` header. This removes the forged-header weakness of the `Host`-based workaround below and makes `A2A_TUNNEL_HOSTS` unnecessary.
-- Cost: a second published loopback port (`127.0.0.1:8121`) and a second listener in the one process. It changes the route target from the earlier plan (8120). The user decides at S3; nothing is built or published before that.
-- If the user declines, the `Host`-based design below stands, with the tunnel pointing at 8120.
+- Design: the Cloudflare Tunnel targets `localhost:8121`. The server treats 8121 as the public listener: only `remote-peer` keys are accepted, only `/a2a/v1` and the public Agent Card are served, and `CF-Connecting-IP` is trusted only on that port. Port 8120 stays tailnet-only (reached through `tailscale serve`), serves the local-harness keys, and never trusts `CF-Connecting-IP`.
+- Why: the two paths differ by listener, not by a client-controlled `Host` header. This removes the forged-header weakness of the `Host`-based variant below.
+- Cost: a second published loopback port (`127.0.0.1:8121`, compose sketch in 1.4) and a second listener in the one process. The route target changes from the earlier plan (8120). The listener is opened only at `A2A_EXPOSURE_STAGE=s3`; nothing listens on 8121 and no route exists before the S3 gate and the user's explicit go.
+- Rejected alternative (kept for the record): a `Host`-based design with the tunnel pointing at 8120 and a variable `A2A_TUNNEL_HOSTS` listing the public hostname. `CF-Connecting-IP` would be believed only when `Host` is in that list and the peer is in `A2A_TRUSTED_PROXY_IPS`, because `tailscale serve` traffic also arrives from core's loopback. A tailnet client could send `Host: a2a.bigrockad.com` itself and forge `CF-Connecting-IP`. It is not the plan and `A2A_TUNNEL_HOSTS` is not a variable of this spec.
 
 Ingress scope:
 
 - Route only `/a2a/v1` (and its tenant-prefixed REST paths) and `/.well-known/agent-card.json`. `/mcp`, `/wake/*`, `/sessions`, `/status` and the admin socket are never routed through the tunnel. This also keeps every long poll away from Cloudflare's timeout.
-- Whether the ingress rule can restrict by path (cloudflared supports a `path` match on ingress rules [reported, not read by us]) or the server must refuse those paths when the `Host` is the public hostname is [unverified]. The server-side refusal is the safe default: a request with the public `Host` to any path outside the two routed ones gets `404` with no body.
+- Whether the ingress rule can restrict by path (cloudflared supports a `path` match on ingress rules [reported, not read by us]) or the server must refuse those paths is [unverified]. The server-side refusal is the safe default and is a property of the public listener: a request on port 8121 to any path outside the two routed ones gets `404` with no body.
 
 Consequences, each a requirement on the server:
 
 - **Cloudflare sees decrypted traffic.** TLS ends at Cloudflare [reported: standard Tunnel behaviour]. Remote-peer task text and API keys are visible to Cloudflare. Accepted by the user's choice [D20]; a peer must not be sent anything secret. Risk 11 in the plan.
-- **Client IP only through `CF-Connecting-IP`.** The TCP peer the server sees is core's loopback (the Docker gateway), never the real client. The server reads `CF-Connecting-IP` for per-client-IP rate limits and for the `audit` log, and believes it only when the request arrived from `cloudflared` on the same host. With the dedicated-port design above the rule is by listener (port 8121 only). In the fallback, because `tailscale serve` traffic also arrives from core's loopback, the rule is by `Host`: `CF-Connecting-IP` is believed only when `Host` is in `A2A_TUNNEL_HOSTS` (the public hostname) and the peer is in `A2A_TRUSTED_PROXY_IPS`; `Tailscale-*` identity headers are ignored on those hosts, and `CF-Connecting-IP` is ignored and stripped on every other `Host`. A tailnet client could send `Host: a2a.bigrockad.com` itself and so forge `CF-Connecting-IP`; it would still need a valid `remote-peer` key and could only change which rate-limit bucket it lands in, but this is a known weakness, and it is what the dedicated-port design removes. Which one is used is the pending S3 decision above; spikes.md section 13, L2 [unverified].
+- **Client IP only through `CF-Connecting-IP`.** The TCP peer the server sees is core's loopback (the Docker gateway), never the real client. The server reads `CF-Connecting-IP` for per-client-IP rate limits and for the `audit` log, and believes it only when the request arrived from `cloudflared` on the same host. The rule is by listener [D-F]: `CF-Connecting-IP` is believed only on port 8121 (and the peer is in `A2A_TRUSTED_PROXY_IPS`); `Tailscale-*` identity headers are ignored on that port, and `CF-Connecting-IP` is ignored and stripped on port 8120. Whether `CF-Connecting-IP` arrives unchanged from `cloudflared` on the same host is still a later-stage check, spikes.md section 13, L2 [unverified].
 - **Host and Origin checks.** `A2A_ALLOWED_HOSTS` contains the public hostname at S3. cloudflared forwards the original `Host` unless the ingress rule rewrites it [reported]; the server accepts exactly the configured values and answers `421` otherwise. `Origin`, when present, must be in `A2A_ALLOWED_ORIGINS`; CORS stays off, so browser origins are refused by default.
 - **Rate limits.** Per remote-peer API key and per client IP (from `CF-Connecting-IP` under the trust rule above), in the server. Cloudflare-side rate limiting is an optional extra whose availability on the user's plan is [unverified]. Without a trusted `CF-Connecting-IP` the per-IP limit falls back to the API key only; it never keys on core's loopback address, which would put every peer in one bucket.
 - **Timeout.** Cloudflare's request timeout is about 100 s [reported, unverified for the user's plan]. Hence the 60 s cap on blocking `SendMessage` [D22]. Streaming (`SendStreamingMessage`, `SubscribeToTask`, S2 or later) through the tunnel needs a keep-alive event well under 100 s [design, unverified].
@@ -1230,13 +1270,14 @@ Trust and auth:
 - Remote tasks never reach a session without a human release; unknown remote senders are rejected [D10].
 - Only a human releases a held task: one typed decision per task on a TTY. No code path releases automatically (no rules, no agent pre-screen) [D19].
 - There is no admin HTTP endpoint and no admin API key scope; admin commands use the in-container Unix socket only [D15].
-- A `local-harness` API key is accepted at S2 and S3 only from the Tailscale identity it was issued for, every harness key including alyx's [D17, D23]. `CF-Connecting-IP` is believed only on requests from `cloudflared` on the same host, told apart from `tailscale serve` traffic by `Host` (8.4.1) [D20, D23].
+- A `local-harness` API key is accepted at S2 and S3 only from the Tailscale identity it was issued for, every harness key including alyx's [D17, D23]. `CF-Connecting-IP` is believed only on requests from `cloudflared` on the same host, told apart from `tailscale serve` traffic by the listener it arrived on (port 8121 only, 8.4.1) [D20, D23, D-F].
 - No public route exists before the S3 gate, and the service is never started on core while one is present; the server refuses the public `Host` before `A2A_EXPOSURE_STAGE=s3` (1.6). A route created early for testing must sit behind a Cloudflare Access deny-all or service-token-only policy [plan Risk 13].
 - An API key whose `<env>` does not equal `A2A_ENV` is refused; a dev key never works on production [D24].
 - Release does not approve the content; it only changes the task from held to offered.
 - Every endpoint requires an API key, loopback included [D11]. Wrong scope is `403`. A remote-peer API key can never reach `/mcp`, `/wake/*`, `/sessions` or `/status`.
 - API keys are stored hashed, shown once, compared in constant time, revocable with immediate effect.
-- Handles are routing labels, not credentials (5.1).
+- Handles are routing labels, not credentials (5.1). Sessions sharing one API key can claim each other's handles (accepted, no bind code) [D-H].
+- A remote-peer key gets the same "not available" error for an unknown handle, an ended handle and a handle outside its `cards_allowed`, and never receives a handle list [D-H]. Test: the enumeration oracle check sends handle guesses with a remote-peer key and asserts that disallowed and non-existent handles give byte-identical response bodies, the same status and the same error class, and no handle appears in any response or card to that key.
 - The Agent Card declares only the auth that is enforced and only the capabilities that are on (3.2).
 
 cognitive-engine boundary [D13]:
@@ -1264,6 +1305,8 @@ S3 gate checks (decision 12; the fuzz list is from RFC 006 section 3 [reported, 
 - SSRF through push configuration
 - oversized and malformed bodies, malformed `Host`, repeated or conflicting headers
 - quarantine live, rate limits live, honest card, explicit user go
+- handle enumeration oracle: unknown and disallowed handles are indistinguishable to a remote-peer key, and no handle list is reachable through port 8121 [D-H]
+- the extension URI is chosen and published before the public card goes live (12.2 point 13) [D-J]
 
 ## 10. Gaps to fill on top of a2a-python
 
@@ -1271,7 +1314,7 @@ From t1c section 7 plus items this spec adds. SDK facts are `[verified]` there.
 
 From the audit:
 
-- SQLite hardening on the engine: WAL, busy timeout, synchronous, foreign keys, tested with concurrent writers (1.2).
+- Postgres engine setup and its operation: seeded version row, pinned image, secret-file password, nightly `pg_dump` with a tested restore, tested with concurrent writers (1.2, SP5b) [D-A, D-B, D-D].
 - Inbound auth middleware, and matching `securitySchemes` and `securityRequirements` on the card (the SDK builds a `ServerCallContext` from the Starlette request but authenticates nothing).
 - Push URL SSRF policy: pass `validate_push_notification_url` always, and add our resolve-and-pin screen (3.3.4).
 - The wake endpoint and per-session listener table (section 7). Nothing in any candidate wakes a live idle harness; this is our own design.
@@ -1332,7 +1375,7 @@ Rules:
 
 - **Keys never go into chezmoi-managed files, and chezmoi-managed files are not edited for keys** [D24]. This replaces the earlier plan of a chezmoi secret template function. The installer never touches `~/.gemini/config/mcp_config.json` for the key.
   - Claude Code key delivery [D34]: the single source is a mode-0600, unmanaged `~/.config/a2a-coord/api-key`. The hook scripts read it directly. One non-secret, chezmoi-managed shell-rc line exports `A2A_API_KEY` from it if the file is readable (that line is edited through chezmoi). The MCP header is `Authorization: Bearer ${A2A_API_KEY}`. If SP2 C9 shows that Claude Code does not expand environment variables in MCP headers, the installer writes the literal key into the user-scope MCP config (`~/.claude.json`, unmanaged). A GUI-launched Claude may not see the exported variable: hooks are unaffected (they read the file), but the MCP entry needs the literal fallback in that case. Rotation: `a2a-coord install --rotate-key` rewrites the one key file (plus the `~/.claude.json` fallback copy if it is in use).
-  - agy: the key is written literally into the unmanaged `~/.gemini/config/plugins/<name>/mcp_config.json` (mode 0600) because agy does not expand env vars in headers [verified on the wire, SP2 A6 follow-up]. agy loads and runs a plugin placed there, including on a cold first load with no schema cache [verified, SP2 A8b runs A to A4, 2026-11-09]. Whether chezmoi manages anything under `~/.gemini/config/plugins/` was not checked [unverified]; the installer asks `chezmoi source-path` as for every target and never writes the key into a managed path.
+  - agy: the key is written literally into the unmanaged `~/.gemini/config/plugins/<name>/mcp_config.json` (mode 0600) because agy does not expand env vars in headers [verified on the wire, SP2 A6 follow-up]. agy loads and runs a plugin placed there, including on a cold first load with no schema cache [verified, SP2 A8b runs A to A4, 2026-11-09]. Chezmoi on alyx, 2026-11-09 [verified, `chezmoi source-path`]: `~/.gemini/config/plugins` itself is a managed directory (`dot_gemini/config/plugins`, no `exact_` prefix), `obsidian` and its `.mcp.json` are managed, while `gitea`, `gitea/.mcp.json` and `coordination` are not managed. So `<name>` must not be a chezmoi-managed name; the installer asks `chezmoi source-path` for the plugin directory and the file as for every target and never writes the key into a managed path. Other machines were not checked [unverified].
   - `~/.agents/plugins/` is not scanned by agy (0 requests), and `~/.agents` is not used for the key: the frozen bridge folder lives there [verified, SP2 A8, 2026-11-08].
   - Fallback if the user-level plugin placement ever stops running tools: the `agy mcp add` global entry in `~/.gemini/config/mcp_config.json` [verified to work, SP2 A6 and A4, 2026-11-04]. That file is chezmoi-managed, so using it for the key reopens decision 24 and goes back to the user first.
   - The installer is told where the key comes from (an environment variable name or a file path); it never prints the key and never writes it anywhere except the 0600 file above.
@@ -1485,10 +1528,10 @@ Carried from the audit [t1b section 7, synthesis section 7]:
 
 - ~~Whether `asyncRewake` wakes count toward Claude Code's 8-continuation Stop cap.~~ Settled, SP1 T6: no cap seen in 11 consecutive wake turns; loop control is the server's wake budget (7.3).
 - ~~The `timeout` ceiling for `asyncRewake` on the installed Claude Code.~~ Settled, SP1 T4: 604800 is accepted, a 900 s round survived 10 h 39 m idle, expiry is a silent SIGTERM.
-- Whether `asyncRewake` is honoured on a `UserPromptSubmit` command hook (the re-arm after Esc, 11.1). Open, spike before S1.
+- Whether `asyncRewake` is honoured on a `UserPromptSubmit` command hook (the re-arm after Esc, 11.1). Open; runs inside S1, not before it, with its own exit test [D-D].
 - agy: maximum Stop-hook timeout; whether a held Stop blocks typing; whether Stop fires per turn or per conversation; ~~whether SessionStart fires on resume~~ (settled, SP2 A3: it does not; it does after `/clear`); whether a background command's completion wakes an idle agy.
 - Inbox socket (`CLAUDE_CODE_MESSAGING_SOCKET`) frame shape and `crossSessionInbound` behaviour. A later spike candidate [D8]; Channels are not used [D8].
-- SQLite under the real write pattern (server plus WAL) with concurrent hooks, in this container.
+- ~~SQLite under the real write pattern (server plus WAL) with concurrent hooks, in this container.~~ Replaced by SP5b on Postgres (D-D): the S1 entry gate is SP1, SP2, SP3, SP4 (record only) and SP5b, the SP5 rerun on Postgres: D3 lost-update test on the versioned store, D7 `pg_dump` backup and restore integrity check, D8 `kill -9` of the server and a restart of the Postgres container with zero lost acked writes, and the D2 load mix including the steady-state session-register and budget-counter writes that SP5 skipped. Pass criteria are the SP5 numbers: 0 lost updates, 0 lost acked writes, p99 write under 200 ms. SP5 (SQLite) stays in the record as passed but no longer gates.
 
 Added by this spec:
 
@@ -1510,20 +1553,17 @@ All of these are defined as spikes in [spikes.md](file:///home/rockad/projects/a
 
 Status after SP1, SP2 Claude half and SP5 (2026-11-05 and 06): settled and folded into this spec are `A2A-SDK-FIT`, `MCP-MOUNT` (SP5, with the four wrappers in 1.2 and the findings in 3.4), `SESSION-BINDING` for Claude Code, `HOOK-ORDER` (parallel, retry required), `HOOK-HTTP-SHAPE` (only `hookSpecificOutput.additionalContext` is accepted; a body that is not JSON, a 500, a timeout and an unset key all let the prompt proceed), `MCP-TOOL-TIMEOUT` for Claude Code (60 s), the session display name (`session_title`), `${A2A_API_KEY}` expansion in project scope, and the `/clear`, `--resume` and `/compact` behaviour.
 
-Status after the agy half of SP2 (A2 to A8, 2026-11-08) and A8b (2026-11-09): also settled and folded in are `SESSION-BINDING` for agy (`systemMessage` injection, 10 of 10 unprompted, 5.4; `/clear` and resume, 5.4.1), `MCP-TOOL-TIMEOUT` for agy (180 s, 4.5), the trust gate (11.2), and the agy plugin placement with the unique-name rule and the real-tool health check (11.0, 11.2). Still open: SP3, SP4, the GUI-launched Claude test, the `asyncRewake` on `UserPromptSubmit` spike, and from A8b: `.mcp.json` at user level, `agy plugin install`, and whether agy tool use needs a live sign-in.
+Status after the agy half of SP2 (A2 to A8, 2026-11-08) and A8b (2026-11-09): also settled and folded in are `SESSION-BINDING` for agy (`systemMessage` injection, 10 of 10 unprompted, 5.4; `/clear` and resume, 5.4.1), `MCP-TOOL-TIMEOUT` for agy (180 s, 4.5), the trust gate (11.2), and the agy plugin placement with the unique-name rule and the real-tool health check (11.0, 11.2). Still open: SP3, SP4 (record only), the new SP5b (SP5 rerun on Postgres, 2026-11-09, D-D), and from A8b: `.mcp.json` at user level, `agy plugin install`, and whether agy tool use needs a live sign-in, which become the new spike runbook A8c (agy, signed-out run last, not blocking S1) [D-E]. The GUI-launched Claude test (decision 34) and the `asyncRewake` on `UserPromptSubmit` spike move inside S1, each with its own exit test, and no longer gate the start of S1 [D-D]. After the agy post-install health check the user runs a real `a2a_hello` in a fresh agy session and the installer confirms the bind on the server; the installer never starts or drives agy [D-C, DDR-003].
 
 ### 12.2 Open points I could not resolve from the evidence
 
-Numbers 1, 2, 3, 4, 5, 9, 14 and 17 were resolved by decisions 14 to 36 and removed (12.3); the other numbers are kept so references to them stay valid.
+Numbers 1, 2, 3, 4, 5, 9, 14 and 17 were resolved by decisions 14 to 36 and removed (12.3); numbers 10, 11 and 12 were resolved by the decisions of 2026-11-09 and moved to 12.3. The other numbers are kept so references to them stay valid.
 
 6. agy and authenticated MCP. Whether agy's `mcp_config.json` can send a custom `Authorization` header is not in the evidence. If not, options are a different documented auth mechanism that agy supports, a small stdio MCP proxy that agy starts as an ordinary MCP server, or a decision to relax loopback API key rules for `/mcp` (which contradicts decision 11). Update 2026-11-04: the SP2 A6 run passed the header gate (header sent on every request, wire log). Env-var interpolation in `headers` is verified unsupported (sent literally on the wire), so the agy key is a literal in an unmanaged, 0600, plugin-scoped `mcp_config.json` outside chezmoi [D24]. Update 2026-11-09: the location is settled by SP2 A8 and A8b: `~/.gemini/config/plugins/<name>/mcp_config.json` runs tools with no enable step, the name must be unique across user and workspace scopes, and `~/.agents/plugins/` is ignored, so nothing is written to `~/.agents` (11.2).
 7. Defaults. Every `[design]` number in 1.5 (TTLs, re-offer schedule, quotas, rate limits, 15 minute `active` window) is a starting value, not tuned. Only the 900 s round and the 20 per hour budget come from decisions.
-8. Tailscale identity delivery for the S2 identity check [D17, D23]: whether `tailscale serve` on core passes a node or user identity to the server (the `Tailscale-User-Login` header is reported; a node name is not), or whether the server must look up the source address, is not covered by the audit. Also how the server tells `cloudflared` traffic from `tailscale serve` traffic when both arrive from core's loopback, and whether `CF-Connecting-IP` arrives unchanged from `cloudflared` on the same host [D20, D23]. Both are later-stage checks (spikes.md section 13). `tailscale`, `cloudflared` and `caddy` are not installed on alyx today; `cloudflared` runs on core [reported by the user].
+8. Tailscale identity delivery for the S2 identity check [D17, D23]: whether `tailscale serve` on core passes a node or user identity to the server (the `Tailscale-User-Login` header is reported; a node name is not), or whether the server must look up the source address, is not covered by the audit. Also whether `CF-Connecting-IP` arrives unchanged from `cloudflared` on the same host [D20, D23]. How the server tells `cloudflared` traffic from `tailscale serve` traffic is no longer open: by listener, port 8121 against 8120 [D-F]. Both remaining items are later-stage checks (spikes.md section 13). `tailscale`, `cloudflared` and `caddy` are not installed on alyx today; `cloudflared` runs on core [reported by the user].
 9. S3 front-door facts that depend on the user's Cloudflare plan and the exact ingress rule: the request timeout (about 100 s reported), whether the ingress can restrict by path, whether Cloudflare-side rate limiting and mTLS are available. Unverified; checked when the ingress rule is written. The server-side requirements are fixed in 8.4.1 and do not depend on the answers.
-10. Status visibility. `a2a_runs` is my addition so a session can read status; decision 13 only defines the write side. It can be dropped without affecting anything else.
-11. Peer handles. Remote peers address cards only in this spec. If the user wants remote peers to address a session, that needs a per-key flag and an explicit review of what handle names reveal.
-12. Handle spoofing inside one API key. Two sessions sharing an API key can claim each other's handle. A bind code is the fix if it matters.
-13. Extension URI. `urn:agentic-hub:coordination:v1` is a placeholder; A2A extension URIs normally resolve to documentation.
+13. Extension URI. `urn:agentic-hub:coordination:v1` is a placeholder; A2A extension URIs normally resolve to documentation. It stays the placeholder through S1 and S2. Choosing and publishing the final URI is an S3 gate item and must be fixed before the public card goes live [D-J]. Assigned to the S3 gate; open until then.
 16. Migration of the frozen file channel [D7] into the store: see [go-live-migration.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/go-live-migration.md) section 6. Imported tasks are marked `coord.origin = "import"` with provenance in `coord.import` (5.3); the tables here have no import-specific columns.
 
 ### 12.3 Resolved by decisions 14 to 36 (2026-11-04 and 2026-11-05)
@@ -1545,3 +1585,11 @@ Numbers 1, 2, 3, 4, 5, 9, 14 and 17 were resolved by decisions 14 to 36 and remo
 - Credential naming, format and client storage: [D24] (8.2).
 - Release of held tasks: [D19]. Human only, one typed decision per task, no auto-release path (8.3).
 - Go-live timing: [D14]. After S3 (go-live-migration.md).
+
+Resolved by the decisions of 2026-11-09 (`/clarify` session):
+
+- Status visibility (was open point 10): [D-I]. `a2a_runs`, a read-only status tool scoped to the caller, is kept; the earlier drop-it hedge is removed (4.7).
+- Peer handles (was open point 11): [D-G]. Every remote-peer key may address session handles within its `cards_allowed`; this reverses the earlier "cards only" rule (5.2).
+- Handle spoofing inside one API key (was open point 12): [D-H], accepted risk. Sessions sharing one key can still claim each other's handles and there is no bind code. The mitigation is the uniform "not available" error for unknown and disallowed handles and no handle list for remote-peer keys; exposure is limited to peers that hold a remote-peer key (decision 18 allowlist), not the open internet (5.1, 5.2).
+- Storage engine: [D-A, D-B]. Postgres in the compose project from S1, reversing decision 4's starting engine (1.2).
+- S3 listener: [D-F]. The tunnel targets the dedicated loopback port 8121 (8.4.1); the former "pending user decision" is closed.

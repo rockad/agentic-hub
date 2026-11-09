@@ -1,10 +1,10 @@
 # Coordination server: implementation plan and workstreams
 
-Status (2026-11-05): **PLANNING ONLY, planning complete, S0 spikes are next.** Nothing here is built. This file turns the accepted DDR-004 (36 binding decisions, 25 to 36 of 2026-11-05 closing the former section 6 items) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
+Status (2026-11-09): **PLANNING ONLY, planning complete, the remaining S0 spikes are next (SP5b gates S1).** Nothing here is built. This file turns the accepted DDR-004 (40 binding decisions: 25 to 36 of 2026-11-05 closing the former section 6 items, 37 to 40 of 2026-11-09, which also reverse D4's starting engine to Postgres and decide the S3 listener of D20) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
 
 Home: `agentic-hub/plugins/coordination`, branch `feat/coordination`. Authoritative inputs, in this order: [plan][plan] (decisions, roadmap, risks, section 7), [server-api][api], [spikes][spikes], [status-client][status], [go-live-migration][golive], [master-tasklist][tasklist], the two agy results ([A6][a6], [A4][a4]), and the plugin [AGENTS.md][agentsmd].
 
-Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D36. Risk numbers are R1 to R13 from plan section 6.
+Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D40 (D37 to D40 of 2026-11-09 are in plan section 3). Where this file says "SP5" it means the SQLite run of 2026-11-05; "SP5b" is the Postgres rerun that gates S1 (D39). Risk numbers are R1 to R13 from plan section 6.
 
 ## 1. Purpose, status, scope, links
 ### 1.1 Purpose
@@ -40,7 +40,7 @@ Out of scope (all from plan or specs):
 - Admin HTTP endpoint or admin scope.
 - A workstation-local fallback server.
 - mTLS (later, per peer).
-- Postgres (unless SP5 fails, BP15).
+- WAL archiving and point-in-time restore, and a host-installed Postgres (D37; Postgres itself is now in scope as a compose service, D4).
 - Any change to cognitive-engine's deterministic core.
 - Anything that starts, steers or wraps an agy process.
 
@@ -79,10 +79,10 @@ Every stage that adds a listener needs the user's explicit go. The gates are nec
 
 | phase | entry gate | exit gate | kill switch | cites |
 | --- | --- | --- | --- | --- |
-| S0 | user approves each host change a spike needs; scratch dir and scratch container only | S1 entry gate: SP1, SP2, SP3, SP5 passed or failed-with-fallback; SP4 recorded; SP6 optional; results written and linked from `master-tasklist.md` (edit made with the user's go) | remove spike hook and MCP entries, delete scratch container and directory | [plan 5 S0][plan], [spikes 11][spikes] |
-| S1 | S0 done and the user's go for S1 (lifts planning-only) | round trip both ways between live Claude Code and live agy; idle Claude woken by the stub; agy sees the pending count at its next model call; keyless and wrong-scope requests refused on loopback; quarantine and review end to end with a local test peer | `docker compose down`; `a2a-coord install --uninstall` (chezmoi parts through chezmoi); revoke keys; frozen channel untouched | [plan 5 S1][plan], [api 11.0][api] |
+| S0 | user approves each host change a spike needs; scratch dir and scratch container only | S1 entry gate (D39): SP1, SP2, SP3 passed or failed-with-fallback; SP4 recorded; **SP5b passed on Postgres** (SP5 on SQLite stays as passed but no longer gates); SP6 optional; A8c does not block; results written and linked from `master-tasklist.md` (edit made with the user's go) | remove spike hook and MCP entries, delete scratch container and directory | [plan 5 S0][plan], [spikes 11][spikes] |
+| S1 | SP1, SP2, SP3, SP4 (record only) and SP5b done (D39) and the user's go for S1 (lifts planning-only) | round trip both ways between live Claude Code and live agy; idle Claude woken by the stub; agy sees the pending count at its next model call; keyless and wrong-scope requests refused on loopback; quarantine and review end to end with a local test peer; `asyncRewake` `UserPromptSubmit` re-arm test and the GUI-launched Claude test pass (D39); a `pg_dump` backup restores into a scratch Postgres with equal counts | `docker compose down` (the Postgres volume survives); `a2a-coord install --uninstall` (chezmoi parts through chezmoi); revoke keys; frozen channel untouched | [plan 5 S1][plan], [api 11.0][api] |
 | S2 | S1 exit; no public route exists; service never started on core while a route is present | cross-host wake works from alyx and mac to core, shown on one workstation before the rest | turn off `tailscale serve` on core (exact command depends on the Tailscale version, unverified) and revoke per-machine keys; or `docker compose down` on core | [plan 5 S2][plan], [spikes 13][spikes] L1, L4 |
-| S3 | S2 exit and the user's go to start S3 work (no route; core stays at stage `s2`). Route condition, separate: S3 gate passed (quarantine live, rate limits, fuzz pass, honest card) and the user's explicit go; then the user creates the route | allowlisted test peer completes a task through quarantine and human release; unknown peer rejected; fuzz report filed in `docs/research/` | delete the route in the tunnel configuration on core; revoke all `remote-peer` keys; S1 and S2 keep working | [plan 5 S3][plan], [api 8.4.1, 9][api] |
+| S3 | S2 exit and the user's go to start S3 work (no route; core stays at stage `s2`). Route condition, separate: S3 gate passed (quarantine live, rate limits, fuzz pass, honest card, final extension URI fixed per D40) and the user's explicit go; then the user creates the route | allowlisted test peer completes a task through quarantine and human release; unknown peer rejected; fuzz report filed in `docs/research/` | delete the route in the tunnel configuration on core; revoke all `remote-peer` keys; S1 and S2 keep working | [plan 5 S3][plan], [api 8.4.1, 9][api] |
 | go-live | S3 exit gate passed and the user declares go-live (D14) | store holds the imported history; tar backup verified; watcher stopped; channel files deleted | importer is repeatable on a fresh store; restore files from the tar | [plan 5][plan], [golive 2, 13][golive] |
 | LT (later) | S1 exit and the user's go; off by default | adapter posts the five fields to `/status`; sender isolation and leak tests pass | disable the adapter; revoke the `status-client` key | [status 12][status] |
 
@@ -99,7 +99,9 @@ flowchart TD
         S0SP2A["S0-SP2A<br/>agy A2 A3 A4 A5 A7 A8"]
         S0SP3["S0-SP3<br/>agy PreInvocation"]
         S0SP4["S0-SP4<br/>held Stop, record only"]
-        S0SP5["S0-SP5<br/>DatabaseTaskStore and MCP mount"]
+        S0SP5["S0-SP5<br/>DatabaseTaskStore and MCP mount<br/>(done on SQLite, no longer gates)"]
+        S0SP5B["S0-SP5B<br/>SP5 rerun on Postgres, gates S1"]
+        S0A8C["S0-A8C<br/>agy runbook, not blocking"]
         S0SP6["S0-SP6<br/>inbox socket, optional"]
         S0RES["S0-RES<br/>results and S1 entry gate"]
     end
@@ -117,13 +119,19 @@ flowchart TD
     BP10 -->|"A8 fails"| UA8(["USER: choose non-chezmoi include for agy key"])
     S0SP3 --> BP13{"BP13<br/>SP3 passes?"}
     BP13 -->|"fails"| DROPHOOK["agy PreInvocation hook dropped<br/>SessionStart injectSteps, a2a_inbox, a2a_wait stay"]
-    S0SP5 --> BP15{"BP15 and BP16<br/>SP5 passes?"}
+    S0SP5 --> S0SP5B
+    S0SP5B --> BP24{"BP24<br/>SP5b passes on Postgres?"}
+    BP24 -->|"fails"| UD4(["S1 stays blocked, next step not decided"])
+    S0SP5 --> BP15{"BP15 and BP16<br/>SP5 result, SDK fit"}
     BP15 -->|"fails"| SDKFB["fallbacks from spikes.md section 8"]
-    BP1 & BP6 & BP10 & BP13 & BP15 & S0SP4 --> S0RES
+    S0A8C -.-> BP25{"BP25<br/>A8c, not blocking"}
+    BP1 & BP6 & BP10 & BP13 & BP15 & BP24 & S0SP4 --> S0RES
     S0RES --> GO1(["USER: lift planning-only, go for S1"])
 
     subgraph P1["S1 dev on alyx"]
         S1SCAF["S1-SCAF<br/>scaffold, uv, compose"]
+        S1PG["S1-PG<br/>Postgres compose service"]
+        S1BKP["S1-BKP<br/>pg_dump backup and restore test"]
         S1STORE["S1-STORE<br/>storage layer"]
         S1OBS["S1-OBS<br/>audit and logging"]
         S1AUTH["S1-AUTH<br/>API keys, middleware, start-up checks"]
@@ -142,9 +150,12 @@ flowchart TD
         S1GATE["S1-GATE<br/>S1 exit gate"]
     end
     GO1 --> S1SCAF
-    S0SP5 --> S1STORE
-    S1SCAF --> S1STORE & S1OBS & S1TEST
+    S0SP5B --> S1STORE & S1PG
+    S1SCAF --> S1PG & S1STORE & S1OBS & S1TEST
+    S1PG --> S1STORE & S1BKP
+    S1STORE --> S1BKP
     S1STORE --> S1AUTH & S1STATE
+    S1BKP --> S1GATE
     S1AUTH & S1STATE --> S1ADMIN & S1A2A & S1MCP
     S1MCP --> S1ID --> S1WAKE
     S1WAKE --> S1CLAUDE
@@ -157,7 +168,7 @@ flowchart TD
     S1SEC & S1TEST & S1DOC --> S1GATE
 
     subgraph P2["S2 production on core"]
-        S2DEPLOY["S2-DEPLOY<br/>deploy, volume, backups"]
+        S2DEPLOY["S2-DEPLOY<br/>deploy, Postgres, nightly pg_dump"]
         S2TS["S2-TS<br/>tailscale serve, L1 identity"]
         S2ONB["S2-ONBOARD<br/>keys, installer on alyx and mac"]
         S2WAKE["S2-WAKE<br/>cross-host wake, L4"]
@@ -184,7 +195,7 @@ flowchart TD
         S3CF["S3-CF<br/>route, L2, L3"]
         S3EXIT["S3-EXIT<br/>S3 exit evidence"]
     end
-    S2GATE --> BP19(["BP19 USER: port 8121 or Host-based"])
+    S2GATE --> BP19(["BP19 decided 2026-11-09: port 8121"])
     BP19 --> S3LISTEN
     S2GATE --> S3CARD & S3PEER
     S3LISTEN --> S3LIMITS
@@ -208,7 +219,7 @@ flowchart TD
     GLREH --> UGOA(["USER: declares go-live, explicit go for the apply"])
     UGOA --> GLAPPLY
     GLAPPLY --> GLRET
-    S0SP5 -.-> BP23{"BP23<br/>store timestamps settable?"}
+    S0SP5 -.-> BP23{"BP23<br/>store timestamps settable? (SP5 D13)"}
     BP23 -.-> GLIMP
 
     subgraph PL["Later"]
@@ -237,18 +248,20 @@ Each row says what to do on either outcome. The fallbacks are copied in substanc
 | BP9 | SP2 C9, `${A2A_API_KEY}` in Claude MCP headers | installer writes the env reference | key cannot live in the environment for the MCP entry: a user-chosen wrapper or headers helper, never a literal key in a chezmoi-managed file | S1-INST | USER |
 | BP10 | SP2 A2 and A4 compliance, agy `injectSteps` | at least one `injectSteps` type reaches the model; at least 8 of 10 bind after the injected text or the error | none of the types reaches the model: move the handle into the `AGENTS.md` rule. A6 and A4 identity are already verified, so agy binding itself does not depend on the model | S1-AGY, S1-ID | CC |
 | BP11 | SP2 A3, agy `SessionStart` on `/clear` and resume | hook registers the new conversation | server registers an unknown `conversation_id` on its first `tools/call` ([api 5.4.1][api], accepted by D30). This becomes the only registration path | S1-ID, S1-AGY | CC |
-| BP12 | SP2 A8, user-level plugin config and `~/.agents` collision | installer writes `.agents/plugins/coordination/mcp_config.json` (0600) at the location that loaded, provided `chezmoi source-path` returns "not managed" for both the file and its parent directory (`~/.gemini/config/plugins/` is chezmoi-managed, verified, so it never qualifies) | a non-chezmoi include that agy reads, chosen by the user | S1-INST, S1-AGY | USER |
+| BP12 | SP2 A8 and A8b, user-level plugin config and `~/.agents` collision (resolved 2026-11-09) | installer writes `~/.gemini/config/plugins/<name>/mcp_config.json` (0600), provided `chezmoi source-path` returns "not managed" for both the file and its plugin directory (verified 2026-11-09: `~/.gemini/config/plugins` itself is a chezmoi-managed directory with no `exact_` prefix, `coordination` and `gitea` inside it are not managed, `obsidian` is, so `<name>` must not be a chezmoi-managed name); `<name>` unique across user and workspace scopes; `~/.agents/plugins` is ignored by agy | the `agy mcp add` global entry in the chezmoi-managed `~/.gemini/config/mcp_config.json` (reopens decision 24), or a per-workspace plugin written by the user | S1-INST, S1-AGY | USER |
 | BP13 | SP3, `PreInvocation` | agy hook ships | `ephemeralMessage` unseen: try `userMessage` and `systemMessage`, else drop; hook blocks the turn and cannot be avoided: do not ship it. Dropping does not block S1 | S1-AGY | CC |
 | BP14 | SP4, held `Stop` | recorded as usable or not | nothing ships either way. K6 "background command wakes agy" is recorded as a candidate for a later user decision | none | USER (later) |
-| BP15 | SP5 D2, D3, D1 (engine) | plain `DatabaseTaskStore` as in [api 1.2][api] | busy errors: single writer queue, `BEGIN IMMEDIATE`, longer timeout; lost update: versioned store inside the one process or our own compare-and-swap; plain store unfit: own `TaskStore` subclass; SQLite unfit: Postgres in compose from S1 (**needs the user's confirmation**) | S1-STORE, S1-STATE | CC, USER for Postgres |
-| BP16 | SP5 D11, D12, D6 | SDK request handler, visibility wrapper, `mcp` app mount and two migration streams work | D11: own request handler and `TaskStore` wrapper, keep only SDK types, card and wire code; D12: `/mcp` as a second ASGI app on an internal port behind the same auth middleware; D6 clash: our tables in a second SQLite file with its own history | S1-STORE, S1-A2A, S1-MCP, S1-STATE | CC |
+| BP15 | SP5 D2, D3, D1 (engine), run on SQLite (resolved 2026-11-05 and 2026-11-09; superseded for the gate by BP24) | SP5 result: the plain `DatabaseTaskStore` is **not** sufficient (300 of 300 lost updates); the cure is `CoordTaskStore` over the SDK `VersionedDatabaseTaskStore` with a version row seeded at task creation. SQLite engine findings (`BEGIN IMMEDIATE`, single write connection, WAL) are retired by the 2026-11-09 engine decision (D4, D37) and kept only as evidence that SQLite would have been enough | the Postgres move is decided (D4), no longer a fallback needing confirmation; what SP5 did not show on Postgres is BP24 | S1-STORE, S1-STATE | CC |
+| BP16 | SP5 D11, D12, D6 | SDK request handler, visibility wrapper, `mcp` app mount and two migration streams work | D11: own request handler and `TaskStore` wrapper, keep only SDK types, card and wire code; D12: `/mcp` as a second ASGI app on an internal port behind the same auth middleware; D6 clash: our tables with their own migration history, separated from the SDK's [design: how, on Postgres, is open until S1-STORE; SP5 D6 passed on both engines, so the fallback was not needed] | S1-STORE, S1-A2A, S1-MCP, S1-STATE | CC |
 | BP17 | SP6 X1 to X5 | candidate to replace or back up `asyncRewake` | stay on `asyncRewake`, no change | S1-CLAUDE (only if BP1 fails) | USER |
 | BP18 | L1, tailnet identity | node name available: bind each key to `tailnet_node` | only a user login: the check cannot tell alyx from mac, so D17 needs the user's input before S2 | S2-TS, S1-AUTH | USER |
-| BP19 | S3 listener port (a user decision, not a spike) | recommended: dedicated loopback port 8121 is the public listener, 8120 stays tailnet-only | Host-based design with `A2A_TUNNEL_HOSTS`, tunnel points at 8120 | S3-LISTEN, S3-LIMITS, S3-CF | USER |
-| BP20 | L2, `CF-Connecting-IP` | believed only by listener (8121) or by `Host` (fallback) | per-key limits only | S3-LIMITS, S3-CF | CC reports, USER confirms |
+| BP19 | S3 listener port (**decided by the user on 2026-11-09, D20, D-F**) | the tunnel targets a dedicated loopback port 8121, the public listener (`remote-peer` keys only, only `/a2a/v1` and the public Agent Card, `CF-Connecting-IP` trusted only there); 8120 stays tailnet-only | none: the Host-based `A2A_TUNNEL_HOSTS` design (tunnel to 8120) is a rejected alternative | S3-LISTEN, S3-LIMITS, S3-CF | decided |
+| BP20 | L2, `CF-Connecting-IP` | believed only by the 8121 listener | per-key limits only | S3-LIMITS, S3-CF | CC reports, USER confirms |
 | BP21 | L3, Cloudflare timeout and path routing | 60 s hold succeeds; unrouted path refused | server-side refusal of paths outside `/a2a/v1` and the card is the safe default (already planned) | S3-CF, S3-CARD | CC |
 | BP22 | L4, wake over the tailnet | latency recorded; re-park without a loop after a 30 s and a 5 min break | back-off tuning; wake budget bounds a flapping link (R12) | S2-WAKE | CC |
 | BP23 | go-live: can `DatabaseTaskStore` set its own created and updated timestamps ([golive 15][golive] point 7) | import timestamps from the source | ordering and dates come from `coord.import.seq` and `begin_ts` | GL-IMPORT | CC |
+| BP24 | SP5b (new, D39): SP5 rerun on Postgres. D3 lost-update test on the versioned store; D7 `pg_dump` backup and restore integrity check; D8 `kill -9` of the server and a restart of the Postgres container with zero lost acked writes; D2 load mix **including the steady-state session-register and budget-counter writes SP5 skipped** | 0 lost updates, 0 lost acked writes, p99 write under 200 ms (SP5's numbers); the Postgres major version is chosen and the image pinned by tag (D37) | S1 stays blocked on the storage tasks; the next step is [design: not decided]. A deadlock count above zero in the Postgres log is recorded, since the SP5 D10 deadlocks were cured by seeding the version row | S1-PG, S1-STORE, S1-BKP, S1-STATE, S1-GATE | CC runs it; no user time needed unless the next step is open |
+| BP25 | A8c (new, D39 and D-E): `.mcp.json` at user level in `~/.gemini/config/plugins/<name>/`; `agy plugin install <path>` and uninstall; tool use while signed out of agy | each item has an observed answer labelled verified, reported or unverified | recorded, and BP12 stays as decided; if a placement stops running tools the BP12 fallback applies. **Not blocking S1** | S1-INST (record only) | USER runs it |
 | closed | SP2 A6, agy header | **PASS, verified 2026-11-04** | n/a | S1-INST, S1-AGY | n/a |
 
 ## 4. Workstream catalogue
@@ -265,9 +278,11 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
 | S0-SP2A | agy remaining checks | AGY or USER; CC prepares files | n/a (Antigravity) | S, 3-4 | R1, R6, R10 | S1-AGY, S1-ID, S1-INST | BP8 (A7), BP10 to BP12 |
 | S0-SP3 | agy `PreInvocation` | AGY or USER | n/a | S, 1.5-2.5 | R6 | S1-AGY | BP13 |
 | S0-SP4 | agy held `Stop` park | AGY or USER | n/a | S, 2-3 | R1, R6 | none (recorded) | BP14 |
-| S0-SP5 | `DatabaseTaskStore`, MCP mount | CC | sonnet; opus only for subtle debugging of D3 | M, 8-12 (+2 stretch D10) | R7, R9 | S1-STORE, S1-STATE, S1-A2A, S1-MCP | BP15, BP16, BP23 |
+| S0-SP5 | `DatabaseTaskStore`, MCP mount (done on SQLite 2026-11-05; passed, no longer gates S1) | CC | sonnet; opus only for subtle debugging of D3 | M, 8-12 (+2 stretch D10) | R7, R9 | S1-STATE, S1-A2A, S1-MCP (SDK fit, D11 and D12) | BP15, BP16, BP23 |
+| S0-SP5B | SP5 rerun on Postgres (D39) | CC | sonnet; opus only for subtle debugging of D3 | to be estimated | R7, R9, R14 | S1-PG, S1-STORE, S1-BKP, S1-STATE | BP24 |
+| S0-A8C | agy runbook A8c: user-level `.mcp.json`, `agy plugin install`, signed-out tool use (D39, not blocking) | USER runs; CC writes the runbook | n/a (runbook) | S, to be estimated | R1, R8 | none (records only) | BP25 |
 | S0-SP6 | inbox socket (optional) | USER starts; CC runs stub | sonnet | S, 2-3 | R5 | S1-CLAUDE only if BP1 fails | BP17 |
-| S0-RES | results write-up and S1 entry gate | CC | sonnet | S, 2-3 | all | S1 start | all |
+| S0-RES | results write-up and S1 entry gate (D39) | CC | sonnet | S, 2-3 | all | S1 start | all |
 
 #### S0-SCAF: shared spike scaffolding and results convention
 - Goal: one throwaway stub that all agent-side spikes share, and one convention for recording results.
@@ -305,7 +320,7 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
   - A4 count: 10 fresh sessions, how many call `a2a_hello` after the injected instruction or the error text.
   - A5: hook runs only in a trusted workspace (record).
   - A7: blocking `a2a_wait` at 30, 120 and 240 s (gate item with C8).
-  - A8: place `.agents/plugins/coordination/mcp_config.json` (0600) at workspace level and at user level (`~/.agents/plugins/coordination/`, created for the test and removed after); record which loads, what `/mcp` shows, whether agy reads anything else in `~/.agents`, that the frozen channel watcher (`watch-bridge-coordination.sh`) is unaffected, and that no file is left behind.
+  - A8 (original method; done 2026-11-08, and A8b on 2026-11-09 settled the placement as `~/.gemini/config/plugins/<name>/mcp_config.json`, see BP12): place `.agents/plugins/coordination/mcp_config.json` (0600) at workspace level and at user level (`~/.agents/plugins/coordination/`, created for the test and removed after); record which loads, what `/mcp` shows, whether agy reads anything else in `~/.agents`, that the frozen channel watcher (`watch-bridge-coordination.sh`) is unaffected, and that no file is left behind.
   - A8 extra check: whether agy loads plugin `mcp_config.json` from `~/.gemini/config/plugins/<name>/`. Record it, but note that this tree is chezmoi-managed (verified: `chezmoi source-path` gives `dot_gemini/config/plugins`), so it can never hold the literal key (D24).
 - Acceptance (gate): at least one `injectSteps` type reaches the model and the model calls `a2a_hello`; at least 8 of 10 bind; A7 recorded and `a2a_wait`'s default shown inside it. A8 record: a placement found that agy loads, is outside chezmoi and disturbs nothing in `~/.agents`.
 - Owner detail: AGY or USER in its own session. Antigravity may use the frozen channel for research (D14); A8 must not write into it.
@@ -324,6 +339,7 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
 - Acceptance: every K1 to K6 question has an observed answer and a one-line recommendation (usable, usable with caveats, not usable).
 
 #### S0-SP5: `a2a-python` on SQLite, SDK fit, MCP mount
+- Status (2026-11-09): **done on SQLite, passed (2026-11-05), no longer gates S1** (D39). The user moved the starting engine to Postgres (D4); S0-SP5B below reruns the engine-dependent items on Postgres. The SQLite evidence stays as the record of why the SDK wrappers exist and of why SQLite would have been enough; the D11, D12 and D6 results still stand.
 - Goal: show one process with `DatabaseTaskStore` on SQLite (WAL, busy timeout set by us) carries the mixed traffic, and that the three SDK extension points and the `mcp` mount work.
 - Scope: `~/scratch/a2a-spikes/sp5/` as a `uv` project with `a2a-sdk` pinned; Docker only for the volume steps. Read the store constructor and migration CLI source first (not in the audit).
 - Spec: [spk 8][spikes], D3, D4, [api 1.2, 1.3, 3.3.3, 10][api].
@@ -339,6 +355,26 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
 - Added check **[proposal]** D13: can the store set its own created and updated timestamps (answers go-live open point 7). Record only.
 - Record: exact `a2a-sdk`, Python, SQLite, `aiosqlite` and SQLAlchemy versions; the passing engine and PRAGMA configuration; latency and error table; the backup and restore command sequence; wrappers we need. Escalate to opus only for subtle debugging if D3 shows a lost update.
 
+#### S0-SP5B: SP5 rerun on Postgres (gates S1)
+- Goal: show that the engine S1 ships, Postgres in the compose project, keeps the three properties SP5 measured on SQLite: no lost update, no lost acked write, write p99 under 200 ms. SP5 D10 ran only D4, D5, D6 and a 3-minute D2 mix on Postgres; stress, backup and crash were not run.
+- Scope: `~/scratch/a2a-spikes/sp5b/` as a `uv` project (reuse of the SP5 driver and server is [proposal]); Postgres as a scratch container on a user network with throwaway credentials, no published port. The image is pinned by tag and the **major version is chosen here** (D37: "pinned by tag, chosen when SP5b runs"); record the choice and why.
+- Spec: [spk 8][spikes] (written for SQLite, to be amended), D4, D37, D39; the SP5 results ([sp5][sp5res]) D2, D3, D7, D8 and D10 rows.
+- Inputs: the SP5 results file; the SP5 D2 load driver; the SDK versioned store with the version row seeded at task creation.
+- Acceptance (gate; same numbers as SP5):
+  - D3 on Postgres: cancel versus complete and double take on the versioned store, 0 lost updates and 0 double takes; the plain store shown unsafe again.
+  - D7: `pg_dump` taken under load, restored into a scratch Postgres, with an integrity check and equal row counts; the command sequence recorded.
+  - D8: `kill -9` of the server under load and a restart of the Postgres container: 0 lost acked writes (creates, completions, cancels counted as in SP5 D8).
+  - D2: the SP5 mix (10x, 200 parked listeners) **plus the steady-state session-register and budget-counter writes that SP5 skipped**: p99 write under 200 ms, event-loop lag under 100 ms, wake p99 under 500 ms; the Postgres log checked for deadlocks (SP5 D10 saw 22 without the seed).
+- Record: exact `a2a-sdk`, Python, Postgres image tag and major version, `asyncpg` and SQLAlchemy versions; the latency and error table; the backup and restore command sequence; wrappers we need.
+- Owner: CC; no user time needed. Tier sonnet; opus only for subtle debugging if D3 shows a lost update. If it fails, S1 stays blocked and the next step is [design: not decided].
+
+#### S0-A8C: agy runbook for the three items A8b left open (not blocking)
+- Goal: observed answers for (1) `.mcp.json` at user level in `~/.gemini/config/plugins/<name>/`, (2) `agy plugin install <path>` and uninstall, (3) tool use while signed out of agy. Not blocking S1 (D39).
+- Rules, as the A8b runbook ([runbook][a8brun]) and D25: the helper never starts or drives agy (DDR-003); the user starts agy and agy answers the prompts; every finding is labelled verified, reported or unverified; borrow and put back (back up every touched file, restore, verify against the backup).
+- Order: runs for items 1 and 2 first. **Item 3 is the last run**, because signing out changes the user's real agy login. Before it: an explicit backup of the agy credential files (their paths are read from the agy docs and the machine during the runbook, not assumed here) and a written put-back step. **The helper never signs the user out of agy; the user does.** After it: the user signs back in, and the check shows the credential files and the login state match the backup.
+- Deliverable: the runbook file in `docs/research/` (name follows the A8b pattern) and, after the user's runs, a results file. Owner: CC writes the runbook; USER runs it.
+- Acceptance: each of the three items has an answer and a label; the put-back check after item 3 passes; BP12 and D24 are amended only if an answer contradicts them.
+
 #### S0-SP6: inbox socket (optional)
 - Goal: a candidate replacement or fallback for the exit-2 wake.
 - Spec: [spk 9][spikes]. Needs SP1 T10 variables; Claude Code 2.1.224 or later (verified in official docs). Outside the gate; run only if BP1 fails or the user asks.
@@ -347,8 +383,8 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
 #### S0-RES: results write-up and S1 entry gate
 - Goal: one reviewed statement that the S1 entry gate is met.
 - Spec: [spk 10, 11][spikes], [plan 5 S0][plan].
-- Deliverables: an index of the results files (each spike marked passed, failed-with-fallback or recorded); the BP decisions taken; spec corrections owed (for example the api 7.5 shape if BP5 fired), listed and not applied silently; a go or no-go line for the user.
-- Acceptance: every must-pass criterion in spikes 11 is met with logs, or its fallback is stated and, where spikes says so, confirmed by the user. The results are linked from `master-tasklist.md` ([spk 11][spikes] makes this part of the S1 entry gate); the link is a separate edit in another file, made with the user's go, and counts as an S0-RES deliverable, not an optional extra.
+- Deliverables: an index of the results files (each spike marked passed, failed-with-fallback or recorded; SP5b is the storage gate and SP5 on SQLite is listed as passed but not gating; A8c is listed as not blocking); the BP decisions taken; spec corrections owed (for example the api 7.5 shape if BP5 fired), listed and not applied silently; a go or no-go line for the user.
+- Acceptance: every must-pass criterion in spikes 11 (as changed by D39: SP5b on Postgres replaces SP5 on SQLite) is met with logs, or its fallback is stated and, where spikes says so, confirmed by the user. The results are linked from `master-tasklist.md` ([spk 11][spikes] makes this part of the S1 entry gate); the link is a separate edit in another file, made with the user's go, and counts as an S0-RES deliverable, not an optional extra.
 - Owner: CC drafts; USER confirms. Tier sonnet.
 
 ### 4.2 S1: dev on alyx
@@ -357,7 +393,9 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 | ID | what | owner | tier | size, hours | risks | spikes and branch points |
 | --- | --- | --- | --- | --- | --- | --- |
 | S1-SCAF | repo scaffolding, uv, Docker, compose | CC | sonnet | M, 6-10 | R3 | none |
-| S1-STORE | storage layer | CC | sonnet; opus for subtle debugging | L, 16-24 | R7, R9 | SP5, BP15, BP16 |
+| S1-PG | Postgres compose service (D37) | CC | sonnet | to be estimated | R3, R14 | SP5b, BP24 |
+| S1-BKP | `pg_dump` backup and restore test (D37) | CC; USER runs the scheduled job on core in S2 | sonnet | to be estimated | R14 | SP5b D7, BP24 |
+| S1-STORE | storage layer | CC | sonnet; opus for subtle debugging | L, 16-24 | R7, R9 | SP5b, BP15, BP16, BP24 |
 | S1-AUTH | API keys, middleware, start-up checks | CC | sonnet | M, 10-16 | R8, R13 | none |
 | S1-ADMIN | admin socket and `a2a-coord` | CC (USER tests the TTY paths) | sonnet | M, 12-18 | R4, R8 | none |
 | S1-STATE | service layer, state machine, trust | CC | sonnet | L, 14-22 | R4, R5 | SP5 D4, D11, BP16 |
@@ -376,42 +414,71 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 
 #### S1-SCAF: repo scaffolding, uv project, Docker and compose
 - Goal: a skeleton every other stream can add modules to without touching each other's files.
-- Scope and target files: `plugin.json`, `docker-compose.yml` (service `coordination`, named volume `a2a-data` at `/data`, port mapping `127.0.0.1:${A2A_PORT:-8120}:8120`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, tmpfs `/tmp` and `/run/a2a`, healthcheck), `servers/coordination/{Dockerfile,pyproject.toml,uv.lock}`, `src/coordination/` module skeleton (app, service, store, mcp, wake, auth, cli, config), `config/cards.yaml`, CI config **[proposal]**.
+- Scope and target files: `plugin.json`, `docker-compose.yml` (service `coordination`, the Postgres service is S1-PG, port mapping `127.0.0.1:${A2A_PORT:-8120}:8120`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, tmpfs `/tmp` and `/run/a2a`, healthcheck), `servers/coordination/{Dockerfile,pyproject.toml,uv.lock}`, `src/coordination/` module skeleton (app, service, store, mcp, wake, auth, cli, config), `config/cards.yaml`, CI config **[proposal]**.
 - Spec: api 1.1, 1.4, 1.5, plan decisions D2, D3, D5, D23.
 - Inputs: the user's go for S1 (GO1). `a2a-sdk` pinned to an exact 1.3.x release at or above 1.3.0, the one SP5 ran on.
 - Deliverables:
-  - The tree above, `uv sync --frozen` image build, non-root user, `/data` ownership set so a fresh volume inherits it, base image `python:3.14-slim` (matches `servers/lookup`).
+  - The tree above, `uv sync --frozen` image build, non-root user, `/data` ownership set so a fresh volume inherits it [design: `/data` held the SQLite file; whether the server keeps any file volume now that the database is the Postgres service (S1-PG) is open until here], base image `python:3.14-slim` (matches `servers/lookup`).
   - Module interfaces as typed protocols (service layer, store, clock, notifier) so streams code against interfaces. **[proposal]** to prevent merge conflicts.
   - One config module that reads every variable in api 1.5 and nothing else; no host name in the image.
   - Updated `AGENTS.md` status rules and README, with the user's go (another-file edit, done here).
 - Acceptance:
   - `docker compose build` and `up` give a container that passes `/healthz`; `docker compose exec coordination id` shows non-root.
   - Root filesystem is read-only: a write outside `/data`, `/tmp`, `/run/a2a` fails.
-  - `docker port` shows only `127.0.0.1:8120`; no other published port.
+  - `docker port` shows only `127.0.0.1:8120`; no other published port (the Postgres service of S1-PG publishes none).
   - The image contains no host name and no `memory` plugin import (`rg` over the tree).
   - `uv.lock` committed; tests run in the build stage.
 - Branch: none. Open design detail settled here: compose service name `coordination`, final tree ([plan 7 item 3][plan]).
 
 #### S1-STORE: storage layer
-- Goal: one process owns SQLite with WAL, our tables and the SDK's tables coexist, migrations are safe.
+- Goal: one server process uses Postgres through `A2A_DB_URL`, our tables and the SDK's tables coexist, migrations are safe, and task transitions are compare-and-swap on the versioned store (D4, D37).
 - Scope: `src/coordination/store/` (engine, tables, migrations, retention).
-- Spec: api 1.2, 1.3, 10; D4.
-- Inputs: S0-SP5 results (engine configuration, D4 handle lookup choice, D6 migration result); S1-SCAF.
+- Spec: api 1.2, 1.3, 10; D4, D37.
+- Inputs: S0-SP5 results (D4 handle lookup choice, D6 migration result, the version-row cure) and **S0-SP5B results (engine and pool configuration on Postgres, the pinned image)**; S1-SCAF; S1-PG.
 - Deliverables:
-  - Async engine `sqlite+aiosqlite:////data/a2a.db` from `A2A_DB_URL`; `connect` event sets `journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`, `foreign_keys=ON`; `BEGIN IMMEDIATE` for writes if SP5 D1 showed the need.
-  - `DatabaseTaskStore` wiring (or our `TaskStore` wrapper per BP16), `interrupted_task_timeout` set long or off.
+  - Async engine on Postgres (`postgresql+asyncpg://...`) from `A2A_DB_URL`, the password read from the Docker secret file (D37); pool settings from the SP5b results [design: values open until SP5b]. No `BEGIN IMMEDIATE`, no single-connection write engine, no WAL or PRAGMA setup (retired by D4).
+  - `CoordTaskStore` over the SDK `VersionedDatabaseTaskStore` with the **version row seeded in the same transaction as the task at creation** (SP5 D10 cure), wired with the custom parked-task request handler (BP16); `interrupted_task_timeout` set long or off.
   - Our tables via SQLAlchemy Core only: `cards`, `sessions`, `api_keys`, `task_index`, `wakes`, `audit`; later `status_runs` and `status_events` (LT-SRV). Listeners are in memory ([api 1.1][api]) and quarantine lives in `task_index.hold` plus `coord.hold`.
   - Two migration streams (SDK first, ours second), `coord_schema_version`, refusal of a newer schema.
   - Retention job: terminal tasks purged after `A2A_RETAIN_DAYS` (30), remote REJECTED after 24 h; `audit` is not pruned.
 - Acceptance:
-  - A fresh connection reports `journal_mode=wal` and `busy_timeout=5000` on every pooled connection.
+  - Every task is created with its version row (a test fails if a task exists without one); a cancel versus complete race and a double take give 0 lost updates against the Postgres service.
   - Starting against a database with a newer `coord_schema_version` exits non-zero with a one-line reason.
   - Migrations run twice with no change; run from the oldest SDK revision with data present.
-  - `kill -9` of the container mid-load loses no committed task; WAL recovery is clean on restart.
-  - Backup by `sqlite3 .backup` restores to a fresh volume with `PRAGMA integrity_check` ok and equal row counts; a copy of `a2a.db` alone under load is shown unsafe in the runbook text.
-  - No SQLite-specific SQL in our tables: the unit suite also passes against a Postgres container (optional CI job, **[proposal]**, SP5 D10).
+  - `kill -9` of the server container mid-load, and a restart of the Postgres container, lose no acked write (the SP5b D8 criterion, kept as a regression test).
+  - The backup and restore test is S1-BKP.
+  - No dialect-specific SQL in our tables (SQLAlchemy Core only); the unit suite runs against a Postgres container, the only engine S1 supports.
   - A retention test with a fake clock purges exactly the rows the rule names.
-- Branch: BP15, BP16. Escalate to opus for subtle debugging only if lost updates or busy errors survive the SP5 fallback.
+- Branch: BP15, BP16, BP24. Blocked until SP5b passes (D39). Escalate to opus for subtle debugging only if lost updates or deadlocks survive the version-row seeding.
+
+#### S1-PG: Postgres compose service (new, D37)
+- Goal: the database is a second service in the same compose project, reachable only by the server.
+- Scope: `docker-compose.yml` (the Postgres service, the named volume, the Docker secret), `secrets/` handling documented in S1-DOC. Spec: D4, D37, plan risk R14.
+- Inputs: S1-SCAF; S0-SP5B (the major version is chosen there and the image pinned by tag).
+- Deliverables:
+  - A Postgres service with an image pinned by tag, a named volume for its data, **no published port** (reachable only on the compose network), and its password read from a Docker secret file (the secret file itself is never committed; where it lives on alyx and on core is [design], open until here).
+  - The server's `A2A_DB_URL` points at this service; the server starts only after the database reports healthy [design: healthcheck form open].
+- Acceptance:
+  - `docker compose up` gives a healthy database and a server that connects; `docker port` shows no published port for the Postgres service.
+  - From the host, a connection to the Postgres port on `127.0.0.1` and on the host address is refused.
+  - The password does not appear in `docker inspect` output of either service, in logs, or in the image history (`rg` over the captured output with a canary value).
+  - `docker compose down` then `up` keeps the data (volume survives).
+- Branch: BP24. Owner: CC; tier sonnet.
+
+#### S1-BKP: `pg_dump` backup and restore test (new, D37)
+- Goal: a nightly dump that ends up in the existing encrypted backup route on core, and a restore that is tested, not assumed. Up to about one day of loss is accepted; WAL archiving and point-in-time restore are not adopted.
+- Scope: a backup script `bin/` [design: location and name open], the restore test, the runbook text. The scheduled job on core is installed in S2-DEPLOY by the USER.
+- Spec: D37; SP5 D7 as the model for the restore test; plan risk R14.
+- Inputs: S0-SP5B D7 (the recorded command sequence); S1-PG; knowledge of the existing encrypted backup route on core [design: how the dump enters that route is open until S2-DEPLOY].
+- Deliverables:
+  - A `pg_dump` run inside or against the Postgres service, written to a file the existing route can pick up.
+  - A restore test: dump taken under load, restored into a scratch Postgres, integrity check and equal row counts, as in SP5 D7.
+  - Runbook text: what the nightly dump covers, the loss window of about one day, and how to restore.
+- Acceptance:
+  - Restore of a dump taken during the S1 load test passes the integrity check with equal counts.
+  - A copy of the Postgres data directory taken from the running volume is **not** treated as a backup (the runbook says the dump is the backup).
+  - A failed dump exits non-zero and is not silently ignored [design: how it is noticed is open].
+- Branch: BP24. Owner: CC; USER runs the scheduled job on core in S2. Tier sonnet.
 
 #### S1-AUTH: API keys, middleware, start-up checks
 - Goal: every request is authenticated and scoped before any handler runs.
@@ -429,7 +496,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
     - schema newer than the code
     - `s2` or `s3` without an `https://` public URL
     - `s2` or `s3` with empty trusted proxies
-    - `s3` with empty tunnel hosts (dropped or amended if the 8121 variant is chosen, see S3-LISTEN)
+    - `s3` with empty tunnel hosts (dropped by the decided 8121 design, D20; see S3-LISTEN)
     - public host in `A2A_ALLOWED_HOSTS` before `s3`
     - `A2A_ENV` not `dev` or `live`
     - `s2` or `s3` with tailnet enforcement off
@@ -437,7 +504,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
     - cards file missing or invalid
     - more than one worker
   - Unit test with `A2A_ENV=live`: a dev key (`a2ak_dev_...`) is refused. (S2-DEPLOY repeats it live on core.)
-  - Hash storage: after creating a key the secret does not appear in the database file, logs or audit (`rg` over the volume copy).
+  - Hash storage: after creating a key the secret does not appear in the database, logs or audit (`rg` over a `pg_dump` of the database and the captured logs).
   - Loopback requests without a key get 401.
   - Timing test of valid and invalid key ids stays within noise (loose statistical bound).
   - Tailnet identity logic unit-tested with a fake identity: mismatch gives 403, forged identity header from a non-proxy peer is ignored. (The real identity source is S2-TS.)
@@ -468,7 +535,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Deliverables:
   - Transition table of api 6.2 including `QUARANTINED` stored as `INPUT_REQUIRED` plus `coord.hold`.
   - Trust by origin: local gives `SUBMITTED`; allowlisted remote gives held; unknown remote or card not in `cards_allowed` gives `REJECTED` (identical for "not allowed" and "does not exist"); quotas (20 held per peer, 10 `SendMessage` per minute per peer).
-  - Routing: handle goes to that session only, orphaned when ended; card goes to the newest `listening`, then `active` (15 min), else queued; remote peers address cards only.
+  - Routing: handle goes to that session only, orphaned when ended; card goes to the newest `listening`, then `active` (15 min), else queued; remote peers may address handles under a card in their `cards_allowed` (D38, 2026-11-09, reverses "cards only"; unknown and outside-`cards_allowed` handles return the same "not available" error, and the handle list is never returned to `remote-peer` keys).
   - "Offered until confirmed": offer counting, `next_offer_at = last_offered_at + A2A_REOFFER_AFTER_S * 3^(n-1)`, stop at `A2A_REOFFER_MAX`; follow-ups (6.4); atomic claim of card-addressed tasks.
   - TTL sweeps: `A2A_SUBMITTED_TTL_H`, `A2A_QUARANTINE_TTL_H` (expiry goes to `REJECTED`, never released), `A2A_WORKING_TTL_H`, `A2A_SESSION_IDLE_TTL_H`.
   - Visibility rules (originator or recipient; remote sees only its own; `coord.origin=import` visible to `local-harness` only).
@@ -584,6 +651,9 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Guard tests: attended=0, bad session id and `clear` or `compact` sources exit 0 at once.
   - Owner-pid watch ends the listener within a few seconds of `kill -9` of the parent (scratch parent).
   - Live, USER: an idle interactive session starts a turn from a stub release with latency under 10 s (SP1 T1 criterion); `claude --version` is at or above 2.1.290.
+- Inside S1, not before it (D39), each with its own exit test:
+  - `asyncRewake` on a `UserPromptSubmit` command hook that re-arms the listener after Esc (SP1: `Stop` does not fire after Esc). Exit test: after Esc interrupts a turn, a stub release still wakes the session. [design: exact test steps open until here]
+  - The GUI-launched Claude test for D34: a Claude launched from the GUI may not see `A2A_API_KEY`; hooks (which read `~/.config/a2a-coord/api-key` directly) are unaffected, MCP needs the fallback. Exit test: a GUI-launched session registers and calls `a2a_hello` successfully. [design: exact test steps open until here]
 
 #### S1-AGY: agy hooks, `injectSteps` inbox instruction, `a2a_wait`
 - Goal: agy surfaces pending tasks at its next model call and checks the inbox at session start; no idle wake (accepted, D9).
@@ -611,7 +681,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - `--server <url>` (`http://127.0.0.1:8120` at S1, the tailnet URL of core in production).
   - Script install (D28): copy the scripts from the plugin `bin/` to `~/.local/share/a2a-coord/<version>/bin/`, point the `current` symlink at it, reference `.../current/bin/...` from both harnesses' hooks; upgrade switches the symlink; uninstall removes the directory; `--dev` link mode **[proposal]**.
   - `--claude`: hooks of api 11.1 (the hook scripts read `~/.config/a2a-coord/api-key` directly), the `a2a` MCP entry with `Authorization: Bearer ${A2A_API_KEY}` (or, if C9 shows no env expansion, the literal key written into the unmanaged user-scope `~/.claude.json`), `claude --version` check against 2.1.290. Key delivery (D34): the 0600 `~/.config/a2a-coord/api-key` is the single source, one non-secret chezmoi-managed shell-rc line exports `A2A_API_KEY` from it if readable; a GUI-launched Claude may not see the variable (hooks are unaffected; MCP needs the fallback).
-  - `--agy`: the `a2a` entry in the unmanaged plugin-scoped `.agents/plugins/coordination/mcp_config.json` (`url` plus `headers.Authorization` with the literal key, mode 0600) at the BP12 location; the agy hook entries in the user-level `~/.gemini/config/hooks.json` (D26; exists, not chezmoi-managed; backed up and written after a printed diff). **No `AGENTS.md` is ever written** (D27).
+  - `--agy`: the `a2a` entry in the unmanaged user-level plugin file `~/.gemini/config/plugins/<name>/mcp_config.json` (`url` plus `headers.Authorization` with the literal key, mode 0600; `<name>` unique across user and workspace scopes, BP12); a post-install check that a real tool call works in a fresh agy session (the user makes the call, the installer confirms it on the server); the agy hook entries in the user-level `~/.gemini/config/hooks.json` (D26; exists, not chezmoi-managed; backed up and written after a printed diff). **No `AGENTS.md` is ever written** (D27).
   - `install --rotate-key` (D34): rewrites the one key file, plus the `~/.claude.json` fallback copy if it is in use.
   - Symlink and git guard (kept as a general safety rule, D27): the installer never writes through a symlink into another repository. It resolves every target, refuses when a target resolves outside the intended config directory or into a git work tree, and prints the resolved path in the dry run (see the verified doppelganger symlink of `~/.gemini/config/AGENTS.md` in section 1.5). The `current` symlink it creates itself is the only exception.
   - Chezmoi-directory guard: the installer refuses any target inside a chezmoi-managed directory for the literal-key file.
@@ -676,7 +746,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Goal: one place that owns how the system is tested at each level.
 - Scope: `servers/coordination/tests/` layout, CI config, fixtures, a scripted peer, the TCK job. Stream-level unit tests stay with their streams.
 - Layers:
-  - Unit (pytest per module, fake clock, temp SQLite) and integration (ASGI test client on the real app; long-poll tests against a real `uvicorn` in a container).
+  - Unit (pytest per module, fake clock, a Postgres test container) and integration (ASGI test client on the real app; long-poll tests against a real `uvicorn` in a container).
   - TCK: the A2A TCK against the running server in CI with the deviation allowlist (S1-A2A). Security: S1-SEC.
   - Load regression **[proposal]**: the SP5 D2 driver kept as an on-demand job.
   - Scripted peers: a Python `remote-peer` test peer and two fake local harnesses, HTTP only; they never start a harness.
@@ -689,7 +759,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Deliverables:
   - Setup: build, compose, key create on a TTY, installer.
   - Operations:
-    - backup with `sqlite3 .backup` and restore
+    - backup with `pg_dump` and restore (S1-BKP)
     - key rotate and revoke
     - review procedure
     - reading `status`
@@ -710,6 +780,8 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - An idle Claude Code session is woken by a stub-only wake; an agy session sees the pending count at its next model call.
   - A request without a key and with a wrong-scope key is refused on loopback. (The "dev key refused on `A2A_ENV=live`" check is an S1-AUTH unit test, since an S1 dev instance cannot run live; S2-DEPLOY repeats it on core.)
   - Quarantine and `a2a-coord review` end to end with a local test peer holding a `remote-peer` dev key, release typed by the user on a TTY.
+  - `asyncRewake` on a `UserPromptSubmit` command hook re-arms the listener after Esc, and the GUI-launched Claude test for D34 passes (D39; each has its own exit test and runs inside S1, not before it).
+  - The S1-BKP restore test passes, and the Postgres service publishes no port (S1-PG).
   - **[proposal]** The offline suites, S1-SEC and the TCK job are green; the deviation allowlist is the one reviewed by the user (S1-A2A).
   - Frozen channel untouched (hash of `~/.agents/bridge-v2-coordination-channel.md` unchanged by the server and installer; Antigravity's own research appends are expected and not a failure).
   - Spec corrections found during S1 are listed for the user, not silently applied.
@@ -720,7 +792,7 @@ The same image runs with `A2A_ENV=live`, `A2A_DEPLOY_HOST=core`, `A2A_EXPOSURE_S
 
 | ID | what | owner | tier | size, hours | risks | gates and branch points |
 | --- | --- | --- | --- | --- | --- | --- |
-| S2-DEPLOY | deploy on core, volume, backups | USER on core; CC drafts | sonnet | M, 6-10 | R3, R13 | S1 exit |
+| S2-DEPLOY | deploy on core, Postgres, nightly `pg_dump` | USER on core; CC drafts | sonnet | M, 6-10 | R3, R13 | S1 exit |
 | S2-TS | `tailscale serve`, L1 tailnet identity binding | USER installs; CC implements and runs L1 stub | sonnet | M, 6-10 | R12 | L1, BP18 |
 | S2-ONBOARD | per-machine keys, installer on alyx and mac | USER | sonnet (helper) | M, 4-8 | R8 | BP9, BP12 |
 | S2-WAKE | cross-host wake, L4 | USER and CC | sonnet | M, 4-8 | R12 | L4, BP22 |
@@ -728,17 +800,19 @@ The same image runs with `A2A_ENV=live`, `A2A_DEPLOY_HOST=core`, `A2A_EXPOSURE_S
 | S2-GATE | S2 exit gate | USER | sonnet | S, 3-5 | R13 | all |
 
 #### S2-DEPLOY: deploy on core
-- Goal: the S1 image runs on core, always on, with data on a named volume and a tested backup.
+- Goal: the S1 image and its Postgres service run on core, always on, with the database on a named volume and a tested nightly `pg_dump` backup (D4, D37).
 - Spec: plan 5 S2; api 1.4, 1.5, 1.6; D23.
 - Deliverables:
   - Compose on core with `A2A_ENV=live`, `A2A_DEPLOY_HOST=core`, `A2A_EXPOSURE_STAGE=s2`, `A2A_PUBLIC_URL=https://<tailnet name of core>` (name not yet known), `A2A_TRUSTED_PROXY_IPS` set to the `tailscale serve` front, host mapping `127.0.0.1:8120` only.
-  - Backup job using `sqlite3 .backup` per the SP5 D7 sequence (scheduling mechanism **[proposal]**: a systemd timer or cron run by the user); restore drill into a scratch volume.
+  - The Postgres service of S1-PG on core (pinned image, named volume, no published port, password from a Docker secret file created by the USER on core).
+  - Nightly `pg_dump` job from S1-BKP into the existing encrypted backup route on core (scheduling mechanism **[proposal]**: a systemd timer or cron run by the user); restore drill into a scratch Postgres.
   - A check that no public route exists before every start: the hostname `a2a.bigrockad.com` does not resolve and curl returns 000.
 - Acceptance:
   - The container starts with the stage checks of api 1.6; it refuses to start with `A2A_PUBLIC_URL` not `https://`, with empty trusted proxies, or with the public hostname in `A2A_ALLOWED_HOSTS`.
   - A key from alyx S1 (`a2ak_dev_`) is refused on core.
   - `ss -ltn` on core shows nothing on 8120 except the `127.0.0.1` mapping.
-  - Restore drill: backup restored to a scratch volume passes `integrity_check` with equal counts.
+  - Restore drill: the nightly dump restored into a scratch Postgres passes the integrity check with equal counts.
+  - `ss -ltn` on core shows no listener for the Postgres port.
   - Port 8120 is free on core before first start (verified once on 2026-11-04; recheck).
 - Branch: none. Owner detail: if CC cannot reach core, USER runs the commands from the runbook and pastes output.
 
@@ -799,7 +873,7 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
 
 | ID | what | owner | tier | size, hours | risks | gates and branch points |
 | --- | --- | --- | --- | --- | --- | --- |
-| S3-LISTEN | public listener | CC; decision by USER | sonnet | M, 8-14 | R11, R13 | BP19 |
+| S3-LISTEN | public listener (port 8121, decided) | CC | sonnet | M, 8-14 | R11, R13 | BP19 |
 | S3-LIMITS | rate limits and client IP | CC | sonnet | M, 8-12 | R11 | BP19, BP20 |
 | S3-CARD | honest public card | CC | sonnet | S, 3-5 | R11 | BP21 |
 | S3-PEER | remote-peer flow | CC; USER releases | sonnet | M, 8-12 | R4, R8 | none |
@@ -810,39 +884,33 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
 
 #### S3-LISTEN: public listener
 - Goal: the two traffic paths on core's loopback (tailnet and tunnel) are told apart by something a client cannot forge.
-- Spec: [api 8.4.1][api], 1.5, 1.6; [spk 13][spikes] L2; D20, D23. **Pending user decision (BP19)**, recommended but not decided: dedicated loopback port 8121.
-- If the user chooses port 8121:
+- Spec: [api 8.4.1][api], 1.5, 1.6; [spk 13][spikes] L2; D20, D23. **Decided by the user on 2026-11-09 (BP19, D20): the dedicated loopback port 8121.** The api 8.4.1 and spikes L2 text still describes the Host-based design and is to be amended with the user's go.
+- Design (decided):
   - A second listener in the one process on `127.0.0.1:8121`, off at stages `s1` and `s2` (nothing listens where a route would point before the gate).
-  - 8121 accepts `remote-peer` keys only, serves only `/a2a/v1` and the Agent Card, and is the only place `CF-Connecting-IP` is believed; 8120 never believes it.
-  - Compose publishes `127.0.0.1:8121`; `A2A_TUNNEL_HOSTS` is not needed. The start-up rule "`s3` needs `A2A_TUNNEL_HOSTS`" (api 1.6) then applies to the fallback only: **spec text to amend with the user's go**.
-- If the user declines (Host-based fallback):
-  - Tunnel targets 8120.
-  - `CF-Connecting-IP` is believed only when `Host` is in `A2A_TUNNEL_HOSTS` and the peer is in `A2A_TRUSTED_PROXY_IPS`.
-  - `Tailscale-*` headers are ignored on those hosts.
-  - `CF-Connecting-IP` is stripped on every other `Host`.
-  - Known weakness: a tailnet client can send the public `Host` itself.
-- Silence rule: until the user decides, the Host-based design of [api 8.4.1][api] stands (tunnel to 8120); 8121 is built only on the user's explicit choice.
+  - 8121 accepts `remote-peer` keys only, serves only `/a2a/v1` and the public Agent Card, and is the only place `CF-Connecting-IP` is believed; 8120 never believes it and stays tailnet-only (`tailscale serve`, `local-harness` keys).
+  - Compose publishes `127.0.0.1:8121`; `A2A_TUNNEL_HOSTS` is not needed. The old start-up rule "`s3` needs `A2A_TUNNEL_HOSTS`" is replaced in the spec by a listener-based check (api 1.6 and 8.4.1, amended 2026-11-09 for D-F).
+- Rejected alternative (kept for the record only, not built): the Host-based design, with the tunnel at 8120 and `CF-Connecting-IP` believed only when `Host` is in `A2A_TUNNEL_HOSTS` and the peer is in `A2A_TRUSTED_PROXY_IPS`. Its known weakness: a tailnet client can send the public `Host` itself.
 - Where it runs: alyx or a scratch container only (section 4.4 preamble); core stays at stage `s2` with 8121 unbound until S3-GATE passes and the user gives the go.
-- Both: any request with the public `Host` to a path outside `/a2a/v1` (and its tenant paths) and the card gets 404 with no body; `/mcp`, `/wake/*`, `/sessions`, `/status` are never served on the public path.
-- Acceptance (8121 variant):
+- Any request with the public `Host` to a path outside `/a2a/v1` (and its tenant paths) and the card gets 404 with no body; `/mcp`, `/wake/*`, `/sessions`, `/status` are never served on the public path.
+- Acceptance:
   - Forged `CF-Connecting-IP` on 8120 is ignored and stripped.
   - A `local-harness` key on 8121 gets 403; a `remote-peer` key on 8120 is allowed only for `/a2a/v1` per scope (unchanged).
   - `ss -ltn` on core: 8121 bound to `127.0.0.1` only, present only at stage `s3`.
   - Paths outside the two routed ones return 404 without a body on 8121.
-- Acceptance (fallback variant): a tailnet client sending `Host: a2a.bigrockad.com` can only move its own rate-limit bucket and still needs a valid `remote-peer` key (test documents the weakness).
-- Build only the chosen variant. Building both costs more and is not planned.
+- Only the 8121 design is built. The rejected Host-based variant is not built.
 
 #### S3-LIMITS: rate limits and client IP
 - Goal: per-key and per-IP limits that cannot be bypassed or turned against others.
 - Spec: api 2.1, 3.3.2, 8.4, 8.4.1; D18, D20.
-- Deliverables: per remote-peer key limits (10 `SendMessage` per minute, 20 held tasks per peer, 429 with `Retry-After`); per-client-IP limit keyed on `CF-Connecting-IP` under the BP19 trust rule; fallback to key-only when no trusted header; never keyed on core's loopback address; Cloudflare-side limits are an optional extra, availability on the user's plan unverified.
+- Deliverables: per remote-peer key limits (10 `SendMessage` per minute, 20 held tasks per peer, 429 with `Retry-After`); per-client-IP limit keyed on `CF-Connecting-IP` under the BP19 trust rule (believed only on the 8121 listener); fallback to key-only when no trusted header; never keyed on core's loopback address; Cloudflare-side limits are an optional extra, availability on the user's plan unverified.
 - Acceptance: with a fake clock, the 11th message in a minute gets 429; a peer cannot exhaust another peer's bucket; without a trusted `CF-Connecting-IP` the limiter still works per key; a forged header from the untrusted path does not change the bucket.
 
 #### S3-CARD: honest public card
 - Goal: the public card declares only what is enforced.
 - Spec: api 3.2, 8.5, 9; D20, D22.
-- Deliverables: card URLs from `A2A_PUBLIC_URL` (`https://a2a.bigrockad.com`), bearer scheme only, `streaming` and `pushNotifications` matching what is on, the 60 s deviation sentence, no handles to peers unless `A2A_ADVERTISE_HANDLES_TO_PEERS=1` (default off), optional signed card left off.
+- Deliverables: card URLs from `A2A_PUBLIC_URL` (`https://a2a.bigrockad.com`), bearer scheme only, `streaming` and `pushNotifications` matching what is on, the 60 s deviation sentence, no handle list to peers (D38: the handle list is never returned to `remote-peer` keys; the `A2A_ADVERTISE_HANDLES_TO_PEERS` switch of api 1.5 conflicts with that and is **spec text to amend with the user's go**), optional signed card left off.
 - Acceptance: card-versus-behaviour test (S1-A2A card test) run against the public listener; the card contains no internal host name, tailnet name or port; the `description` contains the 60 s sentence.
+- S3 gate item (D40): the final extension URI is chosen and published here, before the public card goes live; the placeholder `urn:agentic-hub:coordination:v1` stays through S1 and S2.
 
 #### S3-PEER: remote-peer flow in daily use
 - Goal: an allowlisted peer's tasks are held, a human releases them, an unknown peer is rejected, and nothing else is reachable.
@@ -851,14 +919,15 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
 - Acceptance:
   - A test peer with a valid key and the card in `cards_allowed`: task is `INPUT_REQUIRED` plus hold on the wire, invisible to any local session, released only by USER on a TTY, then offered as untrusted data.
   - Same peer addressing a card not in its list, and a card that does not exist: identical `REJECTED` responses.
-  - A peer cannot see another peer's tasks, cannot address handles, cannot reach `/mcp`, `/wake/*`, `/sessions`, `/status`.
+  - D38: a peer may address a session handle under a card in its `cards_allowed`; an unknown handle and a handle outside `cards_allowed` return the same "not available" error (same error class and response shape); no response to a `remote-peer` key contains the handle list.
+  - A peer cannot see another peer's tasks, cannot reach `/mcp`, `/wake/*`, `/sessions`, `/status`.
   - A revoked key stops immediately; rotation grace works.
 - Open: which test peer is used for the S3 exit gate (section 6).
 
 #### S3-FUZZ: fuzz pass
 - Goal: the proxy-class surface survives hostile input before it is public.
 - Spec: [api 9, 10][api] S3 gate checks; [plan 5 S3][plan]; cognitive-engine RFC 006 section 3 (reported by T2; the RFC is in the cognitive-engine repo and has not been read for this plan, read it first).
-- Scope: a fuzz harness under `servers/coordination/tests/fuzz/` driven against the public listener (BP19 variant) and the tailnet listener, both running on alyx or in a scratch container, never on core before S3-GATE (section 4.4 preamble); findings filed in `docs/research/s3-fuzz-<date>.md` **[proposal]**.
+- Scope: a fuzz harness under `servers/coordination/tests/fuzz/` driven against the public listener (8121, BP19) and the tailnet listener, both running on alyx or in a scratch container, never on core before S3-GATE (section 4.4 preamble); findings filed in `docs/research/s3-fuzz-<date>.md` **[proposal]**.
 - Cases:
   - header smuggling and repeated or conflicting headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Authorization`)
   - request splitting
@@ -874,7 +943,7 @@ Where S3 work runs (R13, [AGENTS.md][agentsmd]: never let anything listen where 
 - Goal: the user creates the route only after the gate; the two tunnel checks run and their results confirm or change the S3 design.
 - Spec: [spk 13][spikes] L2, L3; [api 8.4.1][api]; D20, D22.
 - Steps:
-  - USER, after the explicit go: adds the ingress rule for `a2a.bigrockad.com` to the BP19 target (8121, or 8120 in the fallback), restricted by path if the ingress supports it (reported, unverified). CC never edits the tunnel configuration.
+  - USER, after the explicit go: adds the ingress rule for `a2a.bigrockad.com` to the BP19 target (`localhost:8121`, decided 2026-11-09), restricted by path if the ingress supports it (reported, unverified). CC never edits the tunnel configuration.
   - L2: with the route pointing at a stub (preferred for the first run), record the `Host`, `CF-Connecting-IP` and TCP peer; send the same request through `tailscale serve` with a forged header and with `Host: a2a.bigrockad.com`; record what tells the paths apart.
   - L3: a stub endpoint that holds a request for 30, 60, 90 and 120 s; a request to a path outside the two routed ones.
 - Acceptance:
@@ -994,7 +1063,7 @@ The dry run is rerun at go-live on the live channel files, and its report is com
   - Any running watcher is stopped ([gl 11][golive]).
   - Dry-run; the report is compared with the re-measured numbers and every error and ambiguous reply-to is resolved.
   - The user's explicit go for the apply.
-  - Pre-apply store snapshot `/data/backups/pre-import-<run_id>.db` (backup API or `VACUUM INTO`); it is the rollback anchor ([gl 13][golive]).
+  - Pre-apply store snapshot taken with `pg_dump` (D4, D37; the file name `pre-import-<run_id>` and its location are [design], since `/data/backups/...db` with `VACUUM INTO` named the SQLite store; [gl 13][golive] still describes the SQLite form and is not edited here); it is the rollback anchor.
   - `--apply --plan`, in production via `ssh core docker compose exec -T coordination a2a-coord admin-apply -`.
   - Automatic verify.
   - Three spot checks through a normal MCP `a2a_get` call.
@@ -1024,7 +1093,7 @@ The dry run is rerun at go-live on the live channel files, and its report is com
 ### 4.6 LT: cognitive-engine status adapter (later)
 | ID | what | owner | tier | size, hours | risks | gates | branch points |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| LT-SRV | `POST /status`, tables, `a2a_runs` | CC | sonnet | M, 8-12 | R4 | S1 exit, user go (D13: built after S1) | none (`a2a_runs` drop is section 6 item 13) |
+| LT-SRV | `POST /status`, tables, `a2a_runs` | CC | sonnet | M, 8-12 | R4 | S1 exit, user go (D13: built after S1) | none (`a2a_runs` is kept, D38) |
 | LT-ADP | adapter in the cognitive-engine repo | CC in the cognitive-engine session; USER go | sonnet; opus review of the leak and sbx tests (with `jev_judge` in parallel when Jev is available) | M, 10-16 | R4 | S1 exit, LT-SRV, user go | Q1 to Q11 answers ([st 13][status]) |
 
 #### LT-SRV: server side of status intake
@@ -1038,7 +1107,7 @@ The dry run is rerun at go-live on the live channel files, and its report is com
   - `report_path` is never opened: a test monkeypatches file access and posts a path; zero opens.
   - The response is the fixed acknowledgement only; no Agent Card entry for `/status`; not routed at S3; no wake on status.
   - `a2a_runs` output is framed as data and carries only stored fields.
-- Branch: the `a2a_runs` tool is this spec's addition and can be dropped without effect (section 6).
+- Branch: the `a2a_runs` tool (read-only status, scoped to the caller) is kept (D38, 2026-11-09; it was this spec's addition and could have been dropped without effect).
 
 #### LT-ADP: adapter in the cognitive-engine repository
 - Goal: `stage1` posts the five fields fire-and-forget; no model data ever leaves.
@@ -1062,8 +1131,8 @@ The dry run is rerun at go-live on the live channel files, and its report is com
 - S2 is sequential and USER-bound. In S3, CARD, PEER and LISTEN run in parallel after BP19, then FUZZ. GL-IMPORT runs during S2 and S3 (D36), in its own worktree beside them, and must finish before S3-GATE so FG covers it.
 
 ### 5.2 Critical path
-- S0: S0-SCAF to S0-SP1 to S0-SP2C to S0-RES, plus the passive overnight leg of SP1. SP5 (8-12 h) can run beside the whole chain and does not extend it unless it fails.
-- S1: S1-SCAF, S1-STORE, S1-STATE, S1-MCP, S1-ID, S1-WAKE, S1-CLAUDE, S1-INST, S1-DOC, S1-GATE (S1-DOC follows S1-INST in the DAG and S1-GATE needs it). Sum of the stream estimates on this chain: 98 to 152 h. Everything else fits beside it.
+- S0: S0-SCAF to S0-SP1 to S0-SP2C to S0-RES, plus the passive overnight leg of SP1. SP5 is done (SQLite). SP5b gates S1 (D39); it reuses the SP5 driver, needs no user time and can run beside the Claude chain, so it extends S0 only if it is still running when the chain ends (not estimated).
+- S1: S1-SCAF, S1-PG, S1-STORE, S1-STATE, S1-MCP, S1-ID, S1-WAKE, S1-CLAUDE, S1-INST, S1-DOC, S1-GATE (S1-DOC follows S1-INST in the DAG and S1-GATE needs it). Sum of the stream estimates on this chain: 98 to 152 h. Everything else fits beside it.
 - Whole project: S0, then S1 chain, then S2 (sequential, user-bound), then S3 (BP19, S3-LISTEN, S3-FUZZ, S3-GATE, route, S3-EXIT), then GL (GL-REHEARSE, the user's go, GL-APPLY, GL-RETIRE). GL-IMPORT is built beside S2 and S3 (D36), so it adds nothing to the critical path unless it is still unfinished at S3-GATE; the S3 critical path now includes GL-IMPORT's finish as a precondition of S3-GATE. User availability for TTY steps, Tailscale install, the route and the typed deletions is the main schedule risk, not agent hours.
 
 ### 5.3 Suggested waves
@@ -1071,9 +1140,9 @@ The dry run is rerun at go-live on the live channel files, and its report is com
 | --- | --- | --- | --- |
 | W0 | S0-SCAF; S0-SP5 starts; S0-SP1 T1 to T3, T9, T10 and overnight leg | CC (sonnet helper), USER starts sessions | day 1 of [spk 10][spikes] |
 | W1 | S0-SP1 finish; S0-SP2C; S0-SP5 continues; S0-RES drafted | CC, USER | day 2 |
-| W2 | S0-SP2A then S0-SP3 (one sitting, about 3.5 h of USER time); S0-SP4 in a separate session; S0-SP5 finishes; S0-SP6 only if BP1 fails | AGY or USER; CC prepares files | day 3 |
+| W2 | S0-SP2A then S0-SP3 (one sitting, about 3.5 h of USER time); S0-SP4 in a separate session; S0-SP5B (the Postgres rerun, replaces "SP5 finishes"; SP5 itself is done); S0-SP6 only if BP1 fails; S0-A8C is not scheduled and does not block | AGY or USER; CC prepares files | day 3 |
 | gate | S0-RES, user go for S1 | USER | lifts planning-only |
-| W3 | S1-SCAF, then S1-STORE with S1-OBS and the S1-TEST skeleton | one sonnet subagent, then S1-STORE and S1-OBS in worktrees (S1-OBS edits `app.py` middleware) and the S1-TEST skeleton in the main tree | schema first, in the first hours of S1-STORE |
+| W3 | S1-SCAF, then S1-PG, S1-STORE (with S1-BKP after both) with S1-OBS and the S1-TEST skeleton | one sonnet subagent, then S1-STORE and S1-OBS in worktrees (S1-OBS edits `app.py` middleware) and the S1-TEST skeleton in the main tree | schema first, in the first hours of S1-STORE |
 | W4 | S1-AUTH, S1-STATE, then S1-ADMIN; S1-A2A, S1-MCP | up to three sonnet subagents at a time, worktrees | AUTH and STATE touch different modules |
 | W5 | S1-ID, then S1-WAKE; S1-CLAUDE and S1-AGY | sonnet subagents; AGY or USER for live agy checks | CLAUDE and AGY need no worktree |
 | W6 | S1-INST, S1-SEC (suite), S1-DOC; opus review of S1-SEC; then S1-GATE | sonnet subagents, opus reviewer; USER with CC and AGY for the gate | live sessions at the gate |
@@ -1101,19 +1170,19 @@ The dry run is rerun at go-live on the live channel files, and its report is com
 - Branch naming **[proposal]**: topic branches `feat/coordination-<stream>` off `feat/coordination`, merged by the user's word. [AGENTS.md][agentsmd] says no commits or branch switches unless the user asks, so this needs the user's go at S1.
 
 ## 6. Decisions still needed from the user
-Nothing in the plan is waiting on a decision today ([plan 7][plan]). Decisions 25 to 36 (2026-11-05) closed the items numbered 2, 4, 5, 6, 7, 8, 9, 10, 11 and 14 of the earlier list (summary below the table). The items that remain are later decisions or defaults, with when each starts to block. The default in the last column is a **[proposal]**, never applied without the user. The numbers are kept from the earlier list so references stay valid.
+Nothing in the plan is waiting on a decision today ([plan 7][plan]). Decisions 25 to 36 (2026-11-05) closed the items numbered 2, 4, 5, 6, 7, 8, 9, 10, 11 and 14 of the earlier list (summary below the table); decisions 4 (reversed), 20 and 37 to 40 (2026-11-09) closed items 3 and 16 and parts of items 13 and 19. The items that remain are later decisions or defaults, with when each starts to block. The default in the last column is a **[proposal]**, never applied without the user. The numbers are kept from the earlier list so references stay valid.
 
 | # | decision | needed by | blocks | source | default if the user is silent |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Lift planning-only (the go for S1) | after S0-RES | S1-SCAF onwards | D1, [spk 11][spikes] | stay planning-only |
-| 3 | S3 listener: dedicated loopback port 8121 or Host-based fallback (BP19) | before S3-LISTEN starts | S3-LISTEN, S3-LIMITS, S3-CF | plan 7 item 1, api 8.4.1 | Host-based design of api 8.4.1 stands (tunnel to 8120); 8121 only on the user's explicit choice. Note: 8121 is the recommendation |
+| 3 | S3 listener (BP19): **decided 2026-11-09, dedicated loopback port 8121** (D20); the Host-based design is a rejected alternative | closed | S3-LISTEN, S3-LIMITS, S3-CF | plan 3 D20, api 8.4.1 | none (decided) |
 | 12 | Which test peer completes the S3 exit evidence (a script on another host, a second machine) | before S3-EXIT | S3-EXIT | plan 5 S3 | a script run from a host that is not core or a workstation |
-| 13 | Status extras: `a2a_runs` tool (drop or keep); `--allow-from` versus the tailnet binding for `status-client` keys; whether the binding applies to `status-client` keys; Q1 to Q11 for cognitive-engine | before LT-SRV and LT-ADP | LT | api 12.2 point 10, st 2, 13, 14 | keep `a2a_runs`; no `--allow-from`; binding not applied until decided |
+| 13 | Status extras: `a2a_runs` tool (**kept, decided 2026-11-09, D38**); `--allow-from` versus the tailnet binding for `status-client` keys; whether the binding applies to `status-client` keys; Q1 to Q11 for cognitive-engine | before LT-SRV and LT-ADP | LT | api 12.2 point 10, st 2, 13, 14 | keep `a2a_runs`; no `--allow-from`; binding not applied until decided |
 | 15 | Go-live open points: freeze instant (set on go-live day), `ROLE_AGENT` versus `ROLE_USER` for imported messages, machine name in handles (`alyx` versus host `alyx-wsl`), turns archive left in the tar, backup retention, the three `handoff/` prompts | go-live day (role and machine name before GL-IMPORT, which now starts during S2, D36) | GL | gl 15 | `ROLE_AGENT`, `alyx`, archive left, user keeps the tar |
-| 16 | Postgres from S1 if SP5 shows SQLite is unfit | only if BP15 reaches that fallback | S1-STORE | spk 8, D4 | stay on SQLite |
-| 17 | Spec amendments owed after spikes (api 7.5 hook shape, api 1.6 start-up rule for the 8121 variant, spk results naming) | after the owning spike or decision | docs only | this plan | list them in S0-RES and S3-GATE, apply with the user's go |
+| 16 | Postgres from S1: **decided 2026-11-09 (D4, D37); no longer conditional on SP5** | closed | S1-STORE, S1-PG, S1-BKP | plan 3 D4, D37 | none (decided); SP5b gates S1 |
+| 17 | Spec amendments owed after spikes and decisions. **Applied 2026-11-09**: api 1.6 start-up rule and 8.4.1 for the 8121 listener, api 1.2 storage text and 12.2 points 10 to 12 for D4, D37, D38, spk 8 and 11 for SP5b, spk L2. **Still owed**: api 7.5 hook shape, spk results naming | after the owning spike or decision | docs only | this plan | list the remaining ones in S0-RES and S3-GATE |
 | 18 | Remaining design defaults in api 1.5 (TTLs, quotas, 15 min `active` window) | tuned after S1-GATE | none | api 12.2 point 7 | keep the starting values |
-| 19 | Remaining design questions: peer handles for remote peers, handle spoofing within one key (bind code), extension URI | when a need appears | none | api 12.2 points 11, 12, 13 | leave as specified |
+| 19 | Remaining design questions: extension URI. (Peer handles for remote peers and handle spoofing within one key are **decided 2026-11-09, D38**: handles addressable, uniform "not available" error, no bind code, accepted risk.) | **at the S3 gate** (D40), before the public card goes live | S3-CARD, S3-GATE | api 12.2 point 13 | keep the placeholder `urn:agentic-hub:coordination:v1` |
 
 Closed by decisions 25 to 36 (2026-11-05), with where each landed:
 
@@ -1137,7 +1206,7 @@ Closed by decisions 25 to 36 (2026-11-05), with where each landed:
 | D1 accepted, planning only | S0-*, S1-SCAF (lifting), section 1.2 |
 | D2 one home, memory plugin not a dependency | S1-SCAF, S1-DOC |
 | D3 Python, a2a-python, uv, Docker | S1-SCAF, S1-A2A, S0-SP5 |
-| D4 single-process SQLite, WAL | S1-STORE, S0-SP5, S2-DEPLOY (backups) |
+| D4 single server process, Postgres in the compose project (reversed from SQLite on 2026-11-09), versioned store with seeded version row | S1-STORE, S1-PG, S0-SP5 (evidence), S0-SP5B (gate), S2-DEPLOY |
 | D5 surface on :8120 | S1-A2A, S1-MCP, S1-ID, S1-WAKE, LT-SRV |
 | D6 identity, per-session handles, agy binding | S1-ID, S1-MCP, S1-A2A (card), S0-SP2C, S0-SP2A |
 | D7 ACP out; channel frozen then migrated | GL-IMPORT, GL-APPLY, GL-RETIRE; S1-INST (no writes to `~/.agents`) |
@@ -1170,6 +1239,10 @@ Closed by decisions 25 to 36 (2026-11-05), with where each landed:
 | D34 Claude key delivery | S1-INST, S1-CLAUDE, S0-SP2C (C9) |
 | D35 streaming and push deferred | S1-A2A (flags false), S2-STREAM (unscheduled), S3-CARD |
 | D36 go-live importer built during S2 and S3, one FG | GL-IMPORT, S3-GATE (FG), GL-REHEARSE, GL-APPLY, GL-RETIRE |
+| D37 Postgres operation (pinned image, no published port, secret file, nightly `pg_dump`) | S1-PG, S1-BKP, S2-DEPLOY, S0-SP5B (version choice) |
+| D38 handle addressing and protection, `a2a_runs` kept | S1-ID, S1-MCP, S3-PEER, S3-CARD, LT-SRV |
+| D39 S1 entry gate (SP5b), asyncRewake and GUI tests inside S1, A8c not blocking | S0-SP5B, S0-A8C, S0-RES, S1-CLAUDE, S1-GATE |
+| D40 extension URI placeholder through S2, final URI at the S3 gate | S3-CARD, S3-GATE |
 
 ### 7.2 Spikes and later checks to the workstreams they gate
 | spike or check | gates | if it fails |
@@ -1192,10 +1265,10 @@ Hours are focused work for the owner named in the workstream, including its own 
 
 | phase | workstreams counted | hours (low to high) | not counted |
 | --- | --- | --- | --- |
-| S0 | SCAF 3-5, SP1 5-8, SP2C 6-9, SP2A 3-4, SP3 1.5-2.5, SP4 2-3, SP5 8-12, RES 2-3 | 30.5-46.5 (rounded 31-47) | SP6 (2-3, optional), SP5 D10 stretch (2), the SP1 overnight run |
-| S1 | SCAF 6-10, STORE 16-24, AUTH 10-16, ADMIN 12-18, STATE 14-22, A2A 16-24, MCP 12-18, ID 8-12, WAKE 12-18, CLAUDE 6-10, AGY 6-10, INST 12-18, SEC 10-16, OBS 4-6, TEST 14-22, DOC 6-10, GATE 6-10 | 170-264 | opus review time beyond the hours shown in S1-SEC |
+| S0 | SCAF 3-5, SP1 5-8, SP2C 6-9, SP2A 3-4, SP3 1.5-2.5, SP4 2-3, SP5 8-12, RES 2-3 | 30.5-46.5 (rounded 31-47) | SP6 (2-3, optional), SP5 D10 stretch (2), the SP1 overnight run, **SP5B and A8C (new 2026-11-09, not yet estimated)** |
+| S1 | SCAF 6-10, STORE 16-24, AUTH 10-16, ADMIN 12-18, STATE 14-22, A2A 16-24, MCP 12-18, ID 8-12, WAKE 12-18, CLAUDE 6-10, AGY 6-10, INST 12-18, SEC 10-16, OBS 4-6, TEST 14-22, DOC 6-10, GATE 6-10 | 170-264 | opus review time beyond the hours shown in S1-SEC; **S1-PG and S1-BKP (new 2026-11-09, not yet estimated)** |
 | S2 | DEPLOY 6-10, TS 6-10, ONBOARD 4-8, WAKE 4-8, GATE 3-5 | 23-41 | S2-STREAM (12-20, optional), the user's Tailscale install time |
-| S3 | LISTEN 8-14, LIMITS 8-12, CARD 3-5, PEER 8-12, FUZZ 12-20, CF 4-8, GATE 6-10, EXIT 2-4 | 51-85 | building the unchosen BP19 variant |
+| S3 | LISTEN 8-14, LIMITS 8-12, CARD 3-5, PEER 8-12, FUZZ 12-20, CF 4-8, GATE 6-10, EXIT 2-4 | 51-85 | (the BP19 variant is decided, so none is left unbuilt) |
 | GL | IMPORT 16-24 (built during S2 and S3, D36), REHEARSE 6-10, APPLY 4-6, RETIRE 6-10 | 32-50 | the importer's share of the FG review time (the separate FG-GL review is removed) |
 | LT | SRV 8-12, ADP 10-16 | 18-28 | the cognitive-engine session's own review time |
 | total | all of the above (using the rounded S0 figure) | 325-515 | |
@@ -1206,7 +1279,7 @@ Assumptions behind the numbers:
 - Estimates are **[proposal]**, made from the spec sizes and the spike estimates in [spikes.md][spikes] (SP1 about 4 h active, SP2 about 1 day plus 2 h, SP3 about 1.5 h, SP4 about 2 h, SP5 1 to 1.5 days, SP6 about 2 h); they were not measured.
 - Unit tests ship inside each stream; S1-TEST covers only the cross-cutting layers (TCK, e2e, scripted peers, CI).
 - Each S1 stream is done by one sonnet subagent with a written brief and an orchestrator diff review; review time is inside the range.
-- SP5 passes with at most one fallback from BP15 or BP16. A second fallback, or a move to Postgres, adds roughly 8 to 16 h to S1-STORE and S1-STATE **[proposal]**.
+- The S1-STORE and S1-STATE hours above were estimated for the SQLite start with SP5 passing and at most one fallback from BP15 or BP16 (an earlier **[proposal]** put a move to Postgres at roughly 8 to 16 h on top). The 2026-11-09 move to Postgres (D4) is not re-estimated here; the new tasks S0-SP5B, S0-A8C, S1-PG and S1-BKP are not counted in the totals until estimated.
 - The pinned SDK is the one SP5 ran on; a new SDK minor during the work adds a changelog and TCK pass (about 2 h each time).
 - S2 and S3 hours include the user's typed steps but not calendar delays for Tailscale installation, Cloudflare dashboard access or the user's availability.
 - The S1 critical path (98 to 152 h) bounds the elapsed time of S1 if enough parallel capacity exists; elapsed time is not estimated here beyond the 3-day S0 plan in [spikes.md][spikes].
@@ -1220,4 +1293,6 @@ Assumptions behind the numbers:
 [tasklist]: file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/master-tasklist.md
 [a6]: file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md
 [a4]: file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md
+[sp5res]: file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md
+[a8brun]: file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-runbook-a8b-user-level-plugin-2026-11-08.md
 [agentsmd]: file:///home/rockad/projects/agentic-hub/plugins/coordination/AGENTS.md

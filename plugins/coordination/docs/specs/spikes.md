@@ -33,7 +33,7 @@ Rules for every spike:
 - **Decision 9 already approves shipping the agy `SessionStart` and `PreInvocation` hooks.** Spikes install them only in a scratch workspace; the user applies them to real config (host-hygiene rule). Only the held-`Stop` park (SP4) needs a further user decision before it could ship.
 - **Cheap models, small budgets.** Test sessions run on the cheapest model that exercises the behaviour (`haiku` for Claude Code). Check the 5h and 7d quota first. Every stub that can wake a session has a hard wake budget (default 12 per hour) and a kill file.
 - **Spikes execute later, on the user's go.** A spike's scratch environment may need a `uv`-managed virtualenv in its scratch directory (SP5 needs `a2a-sdk`). That is a scratch install, never a system or repo install, and it is created only when the spike runs.
-- **Spike ids.** This file defines SP1 to SP6 and their test ids (for example T11, A6, D11). Other documents refer to spikes by these ids only. The older names used in server-api.md section 12.1 are mapped in the table in section 2.1.
+- **Spike ids.** This file defines SP1 to SP6, SP5b (added 2026-11-09), and their test ids (for example T11, A6, D11). Other documents refer to spikes by these ids only. The older names used in server-api.md section 12.1 are mapped in the table in section 2.1.
 - **Result format.** Each spike writes one section to a results file, `docs/research/spike-results-<date>.md` (created by whoever runs the spike, not by this plan). Each section holds:
   - the tool versions (see each spike)
   - what was run, exactly
@@ -51,7 +51,8 @@ Labels follow the audit: verified (read in code or official docs), reported (pro
 | SP2 | Can a handle be tied to an MCP session id for both harnesses? | 6 | Claude half: user plus helper; agy half: user or agy itself | about 1 day (Claude), about 2 h (agy) | must pass |
 | SP3 | Does a `PreInvocation` hook surface a pending count to agy cheaply and safely? | 9 | user or agy itself | about 1.5 h | must pass |
 | SP4 | Can a held `Stop` hook park agy at idle without hurting the user? | 9 (the spike-only part) | user or agy itself | about 2 h | recorded, not required to pass |
-| SP5 | Does `DatabaseTaskStore` on SQLite hold up under our single-process mix of traffic? | 4 | helper session | about 1 to 1.5 days | must pass |
+| SP5 | Does `DatabaseTaskStore` on SQLite hold up under our single-process mix of traffic? | 4 | helper session | about 1 to 1.5 days | passed 2026-11-05; stays in the record, no longer gating (D-A, D-D) |
+| SP5b | Does the versioned store on Postgres hold up under the same mix, with dump and restore and crash recovery? | 4 (starting engine reversed to Postgres, 2026-11-09) | helper session | [design] about 0.5 to 1 day | must pass |
 | SP6 | Can a host helper wake Claude Code through the inbox socket? | 8 (later candidate) | user plus helper | about 2 h | optional, outside the gate |
 
 ### 2.1 Mapping from server-api.md spike names
@@ -254,8 +255,13 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
     - The 2026-11-08 failure was not sign-in (the startup warning appears in every startup log, including working runs), not a missing enable step (A3) and not a cold first load (A4) [verified].
     - It correlates with a same-named workspace plugin being present: in both runs with one, the user-level tools were "not enabled"; in the 2026-11-09 shadow run both servers connected and the workspace server's tools worked [verified]. Which scope wins is [unverified]. Rule: the installed plugin's name must not equal any workspace plugin name.
     - A connected server (`initialize` and `tools/list` 200) is not proof the tools are callable; the installer's health check must call a real tool [verified].
-    - Untested: `.mcp.json` at user level, `agy plugin install`, and whether tool use needs a live sign-in (every successful call was signed in).
+    - Untested: `.mcp.json` at user level, `agy plugin install`, and whether tool use needs a live sign-in (every successful call was signed in). All three are A8c below.
     - Fallback if the placement ever breaks: the `agy mcp add` global entry in `~/.gemini/config/mcp_config.json` (verified in A6 and A4, 2026-11-04); chezmoi-managed, so it reopens decision 24.
+  - **A8c, the three items A8b left open (2026-11-09, planned, not run; D-E)** ([runbook](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-runbook-a8c-agy-open-items-2026-11-09.md)):
+    - Items: (1) `.mcp.json` at user level in `~/.gemini/config/plugins/<name>/`, (2) `agy plugin install <path>` and uninstall, (3) tool use while signed out of agy.
+    - Not blocking S1. Until it runs, the installer's agy placement is the A8b form (user-level native `mcp_config.json`, unique plugin name).
+    - Item (3) changes the user's real agy login, so it is the last run, with an explicit backup of the agy credential file, a put-back step and a check. The helper never signs the user out; the user does.
+    - Same rules as A8b: the helper never starts or drives agy, the user starts agy, agy answers the prompts, labels verified, reported and unverified, borrow and put back. Every variant's plugin name must differ from any workspace plugin name (the A8b unique-name rule).
 
 ### Pass and fail
 
@@ -434,6 +440,8 @@ None needed. Decision 9 already ships without it. If the park is not usable, the
 
 ## 8. SP5: a2a-python on SQLite
 
+Status (2026-11-09): passed, results recorded. On 2026-11-09 the user chose Postgres as the starting engine for reasons beyond this spike (see D-A and SP5b), so SP5 stays in the record as passed and no longer gates S1. Its evidence still explains why the wrappers exist.
+
 ### Question
 
 Does `a2a-python` (1.3.0 or later) with `DatabaseTaskStore` on SQLite hold up under the traffic of one server process that serves MCP, A2A and the wake long-poll together, with WAL and a busy timeout that we configure ourselves? Do migrations, backups and crash recovery behave?
@@ -516,7 +524,75 @@ About 1 to 1.5 days. D10 adds about 2 h.
 - D11 shows the SDK request handler cannot support parked tasks: write our own request handler and `TaskStore` wrapper and keep only the SDK's types, card and wire code.
 - D12 shows the two Starlette apps cannot share a process: run `/mcp` as a second ASGI app in the same container on an internal port behind the same auth middleware, published through one internal route in the container (not the public front door, which is the Cloudflare Tunnel of decision 20 and routes only `/a2a/v1` and the card).
 - Migrations clash: keep our tables in a second SQLite file owned by the same process, with its own Alembic history.
-- SQLite itself unfit: use Postgres in compose from S1. This would change decision 4 only in the starting engine and needs the user's confirmation.
+- SQLite itself unfit: use Postgres in compose from S1. Not triggered: SP5 passed. The user chose Postgres in compose from S1 on 2026-11-09 anyway, for reasons beyond SP5 (D-A), which reverses decision 4's starting engine. The gate for that engine is SP5b.
+
+## 8b. SP5b: a2a-python on Postgres (D-D)
+
+### Question
+
+Does the planned storage stack hold up on Postgres as the starting engine: the SDK `VersionedDatabaseTaskStore` with a version row seeded at task creation, our `CoordTaskStore`, the custom parked-task request handler, the `task_index` side table and our own tables on SQLAlchemy Core, under one server process that serves MCP, A2A and the wake long-poll, with the database as a second compose service? Do the dump and restore backup and crash recovery (server killed, Postgres restarted) behave?
+
+### Why it matters
+
+- Decision 4 started on SQLite. The user reversed that on 2026-11-09: Postgres in the compose project from S1 [D-A]. The user chose it although SQLite had been enough: SP5 on SQLite measured about 23 writes per second at 10 times the realistic rate, p99 write 17 to 35 ms, a ceiling of about 430 saves per second on one connection, and 0 lost acked writes after `kill -9` ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)). The tripwires that would have forced a move, kept for the record: more than one writer process, a network filesystem, a failover need, around 100 times the load.
+- The server stays ONE process (parked wake listeners live in memory), so the single-server-process rule stands. Only the database is now a second service.
+- What SP5 D10 covered on Postgres was partial [verified, SP5 results]: D4, D5 and D6 passed by URL change; the D2 mix ran 3 minutes, not 10, with 22 retried deadlocks (transition p99 1031 ms) cured by seeding the version row at creation (p99 13.8 ms); D3 on Postgres gave 0 lost updates with the versioned store. Stress, backup and crash were not run on Postgres.
+- Our SQLite compare-and-swap built on `BEGIN IMMEDIATE` did not carry over (259 of 300 lost updates on Postgres). That is why the wrapper is the versioned store with a seeded version row, and why the single-connection `BEGIN IMMEDIATE` write engine, the WAL and filesystem caveats, and `sqlite3 .backup` are retired.
+- SP5 D2 skipped the steady-state session-register and budget-counter writes (its own-table writes were wake and audit rows only). SP5b adds them.
+
+### Method
+
+A scratch compose project in `~/scratch/a2a-spikes/sp5b/`, same tools and drivers as SP5 (the load driver and test suites are copied from `~/scratch/a2a-spikes/sp5/`, which is not edited). Ports in the 181xx range, as SP5 did, loopback only (`127.0.0.1:...`): SP5 used 18125 to 18127, so SP5b uses 18130 to 18132 [design; check they are free with `ss` first]. The compose project holds:
+
+- the server container, `A2A_DB_URL` pointing at Postgres, one process
+- a Postgres container from an image pinned by tag, the tag chosen when SP5b runs and recorded in the results [D-B]
+- a named volume for the Postgres data
+- no published Postgres port: the database is reachable only on the compose network (confirm with `ss` on the host that nothing listens)
+- the Postgres password from a Docker secret file in the scratch directory (a throwaway value, mode 0600, never printed or written to a result)
+
+The engine factory is plain: no SQLite PRAGMAs, no single-connection write engine, no `BEGIN IMMEDIATE`. Version rows are seeded at task creation in the same transaction as the task (SP5 D10 cure).
+
+Steps (SP5 ids kept):
+
+- **D2, mixed load in one process.** The SP5 D2 mix on Postgres: 10 minutes at 10 times the realistic rate, with 200 parked wake listeners, the A2A and fake MCP traffic of SP5 D2, and now the steady-state session-register and budget-counter writes. Their rates are [design, open]: set when the driver is written, from the realistic-traffic assumption in the SP5 results (5 agents), and recorded. Measure p50 and p99 per operation, database errors, event-loop lag, wake latency, and the count of `deadlock detected` lines in the Postgres log (SP5 D10 saw 22 before the seeding cure).
+- **D3, same-task race.** Cancel versus complete, and two `a2a_inbox` takes, on the versioned store with the seeded version row, 300 rounds each as in SP5. Record lost updates and double takes.
+- **D7, backup and restore.** While D2 load runs, take a `pg_dump` (the dump format is [design, open]: choose, record and justify), restore it into a fresh Postgres container and volume of the same pinned image, and check integrity: the restore completes without error, row counts per table match the counts taken at dump time, and the SDK migration CLI reports the restored database at head. This is the same restore test as SP5 D7 for the nightly dump into the existing encrypted backup route on core [D-B]. Up to about one day of loss is accepted; WAL archiving and point-in-time restore are not adopted, and a host-installed Postgres is not adopted. The hand-off of the dump into the encrypted route on core is S1 work and is not spiked here [design].
+- **D8, crash.** Under D2 load, `kill -9` the server container and restart it, and separately restart the Postgres container. Check no acked write is lost (acked creates, completions and cancels all present, as SP5 D8 counted them), that tasks left in an "offered" state are re-offered after the server restart, and record how the server's connection pool behaves while Postgres is down and after it returns.
+
+Not re-run: D4, D5, D6, D11 and D12 passed on Postgres by URL change in SP5 D10 and are not repeated here [verified]. D9 (filesystem) is retired with SQLite.
+
+### Pass and fail
+
+Same numbers as SP5. Must pass (gate):
+
+- D2: p99 write latency under 200 ms. Zero unhandled database errors in 10 minutes. Event-loop lag under 100 ms. Wake latency p99 under 500 ms with 200 parked listeners. The deadlock count is recorded and expected to be 0 with the seeded version row [design; not a numbered SP5 criterion].
+- D3: 0 lost updates and 0 double takes.
+- D7: a restored dump passes the integrity check with consistent counts.
+- D8: 0 lost acked writes after `kill -9` of the server and after a restart of the Postgres container.
+
+### Record
+
+- `a2a-sdk` exact version, Python version, the Postgres image tag, `asyncpg` and SQLAlchemy versions.
+- The engine and pool configuration that passed.
+- A latency table and error counts for D2, including the steady-state own-table writes and the deadlock count.
+- The `pg_dump` and restore command sequence that worked, and the dump format chosen.
+- Any SDK behaviour that needs a wrapper of ours.
+
+### Runner
+
+A helper Claude Code session on alyx. No harness session of the user's is involved. Docker, per decision 1.
+
+### Estimated effort
+
+[design] About 0.5 to 1 day: the drivers and suites are reused from SP5, and SP5 took 1 to 1.5 days. No source gives a figure; revise after the first run.
+
+### What a failure does and fallback
+
+- The engine itself is chosen by the user, so a failure revises the versioned-store wrapper or the Postgres setup (pool settings, seeding, dump procedure), not the engine.
+- A failure blocks S1 storage tasks and therefore S1 (section 11).
+- Lost updates: the wrapper is revised until D3 passes; the plain store and the SQLite compare-and-swap are not options (SP5 D3, D10).
+- Deadlocks or high transition p99: check that the version row is seeded in the creation transaction, then revise the wrapper.
+- Restore fails: revise the dump procedure; WAL archiving is not adopted [D-B].
 
 ## 9. SP6: Claude Code inbox socket from a host helper (optional, later)
 
@@ -575,6 +651,7 @@ Dependencies:
 - SP2-agy before SP3, because SP3 reuses the same scratch workspace, hooks file and MCP entry, and SP3's `a2a_inbox` call needs the binding result.
 - SP4 after SP3, in a separate session and workspace, because it is the one spike that can make an agy session awkward to use.
 - SP5 depends on nothing. It can run in parallel with everything else, and should start first because it takes longest and needs no user time.
+- SP5b (added 2026-11-09) reuses SP5's load driver and test suites and needs no user time, so it can run in parallel with the user-time spikes. SP5 is already done.
 - SP6 after SP1 only. It reuses SP1's hooks and the SP1 T10 variable inventory.
 
 Suggested order:
@@ -593,7 +670,7 @@ S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/lis
 - SP1 passed
 - SP2 passed
 - SP3 passed, or failed with the section 6 fallback (agy hook dropped) recorded
-- SP5 passed
+- SP5b passed (the SP5 rerun on Postgres, D-D)
 - SP4 recorded
 - the results file is written and linked from the master tasklist
 
@@ -603,8 +680,11 @@ Gate status (2026-11-09):
 - SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A4 compliance (10 of 10) and A7 (180 s) **passed**, A3 and A5 **recorded** (2026-11-08, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md)); A8 **passed with the unique-name caveat** after A8b (2026-11-09, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-09-a8b-agy.md)). SP2 is **passed**.
 - SP3: **open**.
 - SP4: **open** (record only).
-- SP5: **passed with four wrappers** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)); one defect to fix in S1 (session id bound to the API key).
-- Added by SP1: a spike item for `asyncRewake` on a `UserPromptSubmit` command hook (the re-arm after Esc), not yet a numbered spike; decide whether it blocks S1 or is built and tested inside S1.
+- SP5 (SQLite): **passed with four wrappers** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)); one defect to fix in S1 (session id bound to the API key). Recorded as passed, **not gating** since the user chose Postgres on 2026-11-09 (D-A, D-D).
+- SP5b (Postgres): **open, gating** (D-D). Same pass numbers as SP5.
+- Moved inside S1 (D-D), not before it, each with its own exit test [design, details open until S1 starts]:
+  - `asyncRewake` on a `UserPromptSubmit` command hook (the re-arm after Esc, added by SP1). Exit test: after Esc during a turn, a task created for the session's handle wakes the idle session again, within the wake latency SP1 recorded.
+  - The GUI-launched Claude test (decision 34). Exit test: a Claude Code session launched from the GUI registers, binds with `a2a_hello`, and its MCP calls carry the API key by the route decision 34 chose, with C9's record of what a GUI-launched session sees in its environment.
 
 Definitions:
 
@@ -619,12 +699,12 @@ What a failure does:
 - SP2 A6 failure (agy cannot send a bearer header) stops S1 until the user decides between decisions 9 and 11 for agy.
 - SP1 T11 failure falls back to a command hook for `UserPromptSubmit`. With that fallback recorded in the spec it counts as passed ("failed with fallback"), so it does not block S1.
 - SP3 failure removes the agy hook from the plan. It does not block S1 (the `SessionStart` `injectSteps` instruction, `a2a_inbox` and `a2a_wait` remain).
-- SP5 failure picks the listed fallback. Moving the starting engine to Postgres needs the user's confirmation.
+- SP5b failure revises the versioned-store wrapper or the Postgres setup and blocks S1 storage tasks. The engine is already Postgres by the user's choice (2026-11-09), so no engine confirmation is pending. An SP5 (SQLite) result no longer gates.
 
 What the gate does not cover (these are gates of later stages, not S1):
 
 - S2 (tailnet): API keys and scopes live, cross-host wake works, and the tailnet identity check of decision 17 (section 13). The version check on mac and core happens here.
-- S3 (public HTTPS, the Cloudflare Tunnel on core, decision 20): quarantine live, rate limits, the fuzz pass, an honest card, an explicit user go, and the tunnel checks in section 13.
+- S3 (public HTTPS, the Cloudflare Tunnel on core, decision 20): quarantine live, rate limits, the fuzz pass, an honest card, an explicit user go, and the tunnel checks in section 13. Listener facts decided 2026-11-09 (D-F): the tunnel targets a dedicated loopback port 8121, which the server treats as the public listener (remote-peer keys only, only `/a2a/v1` and the public Agent Card, `CF-Connecting-IP` trusted only on that port); port 8120 stays tailnet-only (`tailscale serve`, local-harness keys). The final extension URI must be chosen and published before the public card goes live (L5, D-J).
 - The cognitive-engine status client (decision 13): built after S1 on the user's go.
 
 ## 12. Open points not resolved by the evidence
@@ -646,12 +726,16 @@ Decisions 17, 20 and 23 (2026-11-04) rest on mechanisms nobody has tested. They 
   - Also record: which header names a client can forge when it reaches the server some other way (it must not be able to).
 - **L2, `CF-Connecting-IP` from `cloudflared` on the same host (S3, decisions 20 and 23).** Question: does the real client address reach the server, and can the server believe it only for tunnel traffic when `tailscale serve` traffic also arrives from core's loopback?
   - Precondition: no route exists now (plan Risk 13). This check runs at S3 only, after the user creates the route on his explicit go. If a route is created earlier just for this test, it sits behind a Cloudflare Access deny-all or service-token-only policy (the test uses a Cloudflare Access service token) and the stub, not the real service, listens behind it.
-  - Method: point the route `a2a.bigrockad.com` at the stub on core. Record the `Host` the stub sees, the `CF-Connecting-IP` it receives, and the TCP peer. Send the same request through `tailscale serve` with a forged `CF-Connecting-IP` and with `Host: a2a.bigrockad.com`, and record what the stub can use to tell the two paths apart. Repeat with the route pointed at a dedicated loopback port (`localhost:8121`), which is the recommended design and the pending user decision (server-api.md 8.4.1).
-  - Pass: `CF-Connecting-IP` arrives from `cloudflared` as the real client address, and the server can believe it only for tunnel traffic: by listener port under the dedicated-port design (no forged-header weakness), or by `Host` in the fallback. If neither works well enough, fall back to per-key limits only.
+  - Method: point the route `a2a.bigrockad.com` at the stub on core. Record the `Host` the stub sees, the `CF-Connecting-IP` it receives, and the TCP peer. Send the same request through `tailscale serve` with a forged `CF-Connecting-IP` and with `Host: a2a.bigrockad.com`, and record what the stub can use to tell the two paths apart. Repeat with the route pointed at the dedicated loopback port (`localhost:8121`), which the user decided on 2026-11-09 (D-F): the server treats 8121 as the public listener (remote-peer keys only, only `/a2a/v1` and the public Agent Card, `CF-Connecting-IP` trusted only on that port), and 8120 stays tailnet-only. The Host-based `A2A_TUNNEL_HOSTS` design is no longer the plan; it is kept only as a rejected alternative.
+  - Pass: `CF-Connecting-IP` arrives from `cloudflared` as the real client address, and the server can believe it only for tunnel traffic, by listener port 8121 (no forged-header weakness). The Host-based path is not a fallback any more; if the port design does not work well enough, fall back to per-key limits only.
 - **L3, Cloudflare timeout and path routing (S3, decisions 20 and 22).** Question: what is the real request timeout on the user's plan, and can the ingress rule restrict paths?
   - Method: a stub endpoint that holds a request for 30, 60, 90 and 120 s; a request to a path outside `/a2a/v1` and the card.
   - Pass: a 60 s hold succeeds, the observed limit is recorded (about 100 s is reported), and the unrouted path is refused by the ingress or by the server (`404`).
 - **L4, wake over the tailnet (S2, decision 23).** Question: what wake latency and failure behaviour does a long-poll from alyx or mac to core show over Tailscale?
   - Method: the SP1 listener against a stub on core. Record time from task creation to the wake line, behaviour across a tailnet interruption (kill the link for 30 s and 5 min), and whether 900 s rounds survive idle NAT or relay paths.
   - Pass: latency recorded; after an interruption the listener re-parks without a loop (plan Risk 12).
+- **L5, final extension URI (S3 gate item, D-J).** Question: which URI identifies the coordination extension on the public Agent Card?
+  - Today: the placeholder `urn:agentic-hub:coordination:v1` stays through S1 and S2. Open point 13 of server-api.md stays open until S3 and is assigned to this gate.
+  - Check: the final URI is chosen and published before the public card goes live, and the card, the server and the docs all use it. Where it is published and whether it must resolve are [design, open].
+  - Pass: the public Agent Card carries the final URI and no placeholder remains in anything served on 8121.
 - **Hostname:** `a2a.bigrockad.com` is the chosen S3 hostname. No route exists now: the user created one on 2026-11-04 and deleted it the same day. L2 and L3 run at S3, when the user creates the route on his explicit go (plan Risk 13).

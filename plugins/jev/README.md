@@ -406,6 +406,8 @@ What the hooks do **not** do:
 
 Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
 
+Case study: [Model tiers for a multi-stream docs workflow (2026-11-09)](docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md) shows where the hook and the batch dispatch fell short on a staged workflow, with proposed fixes.
+
 ---
 
 ## 📟 Slash Commands & Tool Interfaces

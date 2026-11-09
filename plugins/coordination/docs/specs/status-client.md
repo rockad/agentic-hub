@@ -88,7 +88,7 @@ curl -sS -m 3 -X POST http://127.0.0.1:8120/status \
 
 ### Response
 
-The response carries an acknowledgement and nothing else. No pending messages, no instructions, no text a model could mistake for a command.
+The response carries an acknowledgement and one numeric operational field, `dump_age_h` (hours since the last good database dump, [server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 3.6, round-2 decision R5, 2026-11-09). A status client may display it and a stale flag (older than 36 h). Nothing else: no pending messages, no instructions, no text a model could mistake for a command.
 
 ```json
 { "ok": true, "run_id": "h2s1-20261104T141207Z-3f9a", "applied": true }
@@ -197,7 +197,7 @@ Server-side guard: the schema is strict (unknown fields refused), values are len
 
 - **No task intake**: `SendMessage`, `SendStreamingMessage` and all other A2A operations are unreachable with a `status-client` API key. No `cognitive-engine@alyx` handle or card is ever registered. Messages addressed to such a name are rejected (unknown agent), never queued.
 - **No approval path**: nothing on the server resolves, grants or forwards an `INPUT_REQUIRED` for a sweep. No tool starts a sweep, schedules one, releases a gate, or writes into a sweep's run dir.
-- **No return channel**: the `POST /status` response is the fixed acknowledgement of section 4. The server never pushes into a sweep, never returns pending items, never sets headers a client would act on.
+- **No return channel**: the `POST /status` response is the fixed acknowledgement of section 4 (plus the numeric `dump_age_h`). The server never pushes into a sweep, never returns pending items, never sets headers a client would act on.
 - **No second approval path by wake**: wake text is a constant stub. A status record never produces a message to a session that says "approve", "run" or "execute".
 - **Quarantine is separate**: the `a2a-coord review` release flow (decision 10) is for remote tasks. It does not touch status records, and there is no review of a status record because it carries no instruction.
 - **Credentials and run data are not exposed through any server tool**: no tool reads cognitive-engine's run dirs, transcripts, config or credentials. The server never opens `report_path`.
@@ -205,12 +205,12 @@ Server-side guard: the schema is strict (unknown fields refused), values are len
 
 ## 11. sbx network rule
 
-- **Model sessions (sbx) must never reach `:8120`** (decision 13). T2 (reported): sandboxes reach exactly one host:port via a sandbox-scoped allow rule, and the coordination server must not be on that allow list.
+- **Model sessions (sbx) must never reach `:8120` or `:8121`** (decision 13; the 8121 public listener is live on host loopback from stage s2, round-2 decision R8, 2026-11-09). T2 (reported): sandboxes reach exactly one host:port via a sandbox-scoped allow rule, and the coordination server must not be on that allow list.
 - **Rules**:
   - The sbx allow list never names the coordination server, on any stage, any address (loopback, tailnet, public).
   - The status API key is held only by the host-side `stage1` process. It is not mounted into, passed to or readable from a sandbox. The RFC 006 credential rule applies: nothing the sandbox can read may contain it.
   - Model-written code must never reach the server (internal-only network plus filtering proxy, T2 reported).
-- **Acceptance test (not yet run, needs the cognitive-engine session)**: from inside a real sbx session, a connection to the host's `:8120` fails on every address the sandbox can use for the host (loopback, docker bridge gateway, `host.docker.internal`-style names). At S1 the server listens on `0.0.0.0` inside its container and is published only on host `127.0.0.1:8120` ([server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 1.4). The acceptance test must also try the coordination container's own IP on its compose network and the Docker bridge gateway, and must confirm that sbx networks are not attached to the compose network. Whether any of these routes is reachable from an sbx session is unverified (open question Q6).
+- **Acceptance test (not yet run, needs the cognitive-engine session)**: from inside a real sbx session, a connection to the host's `:8120` or `:8121` fails on every address the sandbox can use for the host (loopback, docker bridge gateway, `host.docker.internal`-style names). At S1 the server listens on `0.0.0.0` inside its container and is published only on host `127.0.0.1:8120` ([server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 1.4). The acceptance test must also try the coordination container's own IP on its compose network and the Docker bridge gateway, and must confirm that sbx networks are not attached to the compose network. Whether any of these routes is reachable from an sbx session is unverified (open question Q6).
 - **If the server ever sits in a container on a shared Docker network**: the sbx network must not be attached to it. Re-run the acceptance test after any network change.
 - **Fuzz scope at S3**: `/status` is not publicly routed (section 3), so it is outside the S3 header-smuggling, request-splitting and SSRF fuzz pass for the public surface. The `report_path` field is stored opaque, with no server-side fetch, so SSRF through it is excluded by design. Still add one test that confirms the server never opens a path it was given.
 

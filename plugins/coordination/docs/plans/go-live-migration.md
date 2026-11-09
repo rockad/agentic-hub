@@ -188,7 +188,7 @@ Reply-to resolution:
 ## 7. Import safety
 
 - The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `key create` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin API-key scope. No API-key scope grants it, including `local-harness`. Docker access on the host that runs the container is the credential.
-- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on core (decision 23), so the command is `ssh core docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on alyx (`~/.agents`), so parse, plan, tar backup and deletion happen on alyx; the store, `/data/imports/<run_id>/` and `/data/backups/` are on core's volume (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one process owns SQLite) holds. No bind mount of `~/.agents` into the container is needed.
+- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on core (decision 23), so the command is `ssh core docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on alyx (`~/.agents`), so parse, plan, tar backup and deletion happen on alyx; the store is the Postgres service's, `/data/imports/<run_id>/` is on core's `a2a-data` volume, and the pre-apply store snapshot goes to `/srv/a2a-dumps` on core's host (R6, section 13.1) (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one server process owns the store; Postgres since D-A) holds. No bind mount of `~/.agents` into the container is needed.
 - The server re-validates every record from the bundle: recomputes the uuid5 ids, recomputes `content_sha256` from the text Part, checks `state == COMPLETED`, checks `coord.origin == "import"`. A bundle that disagrees with itself is rejected whole.
 - Credential scan on every `inner` (same four patterns plus the generic `Bearer <long token>` form). A match aborts with the line number and never prints the matched text.
 - Hard limits: block under 1 MiB, file under 16 MiB, at most 10,000 blocks per run. The current data is far below all of them.
@@ -217,7 +217,7 @@ Exit codes:
 - 4 verification mismatch.
 - 5 precondition failure (server down, plan stale, source changed, wrong TTY).
 
-Run artefacts live on the server volume under `/data/imports/<run_id>/`: `manifest.json`, `report.md`, `plan.json`. They contain hashes, counts and keys, never message bodies.
+Run artefacts live on the server volume under `/data/imports/<run_id>/`: `manifest.json`, `report.md`, `plan.json`. They contain hashes, counts and keys, never message bodies. The `a2a-data` volume holds these import run artefacts only and is not part of the backup scope (server-api.md 1.2, R6).
 
 ## 9. Idempotency
 
@@ -314,7 +314,7 @@ References that will dangle once the channel files are deleted (annotate as hist
 
 ### 13.1 Backup before deletion
 
-- Pre-apply store snapshot: a `pg_dump` of the coordination database, taken while the server runs, to `/data/backups/pre-import-<run_id>.dump` [design: where the dump is written, since `pg_dump` runs in the Postgres service and `/data` belongs to the server container, is open]. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly `pg_dump` restore is (server-api.md 1.2, D-B). The nightly dump itself goes to the existing encrypted backup route on `core` and is not this snapshot.
+- Pre-apply store snapshot [R6]: a `pg_dump` of the coordination database, taken while the server runs, named `pre-import-<run_id>` and written into the same directory as the nightly dumps, `/srv/a2a-dumps` on core (path [design], server-api.md 1.2), so the existing restic job on `core` collects it. The host-side importer runs it through the compose stack; the exact command, and the file extension (`.dump` as used earlier in this plan), are [design]. It no longer goes to `/data`: `a2a-data` is for import run artefacts only and is not backed up. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly `pg_dump` restore is (server-api.md 1.2, D-B). The nightly dump is written by the dump sidecar into the same directory and is not this snapshot. Pruning of `pre-import-*` files is kept with the monthly dumps or manual [design]. That the restic job covers `/srv/a2a-dumps` is [unverified] until task S1-BKP is done, so the runbook confirms the snapshot file is present in that directory before apply.
 - Source backup: a tar of exactly the following, taken after verification and before deletion:
   - the two in-scope channel files
   - `cognitive-engine-bridge-turns-archive-2026-10.md`
@@ -341,7 +341,7 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 
 ### 13.3 Rollback
 
-- Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full restore of `/data/backups/pre-import-<run_id>.db` is the heavy alternative.
+- Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full restore of the `pre-import-<run_id>` dump from `/srv/a2a-dumps` is the heavy alternative.
 - Files (after deletion): extract the tar back over `$HOME` with `tar -C "$HOME" -xzf <tar> --keep-old-files`, so an existing file is never overwritten. Then re-run the dry-run, which must again report the same hashes.
 - Both: restore files first, roll the store back, then re-import from a fresh plan. Idempotency makes this safe to repeat.
 - Rollback never touches live tasks, API keys or sessions.
@@ -352,7 +352,7 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 - Confirm the channel is frozen, including Antigravity's research use, which stops now. Record the freeze instant and the sha256 of both files.
 - Stop any watcher still running (section 11).
 - Dry-run. Read the report. Compare against the section 10.2 numbers. Resolve every error and every ambiguous reply-to.
-- User go. Take the pre-apply store snapshot. Apply with the plan id. Let the automatic verify finish.
+- User go. Take the pre-apply store snapshot (`pre-import-<run_id>` in `/srv/a2a-dumps`, section 13.1) and confirm the file is there. Apply with the plan id. Let the automatic verify finish.
 - Read the verify output. Spot-check three tasks through a normal MCP `a2a_get` call.
 - Run `retire-channels`: backup, tar verification, typed confirmation on a real TTY, delete.
 - User retires the section 11 items by hand and annotates the dangling references.

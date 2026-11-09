@@ -92,7 +92,7 @@ Order and decisions in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md). The remai
 - [x] Root README and AGENTS.md trees: add `docs/`, coordination and subagents (2026-11-07).
 - [x] Root README and AGENTS.md: add the celi5, cplain and mcp-toggle skills (README already had mcp-toggle). Remove the references to `plugins/jev/opencode/`, which does not exist (2026-11-08, uncommitted).
 - [x] Jev README: hooks path is `./claude/hooks.json`; removed the missing `opencode/` tree entry. `package.json` version aligned to `plugin.json` (2.3.0). Done in PR #19 (rebase-merged 2026-11-09, main 58420e1).
-- [x] Jev 2.3.0 released 2026-11-09 (tag `jev-v2.3.0`): <https://github.com/rockad/agentic-hub/releases/tag/jev-v2.3.0>. It is final: no further agentic-hub jev code releases. The version line continues in cognitive-engine at 2.4.0 (see "Next: alongside coordination S1").
+- [x] Jev 2.3.0 released 2026-11-09 (tag `jev-v2.3.0`): <https://github.com/rockad/agentic-hub/releases/tag/jev-v2.3.0>. Decision 14 was revised on 2026-11-09: the live plugin keeps getting 2.3.x patch releases (see the item below). The version line continues in cognitive-engine at 2.4.0 (see "Next: alongside coordination S1").
 - [ ] Coordination docs link to `/home/rockad/...`, which resolves only on alyx. Consider repo-relative links.
 - [ ] Subagents plugin for Claude Code, Antigravity and Codex (decided 2026-11-08; closes the subagents half of issue #13):
   - canonical source in `plugins/subagents/src/`
@@ -158,7 +158,8 @@ Jev is not retired: only the agentic-hub copy retires (RFC 005). The engine live
   - Claude: read `CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`; resolve managed agent definitions, or fail closed; have the installer add a native deny rule `Agent(model:opus)`
   - OpenCode and agy: delegation tool `subagent`, not `task`; read `event.input.prompt`; update the restart guidance (`opencode reload`); check whether a model set in `define_subagent` front matter bypasses the `invoke_subagent` guard
 - [ ] **Advisor port.** Port the Claude `UserPromptSubmit` advisor (agentic-hub `plugins/jev/claude/hook.ts` and `logic.ts`; the cognitive-engine Claude adapter has no `UserPromptSubmit` hook) to the cognitive-engine Claude adapter with all of the case-study improvements 5.1 to 5.11. Its own PR set, after the guard follow-up. 5.4 and 5.11 touch dispatch tools shared with Antigravity and OpenCode. Reasoning: [case study, section 5](../plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md).
-- [ ] **Jev 2.4.0 line.** Package `packages/jev` in cognitive-engine as 2.4.0. agentic-hub jev 2.3.0 is final.
+- [ ] **Jev 2.4.0 line.** Package `packages/jev` in cognitive-engine as 2.4.0. The packaging PR also moves the case study into cognitive-engine docs; agentic-hub keeps a pointer.
+- [ ] **Jev 2.3.x patch releases in agentic-hub** (owner, 2026-11-09): the live plugin is in active use, so it gets the case-study fixes (section 5) now, with tests, and stays aligned with the cognitive-engine port. Owner of the work: agentic-hub-cp. Continues until RFC 005 Phase C.
 - [ ] Jev Recall URL: stop hard-coding `:8110` (`telemetry.ts:65`) before RFC 005 retires it.
 - [ ] Jev OpenCode tier map: replace the `~anthropic/...-latest` OpenRouter slugs (pay-per-token) with `openai/...` or `github-copilot/...` models if OpenCode runs on a subscription. Never `claude-agent/*`.
 - [ ] Any future Codex adapter must return `deny` (Codex fails open on `ask`). Any Copilot guard fails open on hook timeout.

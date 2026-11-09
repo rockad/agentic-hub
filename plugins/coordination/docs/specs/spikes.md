@@ -686,14 +686,14 @@ S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/lis
 - SP4 recorded
 - the results file is written and linked from the master tasklist
 
-Gate status (2026-11-09):
+Gate status (2026-11-10):
 
 - SP1: **passed** (decision 8 go), [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp1.md).
 - SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A4 compliance (10 of 10) and A7 (180 s) **passed**, A3 and A5 **recorded** (2026-11-08, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md)); A8 **passed with the unique-name caveat** after A8b (2026-11-09, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-09-a8b-agy.md)). SP2 is **passed**.
 - SP3: **open**.
 - SP4: **open** (record only).
 - SP5 (SQLite): **passed with four wrappers** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)); one defect to fix in S1 (session id bound to the API key). Recorded as passed, **not gating** since the user chose Postgres on 2026-11-09 (D-A, D-D).
-- SP5b (Postgres): **open, gating** (D-D). Same pass numbers as SP5.
+- SP5b (Postgres): **passed** (2026-11-10, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-10-sp5b.md)). All gates met: 0 lost updates, 0 lost acked writes, p99 write 17-18 ms, backup sidecar (-Fc, dump_ro) verified with 100% restore match and Alembic at head, 0 deadlocks with SEED_VERSION=1, name#sid8 separator check validated.
 - Moved inside S1 (D-D), not before it, each with its own exit test [design, details open until S1 starts]:
   - `asyncRewake` on a `UserPromptSubmit` command hook (the re-arm after Esc, added by SP1). Exit test: after Esc during a turn, a task created for the session's handle wakes the idle session again, within the wake latency SP1 recorded.
   - The GUI-launched Claude test (decision 34). Exit test: a Claude Code session launched from the GUI registers, binds with `a2a_hello`, and its MCP calls carry the API key by the route decision 34 chose, with C9's record of what a GUI-launched session sees in its environment.

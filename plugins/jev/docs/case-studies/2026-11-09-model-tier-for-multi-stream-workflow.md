@@ -279,6 +279,33 @@ Still to measure per stream and model:
 
 Provisional verdict (reported): the cheaper plan (three Sonnet, one Haiku, no Opus) produced a usable result for a docs-only fold-in where the decisions were already made. The failures seen were cross-stream timing races, not model-tier failures. The case does not show that Opus was needed for WS1. It also does not show that the missing Jev pre-flight and final gate were harmless: Jev recommended Sonnet for all four streams and would have agreed with the outcome, but it was never asked, and it could not have recommended Haiku or Opus for these descriptions (section 4.11). Final verdict after an independent check: _TO BE FILLED_.
 
+### 7.1 Later runs in the same session: rounds 2 and 3 (2026-11-09)
+
+After the first run, Jev's pre-flight was used (lesson of sections 4.14 and 5.10). Two more docs workflows followed; both are verified from the session transcript and the dispatch code unless marked.
+
+Round 2 (workflow `wf_a066b02d-b7f`, three Sonnet agents: spec stream, plan stream, consistency sweep):
+
+- `jev_batch_dispatch` was called before launch (mode `on`). Result: both streams `flash` / `sonnet` / effort `medium`, personas `general-purpose` and `Plan`, `executionTool` `invoke_subagent`, `activeSessionModel` "Gemini 3.8 Flash (Medium)" (wrong, section 4.12).
+- Followed: the models (Sonnet). Not followed: the `Plan` persona (read-only in Claude Code, cannot edit files), so the default workflow agents ran.
+- Added by the assistant, not by Jev: a final consistency sweep, because the first run had left two stale cross-references from stream races.
+- `jev_judge` was run on a summary of the diff, not the diff itself: `passed: true`, `noul 0.74`, `confidence 0.48`. Weak evidence, kept as a gate only.
+- Result: committed as `eaaf6bb` with three small hand fixes; no model-tier failure.
+
+Round 3 (workflow `wf_d49b1e67-50b`, two Sonnet edit streams, a Sonnet sweep and a final review on Opus at the user's request):
+
+- `jev_batch_dispatch` returned: stream 1 (spec files) `openrouter_free` via `jev_execute_free`, effort `low`; stream 2 `Plan` / `sonnet`; the sweep and the final review `general-purpose` / `sonnet`.
+- Deviation 1, not followed: `openrouter_free` for the spec stream. Cause (verified): `src/tools/dispatch.ts:388` tests `tLower.includes('format')`, and the task text contained "dump format". It is a substring match, so ordinary words such as "information" and "transformation" also contain "format" and would be routed to the free tier. A free text-completion path also cannot run the Edit tool across a 1,600-line spec in the repo (reported, from the tool description; not tested). The assistant ran the stream on Sonnet.
+- Deviation 2, not followed: Sonnet for the final review. The user asked for Opus, and the assistant followed the user. Jev has no keyword or task kind for review, verification or judgement (section 4.11), so it could not have recommended Opus here.
+- `Plan` was again recommended for a file-editing stream and again not used.
+- Outcome of round 3: TO BE FILLED when the workflow's review verdict and the commit are known.
+
+What these two runs add to the findings:
+
+- The keyword rule has false positives on common words (`format` as a substring), which is a new finding beyond section 4.11 (which showed only false negatives).
+- The pre-flight call costs one tool call and a few seconds, but in both rounds the useful decisions (Sonnet default, consistency sweep, Opus for the final review) came from the assistant and the user, not from the manifest.
+- A final-review stage had to be added by hand each time; the dispatch output has no place for it.
+- Proposed addition to 5.3: match whole words (`\bformat\b`) or classify by task kind (edit an existing document, create a new document, review or verify, mechanical checklist) instead of substrings, and add a `review` kind that maps to the highest tier when the user names it or the work is a final gate.
+
 ## 8. Start a new session here (handoff)
 
 Purpose: another Claude Code session can continue the Jev work from this section alone. Everything in it was verified or labelled in sections 2 to 7.
@@ -305,7 +332,7 @@ What is open (do first, in this order):
 2. Decide the precedence order (instruction > mode guard > standing rule) and implement 5.1 and 5.9 with a test case each in `tests/claude-hook.test.ts` (explicit "use opus" must not trigger an approval ask; "minimal viable model" must lower the tier).
 3. Implement 5.10 (pre-flight reminder and recommended-versus-used log for `Agent` and `Workflow` calls) after the 5.8 design check shows whether PreToolUse fires for workflow agents.
 4. Make the dispatch tools harness-aware (5.11): Claude Code tool names and agent types, real session model.
-5. Rework the batch tier rule (5.3) so it can express haiku, sonnet and opus by task kind.
+5. Rework the batch tier rule (5.3) so it can express haiku, sonnet and opus by task kind, and fix the substring false positive at `src/tools/dispatch.ts:388` first (a one-line change to whole-word matching plus a test with "dump format" and "information"); see section 7.1.
 6. Fill the Outcome verdict after an independent check of the coordination diff.
 
 Rules for the new session:

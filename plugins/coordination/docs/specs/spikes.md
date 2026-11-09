@@ -213,7 +213,9 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
     - `Mcp-Session-Id` is process-scoped: one agy process shares one across conversations (A4 T1), separate processes get separate ones (T2), and a restart and resume gets a new one (T3).
     - Consequence for binding: server-api.md 5.4.1.
 - **A2, injectSteps.** A `SessionStart` hook logs its stdin (`conversationId`, `workspacePaths` and others) and returns `injectSteps` with the handle and the `a2a_hello` instruction. Try each item type that is documented (`systemMessage`, `userMessage`, `ephemeralMessage`). Record which the model sees, and whether it is still visible five turns later.
+  - **Result (2026-11-08): PASS [verified, transcript]** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md) section 3): `systemMessage` arrives wrapped in `<SYSTEM_MESSAGE>` and was quoted verbatim after 8 or more turns; `ephemeralMessage` is gone by turn 2; `userMessage` reads as a second user request and confused the model. `systemMessage` is the canonical type (server-api.md 5.4).
 - **A3, resume.** Quit and resume the same conversation. Record whether `SessionStart` fires again and whether the handle is still in context.
+  - **Result (2026-11-08): recorded [verified]** (results section 4): `/clear` gives a new `conversationId` and `SessionStart` fires on the next input with a fresh handle; resume (`agy --conversation <id>`) does not re-fire `SessionStart`, the injected `systemMessage` stays in context, and the model called `a2a_hello` on its first turn.
 - **A4, compliance and multi-conversation.** Same 10-session count as C5. Open a second conversation in the same agy process if the product allows it, and record whether it shares the MCP connection (which would make binding per process, not per conversation). Two follow-up checks moved here from the A6 run (its "parallel background invocation" is not a demonstrated second conversation in one process, [results section 6](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md)):
   - Distinctness: with two conversations in the same agy process, call a tool in each and compare `Mcp-Session-Id` and `_meta["antigravity.google/conversation_id"]` (and `root_conversation_id`) on each `tools/call`. Also start a background or sub-invocation and record whether its `conversation_id` differs from its `root_conversation_id`.
   - Resume: restart agy, resume one conversation, call a tool, and compare its `conversation_id` with the one before the restart.
@@ -223,7 +225,9 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
     - T3: after a full exit (`DELETE /mcp` seen) and `agy --conversation <id>` resume, `conversation_id` and `root_conversation_id` are the same, with a new `Mcp-Session-Id` and a new PID. Caveat: the pre-restart row came from a subagent call; stability still holds because the post-resume calls carry exactly the resumed id.
     - T4: subagent calls carry their own `conversation_id`, plus `root_conversation_id` and `parent_conversation_id` equal to the parent's.
   - Not covered by that run: the 10-session hook-compliance count (whether the model follows the injected `a2a_hello` instruction), which this step also asks for. It stays open, with A2.
+  - **Result (2026-11-08), compliance count: PASS [verified on the wire]** (results section 5): with `systemMessage` injection, 10 of 10 fresh conversations bound unprompted (`a2a_hello` then `a2a_inbox`), 0 needed the error message.
 - **A5, trust gate.** Confirm the hook runs only in the trusted scratch workspace (reported by zb-ss), and record what happens in an untrusted one.
+  - **Result (2026-11-08): recorded** (results section 6): an untrusted workspace shows a blocking trust dialog; "No, exit" ends agy at once, with 0 lines in `session.log` and no hook or MCP server run [verified]. The "Yes" path was not part of this step.
 - **A6, Authorization header.** Evidence gathered 2026-11-04 (Claude Code, read-only):
   - verified: agy 1.5.0 `agy mcp add --help` documents `--header "Authorization: Bearer TOKEN"` (repeatable `-H/--header`) for http servers
   - verified: the user's `~/.gemini/config/mcp_config.json` already has an entry (`obsidian`) with `serverUrl` plus a `headers` object holding an `Authorization` key (key names checked only, value not read)
@@ -239,10 +243,19 @@ The user opens their own interactive agy in a scratch trusted workspace. Files a
     - Q1 correction confirmed by Antigravity: `url` is the documented key, `serverUrl` is the legacy alias, and `headers` is documented only in `agy mcp add --help`; the `McpServerSpec` struct names come from binary strings, not documentation.
   - Hard-gate status: the header gate is met on the evidence of the wire log.
 - **A7, MCP tool timeout.** Same as C8 for agy: blocking `a2a_wait(seconds)` at 30, 120 and 240 s. Record the result, any error shown, and the effective limit.
+  - **Result (2026-11-08): PASS [verified on the wire]** (results section 7): 30 s and 120 s returned 200; 240 s was cancelled at exactly 180.0 s (`notifications/cancelled`, "timed out after 3m0s: context deadline exceeded"), and the connection and `Mcp-Session-Id` survived. The 50 s `a2a_wait` default fits (server-api.md 4.5).
 - **A8, plugin-scoped MCP config location and the `~/.agents` collision (decision 24).** Question: where can the installer put the agy key so that it is outside chezmoi and agy still loads it?
   - Method: in a scratch location, place a plugin-scoped `.agents/plugins/coordination/mcp_config.json` (mode 0600) holding the stub entry with the literal key. Try both a workspace-level placement (inside the scratch workspace) and a user-level placement (`~/.agents/plugins/coordination/`, created for the test and removed after). Record which one agy loads, and what `/mcp` shows for each. Reported by the A6 run: workspace MCP is supported only inside plugin bundles (`plugin.json` beside `mcp_config.json`); whether a user-level plugin directory exists is [unverified].
   - Collision check: `~/.agents` also holds the frozen bridge channel files (decision 14 keeps them untouched, with Antigravity's research exception). Record whether agy reads or scans `~/.agents` for anything else (hooks, rules), whether a `plugins/` subdirectory there is inert to the frozen channel's watcher (`watch-bridge-coordination.sh`, which counts files in `~/.agents` `handoff/`), and that the test left no file behind.
   - Pass: a placement is found that agy loads, is outside chezmoi, and does not disturb `~/.agents`. Fallback if none: a non-chezmoi include that agy reads, chosen by the user. Nothing launches, drives or wraps agy; the user or agy itself runs this in its own session.
+  - **Result (2026-11-08): partial** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md) section 2): `~/.agents/plugins/` is ignored by agy (0 requests) and the `~/.agents` collision check was clean [verified]. `~/.gemini/config/plugins/coordination` connected (`initialize` and `tools/list` 200) but its tools failed with `tool a2a_hello is not enabled for server coordination_a2a-stub-gemini`, and the same-named workspace plugin did not load [verified]. The results file's readings of that failure (session enablement or sign-in, user level shadows workspace) are superseded by A8b.
+  - **A8b, user-level plugin tools (2026-11-09): PASS, with the unique-name caveat** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-09-a8b-agy.md), [runbook](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-runbook-a8b-user-level-plugin-2026-11-08.md)):
+    - A user-level plugin at `~/.gemini/config/plugins/<name>/` with a native `mcp_config.json` runs `a2a_hello` and `a2a_inbox` through agy with no `agy plugin enable`, no `config.json` entry, on a warm restart and on a cold first load with no cache [verified, runs A, A2, A3, A4].
+    - The 2026-11-08 failure was not sign-in (the startup warning appears in every startup log, including working runs), not a missing enable step (A3) and not a cold first load (A4) [verified].
+    - It correlates with a same-named workspace plugin being present: in both runs with one, the user-level tools were "not enabled"; in the 2026-11-09 shadow run both servers connected and the workspace server's tools worked [verified]. Which scope wins is [unverified]. Rule: the installed plugin's name must not equal any workspace plugin name.
+    - A connected server (`initialize` and `tools/list` 200) is not proof the tools are callable; the installer's health check must call a real tool [verified].
+    - Untested: `.mcp.json` at user level, `agy plugin install`, and whether tool use needs a live sign-in (every successful call was signed in).
+    - Fallback if the placement ever breaks: the `agy mcp add` global entry in `~/.gemini/config/mcp_config.json` (verified in A6 and A4, 2026-11-04); chezmoi-managed, so it reopens decision 24.
 
 ### Pass and fail
 
@@ -260,8 +273,8 @@ Record only: A3 resume behaviour, C4 restart behaviour, A5 trust behaviour, sess
 Record, with a stated fallback if negative (they do not block S1 by failing, but they decide how keys are stored, decision 24):
 
 - C9: whether Claude Code expands `${A2A_API_KEY}` in MCP header values.
-- A8: whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and the `~/.agents` collision check.
-- A4 identity checks are done (verified 2026-11-04): distinctness, resume stability and sub-invocation ids. Only the A4 10-session hook-compliance count remains open.
+- A8: whether agy loads a plugin-scoped `mcp_config.json` from a user-level location, and the `~/.agents` collision check. Answered by A8 and A8b (2026-11-08 and 2026-11-09): yes at `~/.gemini/config/plugins/<name>/` with a unique name; `~/.agents` is not scanned.
+- A4 identity checks are done (verified 2026-11-04): distinctness, resume stability and sub-invocation ids. Only the A4 10-session hook-compliance count remains open. Done 2026-11-08: 10 of 10.
 
 ### Record
 
@@ -584,10 +597,10 @@ S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/lis
 - SP4 recorded
 - the results file is written and linked from the master tasklist
 
-Gate status (2026-11-07):
+Gate status (2026-11-09):
 
 - SP1: **passed** (decision 8 go), [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp1.md).
-- SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A3, A4 compliance, A5, A7 write-up and A8 **open**. SP2 is not passed until the agy half is.
+- SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A4 compliance (10 of 10) and A7 (180 s) **passed**, A3 and A5 **recorded** (2026-11-08, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md)); A8 **passed with the unique-name caveat** after A8b (2026-11-09, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-09-a8b-agy.md)). SP2 is **passed**.
 - SP3: **open**.
 - SP4: **open** (record only).
 - SP5: **passed with four wrappers** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)); one defect to fix in S1 (session id bound to the API key).

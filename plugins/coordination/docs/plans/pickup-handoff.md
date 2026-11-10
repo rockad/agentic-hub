@@ -1,11 +1,25 @@
 # Pickup handoff: continuing the coordination plugin in a new session
 
+## Start here (copy this into a new Antigravity or Claude Code session)
+
+```
+You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). The project is planning-only.
+1. Read plugins/coordination/AGENTS.md, then docs/plans/pickup-handoff.md (this file), then docs/plans/master-tasklist.md section 4.
+2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status. Check every claim in a doc against its evidence file. The S1 entry gate is NOT open (SP3 and SP4 are still open).
+3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in /home/rockad/projects/agentic-hub (it is shared with another session). Stage explicit paths only. Never push main, tag or release without the user's go.
+4. Take the first item of section 3 "What to do next" that needs no user input. Ask the user before anything marked needs user (agy runs, attended spikes, core crontab, hygiene items).
+5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
+6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
+7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
+8. When you finish a step: update section 3 and section 8 of this file and the master tasklist, commit, then tell the user what changed and what is next.
+```
+
 Written 2026-11-09, updated 2026-11-10 after SP5b passed, S1 design items were resolved and the round-4 decisions (X1 to X5) and audit corrections (C1 to C5) were applied. Read this file first; it points to the authoritative documents and does not replace them. Labels follow the repo: **verified** (read or observed), **reported** (a claim not reproduced), **unverified**.
 
 ## 1. Where the project stands
 
 - The project is **planning-only**. Implementation is allowed only where a spike strictly needs it (DDR-004, decision 1). Nothing listens on a real port yet and no server code exists.
-- Stage S0 (spikes) is **not complete**. SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite) and **SP5b (Postgres on alyx)** passed with spec changes folded in. S1 storage gate satisfied by SP5b; overall S1 entry gate remains open pending SP3 (agy `PreInvocation`) and SP4 (record only), both still open in `docs/specs/spikes.md` section 11 and in the tasklist.
+- Stage S0 (spikes) is **not complete**. SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite) and **SP5b (Postgres on alyx)** passed with spec changes folded in. S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied while SP3 (agy `PreInvocation`) and SP4 (record only), both still open in `docs/specs/spikes.md` section 11 and in the tasklist.
 - An independent audit of the overnight SP5b work is in `docs/research/audit-2026-11-10-sp5b-s1-gate.md` (agy's audit, moved out of this handoff; not rewritten). Its findings are applied as C1 to C5 in the docs; read the audit file for its own wording.
 - On 2026-11-10, SP5b ran on alyx and **passed** all acceptance gates (full report: `docs/research/spike-results-2026-11-10-sp5b.md`, committed in `946f198`; measured numbers unchanged, three corrections added: C1 gate wording, C2 the D7 outlier, C3 the deadlock count):
   - **Pinned Postgres image**: `postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` (D-B, R3).
@@ -56,12 +70,10 @@ Before picking up new workstreams, Claude Code should verify the committed state
 ### Next actions, in order
 
 1. **SP3 and SP4** (agy hooks): the blockers of the overall S1 entry gate. They need an attended session or an agy run. SP3 is agy `PreInvocation`; SP4 is record only.
-2. **SP5b follow-up** (owner: an agy run on alyx; does not gate S1; result file `docs/research/spike-results-<date>-sp5b-followup.md`):
-   - (a) the D7 role setup through the command route (`a2a-coord db init-dump-role`, X2)
-   - (b) separator evidence with `~` across URL query, shell, JSON body and storage key (X1)
-   - (c) try to establish the cause of the 1,036.82 ms `CancelTask` outlier (C2; optional)
-3. **At S2 (the user):** create the restic password file `~/.config/a2a-coord/restic-password` (mode 0600) and install the second restic job on core from the text the installer prints (X4).
-4. After SP3 and SP4 are recorded and the user gives the go: S1 dev server kickoff (task S1-PG and compose scaffold per `implementation-plan.md`).
+   - A helper pack for SP3 and SP4 is prepared in `~/scratch/a2a-spikes/` (alyx-local, not in git): `helper-brief-sp3-sp4.md` and `agy-operator/sp3-sp4-*.md`.
+   - The SP5b follow-up is done (2026-11-10, non-gating): results in `docs/research/spike-results-2026-11-10-sp5b-followup.md`, Claude Code's independent check in its section 7. Verdicts: (a) PASS for the mechanism, (b) PASS, (c) cause UNVERIFIED. The agy-reported items without a saved log are carried as exit tests of S1-PG and S1-BKP.
+2. **At S2 (the user):** create the restic password file `~/.config/a2a-coord/restic-password` (mode 0600) and install the second restic job on core from the text the installer prints (X4).
+3. After SP3 and SP4 are recorded and the user gives the go: S1 dev server kickoff (task S1-PG and compose scaffold per `implementation-plan.md`).
 
 ### Tasks that need the user or an attended session
 

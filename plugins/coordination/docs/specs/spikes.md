@@ -574,7 +574,14 @@ Not re-run: D4, D5, D6, D11 and D12 passed on Postgres by URL change in SP5 D10 
 
 ### SP5b follow-up (round-4 C4, added 2026-11-10; not gating S1)
 
-Owner: an agy run on alyx, in the same scratch project style as SP5b. Result file: `docs/research/spike-results-<date>-sp5b-followup.md`. The numbers of the SP5b results file stay as measured.
+Status: **done 2026-11-10** (agy run on alyx, checked independently by Claude Code; [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-10-sp5b-followup.md), section 7 holds Claude Code's check). Verdicts:
+- (a) PASS for the mechanism. [verified] by Claude Code: the scratch script matches X2 (SQL over stdin through `docker compose exec -T postgres psql`, `SET log_statement = 'none'`, create the role if missing, `ALTER ROLE ... PASSWORD`, `GRANT pg_read_all_data`); the secret is mounted only into the dump sidecar; a scan of all saved logs for the secret value found 0 files; four more sidecar dumps with 71 `pg_restore --list` entries each. [reported] by agy, no saved log: idempotency over repeated runs, rotation with the old credential rejected, restored row counts (226 of 226 tasks and index, 210 sessions, 223 wakes, orphan tasks 0), the Postgres container log scan. These are covered again by the S1-PG and S1-BKP exit tests.
+- (b) PASS. [verified] `logs/separator_tilde_evidence.json`: `~` needs no encoding in a URL query, the shell, the JSON-RPC and REST `coord.to` calls or the database insert and select.
+- (c) Cause UNVERIFIED. [verified] the 1,036.82 ms event did not reproduce over 4 consecutive dumps under the 10x load (`transition.versioned` n=1246, p50 6.5 ms, p99 19.5 ms, max 100.27 ms); lock contention and slow queries over 100 ms were ruled out. [unverified] a host-level scheduling pause under WSL2 is agy's guess. No further work unless it recurs.
+
+The S1 entry gate is still not open: SP3 and SP4 are open.
+
+Owner: an agy run on alyx, in the same scratch project style as SP5b. Result file: `docs/research/spike-results-2026-11-10-sp5b-followup.md`. The numbers of the SP5b results file stay as measured.
 
 - **(a) D7 role setup through the command route (X2).** On a fresh volume, on an existing volume and on a password rotation, run `a2a-coord db init-dump-role` (or its scratch equivalent) and then the sidecar with `docker compose --profile backup run --rm dump`: `dump_ro` can log in with the secret that only the sidecar mounts, the dump passes `pg_restore --list`, no init script and no mount of the secret into Postgres exist. [design, open: the exact scratch stand-in for the command before S1 builds it]
 - **(b) Separator evidence with `~` (X1).** The same places as the separator check above, with `claude-code@alyx/c6-same~3f2a9c1d`: URL query (no encoding needed), shell (quoted and unquoted), JSON body (value and key), and storage key (`task_index.to_handle`, `sessions.handle`), plus the regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$` against valid and invalid examples.
@@ -696,7 +703,7 @@ S1 (the real server on `127.0.0.1:8120`, API keys, `/mcp`, `/a2a/v1`, `/wake/lis
 - SP4 recorded
 - the results file is written and linked from the master tasklist
 
-Gate status (2026-11-10): the S1 entry gate is **open**. S1 storage gate satisfied by SP5b; overall S1 entry gate remains open pending SP3 and SP4 (round-4 C1; the earlier wording "S0 complete" and "S1 entry gate satisfied" is withdrawn).
+Gate status (2026-11-10): the S1 entry gate is **NOT satisfied**. S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open) (round-4 C1; the earlier wording "S0 complete" and "S1 entry gate satisfied" is withdrawn).
 
 - SP1: **passed** (decision 8 go), [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-05-sp1.md).
 - SP2: Claude half **passed with spec changes** ([results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)); agy A1, A4 identity and A6 passed (2026-11-04); agy A2, A4 compliance (10 of 10) and A7 (180 s) **passed**, A3 and A5 **recorded** (2026-11-08, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md)); A8 **passed with the unique-name caveat** after A8b (2026-11-09, [results](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-09-a8b-agy.md)). SP2 is **passed**.

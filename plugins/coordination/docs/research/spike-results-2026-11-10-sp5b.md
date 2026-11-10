@@ -2,7 +2,7 @@
 
 Written 2026-11-10 on `alyx`. Results of the rerun of SP5 on Postgres with backup sidecar, crash resilience, steady-state own-table writes, and handle separator check. SP5b is the storage part of the S1 entry gate.
 
-Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S1 entry gate remains open pending SP3 and SP4 (spikes 11). Corrections after the independent audit of 2026-11-10 (`audit-2026-11-10-sp5b-s1-gate.md`) are folded in below and marked (C1 to C3, X1); the measured numbers are unchanged.
+Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open) (spikes 11). Corrections after the independent audit of 2026-11-10 (`audit-2026-11-10-sp5b-s1-gate.md`) are folded in below and marked (C1 to C3, X1); the measured numbers are unchanged.
 
 ---
 
@@ -140,7 +140,7 @@ Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S
 
 ## 8. S1 storage conclusions & decisions confirmed
 
-1. **Gate status (C1)**: SP5b is **PASSED**. S1 storage gate satisfied by SP5b; overall S1 entry gate remains open pending SP3 and SP4 (spikes 11).
+1. **Gate status (C1)**: SP5b is **PASSED**. S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open) (spikes 11).
 2. **Pinned Postgres image**: `postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` (D-B, R3).
 3. **Seeded version row rule**: Server must initialize tasks with `SEED_VERSION=1` in `store.save` inside the initial creation transaction. It is the change after the 22 deadlocks of SP5 D10; SP5b saw 0 deadlocks, inferred from an empty `db_errors` count (C3).
 4. **Backup sidecar profile**: Real sidecar with profile `backup` using `dump_ro` role with `pg_dump -Fc` verified for the S1 compose topology. The role was created by an init script in this run; round-4 X2 replaces that route with `a2a-coord db init-dump-role`, retested in the SP5b follow-up item (a) (section 4).

@@ -95,6 +95,14 @@
     {
       "id": "mcp-toggle",
       "path": "skills/mcp-toggle"
+    },
+    {
+      "id": "handoff",
+      "path": "skills/handoff"
+    },
+    {
+      "id": "sync-main",
+      "path": "skills/sync-main"
     }
   ]
 }

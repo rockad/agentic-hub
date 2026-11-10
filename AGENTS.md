@@ -28,11 +28,13 @@ agentic-hub/
 │   ├── celi5/            # Plain-English (explain like I'm five) variant of clarify
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── cplain/           # Plain-English variant of clarify
+│   ├── handoff/          # Living HANDOFF.md for a project, with an optional drift hook
 │   ├── markdown-convert/ # Document to Markdown converter
 │   ├── mcp-toggle/       # Toggle on-demand MCP plugins to save context tokens
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
-│   └── skills-doctor/    # Skills installation repair utility
+│   ├── skills-doctor/    # Skills installation repair utility
+│   └── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
 └── marketplace.json      # Public marketplace manifest
 ```
 

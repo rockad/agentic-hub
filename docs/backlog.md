@@ -21,7 +21,7 @@ From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 - [?] **basic-memory 1.0.0 migration scope** (2026-11-10). The migration plan targets the legacy `plugins/memory` stack (phases 2 to 5: `memory.sh` dual-compatibility, skill docs, volume snapshots, cutover), but RFC 005 retires that stack and cognitive-engine's native `packages/memory` (RFC 003) is the successor. Recommendation: do only the cheap, live-consumer part (phase 2, `memory.sh` detecting `bm_read` versus `read_note`) and the skill docs now; keep both stacks on 0.24.1; make the 1.0.0 cutover one decision, taken once for the native `packages/memory` at Track 4 cutover (it owns the same `recall` tool names), not twice. Flips if you want 1.0.0's features in the live stack before cutover.
 
 - [x] **Port 8120 owner.** Decided 2026-11-08: Harness² moves to 8125; coordination keeps 8120; 8121 stays free for the S3 listener. Record it in the coordination docs, and change the default in cognitive-engine #5 when it is restacked. See [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md).
-- [x] **Handle grammar.** Decided 2026-11-09: `name#sid8`, always present (8 hex). The separator becomes URL-safe if `#` fails; `~` is the candidate to test in SP5b. See the coordination note under plugins/coordination.
+- [x] **Handle grammar.** Decided 2026-11-09 as `name#sid8`; **revised 2026-11-10** by the owner in the coordination session to `card/name~sid8` (`~` separator, `sid8` always present; `#` is out because it starts a URL fragment). Unnamed-session form and imported author handles stay open in the coordination docs.
 - [x] **R8 (8121 listener).** Approved 2026-11-09: the 8121 listener binds `127.0.0.1` from stage s2 (task S2-LISTEN). The tunnel route is the exposure gate, and no route exists before the S3 gate. The AGENTS.md rule changes in the same commit (by agentic-hub-cp).
 - [x] **Lookup staging port.** Decided 2026-11-09: native lookup staging is 8101 on cognitive-engine #8. Recorded in the port map in [`port-map.md`](port-map.md).
 - [?] **Backlog approach.** Build "S1b" (a ready-work backlog inside the A2A server) directly, or first trial beads (stealth mode) or Kanzo (stdio only) for two weeks.
@@ -65,9 +65,8 @@ Plan Phase 0 items 1 and 5 are done (agentic-hub PR #19, below). `agentic-hub-cp
 
 ### plugins/coordination
 
-- [x] Handle grammar decided 2026-11-09: `name#sid8`, always present. Coordination note for `agentic-hub-cp`, which owns these docs and is not edited here:
-  - change `server-api.md:472` (it forbids `#` and appends `-` plus 4 hex on collision) and the SP2 spike docs to `name#sid8`
-  - test `~` as the URL-safe separator in SP5b if `#` fails
+- [x] Handle grammar: `card/name~sid8` (revised 2026-11-10); the spec, SP2 docs and SP5b are updated by `agentic-hub-cp` (round 4, commit 74f6c0e, unpushed). Nothing in ax or cognitive-engine builds or parses coordination handles yet (checked 2026-11-10); any future code must use `~`, not `#`.
+  - S1 entry gate is not open: SP5b passed, SP3 and SP4 are still open
   - R8 is approved: the 8121 listener binds `127.0.0.1` from s2 (task S2-LISTEN); the tunnel route is the exposure gate, with no route before the S3 gate; the AGENTS.md rule is updated in the same commit
 - [ ] Coordination S1 grew: Postgres from S1, the SP5b gate, a `pg_dump` sidecar to `/media/media2/backup/a2a/`, and S2-LISTEN. Track in the coordination plan, not here.
 - [ ] Fix `server-api.md` 11.2 to agy's named-group flat hooks.json form.

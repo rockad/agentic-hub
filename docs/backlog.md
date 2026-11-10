@@ -18,6 +18,8 @@ Status markers:
 
 From [adoption review 2026-11](adoption-review-2026-11.md), section 9.
 
+- [?] **basic-memory 1.0.0 migration scope** (2026-11-10). The migration plan targets the legacy `plugins/memory` stack (phases 2 to 5: `memory.sh` dual-compatibility, skill docs, volume snapshots, cutover), but RFC 005 retires that stack and cognitive-engine's native `packages/memory` (RFC 003) is the successor. Recommendation: do only the cheap, live-consumer part (phase 2, `memory.sh` detecting `bm_read` versus `read_note`) and the skill docs now; keep both stacks on 0.24.1; make the 1.0.0 cutover one decision, taken once for the native `packages/memory` at Track 4 cutover (it owns the same `recall` tool names), not twice. Flips if you want 1.0.0's features in the live stack before cutover.
+
 - [x] **Port 8120 owner.** Decided 2026-11-08: Harness² moves to 8125; coordination keeps 8120; 8121 stays free for the S3 listener. Record it in the coordination docs, and change the default in cognitive-engine #5 when it is restacked. See [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md).
 - [x] **Handle grammar.** Decided 2026-11-09: `name#sid8`, always present (8 hex). The separator becomes URL-safe if `#` fails; `~` is the candidate to test in SP5b. See the coordination note under plugins/coordination.
 - [x] **R8 (8121 listener).** Approved 2026-11-09: the 8121 listener binds `127.0.0.1` from stage s2 (task S2-LISTEN). The tunnel route is the exposure gate, and no route exists before the S3 gate. The AGENTS.md rule changes in the same commit (by agentic-hub-cp).
@@ -67,7 +69,7 @@ Plan Phase 0 items 1 and 5 are done (agentic-hub PR #19, below). `agentic-hub-cp
   - change `server-api.md:472` (it forbids `#` and appends `-` plus 4 hex on collision) and the SP2 spike docs to `name#sid8`
   - test `~` as the URL-safe separator in SP5b if `#` fails
   - R8 is approved: the 8121 listener binds `127.0.0.1` from s2 (task S2-LISTEN); the tunnel route is the exposure gate, with no route before the S3 gate; the AGENTS.md rule is updated in the same commit
-- [ ] Coordination S1 grew: Postgres from S1, the SP5b gate, a `pg_dump` sidecar to `/srv/a2a-dumps`, and S2-LISTEN. Track in the coordination plan, not here.
+- [ ] Coordination S1 grew: Postgres from S1, the SP5b gate, a `pg_dump` sidecar to `/media/media2/backup/a2a/`, and S2-LISTEN. Track in the coordination plan, not here.
 - [ ] Fix `server-api.md` 11.2 to agy's named-group flat hooks.json form.
 - [ ] State explicitly that the "no `Stop` entry" scan (`implementation-plan.md:602`) covers coordination's own group only, since ax adds a `Stop` entry to the user-level file.
 - [ ] Refresh the README status, the branch name and the `DatabaseTaskStore` line. Fix the plan §7 C9 label.
@@ -100,6 +102,9 @@ Order and decisions in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md). The remai
   - verify the Codex agent TOML schema before emitting `codex/agents/*.toml`
   - update the plugin README and the Claude marketplace entry
   - reply to `@Doc-Cr` on issue #13
+- [x] **basic-memory 0.24.1** (be32593, 2026-11-09, owner): the `plugins/memory` compose pin moved from 0.23.2 to 0.24.1 (`BASIC_MEMORY_TAG`, default 0.24.1); drop-in compatible, tool names unchanged, adds POSIX verbs, FastMCP 4.1.3 stateless (needs `FASTMCP_STATELESS_HTTP=true`, already set). It matches cognitive-engine `packages/memory`, which pins `basic-memory==0.24.1` (RFC 003). Plan: [`plugins/memory/docs/v1-migration-plan.md`](../plugins/memory/docs/v1-migration-plan.md) (phase 1 = this upgrade, done).
+- [ ] **Installed memory plugin refresh.** The Claude plugin cache keeps `memory@agentic-hub` at 1.0.0 and the marketplace entry still says 1.0.0, so installed copies will not pick up the 0.24.1 compose pin or the loopback bind until the version is bumped (1.0.1). Owner's call; the stack is not running on alyx.
+- [ ] **basic-memory 1.0.0 breaking contract** (from the migration plan): all MCP tools renamed with a `bm_` prefix (`read_note` to `bm_read`, `write_note` to `bm_write`, `search_notes` to `bm_search`, `edit_note` to `bm_edit`, `delete_note` to `bm_delete`, `list_directory` to `bm_list`, `build_context` to `bm_context`), changed argument schemas (path-based reads and writes), and FastMCP 4 session statefulness by default. Consumers to adapt: `scripts/memory.sh` (dual-compatibility: detect `bm_read` versus `read_note` via `tools/list`), the `recall` skill docs, and cognitive-engine's `packages/memory`, whose RFC 001 promises the upstream tool names the `recall` skill uses. Do not move `packages/memory` past `==0.24.1` until the decision below is made.
 - [x] Memory compose: bind 8110 and 8100 to `127.0.0.1`. Done in PR #19 (main 58420e1), which also shipped plan PR 1, so plan Phase 0 items 1 and 5 are done. The memory 1.0.1 bump idea was refuted: the installed cache already binds `127.0.0.1`. Takes effect after `docker compose up -d`.
 - [ ] RFC 005 Phase A deprecation notices on `plugins/jev` and `plugins/memory`. The scope decision is made (see above); word the `jev` notice as "relocating to cognitive-engine", not "retired".
 - [x] **Port map doc** [`port-map.md`](port-map.md) (single doc, production ports authoritative), added 2026-11-09. Production ports:
@@ -119,9 +124,7 @@ Order and decisions in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md). The remai
   - trigger only on `lookup-v*` tags and manual dispatch
   - check the package visibility against the private-registry-first line in RFC 001 section 8 item 2
 - [ ] **RFC 005 Phase C checklist:** add an entry to remove `.github/workflows/publish-plugins.yml` and `ghcr.io/rockad/lookup` together with `plugins/memory`.
-- [ ] **Owner step: rotate the Obsidian MCP bearer.**
-- [ ] **Owner step (needs sudo on core):** batch `mkdir /srv/a2a-dumps` (the `pg_dump` sidecar target) into one owner-approved step; it is the only S1 item that needs sudo.
-- [ ] **Owner step:** delete `~/scratch/a2a-spikes/runlogs/chezmoi-diff.baseline`.
+- [x] No sudo step on core: round 3 of the coordination plan moved the dumps to `/media/media2/backup/a2a/` (`rockad`-writable), created at S2-DEPLOY.
 - [ ] **Close the stale remote branches** superseded by main:
   - `feat/jev-modular-sqlite-ram-cache`
   - `fix/jev-small-tails`

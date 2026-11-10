@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.3.0-brightgreen)](https://github.com/rockad/agentic-hub)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.1-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.3.0  
+**Version:** 2.3.1  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 
@@ -405,6 +405,27 @@ What the hooks do **not** do:
   line, not to hooks, so the quota strategy is whatever `readQuotaView` reports (usually `unknown`).
 
 Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
+
+**Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
+prompt, either a model named as a word (`opus`, `sonnet`, `haiku`) or a cost intent (`minimal viable model`,
+`cheapest`, `cheap model`, which lowers the tier one step); (2) the mode guard (a `pro` recommendation is
+capped at the session model and needs the user's approval, which naming `opus` satisfies); (3) the default
+rule (Jev's tier mapped to a model). The `PreToolUse` guard does not ask about a model the user named in the
+current prompt. Jev cannot read the user-level `CLAUDE.md`, so the standing rule is only reflected by the
+default rule.
+
+### Release notes
+
+- **2.3.1** (case-study fixes, see the case study above): whole-word tier keywords in `jev_batch_dispatch`
+  ("information", "transformation" and "dump format" no longer count as formatting work); explicit model and
+  cost instructions and the precedence order above; one consistent ceiling sentence in the Claude hook;
+  Plan and Explore are never recommended for an editing task, and display-name aliases are dropped from the
+  Claude persona list; `PreToolUse` logs `tier`, `recommended_model`, `requested_model` and a `turn` id shared
+  with the prompt record, and the `UserPromptSubmit` telemetry field is now `modelRecommended` (it was
+  `modelUsed`); a non-blocking pre-flight reminder on `Agent` calls when no `jev_dispatch` or
+  `jev_batch_dispatch` call was logged in the last 10 minutes; the dispatch tools print `Agent(...)` wording
+  and skip the Antigravity ceiling when the harness is `claude-code`. Not in this release: stage plans for
+  Workflow scripts (5.4) and the design check for Workflow agents (5.8).
 
 Case study: [Model tiers for a multi-stream docs workflow (2026-11-09)](docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md) shows where the hook and the batch dispatch fell short on a staged workflow, with proposed fixes.
 

@@ -15,7 +15,12 @@ export interface JevTelemetryEvent {
   sessionId?: string | null;
   taskSummary?: string;
   tierRecommended?: string;
+  /** The model a delegation actually requested (PreToolUse). */
   modelUsed?: string;
+  /** The model Jev recommended (UserPromptSubmit and PreToolUse). */
+  modelRecommended?: string;
+  /** Short id of the user turn, shared by the prompt and the Agent calls it caused. */
+  turn?: string;
   latencyMs?: number;
   costUsd?: number;
   tokensSaved?: number;

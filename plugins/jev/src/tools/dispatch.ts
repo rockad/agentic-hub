@@ -5,6 +5,9 @@ import {
   readQuotaView,
   clampTierToSessionCeiling,
   detectScaffoldingTask,
+  isFreeTierMechanicalTask,
+  editCapableSubagent,
+  type JevHarness,
   topologicalSortStages,
   estimateTierCost,
   defaultEffortForSubagent,
@@ -73,6 +76,71 @@ export const batchDispatchToolDefinition: Tool = {
     required: ['tasks']
   }
 };
+
+/**
+ * Batch tier rule: a keyword rule on whole words (see isFreeTierMechanicalTask).
+ * Free tier for scaffolding, boilerplate and formatting work; pro only on explicit phrases.
+ */
+export function classifyBatchTier(taskText: string): 'openrouter_free' | 'flash' | 'pro' {
+  const tLower = (taskText || '').toLowerCase();
+  if (isFreeTierMechanicalTask(taskText)) return 'openrouter_free';
+  if (tLower.includes('deep reasoning') || tLower.includes('architecture overhaul')) return 'pro';
+  return 'flash';
+}
+
+/**
+ * Execution tool and guidance text per harness. Claude Code gets Agent(...) wording and its own
+ * model names; every other harness keeps the Antigravity wording it had before.
+ */
+export function buildExecutionGuidance(
+  harness: JevHarness,
+  isFree: boolean,
+  subagent: string,
+  concreteModel: string,
+  single = false
+): { executionTool: 'jev_execute_free' | 'invoke_subagent' | 'Agent'; executionGuidance: string } {
+  if (harness === 'claude-code') {
+    if (isFree) {
+      return {
+        executionTool: 'jev_execute_free',
+        executionGuidance:
+          'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT spawn a paid Agent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 subscription quota).'
+      };
+    }
+    return {
+      executionTool: 'Agent',
+      executionGuidance:
+        subagent === 'self'
+          ? 'Handle it directly in the main session (no delegation).'
+          : `Delegate via Agent(subagent_type: "${subagent}", model: "${concreteModel}").`
+    };
+  }
+  if (isFree) {
+    return {
+      executionTool: 'jev_execute_free',
+      executionGuidance:
+        `CRITICAL QUOTA RULE: ${single ? 'Jev evaluated this task as free-tier eligible' : 'Free-tier eligible'}. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).`
+    };
+  }
+  return {
+    executionTool: 'invoke_subagent',
+    executionGuidance: `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${concreteModel}").`
+  };
+}
+
+/**
+ * The session-model ceiling the clamp compares against. Antigravity's quota file names a Gemini
+ * model, which says nothing about a Claude Code session, so in claude-code there is no ceiling
+ * here (the Claude hook, which knows the session model, applies its own).
+ */
+export function ceilingModelForHarness(harness: JevHarness, quotaActiveModel: string | undefined): string | undefined {
+  return harness === 'claude-code' ? undefined : quotaActiveModel;
+}
+
+/** Read-only personas (Plan, Explore) never own an editing task; Claude Code gets general-purpose. */
+export function resolveEditCapableSubagent(harness: JevHarness, subagent: string, taskText: string): string {
+  return editCapableSubagent(subagent, taskText, harness === 'claude-code' ? 'general-purpose' : 'self');
+}
 
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
@@ -200,11 +268,17 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   };
 
   const quotaView = await readQuotaView();
+  const harness = detectActiveHarness();
+  recommendedSubagent = resolveEditCapableSubagent(harness, recommendedSubagent, task);
   const rawEffort = defaultEffortForSubagent(recommendedSubagent, task);
   const recommendedEffort = applyEffortGovernance(rawEffort, quotaView.strategy, recommendedTier);
 
   // Phase 5: Session Model Ceiling Clamping
-  const ceilingClamping = clampTierToSessionCeiling(recommendedTier, quotaView.active_model, task);
+  const ceilingClamping = clampTierToSessionCeiling(
+    recommendedTier,
+    ceilingModelForHarness(harness, quotaView.active_model),
+    task
+  );
   const effectiveTier = ceilingClamping.clampedTier;
   const cognitiveTier = normalizeTier(effectiveTier);
   const harnessModels = getHarnessModels();
@@ -212,10 +286,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   const isPro = effectiveTier === 'pro' || cognitiveTier === 'deep';
 
   const isFree = cognitiveTier === 'free' || effectiveTier === 'openrouter_free';
-  const executionTool = isFree ? 'jev_execute_free' : 'invoke_subagent';
-  const executionGuidance = isFree
-    ? 'CRITICAL QUOTA RULE: Jev evaluated this task as free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
-    : `Delegate to subagent via invoke_subagent(Role: "${recommendedSubagent}", Model: "${concreteModel}").`;
+  const { executionTool, executionGuidance } = buildExecutionGuidance(harness, isFree, recommendedSubagent, concreteModel, true);
 
   const scaffoldingCheck = detectScaffoldingTask(task);
   const result = {
@@ -378,20 +449,15 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   for (const item of tasks) {
     const taskText = item.task || '';
-    const tLower = taskText.toLowerCase();
     const deps = Array.isArray(item.dependencies) ? item.dependencies : [];
     const scaffolding = detectScaffoldingTask(taskText);
 
-    const subagent = subagentAssignments[item.id] || 'self';
+    const subagent = resolveEditCapableSubagent(activeHarness, subagentAssignments[item.id] || 'self', taskText);
 
-    let rawTier = 'flash';
-    if (tLower.includes('scaffold') || tLower.includes('format') || tLower.includes('boilerplate')) {
-      rawTier = 'openrouter_free';
-    } else if (tLower.includes('deep reasoning') || tLower.includes('architecture overhaul')) {
-      rawTier = 'pro';
-    }
+    const rawTier = classifyBatchTier(taskText);
 
-    const clamped = clampTierToSessionCeiling(rawTier, quotaView.active_model, taskText);
+    const ceilingModel = ceilingModelForHarness(activeHarness, quotaView.active_model);
+    const clamped = clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
     const tier = clamped.clampedTier;
     const cognitiveTier = normalizeTier(tier);
     const harnessModels = getHarnessModels();
@@ -410,10 +476,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     }
 
     const isTaskFree = tier === 'openrouter_free' || cognitiveTier === 'free';
-    const executionTool = isTaskFree ? 'jev_execute_free' : 'invoke_subagent';
-    const executionGuidance = isTaskFree
-      ? 'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
-      : `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${concreteModel}").`;
+    const { executionTool, executionGuidance } = buildExecutionGuidance(activeHarness, isTaskFree, subagent, concreteModel);
 
     const rawEffort = defaultEffortForSubagent(subagent, taskText);
     const taskEffort = applyEffortGovernance(rawEffort, quotaView.strategy, tier);
@@ -444,7 +507,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     planName: 'Multi-Subagent Parallel DAG Execution Manifest',
     totalTasks: plannedTasks.length,
     freeTierTasks: freeTierCount,
-    activeSessionModel: quotaView.active_model || 'unknown',
+    activeSessionModel: ceilingModelForHarness(activeHarness, quotaView.active_model) || 'unknown',
     maxConcurrentFreeWorkers: concurrencyCap,
     tasks: plannedTasks,
     stages,

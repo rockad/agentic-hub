@@ -83,3 +83,46 @@ export function detectScaffoldingTask(taskText: string): { scaffoldFirst: boolea
   }
   return { scaffoldFirst: false, boilerplateType: null };
 }
+
+/**
+ * Free-tier keyword rule for batch dispatch (whole words and a small documented phrase list).
+ *
+ * The old rule used substring `includes('format')`, which also fired on "information",
+ * "transformation" and on "format" used as a noun ("apply a dump format decision").
+ * The keyword here means formatting WORK, so the bare word "format" is deliberately not
+ * enough: only these forms count.
+ *   - scaffold, scaffolds, scaffolded, scaffolding
+ *   - boilerplate
+ *   - formatting, reformat, reformats, reformatted, reformatting, auto-format
+ *   - "format" followed by an object word: the, this, these, those, all, every, each, my, our,
+ *     code, file, files, json, yaml, markdown
+ */
+const FREE_TIER_TASK_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bscaffold(?:s|ed|ing)?\b/i,
+  /\bboilerplate\b/i,
+  /\bformatting\b/i,
+  /\b(?:re|auto-)format(?:s|ted|ting)?\b/i,
+  /\bformat\s+(?:the|this|these|those|all|every|each|my|our|code|files?|json|yaml|markdown)\b/i
+];
+
+export function isFreeTierMechanicalTask(taskText: string): boolean {
+  const text = taskText || '';
+  return FREE_TIER_TASK_PATTERNS.some((p) => p.test(text));
+}
+
+/** Claude Code subagent types that cannot edit files (no Edit or Write tool). */
+export const READ_ONLY_SUBAGENTS: ReadonlySet<string> = new Set(['plan', 'explore']);
+
+export function isReadOnlySubagent(name: string): boolean {
+  return READ_ONLY_SUBAGENTS.has((name || '').trim().toLowerCase());
+}
+
+/** True when the task text asks for a change to files (a whole-word verb match). */
+export function taskNeedsEdit(taskText: string): boolean {
+  return /\b(?:edit|edits|editing|write|rewrite|update|updates|fix|fixes|implement|refactor|rename|create|add|apply|amend|fold|migrate|modify|patch|delete|remove|commit|port)\b/i.test(taskText || '');
+}
+
+/** Read-only personas never get an editing task: fall back to the named editing-capable agent. */
+export function editCapableSubagent(subagent: string, taskText: string, fallback: string): string {
+  return isReadOnlySubagent(subagent) && taskNeedsEdit(taskText) ? fallback : subagent;
+}

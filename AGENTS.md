@@ -11,7 +11,6 @@ This file provides guidance to Google Antigravity (CLI and IDE), Claude Code, an
 
 ```
 agentic-hub/
-├── docs/                 # Repo-wide reviews, live backlog (docs/backlog.md, replaces TODO.md), research evidence
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
 │   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)

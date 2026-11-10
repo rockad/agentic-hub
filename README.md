@@ -8,7 +8,6 @@ An agent-provider-agnostic hub for AI skills, plugins, and MCP integrations. Bui
 agentic-hub/
 ├── .claude-plugin/       # Claude Code plugin registry manifest
 │   └── marketplace.json
-├── docs/                 # Repo-wide reviews, live backlog (docs/backlog.md), research evidence
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
 │   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)

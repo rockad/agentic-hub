@@ -155,16 +155,25 @@ Order and decisions in [pr-plan-2026-11-08.md](pr-plan-2026-11-08.md). The remai
 
 Jev is not retired: only the agentic-hub copy retires (RFC 005). The engine lives on as cognitive-engine `packages/jev` and its adapters, acting as the main decision engine when plugged in.
 
-- [ ] Advisory CI workflow on `main` (`tsc`, `bun test`, `pytest`). #4 and #18 are merged, so this can go first.
-- [ ] Guard follow-up PRs (two), both open after #4:
-  - Claude: read `CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`; resolve managed agent definitions, or fail closed; have the installer add a native deny rule `Agent(model:opus)`
-  - OpenCode and agy: delegation tool `subagent`, not `task`; read `event.input.prompt`; update the restart guidance (`opencode reload`); check whether a model set in `define_subagent` front matter bypasses the `invoke_subagent` guard
-- [ ] **Advisor port.** Port the Claude `UserPromptSubmit` advisor (agentic-hub `plugins/jev/claude/hook.ts` and `logic.ts`; the cognitive-engine Claude adapter has no `UserPromptSubmit` hook) to the cognitive-engine Claude adapter with all of the case-study improvements 5.1 to 5.11. Its own PR set, after the guard follow-up. 5.4 and 5.11 touch dispatch tools shared with Antigravity and OpenCode. Reasoning: [case study, section 5](../plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md).
-- [ ] **Jev 2.4.0 line.** Package `packages/jev` in cognitive-engine as 2.4.0. The packaging PR also moves the case study into cognitive-engine docs; agentic-hub keeps a pointer.
+Status 2026-11-10: **Stack J (Jev) is two PRs on cognitive-engine, both open and ready for `@Doc-Cr`** (formal review requests wait for the collaborator invite to be accepted): #20 `[jev 1/2]` guard hardening, then #22 `[jev 2/2]` advisor port (jev 2.4.0). #19 (advisory CI) and #21 (OpenCode V2 guard) were folded into #20 (merge commit dd6ae2a) and closed. All of them merge cleanly with each other. #12 (Argon hardening) conflicts with `main` and with Stack J and restacks once after #20 and #22 merge.
+
+- [ ] **#20, guard hardening** (open). Advisory CI (`tsc`, `bun test`, `pytest`, from #19); Claude guard reads `CLAUDE_CODE_SUBAGENT_MODEL` and `_FORCE`, resolves agent definitions or fails closed, bounds subagent effort (RFC 007); OpenCode guard for the V2 `subagent` tool reading `event.input` (from #21). Still to check: whether a model set in `define_subagent` front matter bypasses the Antigravity `invoke_subagent` guard.
+- [ ] **#22, advisor port** (open). The Claude `UserPromptSubmit` advisor ported to the cognitive-engine Claude adapter with the case-study improvements 5.1 to 5.11, packaged as `packages/jev` 2.4.0, case study moved into cognitive-engine docs (agentic-hub keeps a pointer). Includes the 2.3.1 open items (5.3, 5.4, 5.5, 5.8, session ceiling for 5.11). When it merges, tell the coordination session so it swaps its case-study copy for a pointer.
 - [x] **Jev 2.3.1 released 2026-11-10** (`57d2f88`, tag `jev-v2.3.1`): 4.11, 5.1, 5.2, 5.6, 5.7, 5.9, 5.10 and the wording half of 5.11. Further 2.3.x patches continue until RFC 005 Phase C, keeping the live plugin aligned with the cognitive-engine port.
-- [ ] **Jev 2.3.1 open items** (from its Opus review, not fixed): 5.1 accepts any non-negated model word in the first 1500 characters (not imperative-only, not capped at one step); only the explicit-instruction case is labelled in the directive (5.9); the stored intent goes stale if mode flips on mid-turn; `taskNeedsEdit` has a broad verb list; `dispatch-keywords.test.ts` leaves temp HOME dirs. Also not done in 2.3.1: 5.3 stage rubric, 5.4, 5.5, 5.8, and the session-ceiling half of 5.11 (`activeSessionModel` reports `unknown` under claude-code and the MCP dispatch tools apply no session ceiling there). These go into the cognitive-engine port.
-- [ ] Jev Recall URL: stop hard-coding `:8110` (`telemetry.ts:65`) before RFC 005 retires it.
-- [ ] Jev OpenCode tier map: replace the `~anthropic/...-latest` OpenRouter slugs (pay-per-token) with `openai/...` or `github-copilot/...` models if OpenCode runs on a subscription. Never `claude-agent/*`.
+- [ ] **Jev follow-up PR, stacked on #22** (base `feat/jev-advisor-port`, retarget to `main` after #22 merges). Decided 2026-11-10 (/clarify, 8 forks):
+
+  | Item | Decision |
+  |---|---|
+  | PR shape | one PR stacked on #22 |
+  | Recall URL (`telemetry.ts:70`) | `JEV_RECALL_URL` env override, default `127.0.0.1:8110/mcp`, empty disables; a test pins the `read_note` tool name (1.0.0 renames it to `bm_read`) |
+  | OpenCode tier map | keep the pay-per-token package default; document it and override under `harnesses.opencode.models` in your own config. Never `claude-agent/*`. **Docs done** (cognitive-engine branch `feat/jev-followup`, commit 6521679) |
+  | Native `Agent(model:opus)` deny rule | documented as an opt-in snippet, no installer (the guard already fails closed on Claude Code 2.1.295+). **Docs done**, same commit |
+  | `ANTHROPIC_DEFAULT_*_MODEL` remaps and `CLAUDE_CODE_EFFORT_LEVEL` | **warn only, never block**; the bypass is documented (**docs done**), and the non-silent warning is still to build: one guard-note line naming the variable (never the value) plus the variable names in the decisions-log entry |
+  | `JEV_HARNESS` | each adapter sets it (OpenCode plugin at init, Antigravity launcher or MCP env), one test each |
+  | Log rotation | deferred: about 20 KB a day measured, documentation and a manual prune only (**docs done**); revisit past about 10 MB |
+  | #12 restack | once, after #20 and #22 merge |
+
+  Code still to write in the follow-up: `JEV_RECALL_URL`, the warn-only note and log field, `JEV_HARNESS` in the adapters. The documentation commit does not depend on them.
 - [ ] Any future Codex adapter must return `deny` (Codex fails open on `ask`). Any Copilot guard fails open on hook timeout.
 
 ## After coordination S1

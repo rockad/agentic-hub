@@ -1,6 +1,6 @@
 # SP2 A8b Results: User-Level Antigravity Plugin MCP Tools, 2026-11-09
 
-Branch note: written on `docs/adoption-review-followups` in the working tree (uncommitted). Spike code and logs stay in `/home/rockad/scratch/a2a-spikes/` and are never merged.
+Branch note: first written on the `docs/adoption-review-followups` branch, since merged as PR #19 (see the [adoption review](https://github.com/rockad/cognitive-engine/blob/main/docs/adoption-review-2026-11.md)). Spike code and logs stay in `/home/rockad/scratch/a2a-spikes/` and are never merged.
 
 Labels:
 - **verified**: observed directly in a file, wire capture, transcript, or log in this session

@@ -1,7 +1,7 @@
 """Mounting a source's network share from inside the container, on a timer.
 
 A source declaring `[source.volume]` lives on a network share, and a share is
-not always there: `core` is only on the home LAN, so on work wifi or while
+not always there: the storage host is only on the home LAN, so on work wifi or while
 travelling its address does not resolve at all. **That must never stop lookup
 starting**, and it must not need a human to fix once the share comes back.
 

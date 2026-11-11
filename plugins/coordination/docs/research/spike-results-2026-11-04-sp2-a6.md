@@ -24,7 +24,7 @@
 ### Q1: Is `headers` the documented key for `serverUrl` entries in global and workspace configuration?
 
 - **Global Configuration (`~/.gemini/config/mcp_config.json`)**: **[VERIFIED]**
-  - Officially documented in [`builtin/skills/agy-customizations/docs/mcp_servers.md`](file:///home/rockad/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/mcp_servers.md#L19) as the global configuration location applying to all sessions.
+  - Officially documented in [`builtin/skills/agy-customizations/docs/mcp_servers.md`](~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/mcp_servers.md#L19) as the global configuration location applying to all sessions.
   - Documented in CLI help: `agy mcp add --help` specifies `--header "Authorization: Bearer TOKEN"` (`-H`), which serializes to `"headers": {"Authorization": "..."}`.
   - Deserialized by `google3/third_party/jetski/cortex_pb/cortex_go_proto.(*McpServerSpec)` as `map[string]string` under the JSON tag `"headers,omitempty"`. Both `url` and legacy `serverUrl` are accepted.
 - **Workspace Configuration (`.agents/mcp_config.json`)**: **[UNVERIFIED / NOT DOCUMENTED]**
@@ -113,7 +113,7 @@
       "_meta": {
         "antigravity.google/conversation_id": "1fbc4b34-23f6-471b-bbec-07b8943a39a6",
         "antigravity.google/root_conversation_id": "1fbc4b34-23f6-471b-bbec-07b8943a39a6",
-        "antigravity.google/artifacts_dir": "/home/rockad/.gemini/antigravity-cli/brain/1fbc4b34-23f6-471b-bbec-07b8943a39a6",
+        "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/1fbc4b34-23f6-471b-bbec-07b8943a39a6",
         "progressToken": "dea9f3e3-cfe3-4e03-b076-19693ba64887:6"
       }
     }
@@ -180,7 +180,7 @@
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "/home/rockad/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1713"
@@ -193,7 +193,7 @@
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "/home/rockad/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1719"
@@ -206,7 +206,7 @@
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "/home/rockad/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1722"
@@ -272,7 +272,7 @@ Review of sections 1 to 5. Sections 1 to 5 are unchanged. Labels: verified (obse
 - **Distinctness across conversations: plausible, not demonstrated.** The comparison in section 5.2 used a "parallel background invocation" whose `Mcp-Session-Id` (`5f12d118-...`) differed from session A's (`stub-session-12345`) and equals its own `conversation_id`. That looks like a test artifact or a separate process, not a second conversation in the same agy process. So "two conversations in one agy process share one `Mcp-Session-Id`" is not shown by this run (section 1.5's process-scope claim rests on the Language Server architecture, not on a two-conversation wire comparison), and per-conversation distinctness of `conversation_id` inside one process is still unproven.
 - **Resume stability: partly verified.** Section 5.2 shows the same conversation continuing across turns and a daemon restart. There is no wire evidence for stability across an agy restart and resume of that conversation, followed by a tool call.
 - **Follow-up checks, moved into SP2 A4** (`spikes.md`): same process, two conversations, compare `Mcp-Session-Id` and `conversation_id` on each `tools/call`; then restart agy, resume one conversation, call a tool, compare `conversation_id` with the earlier one.
-- **Update:** the process-scope of `Mcp-Session-Id`, distinctness, resume stability and the sub-invocation ids above are confirmed on the wire in [sp2-a4](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md) (T1 to T4).
+- **Update:** the process-scope of `Mcp-Session-Id`, distinctness, resume stability and the sub-invocation ids above are confirmed on the wire in [sp2-a4](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md) (T1 to T4).
 - **`root_conversation_id`.** It equals `conversation_id` in every call observed here. Whether a background or sub-invocation carries a different `conversation_id` with the parent's `root_conversation_id` is not shown; the design (server-api.md 5.4.1) groups such invocations under the parent by `root_conversation_id`, and A4 checks it.
 - **First unauthenticated `ping`:** came from Antigravity's own curl test script (section 5.3), not from agy. agy (`Go-http-client`) always sent the header. This corrects the open question in Claude Code's earlier note.
 - **Q1:** confirmed by section 5.4. `url` is the documented key, `serverUrl` is legacy, and `headers` is documented only in `agy mcp add --help`.

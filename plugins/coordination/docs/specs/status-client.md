@@ -4,8 +4,8 @@ Status: DRAFT SPEC, planning only (2026-11-04). Implements binding decision 13 o
 
 Inputs:
 
-- [`t2-cognitive-engine-integration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): reply from the `cognitive-engine` session. It read origin refs, not PR #13. Everything it says about the cognitive-engine repo is **reported**, not verified here.
-- [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis, section 5.
+- [`t2-cognitive-engine-integration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): reply from the `cognitive-engine` session. It read origin refs, not PR #13. Everything it says about the cognitive-engine repo is **reported**, not verified here.
+- [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis, section 5.
 - A2A `TaskState` enum: **verified** in [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto#L187-L208) at commit `4735f48` (lines 187 to 208). The wire names carry the `TASK_STATE_` prefix (for example `TASK_STATE_INPUT_REQUIRED`); section 5 lists the seven this contract uses.
 
 ## 1. Purpose and direction
@@ -24,8 +24,8 @@ Inputs:
 - **When it is built**: after S1 is live (see the exposure gates in the plan), and only with an explicit user go. Until then, nothing in cognitive-engine changes. The contract can be exercised by hand with `curl` against S1 (example in section 4).
 - **Off by default**: the adapter is inactive unless both an explicit enable setting and an API key are present. Missing either means no network call at all, and no warning on every run.
 - **Where it runs**: in the host-side `stage1` process only. It is never imported into, or reachable from, a model session (section 9).
-- **API key** (decision 24; "token" is the retired word): scope `status-client`, issued by `a2a-coord key create --scope status-client --agent cognitive-engine --expires <dur>` (run inside the container, on core in production: `ssh core`, then `docker compose exec -it coordination a2a-coord key create ...`, over the unpublished admin socket, decisions 15 and 23; shown once, stored hashed by the server). Suggested label: `cognitive-engine@alyx`. The label appears in the server's audit log. It is not an Agent Card name.
-  - In production the status client posts to core over the tailnet (decision 23). Where the cognitive-engine host is one of the user's machines, the key can carry the same tailnet node binding as a harness key (`--tailnet-node`, decisions 17 and 24); whether the binding is applied to `status-client` keys is not decided.
+- **API key** (decision 24; "token" is the retired word): scope `status-client`, issued by `a2a-coord key create --scope status-client --agent cognitive-engine --expires <dur>` (run inside the container, on <storage-host> in production: `ssh <storage-host>`, then `docker compose exec -it coordination a2a-coord key create ...`, over the unpublished admin socket, decisions 15 and 23; shown once, stored hashed by the server). Suggested label: `cognitive-engine@<workstation>`. The label appears in the server's audit log. It is not an Agent Card name.
+  - In production the status client posts to <storage-host> over the tailnet (decision 23). Where the cognitive-engine host is one of the user's machines, the key can carry the same tailnet node binding as a harness key (`--tailnet-node`, decisions 17 and 24); whether the binding is applied to `status-client` keys is not decided.
   - On the sender side the key lives in a mode-0600 file read by the host process, or in one environment variable of the host process, like any client key (decision 24). It is never written into a run dir, a report, an audit line, a sandbox mount or a chezmoi-managed file.
   - Loopback (S1) still requires the key (decision 11).
   - Proposal, not yet decided: `--allow-from <cidr>` on `key create` so a status-client key only works from `127.0.0.1/32` (S1) or the sender's tailnet address (S2). It overlaps with the tailnet node binding above; one of the two is enough.
@@ -42,7 +42,7 @@ Inputs:
   - any `GET`
 - **Content type**: `application/json`. Maximum body 4 KiB (413 above that).
 - **No Agent Card entry**: `/status` is not advertised in `/.well-known/agent-card.json`. It is not part of A2A.
-- **Not routed at S3**: the public front door (the Cloudflare Tunnel on core, decision 20) forwards only `/a2a/v1` and the Agent Card path. `/status`, `/mcp`, `/wake/listen` and `/sessions` are never publicly routed. A status sender is always a local or tailnet machine, and in production it reaches core over the tailnet (decision 23); sbx model sessions still never reach the service on any address.
+- **Not routed at S3**: the public front door (the Cloudflare Tunnel on <storage-host>, decision 20) forwards only `/a2a/v1` and the Agent Card path. `/status`, `/mcp`, `/wake/listen` and `/sessions` are never publicly routed. A status sender is always a local or tailnet machine, and in production it reaches <storage-host> over the tailnet (decision 23); sbx model sessions still never reach the service on any address.
 
 ## 4. Request schema
 
@@ -70,7 +70,7 @@ Example (a sweep that just ended well):
   "run_id": "h2s1-20261104T141207Z-3f9a",
   "run_scope": "h2s1-20261104T141207Z-3f9a-s0",
   "state": "TASK_STATE_COMPLETED",
-  "report_path": "/home/rockad/.local/state/cognitive-engine/harness2-stage1/h2s1-20261104T141207Z-3f9a/report.json",
+  "report_path": "~/.local/state/cognitive-engine/harness2-stage1/h2s1-20261104T141207Z-3f9a/report.json",
   "ts": "2026-11-04T14:31:55Z"
 }
 ```
@@ -88,7 +88,7 @@ curl -sS -m 3 -X POST http://127.0.0.1:8120/status \
 
 ### Response
 
-The response carries an acknowledgement and one numeric operational field, `dump_age_h` (hours since the last good database dump, [server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 3.6, round-2 decision R5, 2026-11-09). A status client may display it and a stale flag (older than 36 h). Before the first successful dump the field is `null` (round-3 decision R12, 2026-11-09, default applied by the assistant; the user may veto), so a client must accept `null` and show it as "no dump yet"; a mis-set `backup` compose profile (R14) shows up as a stale value, or as `null` if no dump has ever succeeded. Nothing else: no pending messages, no instructions, no text a model could mistake for a command.
+The response carries an acknowledgement and one numeric operational field, `dump_age_h` (hours since the last good database dump, [server-api.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) 3.6, round-2 decision R5, 2026-11-09). A status client may display it and a stale flag (older than 36 h). Before the first successful dump the field is `null` (round-3 decision R12, 2026-11-09, default applied by the assistant; the user may veto), so a client must accept `null` and show it as "no dump yet"; a mis-set `backup` compose profile (R14) shows up as a stale value, or as `null` if no dump has ever succeeded. Nothing else: no pending messages, no instructions, no text a model could mistake for a command.
 
 ```json
 { "ok": true, "run_id": "h2s1-20261104T141207Z-3f9a", "applied": true }
@@ -129,9 +129,9 @@ Rules:
 
 ## 6. How the server stores it: status records, not A2A tasks
 
-**Decision**: store status as plain records in their own tables in the same SQLite file on the `a2a-data` volume (`/data`). Do not create A2A `Task` objects, and do not use `DatabaseTaskStore` for them. Do not create a `cognitive-engine@alyx` Agent Card.
+**Decision**: store status as plain records in their own tables in the same SQLite file on the `a2a-data` volume (`/data`). Do not create A2A `Task` objects, and do not use `DatabaseTaskStore` for them. Do not create a `cognitive-engine@<workstation>` Agent Card.
 
-Why not tasks under a card `cognitive-engine@alyx`:
+Why not tasks under a card `cognitive-engine@<workstation>`:
 
 - **A task implies a provider that takes work.** A card with tasks on it invites `SendMessage` to that card. Decision 13 says cognitive-engine never receives tasks. A card that exists but refuses everything is a misleading honest-card problem at S3 and a needless attack surface.
 - **Tasks expose control operations.** The core operations include `CancelTask` and `SubscribeToTask`. A mirrored task would look cancelable. Cancelling a mirror would not stop a sweep, and a user or peer could believe it did. Any future wiring of such a cancel to the real sweep would be a second control path, which is forbidden.
@@ -195,7 +195,7 @@ Server-side guard: the schema is strict (unknown fields refused), values are len
 
 ## 10. What the server must never offer back
 
-- **No task intake**: `SendMessage`, `SendStreamingMessage` and all other A2A operations are unreachable with a `status-client` API key. No `cognitive-engine@alyx` handle or card is ever registered. Messages addressed to such a name are rejected (unknown agent), never queued.
+- **No task intake**: `SendMessage`, `SendStreamingMessage` and all other A2A operations are unreachable with a `status-client` API key. No `cognitive-engine@<workstation>` handle or card is ever registered. Messages addressed to such a name are rejected (unknown agent), never queued.
 - **No approval path**: nothing on the server resolves, grants or forwards an `INPUT_REQUIRED` for a sweep. No tool starts a sweep, schedules one, releases a gate, or writes into a sweep's run dir.
 - **No return channel**: the `POST /status` response is the fixed acknowledgement of section 4 (plus the numeric `dump_age_h`). The server never pushes into a sweep, never returns pending items, never sets headers a client would act on.
 - **No second approval path by wake**: wake text is a constant stub. A status record never produces a message to a session that says "approve", "run" or "execute".
@@ -210,7 +210,7 @@ Server-side guard: the schema is strict (unknown fields refused), values are len
   - The sbx allow list never names the coordination server, on any stage, any address (loopback, tailnet, public).
   - The status API key is held only by the host-side `stage1` process. It is not mounted into, passed to or readable from a sandbox. The RFC 006 credential rule applies: nothing the sandbox can read may contain it.
   - Model-written code must never reach the server (internal-only network plus filtering proxy, T2 reported).
-- **Acceptance test (not yet run, needs the cognitive-engine session)**: from inside a real sbx session, a connection to the host's `:8120` or `:8121` fails on every address the sandbox can use for the host (loopback, docker bridge gateway, `host.docker.internal`-style names). At S1 the server listens on `0.0.0.0` inside its container and is published only on host `127.0.0.1:8120` ([server-api.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/server-api.md) 1.4). The acceptance test must also try the coordination container's own IP on its compose network and the Docker bridge gateway, and must confirm that sbx networks are not attached to the compose network. Whether any of these routes is reachable from an sbx session is unverified (open question Q6).
+- **Acceptance test (not yet run, needs the cognitive-engine session)**: from inside a real sbx session, a connection to the host's `:8120` or `:8121` fails on every address the sandbox can use for the host (loopback, docker bridge gateway, `host.docker.internal`-style names). At S1 the server listens on `0.0.0.0` inside its container and is published only on host `127.0.0.1:8120` ([server-api.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) 1.4). The acceptance test must also try the coordination container's own IP on its compose network and the Docker bridge gateway, and must confirm that sbx networks are not attached to the compose network. Whether any of these routes is reachable from an sbx session is unverified (open question Q6).
 - **If the server ever sits in a container on a shared Docker network**: the sbx network must not be attached to it. Re-run the acceptance test after any network change.
 - **Fuzz scope at S3**: `/status` is not publicly routed (section 3), so it is outside the S3 header-smuggling, request-splitting and SSRF fuzz pass for the public surface. The `report_path` field is stored opaque, with no server-side fetch, so SSRF through it is excluded by design. Still add one test that confirms the server never opens a path it was given.
 

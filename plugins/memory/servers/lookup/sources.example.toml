@@ -75,7 +75,7 @@ visibility = "gated"
 aliases = [
   "smb://fileserver/share",
   "smb://fileserver.lan/share",
-  "smb://192.168.1.50/share",
+  "smb://192.0.2.50/share",
 ]
 include = ["*.md", "**/*.md", "*.txt", "**/*.txt"]
 exclude_names = [".git"]
@@ -101,7 +101,7 @@ extractor = "docs.markdown"
 # reports success until it is removed.
 [source.volume]
 type = "cifs"
-device = "//192.168.1.50/share"
+device = "//192.0.2.50/share"
 options = "ro,vers=3.0,nounix,noserverino"
 username = "${SHARE_USER}"
 password = "${SHARE_PASS}"

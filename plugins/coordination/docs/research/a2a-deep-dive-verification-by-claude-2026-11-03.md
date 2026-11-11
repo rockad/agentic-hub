@@ -14,7 +14,7 @@ Author: Claude Code (macp), 2026-11-03. Read-only. Source checked: [`a2aproject/
 | Agent Cards in `~/.agents/roster/` for peer discovery | **our convention, not A2A** | the spec's discovery is `GET /.well-known/agent-card.json` over HTTP (spec line 1826). A roster directory is a sensible local analogue, but it is not defined by A2A |
 | Message roles ROLE_USER and ROLE_AGENT | **verified** | proto lines 249 and 251 |
 
-### What the core operations require (the missing part)
+### What the @@C@@ operations require (the missing part)
 
 The proto defines 11 operations: SendMessage, SendStreamingMessage, GetTask, ListTasks, CancelTask, SubscribeToTask, CreateTaskPushNotificationConfig, GetTaskPushNotificationConfig, ListTaskPushNotificationConfigs, GetExtendedAgentCard, DeleteTaskPushNotificationConfig. A conforming custom binding must support all of them or document what it does not (12.1 says MUST implement all). A file-based binding can plausibly map SendMessage, GetTask, ListTasks and CancelTask to appends and reads, and SubscribeToTask to the inotify watcher. Push-notification config operations and GetExtendedAgentCard have no obvious file equivalent. Result: calling the file channel "an A2A binding" would need either a full mapping or an honest label such as "A2A-aligned data model, not a conforming binding".
 

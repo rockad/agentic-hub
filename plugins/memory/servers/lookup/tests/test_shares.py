@@ -40,7 +40,7 @@ def local_source(name="vault", root="/tmp/vault"):
 
 class HostParsing(unittest.TestCase):
     def test_a_unc_address_yields_its_host(self):
-        self.assertEqual(shares.host_of("//192.168.1.90/archive"), "192.168.1.90")
+        self.assertEqual(shares.host_of("//192.0.2.10/archive"), "192.0.2.10")
 
     def test_a_local_path_has_no_host(self):
         self.assertEqual(shares.host_of("/Volumes/archive"), "")

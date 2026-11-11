@@ -3,7 +3,7 @@
 Written by Antigravity on 2026-11-10 as an independent re-verification (brief: `~/scratch/a2a-spikes/agy-operator/s1-gate-reverify-brief.md`) of its own overnight commits `db17ada`, `946f198`, `c17402b` and `3a2bea8`. It was first appended to `docs/plans/pickup-handoff.md` and moved here on 2026-11-10 by Claude Code. Claude Code checked the SP5b figures independently against the same logs, the image digest and the open ports; the corrections and the five user decisions that followed are recorded in the plan, the spec and the tasklist (decisions of 2026-11-10). Note one finding of this audit that Claude Code does not accept: the cause given for the 1,036 ms `CancelTask` during the D7 dump (a `pg_dump` ACCESS SHARE lock) is not established, because ACCESS SHARE does not conflict with row writes; the docs record that cause as unverified.
 
 
-Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon state, and read-only inspection of `core`.
+Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon state, and read-only inspection of `<storage-host>`.
 
 ### A. The S1 entry gate
 
@@ -12,7 +12,7 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
 - SP2: **passed** across Claude and agy halves. Evidence: `spike-results-2026-11-06-sp2-claude.md`, `spike-results-2026-11-08-sp2-agy.md`, `spike-results-2026-11-09-a8b-agy.md` (verified).
 - SP3: **open** (`plugins/coordination/docs/specs/spikes.md` line 693; `master-tasklist.md` line 193) (verified).
 - SP4: **open** (`plugins/coordination/docs/specs/spikes.md` line 694; `master-tasklist.md` line 193) (verified).
-- SP5b: **passed** on Postgres on alyx. Evidence: `plugins/coordination/docs/research/spike-results-2026-11-10-sp5b.md` (verified).
+- SP5b: **passed** on Postgres on <workstation>. Evidence: `plugins/coordination/docs/research/spike-results-2026-11-10-sp5b.md` (verified).
 - Results file linked: linked in `master-tasklist.md` line 197 (verified).
 
 #### May S1 start?
@@ -20,10 +20,10 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
 
 #### Statement audit and corrections
 - **Claim 1**: `plugins/coordination/docs/plans/pickup-handoff.md` line 8
-  - Quote: `"Stage S0 (spikes) is complete: SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite), and SP5b (Postgres on alyx) passed with spec changes folded in. S1 entry gate is satisfied."`
+  - Quote: `"Stage S0 (spikes) is complete: SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite), and SP5b (Postgres on <workstation>) passed with spec changes folded in. S1 entry gate is satisfied."`
   - Evidence: `spikes.md` line 693 ("SP3: open") and line 694 ("SP4: open"); `master-tasklist.md` line 193 ("S0 still open: SP3, SP4").
   - Verdict: **Contradicted**.
-  - Proposed correction text: `"Stage S0 storage gate is satisfied: SP5b passed on alyx on Postgres. S0 spikes SP3 (agy PreInvocation) and SP4 remain open before overall S1 entry."`
+  - Proposed correction text: `"Stage S0 storage gate is satisfied: SP5b passed on <workstation> on Postgres. S0 spikes SP3 (agy PreInvocation) and SP4 remain open before overall S1 entry."`
 - **Claim 2**: `plugins/coordination/docs/research/spike-results-2026-11-10-sp5b.md` line 134
   - Quote: `"1. Gate status: SP5b is PASSED. S1 entry gate is satisfied."`
   - Evidence: `spikes.md` Section 11 specifies SP3 and SP4 must be resolved for S1 entry.
@@ -87,7 +87,7 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
 ### C. The separator verdict
 
 #### Criterion quote from `spikes.md` section 8b
-- Lines 564–570: `"Run handles with # and with ~ (for example claude-code@alyx/c6-same#3f2a9c1d and claude-code@alyx/c6-same~3f2a9c1d) through every place a handle travels... # starts a URL fragment and is never sent to the server unless encoded as %23. Pass: # works everywhere (with the percent-encoding and quoting rules written down), or ~ is adopted as the separator."`
+- Lines 564–570: `"Run handles with # and with ~ (for example claude-code@<workstation>/c6-same#3f2a9c1d and claude-code@<workstation>/c6-same~3f2a9c1d) through every place a handle travels... # starts a URL fragment and is never sent to the server unless encoded as %23. Pass: # works everywhere (with the percent-encoding and quoting rules written down), or ~ is adopted as the separator."`
 
 #### Is "works everywhere" true for `#`?
 - **NO.** Raw `#` does not work in raw URL paths or query strings without percent-encoding: HTTP clients truncate the URL at `#`, treating it as a client-side URI fragment.
@@ -142,16 +142,16 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
   - Card-addressed sends (`coord.to: "<card>"`) target known agent cards; card names are published in `agent-card.json`. Unknown or disallowed cards fail under standard authorization (403 `CardNotAllowed`), so enumeration of private names is not possible.
   - However, omitting card-addressed sends from the rate limiter allows high-frequency unthrottled message creation if a remote peer floods task submissions.
 
-#### 3. Restic repository and job on `core`
-- Written in `server-api.md` 12.2: `rclone:gdrive:backups/restic-a2a`, script at `/media/media2/knowledge-archive/ops/a2a-restic-backup.sh`, cron "05:45 UTC", and `--keep-daily 7`.
-- Read-only check on `core`:
-  - `rclone listremotes`: Returns `gdrive-aleks:` and `odrive-aleks:`. There is no remote named `gdrive:`.
-  - `timedatectl`: Core operates in `Europe/Helsinki (EET, +0200)`. Crontabs run in local time, not UTC.
-  - `git -C /media/media2/knowledge-archive status`: The directory is a clean Git repository. Writing uncommitted scripts into `ops/` pollutes this repository.
-  - Existing script: `/media/media2/knowledge-archive/ops/restic-backup.sh` uses `--keep-last 3 --tag knowledge-archive`.
+#### 3. Restic repository and job on `<storage-host>`
+- Written in `server-api.md` 12.2: `rclone:gdrive:backups/restic-a2a`, script at `<media-root>/knowledge-archive/ops/a2a-restic-backup.sh`, cron "05:45 UTC", and `--keep-daily 7`.
+- Read-only check on `<storage-host>`:
+  - `rclone listremotes`: Returns `<gdrive-remote>:` and `<odrive-remote>:`. There is no remote named `gdrive:`.
+  - `timedatectl`: <storage-host> operates in `Europe/Helsinki (EET, +0200)`. Crontabs run in local time, not UTC.
+  - `git -C <media-root>/knowledge-archive status`: The directory is a clean Git repository. Writing uncommitted scripts into `ops/` pollutes this repository.
+  - Existing script: `<media-root>/knowledge-archive/ops/restic-backup.sh` uses `--keep-last 3 --tag knowledge-archive`.
 - Values never decided by the user:
-  - Remote name `rclone:gdrive:...` (actual remote is `gdrive-aleks:`).
-  - Execution time zone "05:45 UTC" (core runs local Helsinki time).
+  - Remote name `rclone:gdrive:...` (actual remote is `<gdrive-remote>:`).
+  - Execution time zone "05:45 UTC" (<storage-host> runs local Helsinki time).
   - Placing coordination backup scripts inside `knowledge-archive/ops/`.
   - Retention policy `--keep-daily 7`.
 
@@ -180,7 +180,7 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
 
 #### 1. Proposed corrections to existing documents (exact wording)
 - **`plugins/coordination/docs/plans/pickup-handoff.md` (line 8)**:
-  - Replace with: `Stage S0 storage gate is satisfied: SP5b passed on alyx on Postgres. S0 spikes SP3 (agy PreInvocation) and SP4 remain open before overall S1 entry.`
+  - Replace with: `Stage S0 storage gate is satisfied: SP5b passed on <workstation> on Postgres. S0 spikes SP3 (agy PreInvocation) and SP4 remain open before overall S1 entry.`
 - **`plugins/coordination/docs/research/spike-results-2026-11-10-sp5b.md` (line 134)**:
   - Replace with: `1. **Gate status**: SP5b is **PASSED**. S1 storage entry gate is satisfied; overall S1 entry gate remains open pending SP3 and SP4.`
 - **`plugins/coordination/docs/plans/master-tasklist.md` (line 197)**:
@@ -192,9 +192,9 @@ Audit performed per `s1-gate-reverify-brief.md` against raw logs, Docker daemon 
 - **Item C (Separator)**: Decide between `#` (requires `%23` in URL query strings and shell quoting) versus `~` (URL-safe without encoding).
 - **Item E1 (`dump_ro` Password Delivery)**: Choose the mechanism to deliver the `dump_ro` password while keeping the secret mounted only in the sidecar (Alternative A: sidecar initial superuser connect; Alternative B: host-side CLI command `a2a-coord db init-dump-role`; Alternative C: separate init secret for Postgres).
 - **Item E2 (Guess Counter Scope)**: Decide whether card-addressed sends (`coord.to: "<card>"`) should participate in the rate limiter or bypass it.
-- **Item E3 (Restic on `core`)**: Confirm the correct restic remote (`rclone:gdrive-aleks:backups/restic-a2a`), the script directory location outside `knowledge-archive`, cron time in local EET, and retention policy (`--keep-last 3` vs `--keep-daily 7`).
+- **Item E3 (Restic on `<storage-host>`)**: Confirm the correct restic remote (`rclone:<gdrive-remote>:backups/restic-a2a`), the script directory location outside `knowledge-archive`, cron time in local EET, and retention policy (`--keep-last 3` vs `--keep-daily 7`).
 - **Item E4 (`a2a-coord expose check`)**: Confirm or adjust the proposed 7 readiness rules and exit code semantics.
 
 #### 3. Anything that could not be verified
-- **None.** All raw SP5b logs, Docker states, network ports, `core` configuration parameters, and conversation ID prefixes were directly read, executed, and verified.
+- **None.** All raw SP5b logs, Docker states, network ports, `<storage-host>` configuration parameters, and conversation ID prefixes were directly read, executed, and verified.
 

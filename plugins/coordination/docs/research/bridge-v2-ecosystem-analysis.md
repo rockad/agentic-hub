@@ -109,7 +109,7 @@ Project / Repository
 	9
 	Human gate blind spot (outward-facing actions wait for user approval without pinging the user)
 	TadMSTR/agent-bus (ntfy) or MCP Approval Hook
-	Transitioning a task to input-required (for PR creation, merges, force-push, or host core account actions) triggers a desktop notification (notify-send) and/or webhook (Home Assistant / ntfy) to alert the user immediately.
+	Transitioning a task to input-required (for PR creation, merges, force-push, or host <storage-host> account actions) triggers a desktop notification (notify-send) and/or webhook (Home Assistant / ntfy) to alert the user immediately.
 	4. Live Environment Audit & Verification Protocol (For Claude Code & Antigravity CLI)
 Step 1: Sync or Export from agents exchange
 Sync or export this document to ~/.agents/bridge-v2-ecosystem-analysis.md so neither agent's Git worktree is dirtied.

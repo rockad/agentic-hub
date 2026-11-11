@@ -6,7 +6,7 @@
 # independent and can simply be COPYed into the target image, whose stages
 # contain no RUN at all.
 #
-# That matters concretely: `core` is a Raspberry Pi whose only x86 binfmt
+# That matters concretely: the storage host is a Raspberry Pi whose only x86 binfmt
 # handler is **box86**, a 32-bit emulator that cannot execute amd64 (an amd64
 # container there fails with `exec format error`). Emulating amd64 would have
 # meant registering qemu-x86_64 via a privileged container — root on a box

@@ -58,7 +58,7 @@ cannot fix that one, because the competition is inside a single source.
 "index everything except ..." mode and no recursive discovery from a parent
 directory. Adding data to the index is an edit to that file, visible in a diff.
 
-This is not stylistic. The same physical disk holds `/media/media2/External`,
+This is not stylistic. The same physical disk holds `<media-root>/External`,
 which is **restricted data and must never be indexed**. An exclusion list makes that
 a rule someone can forget; an inclusion list makes it structurally absent. Three
 layers enforce it:
@@ -72,7 +72,7 @@ layers enforce it:
 ## Layout
 
 ```
-sources.toml               the inclusion manifest for what lives only on core
+sources.toml               the inclusion manifest for what lives only on <storage-host>
 sources.example.toml       a template for your own manifest, kept outside this
                            repo -- LOOKUP_MANIFEST points at it
 eval/                      the engine comparison: RESULTS.md and the candidates
@@ -164,15 +164,15 @@ and that costs one ~2 s rebuild.
 
 ### One source, several addresses
 
-A share can be reachable at more than one address — `smb://core/knowledge-archive`,
-`smb://core.lan/knowledge-archive` and `smb://192.168.1.90/knowledge-archive` are one
+A share can be reachable at more than one address — `smb://<storage-host>/knowledge-archive`,
+`smb://<storage-host>.lan/knowledge-archive` and `smb://<storage-host-ip>/knowledge-archive` are one
 machine — so a source may declare them:
 
 ```toml
 aliases = [
-  "smb://core/knowledge-archive",
-  "smb://core.lan/knowledge-archive",
-  "smb://192.168.1.90/knowledge-archive",
+  "smb://<storage-host>/knowledge-archive",
+  "smb://<storage-host>.lan/knowledge-archive",
+  "smb://<storage-host-ip>/knowledge-archive",
 ]
 ```
 
@@ -185,7 +185,7 @@ different share under a source name that already holds documents.
 
 The compose default stays the IPv4 literal, which needs no resolver and so works anywhere
 the LAN does. ⚠️ Note the host and the container can resolve a name differently: on macOS
-`core` goes via LAN DNS to `core.lan` with IPv6 addresses only, while `~/.ssh/config` maps
+`<storage-host>` goes via LAN DNS to `<storage-host>.lan` with IPv6 addresses only, while `~/.ssh/config` maps
 it to the IPv4 literal — inside the Docker VM all three forms reach the same address.
 
 ⚠️ **Renaming a source orphans its volume.** The volume name is derived from the source
@@ -268,31 +268,31 @@ up by the `documents` source. Deliberately not reimplemented: one converter, not
 
 ## Deployment
 
-⚠️ **The registry image is `git.bigrockad.com/rockad/lookup`.** Gitea's 301 for a
+⚠️ **The registry image is `<git-host>/rockad/lookup`.** Gitea's 301 for a
 renamed repository covers the *git* path, not the container registry — an old
 `rockad/personal-index` tag is not redirected and simply will not resolve.
 
 
-Dev on WSL (x86_64), deployed to `core` (aarch64) via this Gitea instance's
+Dev on WSL (x86_64), deployed to `<storage-host>` (aarch64) via this Gitea instance's
 container registry:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t git.bigrockad.com/rockad/lookup:VERSION --push .
-echo "$GITEA_SERVER_TOKEN" | docker login git.bigrockad.com -u rockad --password-stdin
-docker push git.bigrockad.com/rockad/lookup:VERSION
-ssh core docker pull git.bigrockad.com/rockad/lookup:VERSION
+  -t <git-host>/rockad/lookup:VERSION --push .
+echo "$GITEA_SERVER_TOKEN" | docker login <git-host> -u rockad --password-stdin
+docker push <git-host>/rockad/lookup:VERSION
+ssh <storage-host> docker pull <git-host>/rockad/lookup:VERSION
 ```
 
-Push and pull go over **HTTPS to `git.bigrockad.com`**, not the LAN address. The
-LAN registry endpoint is `192.168.1.90:8099`, but plain HTTP would need
+Push and pull go over **HTTPS to `<git-host>`**, not the LAN address. The
+LAN registry endpoint is `<storage-host-ip>:8099`, but plain HTTP would need
 `insecure-registries` in Docker's daemon config on both hosts — and restarting
-the daemon on core restarts **Home Assistant**. Not worth it; the HTTPS path
+the daemon on <storage-host> restarts **Home Assistant**. Not worth it; the HTTPS path
 needs no daemon change and the layers are well under Cloudflare's request limit.
 
 `.gitea/workflows/build.yml` runs the same build in CI once an `act_runner` with
 the `docker` label is registered. Until then it is inert, and `docker save |
-ssh core docker load` remains a working fallback that needs no registry at all.
+ssh <storage-host> docker load` remains a working fallback that needs no registry at all.
 
 Cross-building needs QEMU binfmt once: `docker run --privileged --rm tonistiigi/binfmt --install arm64`.
 
@@ -301,7 +301,7 @@ Cross-building needs QEMU binfmt once: `docker run --privileged --rm tonistiigi/
 architecture; the target stages contain no `RUN` at all, only `COPY`. Nothing here
 is compiled, so the installed tree is architecture-independent.
 
-That is not just tidiness. `core` is an arm64 Pi whose only x86 binfmt handler is
+That is not just tidiness. `<storage-host>` is an arm64 Pi whose only x86 binfmt handler is
 **box86** — a 32-bit emulator that cannot execute amd64 (`docker run --platform
 linux/amd64 alpine uname -m` there fails with `exec format error`). Emulating amd64
 would have meant registering `qemu-x86_64` via a privileged container: root on a box
@@ -313,7 +313,7 @@ local pass and a build pass mean the same thing.
 
 ⚠️ It was pinned to 3.11 for a while precisely because they differed: 3.14 accepts syntax
 3.11 rejects (backslashes inside f-string expressions — hit for real), and failing the build
-is cheaper than failing on core. **Keep them equal, or pin deliberately — never let them
+is cheaper than failing on <storage-host>. **Keep them equal, or pin deliberately — never let them
 drift apart unnoticed.**
 
 ## Gotchas worth keeping

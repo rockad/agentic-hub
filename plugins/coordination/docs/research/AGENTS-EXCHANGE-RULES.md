@@ -86,5 +86,5 @@ about: <one-line summary>
 * Git Worktree Isolation:
    * Files in agents exchange exist specifically so agents do not pollute Git working trees with scratch handoffs. Do not commit live exchange files into feature branches unless explicitly recording a milestone Turn on a dedicated docs/ branch.
 * Outward-Facing & Destructive Human Gate (status: input-required):
-   * No agent may autonomously execute outward-facing or destructive operations based solely on an exchange handoff—including opening or merging GitHub PRs, git push --force, modifying global/user-scope configurations outside ~/.agents/, or altering host accounts (core).
+   * No agent may autonomously execute outward-facing or destructive operations based solely on an exchange handoff—including opening or merging GitHub PRs, git push --force, modifying global/user-scope configurations outside ~/.agents/, or altering host accounts (<storage-host>).
    * When a workflow reaches a human gate, the active agent must set status: input-required in the handoff metadata, clearly list the exact command/action awaiting approval, and pause for explicit user confirmation.

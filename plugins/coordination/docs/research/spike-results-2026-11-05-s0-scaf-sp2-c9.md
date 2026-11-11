@@ -1,7 +1,7 @@
 # S0 results, 2026-11-05: shared stub, SP1 listener draft, SP2 C9 (headless)
 
 Date: 2026-11-05 (log timestamps are UTC; host `ls` times are EET, UTC+2). Branch: `feat/coordination-s0`, nothing committed.
-Plan: [spikes.md](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md) sections 1, 3, 4 (SP1), 5 (SP2 C9), 10, 11.
+Plan: [spikes.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md) sections 1, 3, 4 (SP1), 5 (SP2 C9), 10, 11.
 Run by: Claude Code helper subagent (Sonnet 5.5), no interactive session, no `claude -p`, no agy.
 Scope of this file: Task A only. The interactive SP1 and SP2 tests (T1 to T11, C1 to C8) are not run here.
 
@@ -20,13 +20,13 @@ Summary:
 
 - Python 3.14.4 (stub, standard library only), curl 8.18.0, `/bin/sh` is dash, jq 1.8.1, shellcheck 0.11.0
 - Claude Code 2.1.318 (`claude --version`)
-- Host: alyx, WSL2, Linux 6.18.54.1-microsoft-standard-WSL2
+- Host: <workstation>, WSL2, Linux 6.18.54.1-microsoft-standard-WSL2
 
 ### What was built
 
-- `/home/rockad/scratch/a2a-spikes/stub/stub.py`, one file, 127.0.0.1:18120 (threaded `http.server`, HTTP/1.1 keep-alive)
-- `/home/rockad/scratch/a2a-spikes/stub/README.md` with start and stop commands and the control-file protocol
-- `/home/rockad/scratch/a2a-spikes/stub/selftest.sh`, curl only; outputs in `stub/log/selftest-output.txt` and `stub/log/stub-selftest.jsonl`
+- `~/scratch/a2a-spikes/stub/stub.py`, one file, 127.0.0.1:18120 (threaded `http.server`, HTTP/1.1 keep-alive)
+- `~/scratch/a2a-spikes/stub/README.md` with start and stop commands and the control-file protocol
+- `~/scratch/a2a-spikes/stub/selftest.sh`, curl only; outputs in `stub/log/selftest-output.txt` and `stub/log/stub-selftest.jsonl`
 - Scratch location is outside every git repo (`git rev-parse` there: "not a git repository")
 
 Endpoints, as in spikes.md section 3:
@@ -39,7 +39,7 @@ Endpoints, as in spikes.md section 3:
 
 ### Self-test, run with `A2A_STUB_WAKE_BUDGET=3` (curl only, no harness)
 
-Run: `/home/rockad/scratch/a2a-spikes/stub/selftest.sh`. Result lines (full output in `stub/log/selftest-output.txt`):
+Run: `~/scratch/a2a-spikes/stub/selftest.sh`. Result lines (full output in `stub/log/selftest-output.txt`):
 
 - W1 release `200 2` while parked: `200 body=[2] elapsed=1.0s`. PASS.
 - W2 round timeout (`X-Wait: 2`): `408 body=[] elapsed=2.0s`. PASS.
@@ -76,8 +76,8 @@ Decision consequence: the stub is ready for SP1 and SP2 runs; pick one set of wa
 
 ### What was built
 
-- `/home/rockad/scratch/a2a-spikes/sp1/a2a-listen`: POSIX `sh` plus `curl` (`sh -n` clean, `shellcheck -s sh` clean, run under dash).
-- `/home/rockad/scratch/a2a-spikes/sp1/test-listen.sh`: the offline test; output in `sp1/out/test-listen-output.txt`, listener log in `sp1/state-run3/listen.log`.
+- `~/scratch/a2a-spikes/sp1/a2a-listen`: POSIX `sh` plus `curl` (`sh -n` clean, `shellcheck -s sh` clean, run under dash).
+- `~/scratch/a2a-spikes/sp1/test-listen.sh`: the offline test; output in `sp1/out/test-listen-output.txt`, listener log in `sp1/state-run3/listen.log`.
 
 Behaviour as built (configuration is by environment variable; see the script header):
 
@@ -131,7 +131,7 @@ Decision consequence: the status table of decision 8 is implementable in about 1
 
 This shows the behaviour of the **CLI health check** (`claude mcp list` and `claude mcp get`) in Claude Code 2.1.318. Whether an interactive session expands the variable identically is **unverified** and stays to be confirmed in SP2's interactive part (C9 proper).
 
-### What was run, in order (cwd `/home/rockad/scratch/a2a-spikes/sp2c`)
+### What was run, in order (cwd `~/scratch/a2a-spikes/sp2c`)
 
 - Safety copy of `~/.claude.json` to `sp2c/backup/claude.json.pre-c9` (mode 600, sha256 prefix `cfb55e4fc786bb14`); recorded that no project entry existed for the scratch directory.
 - `claude mcp add -s project --transport http -H 'Authorization: Bearer ${A2A_API_KEY}' a2a-stub http://127.0.0.1:18120/mcp` failed with `error: missing required argument 'name'`. `-H` is variadic and swallowed the name. Working form, options last:
@@ -147,14 +147,14 @@ This shows the behaviour of the **CLI health check** (`claude mcp list` and `cla
   - `A2A_API_KEY=spike-token claude mcp list` (41 s, see the side effect below): `a2a-stub: http://127.0.0.1:18120/mcp (HTTP) - ⏸ Pending approval (run \`claude\` to approve)`. The stub saw **0 requests**.
   - `claude mcp get a2a-stub`: `Status: ⏸ Pending approval (run \`claude\` to approve)`, `Headers: Authorization: Bearer ${A2A_API_KEY}` (shown unexpanded), 0 requests.
   - Conclusion: **project-scope servers are not health-checked without trust approval**, so the project-scope variant cannot be tested without an interactive session. Switched to local scope as instructed. The project entry was removed with `claude mcp remove a2a-stub -s project` (leaves `.mcp.json` as `{"mcpServers": {}}`).
-- Local scope: `claude mcp add a2a-stub http://127.0.0.1:18120/mcp -s local --transport http -H 'Authorization: Bearer ${A2A_API_KEY}'`. `~/.claude.json` then held `.projects["/home/rockad/scratch/a2a-spikes/sp2c"].mcpServers["a2a-stub"]` with the literal `Bearer ${A2A_API_KEY}`.
+- Local scope: `claude mcp add a2a-stub http://127.0.0.1:18120/mcp -s local --transport http -H 'Authorization: Bearer ${A2A_API_KEY}'`. `~/.claude.json` then held `.projects["~/scratch/a2a-spikes/sp2c"].mcpServers["a2a-stub"]` with the literal `Bearer ${A2A_API_KEY}`.
   - `A2A_API_KEY=spike-token claude mcp list`: `a2a-stub: http://127.0.0.1:18120/mcp (HTTP) - ✔ Connected`.
   - `A2A_API_KEY=spike-token claude mcp get a2a-stub`: `Status: ✔ Connected`; the displayed header stays the unexpanded text.
   - Unset: `env -u A2A_API_KEY claude mcp get a2a-stub`: `Status: ✘ Failed to connect`, `Issue: Server rejected the configured Authorization header (HTTP 401). Check that the token is valid for this MCP endpoint — OAuth fallback is disabled when headers.Authorization is set. Error detail: {"error": "unauthorized"}`.
   - Unset: `env -u A2A_API_KEY claude mcp list`: `a2a-stub: ... - ✘ Failed to connect — Server rejected the configured Authorization header (HTTP 401). ...` and a second line `└ [Warning] [a2a-stub] mcpServers.a2a-stub: Missing environment variables: A2A_API_KEY`.
 - Removal: `claude mcp remove -s local a2a-stub`, then the jq checks in section 4.
 
-### Wire evidence (stub log, `/home/rockad/scratch/a2a-spikes/stub/log/stub.jsonl`)
+### Wire evidence (stub log, `~/scratch/a2a-spikes/stub/log/stub.jsonl`)
 
 Variable set, `claude mcp list` at 06:36:15 UTC (and again for `get`):
 
@@ -198,14 +198,14 @@ Side effect to know about: `claude mcp list` health-checks every configured serv
 
 Touched files:
 
-- `/home/rockad/.claude.json` (user level, unmanaged by chezmoi): changed only by `claude mcp add -s local` and `claude mcp remove -s local`, for the scratch project path. Safety copy `sp2c/backup/claude.json.pre-c9` was taken first. Not restored byte for byte, as instructed, because running sessions rewrite it.
+- `~/.claude.json` (user level, unmanaged by chezmoi): changed only by `claude mcp add -s local` and `claude mcp remove -s local`, for the scratch project path. Safety copy `sp2c/backup/claude.json.pre-c9` was taken first. Not restored byte for byte, as instructed, because running sessions rewrite it.
   - Verified after removal: `jq '[.. | objects | select(has("a2a-stub"))] | length'` gives 0; `rg -c a2a-stub` finds 0 occurrences; `A2A_API_KEY` occurs 0 times.
-  - Verified: the sorted list of server names across all `mcpServers` objects is identical before and after; the top-level keys are identical; the only difference in `projects` keys is one added key, `/home/rockad/scratch/a2a-spikes/sp2c`.
+  - Verified: the sorted list of server names across all `mcpServers` objects is identical before and after; the top-level keys are identical; the only difference in `projects` keys is one added key, `~/scratch/a2a-spikes/sp2c`.
   - **Residual, not removable with the CLI:** that project entry remains, empty and inert: `{"allowedTools":[],"mcpContextUris":[],"mcpServers":{},"enabledMcpjsonServers":[],"disabledMcpjsonServers":[],"hasTrustDialogAccepted":false,...}`. I did not hand-edit the file because it is rewritten continuously by running sessions. If you want it gone, delete that one key by hand when no session is writing.
   - The safety copy held credentials, so it was deleted after the checks above (and its directory removed); it is no longer on disk.
-- `/home/rockad/scratch/a2a-spikes/sp2c/.mcp.json` (scratch): created by `claude mcp add -s project`, emptied by `remove`; now `{"mcpServers": {}}`. Kept.
-- `/home/rockad/.local/state/a2a-coord/` (accidental): one test run used an empty state-directory variable (a bug in `test-listen.sh`, since fixed) and the listener fell back to its default state directory, creating this directory with `listen.log` and three empty marker files. I removed those files and the directory and verified `ls ~/.local/state` no longer lists it. Nothing else under `~/.local` was touched.
-- Repo: only this file was written in `/home/rockad/projects/agentic-hub`. Before writing it `git status --short` was empty; branch `feat/coordination-s0`; no commit, push or branch switch.
+- `~/scratch/a2a-spikes/sp2c/.mcp.json` (scratch): created by `claude mcp add -s project`, emptied by `remove`; now `{"mcpServers": {}}`. Kept.
+- `~/.local/state/a2a-coord/` (accidental): one test run used an empty state-directory variable (a bug in `test-listen.sh`, since fixed) and the listener fell back to its default state directory, creating this directory with `listen.log` and three empty marker files. I removed those files and the directory and verified `ls ~/.local/state` no longer lists it. Nothing else under `~/.local` was touched.
+- Repo: only this file was written in `~/projects/agentic-hub`. Before writing it `git status --short` was empty; branch `feat/coordination-s0`; no commit, push or branch switch.
 - Not touched: `~/.claude/settings.json`, any hooks file, `~/.gemini`, `~/.agents`, any chezmoi-managed file, agy in any form, Docker (containers `a2a-spike-sp5*` belong to another workstream).
 
 Cleanup confirmation:
@@ -214,7 +214,7 @@ Cleanup confirmation:
 - No Claude session was started; no `claude -p`; only `claude --version` and `claude mcp add|list|get|remove` were run.
 - Docker not used.
 
-Scratch files kept under `/home/rockad/scratch/a2a-spikes/`:
+Scratch files kept under `~/scratch/a2a-spikes/`:
 
 - `stub/`: `stub.py`, `README.md`, `selftest.sh`, `log/` (`stub.jsonl`, `stub-selftest.jsonl`, `selftest-output.txt`, `stdout.log`), `ctl/`, `run/`
 - `sp1/`: `a2a-listen`, `test-listen.sh`, `out/test-listen-output.txt`, `state/`, `state-run2/`, `state-run3/` (listener logs of three test runs; `state-run3` is the clean final run, `state` and `state-run2` are earlier runs with the connection-refused test still pointed at the timing-out IPv4 port)
@@ -222,7 +222,7 @@ Scratch files kept under `/home/rockad/scratch/a2a-spikes/`:
 
 ## 5. Open points for the user-run spikes
 
-- Restart the stub for the interactive work: `cd /home/rockad/scratch/a2a-spikes/stub && mkdir -p ctl log run && setsid nohup python3 stub.py >> log/stdout.log 2>&1 < /dev/null &` (default budget 12). Note: the stdlib-only stub runs on the system `python3` (3.14.4), outside any uv project. This is a deliberate exception: spikes.md section 3 allows a stdlib-only stub with no install. The alternative that follows the tool rule strictly is `uv run --no-project python stub.py`. The log accumulates; move `log/stub.jsonl` aside first if a clean log is wanted.
+- Restart the stub for the interactive work: `cd ~/scratch/a2a-spikes/stub && mkdir -p ctl log run && setsid nohup python3 stub.py >> log/stdout.log 2>&1 < /dev/null &` (default budget 12). Note: the stdlib-only stub runs on the system `python3` (3.14.4), outside any uv project. This is a deliberate exception: spikes.md section 3 allows a stdlib-only stub with no install. The alternative that follows the tool rule strictly is `uv run --no-project python stub.py`. The log accumulates; move `log/stub.jsonl` aside first if a clean log is wanted.
 - SP1 must determine the real owner pid (`$PPID` versus `claude`) and the hook environment (T7, T10); the listener's owner default is unverified.
 - SP2 interactive part must confirm `${A2A_API_KEY}` expansion in an interactive session for `tools/call` and `DELETE`, in project scope after approval, and with a GUI-launched Claude.
 - Choose one spelling for the wake headers (`X-Session` or `X-Coord-Session`) in the spec.
@@ -230,7 +230,7 @@ Scratch files kept under `/home/rockad/scratch/a2a-spikes/`:
 
 ## 6. Stub patches for the user-run spikes (runbook 0.6, applied 2026-11-05)
 
-All three patches are in `/home/rockad/scratch/a2a-spikes/stub/stub.py` (scratch only).
+All three patches are in `~/scratch/a2a-spikes/stub/stub.py` (scratch only).
 
 - **Patch 1, `POST /wake/pending` (SP1 T11):** verified.
   - Each request logs a `wake_pending_body` event with the first 4 KB of the body, the `Content-Type` and the header names. The bearer value is never logged (`rg -c spike-token log/stub.jsonl` returns 0).

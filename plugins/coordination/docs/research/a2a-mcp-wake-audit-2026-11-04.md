@@ -4,10 +4,10 @@ Author: Claude Code (session `agents-bridge-52`), 2026-11-04. Research only; not
 
 Inputs (full reports, copied into the repo):
 
-- [`a2a-audit-2026-11-04/t1a-a2a-mcp-bridges.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1a-a2a-mcp-bridges.md): A2A bridges with an MCP facade.
-- [`a2a-audit-2026-11-04/t1b-wake-mechanisms.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1b-wake-mechanisms.md): idle-session wake mechanisms and the official Claude Code and Antigravity hook docs.
-- [`a2a-audit-2026-11-04/t1c-bridges-and-sdks.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md): remaining bridges, Docker Agent, official A2A SDKs.
-- [`a2a-audit-2026-11-04/t2-cognitive-engine-integration.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): answer from the `cognitive-engine` session.
+- [`a2a-audit-2026-11-04/t1a-a2a-mcp-bridges.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1a-a2a-mcp-bridges.md): A2A bridges with an MCP facade.
+- [`a2a-audit-2026-11-04/t1b-wake-mechanisms.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1b-wake-mechanisms.md): idle-session wake mechanisms and the official Claude Code and Antigravity hook docs.
+- [`a2a-audit-2026-11-04/t1c-bridges-and-sdks.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md): remaining bridges, Docker Agent, official A2A SDKs.
+- [`a2a-audit-2026-11-04/t2-cognitive-engine-integration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): answer from the `cognitive-engine` session.
 
 Labels: **verified** (read in code or official docs by the auditor), **reported** (project README or PR text), **unverified**. The audits were run by Sonnet subagents; the labels are theirs.
 
@@ -82,7 +82,7 @@ Labels: **verified** (read in code or official docs by the auditor), **reported*
 - **Reuse, do not duplicate**: `audit.jsonl` (with `run_scope` ids) is the source of truth; the server mirrors from it. Watch R-18: `sessions_summary.denied_requests` counts path denials only, so no dashboard may show "denied = 0" from that field.
 - **Agent Cards** belong to the long-lived Claude Code and Antigravity sessions, not to cognitive-engine's contained sessions.
 - **Network**: model sessions must never reach the server; it must not be on the sbx one-host allow rule.
-- **Ports (t2)**: avoid 8100 to 8110 (8100, 8101, 8105, 8110 in use or reserved) and 11434. Separately, this session (not the cognitive-engine session) checked `:8120` free on alyx-wsl on 2026-11-04 with `ss -ltn`; it is not reserved anywhere.
+- **Ports (t2)**: avoid 8100 to 8110 (8100, 8101, 8105, 8110 in use or reserved) and 11434. Separately, this session (not the cognitive-engine session) checked `:8120` free on <workstation>-wsl on 2026-11-04 with `ss -ltn`; it is not reserved anywhere.
 - **Never expose publicly**:
   - anything that starts a sweep or grants approval
   - credentials (OpenRouter key, the RFC 006 credential route, Claude and agy tokens)

@@ -1,6 +1,6 @@
 # SP2 A8b Results: User-Level Antigravity Plugin MCP Tools, 2026-11-09
 
-Branch note: written on `docs/adoption-review-followups` in the working tree (uncommitted). Spike code and logs stay in `/home/rockad/scratch/a2a-spikes/` and are never merged.
+Branch note: first written on the `docs/adoption-review-followups` branch, since merged as PR #19 (see the [adoption review](https://github.com/rockad/cognitive-engine/blob/main/docs/adoption-review-2026-11.md)). Spike code and logs stay in `~/scratch/a2a-spikes/` and are never merged.
 
 Labels:
 - **verified**: observed directly in a file, wire capture, transcript, or log in this session
@@ -9,10 +9,10 @@ Labels:
 
 Run facts:
 - Antigravity CLI version: **1.5.3** (verified, `agy --version`).
-- Shell & OS: Linux 6.6 WSL2 x86_64 (`alyx`).
-- Workspace: `/home/rockad/scratch/a2a-spikes/sp2-agy-a8b`.
+- Shell & OS: Linux 6.6 WSL2 x86_64 (`<workstation>`).
+- Workspace: `~/scratch/a2a-spikes/sp2-agy-a8b`.
 - Stub server: `http://127.0.0.1:18120/mcp`, Python 3.12 (`stub.py`).
-- Stub log: `/home/rockad/scratch/a2a-spikes/runlogs/a8b/stub-a8b.jsonl`.
+- Stub log: `~/scratch/a2a-spikes/runlogs/a8b/stub-a8b.jsonl`.
 - Candidate plugin: `~/.gemini/config/plugins/coordination` (`mcp_config.json`, server `a2a-stub-gemini`, header `X-Spike-Via: gemini`).
 - Credential: `spike-token` only.
 - Known environment delay: `lookup` and `recall` timed out at startup in every agy session (`MCP: 2 server(s) still connecting after 2m0s`), delaying MCP startup by ~2 minutes (verified in `cli.log`, reported out of scope by user).
@@ -44,7 +44,7 @@ Do user-level agy plugin tools run when signed in, and why did they fail on 2026
 ## 2. Per-Run Results (Part 1, A, A2, A3, A4, Shadow)
 
 ### Part 1: Read-Only Questionnaire (No Files Placed)
-- **Setup:** Fresh agy session in `/home/rockad/scratch/a2a-spikes/sp2-agy-a8b` answering read-only questions from `a8b-operator-brief.md`.
+- **Setup:** Fresh agy session in `~/scratch/a2a-spikes/sp2-agy-a8b` answering read-only questions from `a8b-operator-brief.md`.
 - **Log lines (verified, `cli-20261108_225446.log`):**
   - `I1109 11:02:46.821682 ... token refreshed, new expiry=2026-11-09 12:02:45.821617462 +0200`
   - `I1109 11:31:43.278098 ... Full redraw completed (RerenderAll) for conversation 39d358e6-0da9-401e-aa97-53fff652c376`
@@ -81,7 +81,7 @@ Do user-level agy plugin tools run when signed in, and why did they fail on 2026
 - **Pass / Fail:** **PASS** (proves clean cold load works on first start).
 
 ### Run Shadow: User-Level + Same-Named Workspace Plugin
-- **Setup:** User-level plugin `~/.gemini/config/plugins/coordination` (`a2a-stub-gemini`) kept; workspace plugin `.agents/plugins/coordination` (`a2a-stub-ws`) added back into `/home/rockad/scratch/a2a-spikes/sp2-agy-a8b`.
+- **Setup:** User-level plugin `~/.gemini/config/plugins/coordination` (`a2a-stub-gemini`) kept; workspace plugin `.agents/plugins/coordination` (`a2a-stub-ws`) added back into `~/scratch/a2a-spikes/sp2-agy-a8b`.
 - **Observed behavior (verified, `stub-a8b.jsonl`, `cli-20261109_180627.log`, transcript `2facd2be`):**
   - `gemini` connected at `16:06:38.486 UTC` (port 44253, session `e0dfecf6`).
   - `ws` connected at `16:08:27.220 UTC` (port 44253, session `51f8a5d2`).
@@ -95,7 +95,7 @@ Do user-level agy plugin tools run when signed in, and why did they fail on 2026
 
 In the shadow run, both candidate plugins shared the directory name `coordination`:
 - User-level: `~/.gemini/config/plugins/coordination` (`a2a-stub-gemini`, `X-Spike-Via: gemini`)
-- Workspace-level: `/home/rockad/scratch/a2a-spikes/sp2-agy-a8b/.agents/plugins/coordination` (`a2a-stub-ws`, `X-Spike-Via: ws`)
+- Workspace-level: `~/scratch/a2a-spikes/sp2-agy-a8b/.agents/plugins/coordination` (`a2a-stub-ws`, `X-Spike-Via: ws`)
 
 ### Wire & Execution Sequence (verified)
 - At `16:06:38 UTC`: The user-level server (`coordination_a2a-stub-gemini`) connected to the stub, completed `initialize` (200), and fetched `tools/list` (200).
@@ -162,9 +162,9 @@ In accordance with empirical evidence across runs A3, A4, and Shadow, the follow
 ## 7. Touched Files & Restore Check
 
 - **Checksum verification against `sha256.before` (verified):**
-  - `/home/rockad/.gemini/config/config.json`: `85e401bb...` (matches `sha256.before`)
-  - `/home/rockad/.gemini/config/hooks.json`: `fe75d19e...` (matches `sha256.before`)
-  - `/home/rockad/.gemini/config/mcp_config.json`: `9ec82f01...` (matches `sha256.before`)
+  - `~/.gemini/config/config.json`: `85e401bb...` (matches `sha256.before`)
+  - `~/.gemini/config/hooks.json`: `fe75d19e...` (matches `sha256.before`)
+  - `~/.gemini/config/mcp_config.json`: `9ec82f01...` (matches `sha256.before`)
 - **Plugin removals (verified):**
   - `~/.gemini/config/plugins/coordination` removed.
   - Workspace `.agents/plugins/coordination` in `sp2-agy-a8b` removed.
@@ -172,7 +172,7 @@ In accordance with empirical evidence across runs A3, A4, and Shadow, the follow
 - **Stub status (verified):**
   - Stub process stopped (port `:18120` closed).
 - **Host settings note:**
-  - `/home/rockad/scratch/a2a-spikes/sp2-agy-a8b` remains in `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json` (left for user cleanup).
+  - `~/scratch/a2a-spikes/sp2-agy-a8b` remains in `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json` (left for user cleanup).
 
 ---
 

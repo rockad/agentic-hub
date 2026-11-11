@@ -1,15 +1,15 @@
 """Runtime paths and settings, environment-driven.
 
-Defaults are the in-container paths; compose maps core's real directories onto
+Defaults are the in-container paths; compose maps the storage host's real directories onto
 them. Source trees are mounted read-only — the indexer has no business writing
 to the archive it reads.
 
-    /media/media2/lookup            -> /data
-    /media/media2/takeout/extracted/Takeout -> /data/takeout   (ro)
+    /media/storage/lookup            -> /data
+    /media/storage/takeout/extracted/Takeout -> /data/takeout   (ro)
     .../lookup/sources/...          -> /data/sources   (ro)
     .../lookup/converted            -> /data/converted (ro)
 
-/media/media2/External is deliberately absent from that list and from
+/media/storage/External is deliberately absent from that list and from
 sources.toml. It is restricted data. See the header of sources.toml.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ def load_dotenv(start: Path | None = None) -> dict[str, str]:
     compose` reads `.env` on its own, but nothing else does — so
     `uv run lookup mounts --write`, the one bring-up step that must not be
     skipped, ran with LOOKUP_HOME unset AND LOOKUP_MANIFEST unset, fell back to the
-    packaged `sources.toml` (core's manifest, whose roots are container paths),
+    packaged `sources.toml` (the storage host's manifest, whose roots are container paths),
     generated mounts for `/data/converted` and friends, and **exited 0**. A
     wrong override file that looks right is worse than a crash.
 

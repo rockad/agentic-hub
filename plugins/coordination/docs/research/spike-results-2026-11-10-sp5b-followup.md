@@ -1,8 +1,8 @@
-# Spike results: SP5b follow-up on alyx (2026-11-10)
+# Spike results: SP5b follow-up on <workstation> (2026-11-10)
 
 Claude Code's independent check of this file against the scratch logs is in section 7 (2026-11-10); sections 1 to 6 are agy's text and are unchanged.
 
-Follow-up checks on alyx following the 2026-11-10 SP5b spike, covering:
+Follow-up checks on <workstation> following the 2026-11-10 SP5b spike, covering:
 - (a) `dump_ro` role creation and rotation through the host-command route (`a2a-coord db init-dump-role`, decision X2)
 - (b) handle separator evidence for `~` (`card/name~sid8`, decision X1)
 - (c) investigation of the D7 1,036.82 ms `transition.versioned` latency outlier
@@ -13,7 +13,7 @@ Status: **COMPLETED**. Non-gating spike (S1 entry gate is NOT yet satisfied (SP3
 
 ## 1. Environment, versions, and pins
 
-- Host: `alyx` (WSL2, Debian GNU/Linux 12) (verified).
+- Host: `<workstation>` (WSL2, Debian GNU/Linux 12) (verified).
 - Image pin: `postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` (verified by `docker image inspect`).
 - Python container / venv packages (`uv.lock` in `sp5b/`):
   - `a2a-sdk`: `1.3.0` (verified)
@@ -72,20 +72,20 @@ Status: **COMPLETED**. Non-gating spike (S1 entry gate is NOT yet satisfied (SP3
 
 ## 3. (b) Handle separator evidence for `~` (decision X1)
 
-Handle evaluated: `claude-code@alyx/c6-same~3f2a9c1d`.
+Handle evaluated: `claude-code@<workstation>/c6-same~3f2a9c1d`.
 Session-part regex: `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`.
 
 ### Verification checklist
 - **Unencoded URL query via `curl`**:
-  - Quoted: `curl -s -H "Authorization: Bearer spike-token" "http://127.0.0.1:18130/spike/metrics?session=claude-code@alyx/c6-same~3f2a9c1d"` -> HTTP 200, parsed cleanly (verified).
-  - Unquoted: `curl -s -H "Authorization: Bearer spike-token" http://127.0.0.1:18130/spike/metrics?session=claude-code@alyx/c6-same~3f2a9c1d` -> HTTP 200, parsed cleanly without shell error (verified).
+  - Quoted: `curl -s -H "Authorization: Bearer spike-token" "http://127.0.0.1:18130/spike/metrics?session=claude-code@<workstation>/c6-same~3f2a9c1d"` -> HTTP 200, parsed cleanly (verified).
+  - Unquoted: `curl -s -H "Authorization: Bearer spike-token" http://127.0.0.1:18130/spike/metrics?session=claude-code@<workstation>/c6-same~3f2a9c1d` -> HTTP 200, parsed cleanly without shell error (verified).
 - **HTTP client query encoding (`httpx` / `urllib.parse`)**:
-  - When query parameters are serialized (`params={"session": "claude-code@alyx/c6-same~3f2a9c1d"}`), `httpx` and `urllib` encode `@` to `%40` and `/` to `%2F`, but preserve `~` unencoded: `session=claude-code%40alyx%2Fc6-same~3f2a9c1d` (verified).
+  - When query parameters are serialized (`params={"session": "claude-code@<workstation>/c6-same~3f2a9c1d"}`), `httpx` and `urllib` encode `@` to `%40` and `/` to `%2F`, but preserve `~` unencoded: `session=claude-code%40alyx%2Fc6-same~3f2a9c1d` (verified).
   - `~` is an RFC 3986 unreserved character (`ALPHA / DIGIT / "-" / "." / "_" / "~"`), so standard HTTP clients never percent-encode it (verified).
-  - Starlette query parser (`request.query_params["session"]`) decodes the parameter to the exact handle `claude-code@alyx/c6-same~3f2a9c1d` (verified).
+  - Starlette query parser (`request.query_params["session"]`) decodes the parameter to the exact handle `claude-code@<workstation>/c6-same~3f2a9c1d` (verified).
 - **API `coord.to` handling**:
-  - JSON-RPC `SendMessage` with `metadata.coord.to: "claude-code@alyx/c6-same~3f2a9c1d"` -> HTTP 200, task created (verified).
-  - REST `messages:send` with `metadata.coord.to: "claude-code@alyx/c6-same~3f2a9c1d"` -> HTTP 200, task created (verified).
+  - JSON-RPC `SendMessage` with `metadata.coord.to: "claude-code@<workstation>/c6-same~3f2a9c1d"` -> HTTP 200, task created (verified).
+  - REST `messages:send` with `metadata.coord.to: "claude-code@<workstation>/c6-same~3f2a9c1d"` -> HTTP 200, task created (verified).
 - **Database storage & indexed lookups**:
   - `sessions.handle`: inserted and queried via `SELECT handle WHERE handle = '...'` -> exact match (verified).
   - `task_index.to_handle`: inserted, indexed, and retrieved -> exact match (verified).
@@ -168,7 +168,7 @@ Final system inspection:
 
 ## 7. Independent check by Claude Code (2026-11-10)
 
-Claude Code checked this file against the scratch logs in `~/scratch/a2a-spikes/sp5b/` (alyx-local, not in git). Labels in this section are Claude Code's: **verified** (read or observed by Claude Code), **reported** (agy's claim with no saved log), **unverified** (a guess).
+Claude Code checked this file against the scratch logs in `~/scratch/a2a-spikes/sp5b/` (<workstation>-local, not in git). Labels in this section are Claude Code's: **verified** (read or observed by Claude Code), **reported** (agy's claim with no saved log), **unverified** (a guess).
 
 ### (a) `dump_ro` role through the host-command route (X2)
 
@@ -200,7 +200,7 @@ Verdict: PASS for the mechanism. Not gating.
 
 ### (b) Separator evidence for `~` (X1)
 
-[verified] `logs/separator_tilde_evidence.json` records, for the handle `claude-code@alyx/c6-same~3f2a9c1d`:
+[verified] `logs/separator_tilde_evidence.json` records, for the handle `claude-code@<workstation>/c6-same~3f2a9c1d`:
 - `curl` with the handle unencoded in a query string, quoted and unquoted, succeeds.
 - `httpx` serialises `@` and `/` as `%40` and `%2F`, leaves `~` unchanged, and the server decodes the same string.
 - JSON-RPC and REST `coord.to` succeed.

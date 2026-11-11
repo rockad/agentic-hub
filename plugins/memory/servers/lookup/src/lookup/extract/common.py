@@ -1,6 +1,6 @@
 """Shared parsing helpers.
 
-Stdlib only — core has no bs4/lxml, and keeping it that way is what lets the
+Stdlib only — the storage host has no bs4/lxml, and keeping it that way is what lets the
 arm64 image cross-build with no compiled dependencies.
 """
 from __future__ import annotations

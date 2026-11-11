@@ -185,7 +185,7 @@ class DotenvTests(unittest.TestCase):
     reads `.env` on its own but nothing else did, so
     `uv run lookup mounts --write` — the one bring-up step that must not be
     skipped — ran with LOOKUP_HOME unset AND LOOKUP_MANIFEST unset, fell back to the
-    packaged sources.toml (core's manifest, whose roots are in-container paths),
+    packaged sources.toml (the storage host's manifest, whose roots are in-container paths),
     wrote mounts for /data/converted and friends, and exited 0.
     """
 
@@ -499,7 +499,7 @@ class AliasTests(unittest.TestCase):
 
     Decision 2026-09-07: *"check that lookup sources include aliases for the
     sources, as smb://core/knowledge-archive/ is the same as
-    smb://192.168.1.90/knowledge-archive/."*
+    smb://192.0.2.10/knowledge-archive/."*
 
     Purely declarative. Document identity is address-independent already —
     `sha1(source|path|key)` with paths under a root — so an alias changes
@@ -515,11 +515,11 @@ class AliasTests(unittest.TestCase):
         self.mpath.write_text(
             '[[source]]\nname = "share"\ndescription = "d"\n'
             'root = "/Volumes/share"\n'
-            'aliases = ["smb://core/share", "smb://core.lan/share",'
-            ' "smb://192.168.1.90/share"]\n'
+            'aliases = ["smb://nas/share", "smb://nas.lan/share",'
+            ' "smb://192.0.2.10/share"]\n'
             'include = ["*.md"]\nextractor = "docs.markdown"\n'
             '[source.volume]\ntype = "cifs"\n'
-            'device = "smb://core/share"\noptions = "ro"\n'
+            'device = "smb://nas/share"\noptions = "ro"\n'
             'username = "${SHARE_USER}"\npassword = "${SHARE_PASS}"\n\n'
             '[[source]]\nname = "plain"\ndescription = "d"\n'
             f'root = "{self.base}"\ninclude = ["*.md"]\n'
@@ -547,8 +547,8 @@ class AliasTests(unittest.TestCase):
 
     def test_normalise_accepts_the_three_forms_people_write(self):
         n = manifest.normalise_address
-        for form in ("smb://core/share/", "//core/share", "\\\\CORE\\share"):
-            self.assertEqual(n(form), "//core/share", form)
+        for form in ("smb://nas/share/", "//nas/share", "\\\\NAS\\share"):
+            self.assertEqual(n(form), "//nas/share", form)
 
     def test_a_local_path_passes_through_untouched(self):
         self.assertEqual(manifest.normalise_address("/Volumes/x"), "/Volumes/x")
@@ -556,12 +556,12 @@ class AliasTests(unittest.TestCase):
     def test_addresses_are_normalised_deduped_and_ordered(self):
         src = manifest.load(self.mpath)["share"]
         self.assertEqual(src.addresses(),
-                         ("//core/share", "//core.lan/share", "//192.168.1.90/share"))
+                         ("//nas/share", "//nas.lan/share", "//192.0.2.10/share"))
 
     def test_any_declared_alias_is_accepted(self):
         src = manifest.load(self.mpath)["share"]
-        for form in ("smb://core/share/", "//core.lan/share",
-                     "//192.168.1.90/share"):
+        for form in ("smb://nas/share/", "//nas.lan/share",
+                     "//192.0.2.10/share"):
             self.assertTrue(src.accepts_address(form), form)
 
     def test_an_unlisted_address_is_not(self):
@@ -582,7 +582,7 @@ class AliasTests(unittest.TestCase):
     def test_the_declared_device_is_normalised_on_the_source(self):
         self.assertEqual(self._run(), 0)
         src = manifest.load()["share"]
-        self.assertEqual(src.device(), "//core/share")
+        self.assertEqual(src.device(), "//nas/share")
         self.assertEqual(src.volume.get("type"), "cifs")
 
     def test_no_credential_reaches_the_generated_file(self):
@@ -613,7 +613,7 @@ class AliasTests(unittest.TestCase):
 
     def test_mounts_refuses_a_device_outside_the_alias_list(self):
         m = self.mpath.read_text(encoding="utf-8").replace(
-            'device = "smb://core/share"', 'device = "//typo/share"')
+            'device = "smb://nas/share"', 'device = "//typo/share"')
         self.mpath.write_text(m, encoding="utf-8")
         with self.assertRaises(SystemExit) as e:
             self._run()

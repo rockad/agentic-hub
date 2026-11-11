@@ -1,6 +1,6 @@
 # T1c audit: MCP bridges, Docker Agent A2A server, official A2A SDKs
 
-Date of audit: 2026-11-04. Method: shallow clones (depth 200) under `/tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/<owner>-<repo>`, read with `rg`/`fd`/`jq`/`gh api`. Nothing was built, installed or executed. No missing tools (`jq`, `rg`, `fd`, `gh` present). Labels: **verified** = read in the clone; **reported** = from README/docs/GitHub metadata only; **unverified** = not checked.
+Date of audit: 2026-11-04. Method: shallow clones (depth 200) under `/tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/<owner>-<repo>`, read with `rg`/`fd`/`jq`/`gh api`. Nothing was built, installed or executed. No missing tools (`jq`, `rg`, `fd`, `gh` present). Labels: **verified** = read in the clone; **reported** = from README/docs/GitHub metadata only; **unverified** = not checked.
 
 Spec note: the spec repository [`a2aproject/A2A`](https://github.com/a2aproject/A2A/tree/4735f4876449c6f381825d8a841b31b16c6ad0c4) (checked as a local clone at that commit; the clone is now deleted) has a `LICENSE` byte-identical (sha1 2b8b8152...) to the a2a-python and a2a-js LICENSE files (verified). The user-facing names of the 11 core operations match the dispatcher tables of the SDKs below.
 
@@ -176,7 +176,7 @@ Spec note: the spec repository [`a2aproject/A2A`](https://github.com/a2aproject/
 
 | Candidate | Licence riders | agy launched/wrapped | Spawns CLIs one-shot | Symmetric agency possible |
 | --- | --- | --- | --- | --- |
-| TonPC64/mcp-a2a-bridge | none (MIT) | no | examples: `claude -p`, `copilot -p`; core bridge none | client-only core; servers only via example adapters |
+| TonPC64/mcp-a2a-bridge | none (MIT) | no | examples: `claude -p`, `copilot -p`; core bridge none | client-only <storage-host>; servers only via example adapters |
 | GongRzhe/A2A-MCP-Server | none (Apache-2.0) | no | no | client-only, obsolete protocol |
 | hieuntg81/a2a-bridge | not assessable | not assessable | not assessable | not assessable |
 | docker/docker-agent | none (Apache-2.0) | no | yes: harness feature runs `claude --print` | no: orchestrator/sub-agent model, server hosts its own agents |

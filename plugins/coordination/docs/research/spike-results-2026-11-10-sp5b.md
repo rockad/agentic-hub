@@ -1,6 +1,6 @@
 # Spike results: SP5b — a2a-python on Postgres (D-D)
 
-Written 2026-11-10 on `alyx`. Results of the rerun of SP5 on Postgres with backup sidecar, crash resilience, steady-state own-table writes, and handle separator check. SP5b is the storage part of the S1 entry gate.
+Written 2026-11-10 on `<workstation>`. Results of the rerun of SP5 on Postgres with backup sidecar, crash resilience, steady-state own-table writes, and handle separator check. SP5b is the storage part of the S1 entry gate.
 
 Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open) (spikes 11). Corrections after the independent audit of 2026-11-10 (`audit-2026-11-10-sp5b-s1-gate.md`) are folded in below and marked (C1 to C3, X1); the measured numbers are unchanged.
 
@@ -20,7 +20,7 @@ Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S
 
 ## 2. Environment, versions, and pins
 
-- Host: `alyx` (WSL2, Debian GNU/Linux 12).
+- Host: `<workstation>` (WSL2, Debian GNU/Linux 12).
 - Container base: `python:3.12-slim` (Python 3.12.13).
 - Postgres image pinned: `postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` (D-B, R3).
 - `a2a-sdk`: `1.3.0`.
@@ -122,7 +122,7 @@ Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S
 
 ## 7. Handle separator check (# vs ~)
 
-- Evaluated `#` and `~` in `claude-code@alyx/c6-same#3f2a9c1d` and `claude-code@alyx/c6-same~3f2a9c1d`.
+- Evaluated `#` and `~` in `claude-code@<workstation>/c6-same#3f2a9c1d` and `claude-code@<workstation>/c6-same~3f2a9c1d`.
 - Domains tested:
   - JSON-RPC: `coord.to` parameter in `SendMessage` — both pass.
   - REST: `coord.to` in `message:send` — both pass.
@@ -131,7 +131,7 @@ Status: **passed** (all gates met). S1 storage gate satisfied by SP5b; overall S
   - Shell quoting: quoted arguments in `curl` and bash variables pass cleanly.
   - JSON serialization: round-trips as value and dictionary key without alteration.
   - Postgres storage: indexed lookups on `task_index.to_handle` and unique key lookups on `sessions.handle` pass without alteration.
-- Verdict (X1, user decision 2026-11-10): `#` needs `%23` in URL queries (a raw `#` starts a URL fragment and silently truncates an unencoded `curl` URL). `~` is adopted: the handle is `card/name~sid8` (for example `claude-code@alyx/c6-same~3f2a9c1d`), session part regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`. `~` is outside the name charset, so the split is exact. The earlier line "adopted `name#sid8` as designed" in this file is superseded.
+- Verdict (X1, user decision 2026-11-10): `#` needs `%23` in URL queries (a raw `#` starts a URL fragment and silently truncates an unencoded `curl` URL). `~` is adopted: the handle is `card/name~sid8` (for example `claude-code@<workstation>/c6-same~3f2a9c1d`), session part regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`. `~` is outside the name charset, so the split is exact. The earlier line "adopted `name#sid8` as designed" in this file is superseded.
   - `@` and `/` stay in the handle: both are legal unencoded in a URL query string (RFC 3986 section 3.4), and handles travel in JSON bodies and query parameters, never as URL path segments.
   - The unnamed-session form stays [design, open].
   - Re-check with `~` across URL query, shell, JSON body and storage key: SP5b follow-up, item (b) (spikes 8b). The measurements above are for both separators as run on 2026-11-10 and are unchanged.

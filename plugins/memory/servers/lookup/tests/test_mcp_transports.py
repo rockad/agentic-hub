@@ -158,7 +158,7 @@ class HttpTests(unittest.TestCase):
     """The transport a resident container needs.
 
     stdio forces one server process per client, and a container per session is
-    what leaked on core and got the earlier incarnation scrapped.
+    what leaked on the storage host and got the earlier incarnation scrapped.
     """
 
     @classmethod

@@ -14,14 +14,14 @@ Timing consequences (decision 14):
 
 Related documents:
 
-- [Evidence synthesis](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md)
-- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
-- [Master tasklist](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/master-tasklist.md)
-- [a2a-python and bridges audit (TaskStore, DatabaseTaskStore)](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md)
+- [Evidence synthesis](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md)
+- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
+- [Master tasklist](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
+- [a2a-python and bridges audit (TaskStore, DatabaseTaskStore)](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md)
 
 Evidence labels used below:
 
-- `[verified]`: measured by reading the files on alyx-wsl on 2026-11-04.
+- `[verified]`: measured by reading the files on <workstation>-wsl on 2026-11-04.
 - `[inferred]`: my reading of the evidence, not directly stated anywhere.
 - `[reported]`: taken from the audit documents, not re-checked here.
 - `[unverified]`: needs a spike or a user answer.
@@ -135,9 +135,9 @@ A2A objects follow `a2a.proto` (`Task`, `TaskStatus`, `Message`, `Part`, `Role`)
 
 ### 6.1 Identity
 
-- Author card: `claude` maps to `claude-code@alyx`, `antigravity` maps to `antigravity@alyx`. The machine part is `alyx` per the decisions; the host reports `alyx-wsl` `[verified]`, so the machine name is a profile setting and not read from the OS (open point 4).
-- Author handle: `<card>/<lowercased conversation_id>`, for example `claude-code@alyx/012hq2t9cjjjdcy9jysndaej`. The name charset in server-api.md 5.1 is lowercase only (`[a-z0-9._-]`), and some conversation ids contain uppercase letters, so the handle uses the lowercased id (this option, not a hash). An imported handle is a historical author label, not a live session: it carries no `~<sid8>` suffix, so it does not fit the session part regex of 5.1 (`^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`, round-4 X1); whether imported handles are exempt from that regex is [design, open]. The raw conversation id is kept only in metadata (`coord.import.conversation_id`). The dry-run aborts if two distinct raw ids collide after lowercasing. Handles are our extension (decision 6). Imported handles are never registered as live sessions: no `/sessions` row, no listener, no card routing.
-- `to:` mapping: `claude` to `claude-code@alyx`, `antigravity` to `antigravity@alyx`, `all` to the literal `*`. Unknown tokens are kept as raw strings and reported.
+- Author card: `claude` maps to `claude-code@<workstation>`, `antigravity` maps to `antigravity@<workstation>`. The machine part is `<workstation>` per the decisions; the host reports `<workstation>-wsl` `[verified]`, so the machine name is a profile setting and not read from the OS (open point 4).
+- Author handle: `<card>/<lowercased conversation_id>`, for example `claude-code@<workstation>/012hq2t9cjjjdcy9jysndaej`. The name charset in server-api.md 5.1 is lowercase only (`[a-z0-9._-]`), and some conversation ids contain uppercase letters, so the handle uses the lowercased id (this option, not a hash). An imported handle is a historical author label, not a live session: it carries no `~<sid8>` suffix, so it does not fit the session part regex of 5.1 (`^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`, round-4 X1); whether imported handles are exempt from that regex is [design, open]. The raw conversation id is kept only in metadata (`coord.import.conversation_id`). The dry-run aborts if two distinct raw ids collide after lowercasing. Handles are our extension (decision 6). Imported handles are never registered as live sessions: no `/sessions` row, no listener, no card routing.
+- `to:` mapping: `claude` to `claude-code@<workstation>`, `antigravity` to `antigravity@<workstation>`, `all` to the literal `*`. Unknown tokens are kept as raw strings and reported.
 
 ### 6.2 Containers
 
@@ -188,7 +188,7 @@ Reply-to resolution:
 ## 7. Import safety
 
 - The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `key create` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin API-key scope. No API-key scope grants it, including `local-harness`. Docker access on the host that runs the container is the credential.
-- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on core (decision 23), so the command is `ssh core docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on alyx (`~/.agents`), so parse, plan, tar backup and deletion happen on alyx; the store is the Postgres service's, `/data/imports/<run_id>/` is on core's `a2a-data` volume, and the pre-apply store snapshot goes to `/media/media2/backup/a2a/` on core's host (R6, R9, section 13.1) (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one server process owns the store; Postgres since D-A) holds. No bind mount of `~/.agents` into the container is needed.
+- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on <storage-host> (decision 23), so the command is `ssh <storage-host> docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on <workstation> (`~/.agents`), so parse, plan, tar backup and deletion happen on <workstation>; the store is the Postgres service's, `/data/imports/<run_id>/` is on <storage-host>'s `a2a-data` volume, and the pre-apply store snapshot goes to `<media-root>/backup/a2a/` on <storage-host>'s host (R6, R9, section 13.1) (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one server process owns the store; Postgres since D-A) holds. No bind mount of `~/.agents` into the container is needed.
 - The server re-validates every record from the bundle: recomputes the uuid5 ids, recomputes `content_sha256` from the text Part, checks `state == COMPLETED`, checks `coord.origin == "import"`. A bundle that disagrees with itself is rejected whole.
 - Credential scan on every `inner` (same four patterns plus the generic `Bearer <long token>` form). A match aborts with the line number and never prints the matched text.
 - Hard limits: block under 1 MiB, file under 16 MiB, at most 10,000 blocks per run. The current data is far below all of them.
@@ -288,7 +288,7 @@ To retire after the import is verified, on the user's decision:
 - State files under `~/.local/state`: `bridge-watch.seen`, `bridge-watch-cognitive-engine.seen`, `bridge-watch-cognitive-engine-claude.seen`, `bridge-watch-coordination.seen`, `handoff-watch.seen` `[verified]`.
 - `~/.agents/session-registry.json`: superseded by `POST /sessions`.
 - Session-only loops that die with their sessions: the Claude Code Monitor (30-minute limit) and one-shot cron fallbacks, as described in `agent-bridge-protocol.md`. Nothing to delete, but they should not be re-armed.
-- The Antigravity persistent watcher mentioned in the channel text (daemon task, PID 3444326, 2026-10-28) `[reported]`. No `watch-bridge` process was running on alyx-wsl at inspection time `[verified]`; other machines were not checked (open point 6).
+- The Antigravity persistent watcher mentioned in the channel text (daemon task, PID 3444326, 2026-10-28) `[reported]`. No `watch-bridge` process was running on <workstation>-wsl at inspection time `[verified]`; other machines were not checked (open point 6).
 - Copies of `watch-bridge.sh` under the Antigravity `brain/*/scratch` directories are session scratch and out of our control. Ignore.
 
 Not retired:
@@ -298,7 +298,7 @@ Not retired:
 References that will dangle once the channel files are deleted (annotate as historical, do not rewrite history):
 
 - Outside the repo: `bridge-v2-coordination-tasklist.md`, `cognitive-engine-tasklist.md`, `agent-bridge-protocol.md`, `bridge-v2-heartbeat-spec-draft.md`, `handoff/2026-11-02-next-session-kickoff.md`.
-- Inside the repo: `file://` links to the channel in [the consolidated plan](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) (the baseline table row and the "Operational Channel" references).
+- Inside the repo: `file://` links to the channel in [the consolidated plan](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) (the baseline table row and the "Operational Channel" references).
 - User-scope config: none found. A search of `~/.claude/CLAUDE.md` and `~/.claude/settings.json` found no reference to the channel files `[verified]`.
 
 ## 12. Dress rehearsal and tests (before the real run)
@@ -314,7 +314,7 @@ References that will dangle once the channel files are deleted (annotate as hist
 
 ### 13.1 Backup before deletion
 
-- Pre-apply store snapshot [R6, R9, R12]: a `pg_dump` of the coordination database in custom format (`-Fc`), taken while the server runs, named `pre-import-<run_id>.dump` and written into the same directory as the nightly dumps, `/media/media2/backup/a2a/` on core (server-api.md 1.2), so the second restic job on `core` (own script `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh`, own repository `rclone:gdrive-aleks:backups/restic-a2a`, tag `a2a-dumps`, user-crontab line `45 5 * * *` in core's local time; server-api.md 1.2, X4, user decision 2026-11-10) collects it. The host-side importer runs it through the compose stack; the exact command, and which database role it runs as, are [design]. It no longer goes to `/data`: `a2a-data` is for import run artefacts only and is not backed up. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly dump restore is, with `pg_restore` (server-api.md 1.2, D-B, R12). The nightly dump (`a2a-<UTC timestamp>.dump`) is written by the dump sidecar into the same directory and is not this snapshot. The daily prune never deletes `pre-import-*` files [R12, default applied by the assistant; the user may veto]; removing old ones is manual. Whether the restic job covers the directory is confirmed on core in task S2-DEPLOY (S1-BKP writes the job's text; the second job is a new job, not an addition to the existing one, R9), so the runbook confirms the snapshot file is present in that directory before apply.
+- Pre-apply store snapshot [R6, R9, R12]: a `pg_dump` of the coordination database in custom format (`-Fc`), taken while the server runs, named `pre-import-<run_id>.dump` and written into the same directory as the nightly dumps, `<media-root>/backup/a2a/` on <storage-host> (server-api.md 1.2), so the second restic job on `<storage-host>` (own script `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh`, own repository `rclone:<gdrive-remote>:backups/restic-a2a`, tag `a2a-dumps`, user-crontab line `45 5 * * *` in <storage-host>'s local time; server-api.md 1.2, X4, user decision 2026-11-10) collects it. The host-side importer runs it through the compose stack; the exact command, and which database role it runs as, are [design]. It no longer goes to `/data`: `a2a-data` is for import run artefacts only and is not backed up. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly dump restore is, with `pg_restore` (server-api.md 1.2, D-B, R12). The nightly dump (`a2a-<UTC timestamp>.dump`) is written by the dump sidecar into the same directory and is not this snapshot. The daily prune never deletes `pre-import-*` files [R12, default applied by the assistant; the user may veto]; removing old ones is manual. Whether the restic job covers the directory is confirmed on <storage-host> in task S2-DEPLOY (S1-BKP writes the job's text; the second job is a new job, not an addition to the existing one, R9), so the runbook confirms the snapshot file is present in that directory before apply.
 - Source backup: a tar of exactly the following, taken after verification and before deletion:
   - the two in-scope channel files
   - `cognitive-engine-bridge-turns-archive-2026-10.md`
@@ -341,7 +341,7 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 
 ### 13.3 Rollback
 
-- Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full `pg_restore` of the `pre-import-<run_id>.dump` file from `/media/media2/backup/a2a/` is the heavy alternative.
+- Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full `pg_restore` of the `pre-import-<run_id>.dump` file from `<media-root>/backup/a2a/` is the heavy alternative.
 - Files (after deletion): extract the tar back over `$HOME` with `tar -C "$HOME" -xzf <tar> --keep-old-files`, so an existing file is never overwritten. Then re-run the dry-run, which must again report the same hashes.
 - Both: restore files first, roll the store back, then re-import from a fresh plan. Idempotency makes this safe to repeat.
 - Rollback never touches live tasks, API keys or sessions.
@@ -352,7 +352,7 @@ Deleted: the two in-scope channel files, nothing else. Everything else in sectio
 - Confirm the channel is frozen, including Antigravity's research use, which stops now. Record the freeze instant and the sha256 of both files.
 - Stop any watcher still running (section 11).
 - Dry-run. Read the report. Compare against the section 10.2 numbers. Resolve every error and every ambiguous reply-to.
-- User go. Take the pre-apply store snapshot (`pre-import-<run_id>.dump` in `/media/media2/backup/a2a/`, section 13.1) and confirm the file is there. Apply with the plan id. Let the automatic verify finish.
+- User go. Take the pre-apply store snapshot (`pre-import-<run_id>.dump` in `<media-root>/backup/a2a/`, section 13.1) and confirm the file is there. Apply with the plan id. Let the automatic verify finish.
 - Read the verify output. Spot-check three tasks through a normal MCP `a2a_get` call.
 - Run `retire-channels`: backup, tar verification, typed confirmation on a real TTY, delete.
 - User retires the section 11 items by hand and annotates the dangling references.
@@ -365,9 +365,9 @@ Not resolvable from the evidence, in rough priority:
 - 1. Freeze instant. The decision says "frozen now" without a time, and decision 14 allows Antigravity research appends until go-live. The last write seen is 2026-11-04T14:22:23+02:00 `[verified]` and is no longer the last write that will exist. The user fixes the instant on go-live day (when Antigravity stops) so that only appends after it are flagged.
 - 2. Turns archive. Import it with a second, guess-based parser (year inferred as 2026, no ids), or leave it as a plain file in the tar. Default here is leave it.
 - 3. Role for imported messages. `ROLE_AGENT` for all (recommended) or `ROLE_USER` for the sender side. Needs user confirmation.
-- 4. Machine name in handles. Decisions say `alyx`, the host name is `alyx-wsl`. Profile setting; confirm.
+- 4. Machine name in handles. Decisions say `<workstation>`, the host name is `<workstation>-wsl`. Profile setting; confirm.
 - 5. Closed by decision 15 (2026-11-04, /cplain): admin path is `docker compose exec -it` over an in-container Unix socket, no TCP, no API key scope. Defined in server-api.md 3.7.
-- 6. Other machines. Only alyx-wsl was inspected. Whether the Mac or core hold their own copies of the channel files, watcher scripts or state files was not checked. Closer to go-live this matters more, since mac and core will be tailnet peers by then (S2).
+- 6. Other machines. Only <workstation>-wsl was inspected. Whether the Mac or <storage-host> hold their own copies of the channel files, watcher scripts or state files was not checked. Closer to go-live this matters more, since mac and <storage-host> will be tailnet peers by then (S2).
 - 7. Does `DatabaseTaskStore` let the importer set its own created and updated timestamps? Not confirmed in the audit. If it does not, ordering and dates come from `metadata.coord.import.seq` and `begin_ts`, and the store's own timestamps will show the import time. Needs a spike on a scratch store.
 - 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness API keys only (server-api.md 5.3 and 3.3.3).
 - 9. Retention of the backup tar. The tool never deletes it; how long to keep it is the user's call.

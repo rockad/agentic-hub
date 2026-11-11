@@ -3,8 +3,8 @@
 - Date: 2026-11-05 (runs from about 13:55 EET)
 - Branch: `main` (the repo state at the time; no commits made by the helper)
 - Claude Code: 2.1.318 (verified, `claude --version`), model `haiku` for all test sessions
-- Runbook: `file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/spike-runbooks-2026-11-05.md` section 1
-- Spec: `file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md` section 4
+- Runbook: `https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-runbooks-2026-11-05.md` section 1
+- Spec: `https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md` section 4
 - Labels: **verified** (observed in this run), **reported** (claimed, not reproduced), **unverified**
 
 ## Summary

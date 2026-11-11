@@ -138,10 +138,12 @@ must not be skipped. Without the override the container starts with **no corpora
 and the first ingest finds nothing, which reads as a broken manifest rather than a missing
 generate step.
 
-With Docker but no `uv`, the image can emit it instead — same code, no host Python:
+With Docker but no `uv`, the image can emit it instead — same code, no host Python. The main
+compose file pins a published image by digest, so the local build lives in a small override
+(`docker-compose.build.yml`, which tags the result `lookup:local`):
 
 ```bash
-docker compose build
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
 docker run --rm -e LOOKUP_HOME="$HOME" -e LOOKUP_MANIFEST=/app/sources.toml \
   -v "/path/to/your/sources.toml:/app/sources.toml:ro" \
   lookup:local mounts > docker-compose.override.yml

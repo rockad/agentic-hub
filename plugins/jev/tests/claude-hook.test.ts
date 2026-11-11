@@ -7,7 +7,6 @@ import {
   parseDispatch,
   buildDirective,
   decideAgentCall,
-  decideByTier,
   safeSessionId,
   resolveClaudeSubagentCriteria,
   CLAUDE_SUBAGENT_CRITERIA,
@@ -113,13 +112,71 @@ describe('decideAgentCall', () => {
   });
 });
 
-describe('decideByTier', () => {
-  it('asks when Jev recommends the pro tier', () => {
-    const call = { description: 'Redesign the auth flow' };
+describe('PreToolUse never turns a tier rating into a permission dialog (case study 2026-11-11)', () => {
+  // The turn state the UserPromptSubmit hook would have stored: a pro rating for the user's prompt.
+  const proTurn = { turn: 't1', intent: { models: [] }, rec: { subagent: 'code-engineer', tier: 'pro' as const, model: 'opus' as const } };
+  const agentCall = (model?: string) => ({
+    session_id: 's1',
+    tool_name: 'Agent',
+    tool_input: {
+      subagent_type: 'code-engineer',
+      description: 'WS1: build the handoff skill',
+      prompt: 'Build the skill. Design is final. Verify before reporting.',
+      ...(model ? { model } : {})
+    }
+  });
 
-    const verdict = decideByTier(call, proRec);
+  it('lets a call pinned to the session model through, whatever the rating', async () => {
+    const out = await onPreToolUse(agentCall('sonnet'), deps({ readTurn: () => proTurn, dispatch: async () => proRec }));
 
-    expect(verdict?.decision).toBe('ask');
+    expect(out).toBeNull();
+  });
+
+  it('lets a call pinned below the session model through', async () => {
+    const out = await onPreToolUse(agentCall('haiku'), deps({ readTurn: () => proTurn, dispatch: async () => proRec }));
+
+    expect(out).toBeNull();
+  });
+
+  it('lets a call with no model through (it runs on the session model)', async () => {
+    const out = await onPreToolUse(agentCall(), deps({ readTurn: () => proTurn, dispatch: async () => proRec }));
+
+    expect(out).toBeNull();
+  });
+
+  it('does not send the delegation brief to Jev', async () => {
+    let dispatchCalls = 0;
+    const counting = deps({
+      readTurn: () => proTurn,
+      dispatch: async () => {
+        dispatchCalls += 1;
+        return proRec;
+      }
+    });
+
+    await onPreToolUse(agentCall('sonnet'), counting);
+
+    expect(dispatchCalls).toBe(0);
+  });
+
+  it('logs the prompt-time recommendation next to the model the call asked for', async () => {
+    const entries: Array<Record<string, unknown>> = [];
+
+    await onPreToolUse(agentCall('sonnet'), deps({ readTurn: () => proTurn, log: (e) => entries.push(e as Record<string, unknown>) }));
+
+    expect(entries[0]).toMatchObject({ tier: 'pro', recommended_model: 'opus', requested_model: 'sonnet', reason: null });
+  });
+
+  it('still asks for a model above the ceiling, and says what No does', async () => {
+    const out = await onPreToolUse(agentCall('opus'), deps({ readTurn: () => proTurn }));
+
+    expect(String(out?.hookSpecificOutput.permissionDecisionReason)).toContain('No cancels the delegation');
+  });
+
+  it('does not tell a rejected delegation to be retried on a cheaper model by itself', async () => {
+    const out = await onPreToolUse(agentCall('opus'), deps({ readTurn: () => proTurn }));
+
+    expect(String(out?.hookSpecificOutput.permissionDecisionReason)).not.toContain('deny and re-run');
   });
 });
 

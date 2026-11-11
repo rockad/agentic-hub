@@ -6,7 +6,6 @@ import {
   resolveModel,
   buildDirective,
   decideAgentCall,
-  decideByTier,
   parseDispatch,
   dropDisplayNameAliases,
   turnId,
@@ -212,22 +211,14 @@ describe('PreToolUse guard honours the current turn\'s instruction (5.1, 5.9)', 
     expect(verdict?.decision).toBe('ask');
   });
 
-  it('does not ask on a pro recommendation when the user named a model', () => {
-    const verdict = decideByTier({ description: 'Redesign the auth flow' }, proRec, { models: ['sonnet'] });
+  it('end to end: a pro recommendation with no instruction does not ask for a call at the session model', async () => {
+    const store = turnStore();
+    const d = deps({ ...store, dispatch: async () => proRec });
+    await onUserPromptSubmit({ session_id: 's1', prompt: 'Redesign the auth flow and wire the new store' }, d);
 
-    expect(verdict).toBeNull();
-  });
+    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: { model: 'sonnet', prompt: 'Redesign the auth flow' } }, d);
 
-  it('does not ask on a pro recommendation under a cost intent', () => {
-    const verdict = decideByTier({ description: 'Redesign the auth flow' }, proRec, { models: [], cost: 'minimal' });
-
-    expect(verdict).toBeNull();
-  });
-
-  it('still asks on a pro recommendation with no instruction', () => {
-    const verdict = decideByTier({ description: 'Redesign the auth flow' }, proRec, NO_INTENT);
-
-    expect(verdict?.decision).toBe('ask');
+    expect(out).toBeNull();
   });
 
   it('end to end: a prompt naming opus stores the intent and the Agent call is not asked', async () => {

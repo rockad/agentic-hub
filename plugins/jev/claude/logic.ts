@@ -329,10 +329,18 @@ export type AgentCall = {
 export type AgentDecision = { decision: 'ask'; reason: string } | null;
 
 /**
- * Deterministic guard for an Agent tool call: ask when the requested model is
- * stronger than the session's. A missing model or "inherit" runs on the session
- * model and is never stronger, so it passes. A model the user named in the
- * current prompt is their explicit request and never asks.
+ * The only gate on an Agent tool call, and it is deterministic: ask when the requested model is
+ * stronger than the session's. A missing model or "inherit" runs on the session model and is never
+ * stronger, so it passes, and so does a model pinned at or below the session model. A model the user
+ * named in the current prompt is their explicit request and never asks.
+ *
+ * Claude Code shows `ask` as a permission dialog with Yes and No. No is a rejection: the tool call is
+ * cancelled and the assistant is told to stop and wait, so the reason must not promise a retry.
+ *
+ * Jev's tier rating of the task is deliberately not a gate. It is advice (the UserPromptSubmit
+ * directive) and telemetry (`recommended_model` in the PreToolUse log). A `pro` rating is not a
+ * permission question when the call runs at or below the ceiling; a dialog for it fired on every
+ * delegation pinned to the session model (case study 2026-11-11).
  */
 export function decideAgentCall(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): AgentDecision {
   const requested = modelRank(call.model);
@@ -343,23 +351,8 @@ export function decideAgentCall(call: AgentCall, sessionModel: string | null, in
     decision: 'ask',
     reason:
       `[jev] This delegation asks for model "${call.model}", stronger than the session model "${sessionModel}". ` +
-      'Approve to run it on the stronger model, or deny and re-run it on the session model or a cheaper one.'
-  };
-}
-
-/**
- * Second guard, when Jev is reachable: the task itself needs the pro tier. An explicit
- * instruction in the current prompt (a named model, or a cost intent) takes precedence.
- */
-export function decideByTier(call: AgentCall, rec: Dispatch | null, intent?: UserIntent | null): AgentDecision {
-  if (!rec || rec.tier !== 'pro') return null;
-  if (!resolveModel({ intent, rec, sessionModel: null }).needsApproval) return null;
-  const task = (call.description || call.prompt || '').slice(0, 120);
-  return {
-    decision: 'ask',
-    reason:
-      `[jev] Jev recommends the pro tier (opus) for this delegation: "${task}". ` +
-      'Approve to proceed, or deny and run it on sonnet.'
+      'Yes runs it on the stronger model. No cancels the delegation and the assistant waits for your instruction; ' +
+      'it does not retry on a cheaper model by itself.'
   };
 }
 

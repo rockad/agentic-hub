@@ -66,7 +66,7 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 ### 4. In Claude Code
 
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
-- The session model is the ceiling. In mode `on`, a `PreToolUse` hook asks the user before an `Agent` call runs on a stronger model, and before a delegation Jev rates `pro`. Treat a denial as "run it on the session model or cheaper", not as "do it yourself".
+- The session model is the ceiling. In mode `on`, a `PreToolUse` hook asks the user before an `Agent` call runs on a stronger model, and for nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt. In Claude Code No is a rejection: stop and wait for the user instead of retrying on a cheaper model.
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
 - Mode state is read directly from `~/.config/jev/config.json`.
 

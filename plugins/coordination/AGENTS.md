@@ -21,10 +21,9 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 
 ## Status rules
 
-- **Planning only** until the user lifts it. Write documents, not product code.
-- Implementation is allowed only where strictly necessary for a spike.
-  - Spike code lives in a scratch directory and is never merged.
-  - Do not add `plugin.json`, Dockerfiles, hook scripts, config files or marketplace entries as real files unless the user says so.
+- **Planning-only is lifted for S1** (the user's go for S1, 2026-11-11). S1 has started and **S1-SCAF is delivered**: `plugin.json`, `docker-compose.yml`, `servers/coordination/` (Dockerfile, `pyproject.toml`, `uv.lock`, the module skeleton, tests) and `config/cards.yaml` now exist. Product code for the other S1 streams is written under `servers/coordination/`, as the implementation plan assigns it. Everything not named in the S1 go stays a separate user decision (the bullets below).
+- Spike code, where one is still needed, lives in a scratch directory and is never merged.
+  - Real files such as hook scripts (`hooks/hooks.json`, `bin/`) are created by the S1 stream that owns them. Do not add marketplace entries unless the user says so.
   - Do not install anything (no `tailscale`, `cloudflared`, `caddy`) without being asked. The user's Cloudflare Tunnel on <storage-host> already exists. `<a2a-host>` is the chosen S3 hostname, but no route exists now (a route was created and deleted on 2026-11-04). Do not edit the tunnel configuration.
   - **Do not create, or ask the user to create, the public route before the S3 gate. Do not start the service on <storage-host> while a public route is present** (decision 23, plan Risk 13).
   - **Never write an `AGENTS.md` (or edit any file through a symlink) on behalf of the plugin**: the agy inbox instruction comes from `SessionStart` `injectSteps`, and the installer never writes any `AGENTS.md` (decision 27). `~/.gemini/config/AGENTS.md` is a symlink into a git-tracked file in another repository.

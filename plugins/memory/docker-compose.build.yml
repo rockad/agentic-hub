@@ -1,0 +1,14 @@
+# Local build override for the lookup service.
+#
+# docker-compose.yml pins `image:` to a published digest, and Compose refuses a
+# `build:` section next to a digest-pinned image ("build tag cannot contain a
+# digest"). To build from source instead, layer this file on top:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
+services:
+  lookup:
+    build:
+      context: ./servers/lookup
+      dockerfile: Dockerfile
+    image: lookup:local

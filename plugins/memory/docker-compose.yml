@@ -38,10 +38,7 @@ services:
     restart: unless-stopped
 
   lookup:
-    build:
-      context: ./servers/lookup
-      dockerfile: Dockerfile
-    image: ghcr.io/rockad/lookup:${LOOKUP_VERSION:-latest}
+    image: ghcr.io/rockad/lookup@${LOOKUP_DIGEST:-sha256:e9b41a0e66be47da4a9f16c809888169aab5bf7beaf39b6670a4ab561105d1cf}
     ports:
       - "127.0.0.1:${LOOKUP_PORT:-8100}:8100"
     command:

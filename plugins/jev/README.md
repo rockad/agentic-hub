@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.3.1-brightgreen)](https://github.com/rockad/agentic-hub)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.2-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.3.1  
+**Version:** 2.3.2  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 
@@ -395,7 +395,7 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Asks the user before a subagent runs on a stronger model than the session's. When Jev is reachable, it also asks when Jev rates the delegated task `pro`. |
+| `PreToolUse` on `Agent` | Asks the user before a subagent runs on a stronger model than the session's, and for nothing else. Jev's tier rating never opens a dialog; it is logged next to the model the call used. |
 
 What the hooks do **not** do:
 
@@ -409,13 +409,23 @@ Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
 **Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
 prompt, either a model named as a word (`opus`, `sonnet`, `haiku`) or a cost intent (`minimal viable model`,
 `cheapest`, `cheap model`, which lowers the tier one step); (2) the mode guard (a `pro` recommendation is
-capped at the session model and needs the user's approval, which naming `opus` satisfies); (3) the default
+capped at the session model and the turn context tells the assistant to ask before using `opus`; naming `opus`
+satisfies it, and no permission dialog is involved); (3) the default
 rule (Jev's tier mapped to a model). The `PreToolUse` guard does not ask about a model the user named in the
 current prompt. Jev cannot read the user-level `CLAUDE.md`, so the standing rule is only reflected by the
 default rule.
 
 ### Release notes
 
+- **2.3.2** (see `docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md`): `PreToolUse` on `Agent`
+  no longer opens a permission dialog when Jev rates the task `pro`. The dialog fired on every delegation
+  pinned to the session model (51 such dialogs between 2026-10-28 and 2026-11-11, against 4 for a model above
+  the ceiling), because it scored the whole delegation brief and ignored the model the call asked for; and
+  Claude Code treats No as a rejection that stops the
+  assistant, so the old "or deny and run it on sonnet" wording could not work. The only gate left is the
+  deterministic ceiling check (a model stronger than the session's), its reason now says what Yes and No do,
+  and the delegation brief is no longer sent to Jev. The tier rating stays in the turn context and in the
+  decisions log. `decideByTier` is removed.
 - **2.3.1** (case-study fixes, see the case study above): whole-word tier keywords in `jev_batch_dispatch`
   ("information", "transformation" and "dump format" no longer count as formatting work); explicit model and
   cost instructions and the precedence order above; one consistent ceiling sentence in the Claude hook;

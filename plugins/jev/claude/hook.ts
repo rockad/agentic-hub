@@ -4,7 +4,7 @@
  *
  *   session-start | post-model-switch  remember the session model (the ceiling)
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
- *   pre-tool-use (matcher "Agent")     ask before a delegation runs above the ceiling
+ *   pre-tool-use (matcher "Agent")     ask before a delegation runs above the ceiling; nothing else asks
  *
  * Active only in Jev mode "on" (~/.config/jev/mode.json). Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
@@ -32,7 +32,6 @@ import {
   PREFLIGHT_WINDOW_MS,
   buildDirective,
   decideAgentCall,
-  decideByTier,
   dispatchQuestions,
   hasRecentDispatch,
   parseDispatch,
@@ -159,20 +158,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const state = safely(() => deps.readTurn?.(sessionId)) ?? null;
   // What the user said in this turn's prompt (a named model, a cost intent) outranks the guard.
   const intent = state?.intent ?? NO_INTENT;
-  // The deterministic ceiling check first: it needs no network.
-  let verdict = decideAgentCall(call, sessionModel, intent);
-  let rec: Dispatch | null = null;
-  if (!verdict) {
-    const task = (call.prompt || call.description || '').trim();
-    // The egress policy gates only the network advice; the ceiling check above always runs.
-    const egressOk = !deps.egressAllowed || deps.egressAllowed(input.cwd);
-    if (!egressOk) deps.log({ hook: 'PreToolUse', session: sessionId, egress: 'blocked' });
-    rec =
-      task.length >= 8 && egressOk
-        ? await deps.dispatch(task, await deps.readQuotaStrategy(), await resolveClaudeSubagentCriteria())
-        : null;
-    verdict = decideByTier(call, rec, intent);
-  }
+  // The one gate is the deterministic ceiling check: a model stronger than the session's. It needs no
+  // network and sends no task text anywhere. Jev's tier rating is not a gate (see decideAgentCall): it
+  // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
+  const verdict = decideAgentCall(call, sessionModel, intent);
 
   // Pre-flight reminder: only when the dispatch check is available, at most once per window, never blocks.
   const now = (deps.now ?? Date.now)();
@@ -183,8 +172,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     safely(() => deps.saveTurn?.(sessionId, { turn: state?.turn ?? '', intent, rec: state?.rec, remindedAt: now }));
   }
 
-  // Recommended versus used, joined by the turn id of the prompt that started this turn.
-  const recommended = rec ?? state?.rec ?? null;
+  // Recommended versus used, joined by the turn id of the prompt that started this turn. The
+  // recommendation is the one made for the user's prompt, not a score of the delegation brief.
+  const recommended = state?.rec ?? null;
   deps.log({
     hook: 'PreToolUse',
     session: sessionId,

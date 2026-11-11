@@ -297,7 +297,13 @@ Round 3 (workflow `wf_d49b1e67-50b`, two Sonnet edit streams, a Sonnet sweep and
 - Deviation 1, not followed: `openrouter_free` for the spec stream. Cause (verified): `src/tools/dispatch.ts:388` tests `tLower.includes('format')`, and the task text contained "dump format". It is a substring match, so ordinary words such as "information" and "transformation" also contain "format" and would be routed to the free tier. A free text-completion path also cannot run the Edit tool across a 1,600-line spec in the repo (reported, from the tool description; not tested). The assistant ran the stream on Sonnet.
 - Deviation 2, not followed: Sonnet for the final review. The user asked for Opus, and the assistant followed the user. Jev has no keyword or task kind for review, verification or judgement (section 4.11), so it could not have recommended Opus here.
 - `Plan` was again recommended for a file-editing stream and again not used.
-- Outcome of round 3: TO BE FILLED when the workflow's review verdict and the commit are known.
+- Outcome of round 3 (verdict and commit read from the workflow journal and `git log`, verified 2026-11-11; the other items were not recorded at the time):
+  - What ran: workflow `wf_d49b1e67-50b` with two Sonnet edit streams, a Sonnet sweep and a final review on Opus at the user's request. Both deviations from the Jev manifest were deliberate and recorded above: the spec stream ran on Sonnet instead of `openrouter_free`, and the final review ran on Opus instead of Sonnet.
+  - Final review verdict (Opus): `pass_with_fixes` on the combined diff of nine files (about 258 insertions and 147 deletions), verified in the workflow journal.
+  - Commit hash: `7e051cb` (2026-11-09, "apply round-3 clarify decisions"), verified with `git log`.
+  - Rework after review (count and kind): not recorded.
+  - Per-stream model cost: not recorded.
+  - What it shows so far: the final review on Opus was added by hand at the user's request, in line with the standing rule of one final gate on the top tier, and Jev had no way to recommend it (section 4.11). The gate returned `pass_with_fixes`, so it did find something to fix; what the fixes were is not recorded here.
 
 What these two runs add to the findings:
 
@@ -319,7 +325,7 @@ Where things are:
 
 Where the fixes go (verified 2026-11-09 against `cognitive-engine` `origin/main` at `9fd9af1` after a fetch; confirmed by the owner of the cognitive-engine plan):
 
-- The code citations in this document are to the frozen `agentic-hub` copy (Jev 2.3.0, final, pr-plan decision 14). The same defects are present on `cognitive-engine` `origin/main`, `packages/jev`: the keyword substring rule at `src/tools/dispatch.ts:360` (and `core/heuristics.ts:73-76`, `core/governance.ts:376`), `jev_batch_dispatch` at `src/tools/dispatch.ts:49`, the hard-coded `invoke_subagent` at `src/tools/dispatch.ts:190-193` and `:385` (finding 4.12). The ceiling clamp exists there (`dispatch.ts:182-183`, `clampTierToSessionCeiling`), so the 4.4 contradiction is specific to the Claude adapter path.
+- The code citations in this document are to the `agentic-hub` copy as analysed at Jev 2.3.0 (pr-plan decision 14 called that version frozen and final; that is no longer true: jev 2.3.1 is on `main`, tag `jev-v2.3.1`, and the live plugin keeps getting 2.3.x patches until RFC 005 Phase C, so line numbers may have drifted, unverified). The same defects are present on `cognitive-engine` `origin/main`, `packages/jev`: the keyword substring rule at `src/tools/dispatch.ts:360` (and `core/heuristics.ts:73-76`, `core/governance.ts:376`), `jev_batch_dispatch` at `src/tools/dispatch.ts:49`, the hard-coded `invoke_subagent` at `src/tools/dispatch.ts:190-193` and `:385` (finding 4.12). The ceiling clamp exists there (`dispatch.ts:182-183`, `clampTierToSessionCeiling`), so the 4.4 contradiction is specific to the Claude adapter path.
 - Commits `9d5a9bc` (workflow guard, effort threshold) and `12b77c6` (ceiling for inheriting subagents) are on `cognitive-engine` `origin/main` (merged as #18); they do not fix 4.4 or 4.14. The workflow-guard work covers the 5.8 design check only.
 - The fixes (5.1 to 5.11, handoff items 1 to 6) are the advisor port of pr-plan decision 15 in `cognitive-engine` `packages/jev` (2.4.0); do not implement them in `agentic-hub`. De-duplicate against RFC 006 before adding items.
 - This document stays in `agentic-hub` until the advisor-port branch lands, then it moves to `cognitive-engine` docs with the jev 2.4.0 packaging PR, leaving a pointer here (decision of the plan owner, 2026-11-09). The RFC 005 Phase A notice keeps the wording "relocating to cognitive-engine".

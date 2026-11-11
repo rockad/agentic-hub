@@ -5,21 +5,21 @@
 ```
 You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). The project is planning-only.
 1. Read plugins/coordination/AGENTS.md, then docs/plans/pickup-handoff.md (this file), then docs/plans/master-tasklist.md section 4.
-2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status. Check every claim in a doc against its evidence file. SP3 and SP4 were run on 2026-11-10 and 2026-11-11 and are recorded, so the S1 entry gate is satisfied (docs/research/spike-results-2026-11-10-sp3-sp4.md); the S1 kickoff still needs the user's go, and the proposals in section 10 are the user's to decide.
+2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status. Check every claim in a doc against its evidence file. SP3 and SP4 were run on 2026-11-10 and 2026-11-11 and are recorded, so the S1 entry gate is satisfied (docs/research/spike-results-2026-11-10-sp3-sp4.md). The user approved the S1 kickoff on 2026-11-11 (Y10) and decided the SP3 and SP4 proposals (Y5 to Y9); section 10 holds the table Y1 to Y10 and is final.
 3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session). Stage explicit paths only. Never push main, tag or release without the user's go.
-4. Take the first item of section 3 "What to do next" that needs no user input. Ask the user before anything marked needs user (agy runs, attended spikes, <storage-host> crontab, hygiene items).
+4. First action: read the S1 scoping result (the S1 item in docs/plans/master-tasklist.md section 4 links it once it exists; [unverified] whether it exists yet), otherwise start S1-PG per docs/plans/implementation-plan.md. Then take the first item of section 3 "What to do next" that needs no user input. Ask the user before anything marked needs user (agy runs, attended spikes, <storage-host> crontab, hygiene items, and the two user-only actions listed in section 10).
 5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
 6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
 8. When you finish a step: update section 3 and section 8 of this file and the master tasklist, commit, then tell the user what changed and what is next.
 ```
 
-Written 2026-11-09, updated 2026-11-10 after SP5b passed, S1 design items were resolved and the round-4 decisions (X1 to X5) and audit corrections (C1 to C5) were applied, and updated 2026-11-11 after SP3 and SP4 were run and recorded. Read this file first; it points to the authoritative documents and does not replace them. Labels follow the repo: **verified** (read or observed), **reported** (a claim not reproduced), **unverified**.
+Written 2026-11-09, updated 2026-11-10 after SP5b passed, S1 design items were resolved and the round-4 decisions (X1 to X5) and audit corrections (C1 to C5) were applied, updated 2026-11-11 after SP3 and SP4 were run and recorded, and updated again on 2026-11-11 with the fifth clarify round (Y1 to Y10, section 10). Read this file first; it points to the authoritative documents and does not replace them. Labels follow the repo: **verified** (read or observed), **reported** (a claim not reproduced), **unverified**.
 
 ## 1. Where the project stands
 
 - The project is **planning-only**. Implementation is allowed only where a spike strictly needs it (DDR-004, decision 1). Nothing listens on a real port yet and no server code exists.
-- Stage S0 (spikes): the **S1 entry gate is satisfied** (status 2026-11-11, `docs/specs/spikes.md` section 11). SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite) and **SP5b (Postgres on <workstation>)** passed with spec changes folded in. **SP3** (agy `PreInvocation`) and **SP4** (held `Stop` park, record only) were run on 2026-11-10 and 2026-11-11 and are recorded in `docs/research/spike-results-2026-11-10-sp3-sp4.md` (untracked in this worktree until the user asks for a commit). The earlier C1 wording (gate NOT satisfied, SP3 and SP4 open) was correct on 2026-11-10 and is superseded. S0 is not "complete" in the sense of every open item: A8c and the non-gating SP5b follow-up items stay open, and the `asyncRewake` and GUI-launched Claude tests run inside S1.
+- Stage S0 (spikes): the **S1 entry gate is satisfied** (status 2026-11-11, `docs/specs/spikes.md` section 11), and the S1 kickoff is **approved** (Y10, 2026-11-11; section 10). SP1, SP2 (Claude and agy halves, A8b), SP5 (SQLite) and **SP5b (Postgres on <workstation>)** passed with spec changes folded in. **SP3** (agy `PreInvocation`) and **SP4** (held `Stop` park, record only) were run on 2026-11-10 and 2026-11-11 and are recorded in `docs/research/spike-results-2026-11-10-sp3-sp4.md` (tracked since commit `1213787`). The earlier C1 wording (gate NOT satisfied, SP3 and SP4 open) was correct on 2026-11-10 and is superseded. S0 is not "complete" in the sense of every open item: A8c and the non-gating SP5b follow-up items stay open, and the `asyncRewake` and GUI-launched Claude tests run inside S1.
 - SP3 and SP4 results (2026-11-10 and 2026-11-11, agy 1.5.4 then 1.5.5, run by a helper with the user attending):
   - SP3 gate items passed [verified]: P1 5 of 5 trials (the model called `a2a_inbox` unprompted), P3 p50 28 ms and p95 33 ms over 186 runs, P4 dedupe rule works, P5 all 6 failure modes fail open (0 blocked turns, 0 errors, 0 orphans).
   - SP3 record-only items: P1b, P1r (resume does not re-fire `SessionStart`; `PreInvocation` does fire), P2 (once per model call), P6 (no `timeout` key: agy proceeded after about 31.5 s, hook not killed), P7 (both wordings read as system text), P8 (user-level hooks ran in a trusted workspace; `.a2a-optout` honoured with no network call; an untrusted workspace stopped at the trust dialog).
@@ -76,18 +76,19 @@ Before picking up new workstreams, Claude Code should verify the committed state
 ### Next actions, in order
 
 1. **[DONE 2026-11-11] SP3 and SP4** (agy hooks): run on 2026-11-10 and 2026-11-11 and recorded; the overall S1 entry gate is satisfied. Results: `docs/research/spike-results-2026-11-10-sp3-sp4.md`. Spike code and logs stay in `~/scratch/a2a-spikes/` (not in git, never merged). The user still has to prune four scratch workspace entries from `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json` (results file section 7).
-   - Next for the docs: commit the results file and these doc updates when the user asks, and let the user decide the proposals in section 10.
+   - The user decided the proposals drawn from SP3 and SP4 on 2026-11-11 (Y5 to Y9, section 10). Next for the docs: commit these updates when the user asks.
    - The SP5b follow-up is done (2026-11-10, non-gating): results in `docs/research/spike-results-2026-11-10-sp5b-followup.md`, Claude Code's independent check in its section 7. Verdicts: (a) PASS for the mechanism, (b) PASS, (c) cause UNVERIFIED. The agy-reported items without a saved log are carried as exit tests of S1-PG and S1-BKP.
 2. **At S2 (the user):** create the restic password file `~/.config/a2a-coord/restic-password` (mode 0600) and install the second restic job on <storage-host> from the text the installer prints (X4).
-3. SP3 and SP4 are recorded; when the user gives the go: S1 dev server kickoff (task S1-PG and compose scaffold per `implementation-plan.md`).
+3. SP3 and SP4 are recorded and the S1 kickoff is approved (Y10, 2026-11-11): read the S1 scoping result, or start S1-PG and the compose scaffold per `implementation-plan.md`. A8c, the `asyncRewake` test and the GUI-launched Claude test run inside S1.
 
 ### Tasks that need the user or an attended session
 
-- **A8c** (agy): `.mcp.json` at user level, `agy plugin install`, and a signed-out run last (it changes the real agy login). Runbook: `docs/research/spike-runbook-a8c-agy-open-items-2026-11-09.md`.
-- The **`asyncRewake` on `UserPromptSubmit`** test and the **GUI-launched Claude** test (decision 34; both run inside S1 with their own exit tests; not S1-entry blockers). SP3 and SP4 are done (2026-11-11).
+- **A8c** (agy): `.mcp.json` at user level, `agy plugin install`, and a signed-out run last (it changes the real agy login). Runbook: `docs/research/spike-runbook-a8c-agy-open-items-2026-11-09.md`. Run inside S1 (Y10).
+- The **`asyncRewake` on `UserPromptSubmit`** test and the **GUI-launched Claude** test (decision 34; both run inside S1 with their own exit tests, Y10; not S1-entry blockers). SP3 and SP4 are done (2026-11-11).
 - **Creating the restic password file and installing the second restic script and its crontab line on `<storage-host>`** (at S2; the installer prints the script and the line; it never edits `<storage-host>`'s crontab and never writes into the knowledge-archive git repo).
 - **The S3 go** (create the Cloudflare Tunnel route to `127.0.0.1:8121`), and the user's own housekeeping: rotate the Obsidian MCP bearer in `~/scratch/a2a-spikes/runlogs/chezmoi-diff.baseline` and delete that file, prune `sp2-agy` and `sp2-agy-a8b` from `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`, remove the `sp1` project entry from `~/.claude.json`.
-- **S1 dev server implementation kickoff** (the overall S1 entry gate is satisfied since 2026-11-11: SP3 passed and SP4 recorded; it starts only on the user's go, with task S1-PG and compose scaffold per `implementation-plan.md`).
+- **S1 dev server implementation kickoff**: the overall S1 entry gate is satisfied since 2026-11-11 (SP3 passed, SP4 recorded) and the user gave the go on 2026-11-11 (Y10). It starts with the S1 scoping result or task S1-PG and the compose scaffold per `implementation-plan.md`.
+- The two **user-only actions** of the fifth clarify round (delete the old `:latest` tag; schedule the history-rewrite window) are listed in section 10.
 
 ## 4. How spikes are run (process rules)
 
@@ -124,7 +125,7 @@ The following commits are on `main` and pushed to `origin/main`:
 - `946f198`: `docs(coordination): record SP5b pass and S1 entry gate satisfaction` (the commit message predates C1: SP5b satisfies the S1 storage gate only)
 - `c17402b`: `docs(coordination): resolve S1 design items (dump_ro secret, guess counter, restic repo, expose check)` (values replaced by X2 to X5)
 - `3a2bea8`: `docs(coordination): update pickup handoff with SP5b pass and S1 design resolutions` (its gate wording and "settled" statements are corrected by C1 and C5)
-- Round-4 docs (X1 to X5, C1 to C5) are an uncommitted working-tree change until the user asks for a commit.
+- `74f6c0e`: `docs(coordination): apply round-4 decisions and correct the overnight SP5b and S1-gate claims` (the round-4 docs, X1 to X5 and C1 to C5, are committed).
 
 ## 9. Open questions and next steps
 
@@ -132,14 +133,30 @@ The following commits are on `main` and pushed to `origin/main`:
 - **Guess counter scope (X3)**: the counter covers handle-addressed sends only ("not available" answers). Card-addressed sends are outside it (403 `CardNotAllowed`) and stay under the per-key `SendMessage` limit of 10 per minute; card existence is public by design (D32), so there is nothing to enumerate.
 - **Still open for user confirmation**:
   - Whether to commit the SP5 and SP5b scratch drivers into the repo so a session on another machine can run them; today they exist only on <workstation> in `~/scratch/a2a-spikes/`.
-  - Attended spike runs still open: A8c (SP3 and SP4 are done).
+  - Attended spike runs still open: A8c (SP3 and SP4 are done); A8c, the `asyncRewake` test and the GUI-launched Claude test run inside S1 (Y10).
+- The SP3 and SP4 proposals are decided (Y5 to Y9, section 10); no open question remains from them.
 
-## 10. Proposals from the SP3/SP4 results for the user to decide
+## 10. Decisions of 2026-11-11 (fifth clarify round, Y1 to Y10)
 
-These are **proposals** drawn from `docs/research/spike-results-2026-11-10-sp3-sp4.md` section 4. The user decides; none is applied to decisions 9, 26 or 27 or to any spec.
+The user decided these on 2026-11-11, after the SP3 and SP4 results (`docs/research/spike-results-2026-11-10-sp3-sp4.md` section 4 holds the evidence for Y5 to Y8). They are final: do not reopen them. Status labels: **done** (reported by the user), **decided** (the docs follow it; the code or spec text is not written yet), **open** (needs a user action), **in progress**.
 
-- Adopt `systemMessage` (not `ephemeralMessage`) as the `PreInvocation` injection type. The ephemeral text appears not to persist across turns (inferred from one sample, P4a); `systemMessage` text was quoted back verbatim several turns later in one conversation (P4b, verified; reliability over many conversations unverified).
-- Shipped hook timing: connect timeout of about 200 ms (a down stub costs about 1.03 s at a 1 s connect timeout, and `SessionStart` about 2 s), and always exit 0 with `{}`. agy does not kill a slow hook at its timeout: it proceeds after about 5 s with `timeout: 5`, or after about 30 s with no `timeout` key, and the hook keeps running (P5, P6, verified).
-- Decision 26 stands on the evidence: user-level hooks ran in trusted workspaces, and `.a2a-optout` was honoured with no network call (P8, verified). Untrusted-workspace behaviour beyond the trust dialog is unverified.
-- SP4 held `Stop` park: usable with serious caveats at best. agy does not enforce the `Stop` timeout at 30 s (the UI was released at about 60 s), does not signal the hook on Esc, Ctrl-C or `/exit` (the script is left as an orphan process), caps consecutive continues at 10, and queues typed input. A finished background command wakes an idle agy (K6 yes). Any shipped park script would need its own maximum hold and a parent-alive check. Nothing ships on SP4 without a user decision.
-- Note for implementation: the user's own tab-sync tool edits `~/.gemini/config/hooks.json` (it did so twice during the run), so the installer must merge into that file and never overwrite it.
+| ID | Decision | Status | What it changes |
+| --- | --- | --- | --- |
+| Y1 | PR #21 (GHCR hardening) merged now. | done 2026-11-11 (reported) | The GHCR publishing hardening is on `main`; nothing in the coordination docs. |
+| Y2 | Delete the old `ghcr.io/rockad/lookup:latest` tag. | open, user action | Package settings only; the helper's token has no package scope, so an agent cannot do it. |
+| Y3 | The default host in `plugins/gitea/.mcp.json` becomes a placeholder URL. | in progress (separate branch) | The gitea plugin default; no coordination spec changes. |
+| Y4 | Rewrite the agentic-hub git history later, in a planned window. | decided, not scheduled | Plan note: [`history-rewrite-plan.md`](history-rewrite-plan.md). Needs an owner force-push; until then no history rewrite and no force-push by any agent. |
+| Y5 | The agy `PreInvocation` hook injects with `systemMessage` plus the tested dedupe rule (not `ephemeralMessage`). | decided | Decision 9 (note appended); the hook spec in `server-api.md` 11.2 and BP13 in `implementation-plan.md` were aligned on 2026-11-11 (`systemMessage` chosen, about 200 ms connect timeout, `{}` on no announcement). |
+| Y6 | Hook timing: connect timeout about 200 ms, keep the tested dedupe, no throttle, always exit 0 with `{}`. | decided | Decision 9 (note appended); the shipped hook script at S1-AGY. Evidence: a down stub costs about 1.03 s at a 1 s connect timeout, and agy does not kill a slow hook at its timeout (P5, P6, verified). |
+| Y7 | Decision 26 stands: agy hooks in the user-level `~/.gemini/config/hooks.json`, opt-out by the `.a2a-optout` marker. | decided | Nothing changes; decision 26 stays as written. Evidence: user-level hooks ran in trusted workspaces and `.a2a-optout` was honoured with no network call (P8, verified); behaviour in an untrusted workspace past the trust dialog stays unverified. |
+| Y8 | No held `Stop` park for now. agy keeps `SessionStart` `injectSteps` plus `a2a_inbox` and `a2a_wait` (decision 27 baseline, no idle wake). The K6 background-watcher route stays a future option. | decided | Decision 27 (note appended); SP4 stays record-only. K6 (a finished background command wakes an idle agy, verified) is not built. |
+| Y9 | The installer merges into `~/.gemini/config/hooks.json` by its own key only, takes a byte-copy backup first, re-reads the file right before writing, and writes atomically. | decided | Installer rules for S1 (`server-api.md` 11 to be aligned when S1 starts). Reason: the user's own tab-sync tool also edits that file (it did so twice during the SP3 run, reported). |
+| Y10 | Start S1 now; run A8c, the `asyncRewake` test and the GUI-launched Claude test inside S1. | approved | Section 3 and the master tasklist: the S1 kickoff needs no further go; the three attended tests move from "open spikes" to S1 exit tests. |
+
+User-only actions (an agent must not do these):
+
+- Delete the old `ghcr.io/rockad/lookup:latest` tag in the package settings (Y2).
+- Schedule the history-rewrite window and run the owner force-push when the plan is ready (Y4; the plan note is [`history-rewrite-plan.md`](history-rewrite-plan.md); not scheduled).
+- Earlier user-only items stay in section 3 (restic password file and crontab at S2, the S3 go, hygiene actions).
+
+Superseded by this round: the former section 10 was a list of proposals from the SP3 and SP4 results; Y5 to Y9 decide them. The SP4 findings (K1 to K6: `Stop` timeout not enforced at 30 s, orphan scripts on Esc, Ctrl-C and `/exit`, a cap of 10 continues, typed input queued) remain the reason Y8 ships no park.

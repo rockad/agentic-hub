@@ -1,0 +1,15 @@
+{
+  "name": "coordination",
+  "version": "0.1.0",
+  "description": "A2A 1.0.1 coordination server for side-by-side Claude Code and Antigravity sessions",
+  "author": {
+    "name": "Aleksandr Korolev"
+  },
+  "keywords": [
+    "a2a",
+    "coordination",
+    "mcp",
+    "claude-code",
+    "antigravity"
+  ]
+}

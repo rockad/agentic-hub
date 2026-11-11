@@ -1,0 +1,37 @@
+# Stage s1 only: the coordination service. The Postgres service is S1-PG and the dump
+# sidecar is S1-BKP. Spec: docs/specs/server-api.md 1.4 and 1.5.
+name: coordination
+
+services:
+  coordination:
+    build: ./servers/coordination
+    image: coordination:local
+    init: true
+    ports:
+      # Host loopback only, at every stage. The 8121 mapping starts at stage s2 (S2-LISTEN).
+      - "127.0.0.1:${A2A_PORT:-8120}:8120"
+    environment:
+      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://127.0.0.1:8120}
+      A2A_DEPLOY_HOST: ${A2A_DEPLOY_HOST:-local}  # a label, never a trust input
+      A2A_ENV: ${A2A_ENV:-dev}
+      A2A_EXPOSURE_STAGE: ${A2A_EXPOSURE_STAGE:-s1}
+      A2A_ALLOW_WRITES: ${A2A_ALLOW_WRITES:-0}
+    volumes:
+      - a2a-data:/data  # go-live import run artefacts only, not the database
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/a2a:uid=10001,gid=10001,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "python3", "-m", "coordination.healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  a2a-data:

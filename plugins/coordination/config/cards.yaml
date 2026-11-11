@@ -1,0 +1,4 @@
+# Non-secret Agent Card definitions (docs/specs/server-api.md 1.5, A2A_CARDS_FILE).
+# Card ids match ^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$. The card schema and
+# the entries arrive with S1-A2A and S1-ID; this file is a placeholder so the path exists.
+cards: []

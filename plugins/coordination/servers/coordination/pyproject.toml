@@ -1,0 +1,29 @@
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "coordination"
+version = "0.1.0"
+description = "A2A 1.0.1 coordination server for side-by-side coding-agent sessions"
+readme = "README.md"
+requires-python = ">=3.14"  # dev box and image both 3.14
+dependencies = [
+    # Exact pin, decision D3. 1.3.0 is the release SP5 ran on and the only 1.3.x on PyPI.
+    # Re-run the SP5 driver on every bump. Database extras and asyncpg arrive with S1-STORE.
+    "a2a-sdk[http-server]==1.3.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+a2a-coord = "coordination.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",  # Starlette's TestClient prefers it; httpx is deprecated there
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

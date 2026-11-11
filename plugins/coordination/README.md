@@ -4,8 +4,8 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 
 ## Status
 
-- **Planning only, and planning is complete.** No server code, Dockerfile, hook script or `plugin.json` exists yet. There is no urgency.
-- **Next step: S0 spikes on <workstation>.** They test the unverified parts of the design (handle binding, Claude Code wake, agy hook behaviour) in scratch space. Spike code is never merged.
+- **S1 has started; planning-only is lifted for S1** (the user's go, 2026-11-11). The S0 spikes are done and the S1 entry gate is satisfied.
+- **S1-SCAF is delivered:** `plugin.json`, `docker-compose.yml` (service `coordination` only), and `servers/coordination/` with the Dockerfile, `pyproject.toml`, `uv.lock`, the module skeleton (config, typed protocols, `/healthz`, an `a2a-coord` entry point) and tests. The Postgres service, the dump sidecar and every endpoint beyond `/healthz` are later S1 streams. No hook script exists yet.
 - Branch: `feat/coordination` in the `agentic-hub` repository.
 - Decisions of 2026-11-04 and 2026-11-05 are recorded in the plans under [`docs/plans/`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/). Start with the consolidated plan.
   - 13 binding decisions from the `/clarify` session.
@@ -72,7 +72,7 @@ Notes on the diagram:
 
 ### Exposure stages
 
-- **S1, dev on <workstation>.** `127.0.0.1:8120` only. Gate: the S1 entry gate (SP1, SP2, SP3, SP4 recorded, SP5b; `docs/specs/spikes.md` section 11). Status 2026-11-10: S1 storage gate satisfied by SP5b (Postgres); overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open).
+- **S1, dev on <workstation>.** `127.0.0.1:8120` only. Gate: the S1 entry gate (SP1, SP2, SP3, SP4 recorded, SP5b; `docs/specs/spikes.md` section 11). Status 2026-11-10: S1 storage gate satisfied by SP5b (Postgres); the overall S1 entry gate was then satisfied on 2026-11-11 (SP3 passed, SP4 recorded) and the S1 kickoff approved.
 - **S2, production on core.** `tailscale serve` on <storage-host>; every workstation (<workstation>, mac) reaches <storage-host> over the tailnet from day one, with one `local-harness` API key per harness per machine. The server checks the Tailscale identity matches the machine the key was issued for, for all harness keys including <workstation>'s. Hooks on <workstation> and mac long-poll <storage-host> over the tailnet (wake latency and tailnet dependency are risks). Gate: API keys and scopes live, cross-host wake works.
 - **S3, public HTTPS.** The user's existing Cloudflare Tunnel (`cloudflared`) on <storage-host>; the chosen hostname is `<a2a-host>`, but no route exists now (one was created and deleted on 2026-11-04; the hostname no longer resolves). The route is created only at S3, after the gate passes and on the user's explicit go. Only `/a2a/v1` and the card are to be routed. Decided 2026-11-09: the tunnel targets a dedicated loopback port (`localhost:8121`) that the server treats as the public listener, while 8120 stays tailnet-only. The server starts that listener from stage s2, on host loopback only, so its rules are tested before S3; the tunnel route is the exposure gate. Cloudflare sees decrypted traffic; the client IP comes only from `CF-Connecting-IP`, believed only for tunnel traffic; Cloudflare's request timeout of about 100 s is reported (unverified), so blocking `SendMessage` is capped at 60 s. Each remote peer holds its own API key, delivered out of band. Gate: quarantine live, rate limits, fuzz pass (header smuggling, request splitting, SSRF), honest Agent Card, explicit user go.
 - **S3 procedure** (decided 2026-11-09, R13): the flip to `A2A_EXPOSURE_STAGE=s3` is a deliberate human step, in this order. (1) The user runs the read-only `a2a-coord expose check`, which prints the S3 gate list and exits 0 when all conditions are met, 1 when at least one is unmet and 2 when it could not evaluate (decided 2026-11-10, X5: the server checks quarantine, per-key rate limits with the guess counter, `dump_age_h` below 36 h and port 8121 on host loopback only; fuzz report, honest card and extension URI are manual items until S3). (2) The user sets `A2A_EXPOSURE_STAGE=s3` and the public host in the compose environment and restarts the stack. (3) The server's `s3` start-up checks refuse to start if a condition fails. (4) The user then creates the Cloudflare Tunnel route to `127.0.0.1:8121`. There is no runtime admin command for the flip, and the stage is not derived from other configuration.
@@ -83,7 +83,7 @@ Notes on the diagram:
 
 ## Planned layout
 
-Illustrative. Nothing below exists yet except `docs/`. The single illustrative layout is the tree in [`docs/specs/server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) section 1.4 (`servers/coordination`, `bin/a2a-register`, `bin/a2a-listen`, `hooks/hooks.json`); the tree below is a rough sketch and does not override it. The final layout is settled when S1 starts (plan section 7, design details).
+Illustrative. Since S1-SCAF the real server tree is `servers/coordination/` (package `coordination`), not the `servers/a2a-coord/` sketched below; hooks and `bin/` do not exist yet. The single illustrative layout is the tree in [`docs/specs/server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) section 1.4 (`servers/coordination`, `bin/a2a-register`, `bin/a2a-listen`, `hooks/hooks.json`); the tree below is a rough sketch and does not override it. The final layout is settled when S1 starts (plan section 7, design details).
 
 ```
 plugins/coordination/

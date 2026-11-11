@@ -2,7 +2,7 @@
 project: rockad/cognitive-engine
 author_agent: antigravity-cli
 target_agent: all
-host_origin: linux/alyx
+host_origin: linux/<workstation>
 timestamp_utc: 2026-11-03T10:50:00Z
 git_branch: main
 git_head_sha: N/A
@@ -51,7 +51,7 @@ Local MCP coordination servers allow long-lived, heterogeneous agent sessions ac
 - **N-Agent Scalability**:
   - Agents publish structured events (`log_event`) with topic tags.
   - Subscriber agents filter and query events (`query_events`) matching domain patterns.
-  - Optional NATS JetStream federation allows events to bridge across local workstations and remote servers (`core`).
+  - Optional NATS JetStream federation allows events to bridge across local workstations and remote servers (`<storage-host>`).
 - **Human Gate Integration**:
   - Native support for webhook and `ntfy` push alerts, immediately alerting the human when any agent sets `status: input-required`.
 

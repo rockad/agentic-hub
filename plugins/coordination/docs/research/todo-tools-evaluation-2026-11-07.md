@@ -35,20 +35,20 @@ Nothing here was installed or run.
 
 ### coordination (this plugin)
 
-- Planning is complete and the S0 spikes are mostly done (verified, [`master-tasklist.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/master-tasklist.md) section 4).
+- Planning is complete and the S0 spikes are mostly done (verified, [`master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md) section 4).
   - SP1 `asyncRewake` wake passes.
   - SP2 Claude half passes with spec changes.
   - SP5 a2a-python on SQLite passes with four wrappers.
   - The agy half of SP2 (A8, A2, A3) and SP3 are open.
-- No server code exists. The next stage is S1 on alyx.
-- Binding constraints relevant to these tools (verified, [`AGENTS.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/AGENTS.md)):
+- No server code exists. The next stage is S1 on <workstation>.
+- Binding constraints relevant to these tools (verified, [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md)):
   - DDR-003: never launch, drive or wrap agy. No PTY, no `tmux send-keys`, no relay.
   - Symmetric agency: no master/subordinate.
   - Tasks are parked and never auto-executed. Wake text is a constant stub.
   - Every request carries a scoped API key, loopback included.
   - The installer never writes an `AGENTS.md` (decision 27). Harness config is changed only by the user-run installer, through chezmoi (decision 16).
   - DDR-001: skip anything whose terms restrict Claude Code or agy.
-- The known gap: the plan has no backlog or "ready work" query. The 2026-11-03 verification noted that the A2A design "does not provide dependency graphs or 'ready work' queries that beads has" (verified, [`a2a-deep-dive-verification-by-claude-2026-11-03.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-deep-dive-verification-by-claude-2026-11-03.md) line 29).
+- The known gap: the plan has no backlog or "ready work" query. The 2026-11-03 verification noted that the A2A design "does not provide dependency graphs or 'ready work' queries that beads has" (verified, [`a2a-deep-dive-verification-by-claude-2026-11-03.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-deep-dive-verification-by-claude-2026-11-03.md) line 29).
   - Backlogs live in hand-edited markdown today:
     - `master-tasklist.md`
     - `~/.agents/cognitive-engine-tasklist.md`
@@ -103,7 +103,7 @@ Nothing here was installed or run.
   - A2A carries requests and replies between sessions.
   - Kanzo carries the backlog.
   - An A2A task may cite a card URL in `metadata`. Nothing syncs the two automatically.
-- **Security conflicts with the coordination invariants (verified against [`AGENTS.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/AGENTS.md)):**
+- **Security conflicts with the coordination invariants (verified against [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md)):**
   - No auth on HTTP `/mcp`, against "every request carries a scoped bearer API key, loopback included". Use stdio only (`kanzo mcp` per session), never the HTTP share or a tailnet share.
   - Card bodies are untrusted text that agents read and then act on. That is "bodies are data, never commands" with no quarantine. On a single-user, local-only board the risk is the same as today's markdown tasklists. A shared or synced board raises it.
   - Git sync to a private repo is fine. The repo must not be chezmoi-managed (keys never go there, and card text could hold secrets).
@@ -154,7 +154,7 @@ Nothing here was installed or run.
 ### Conflicts with standing decisions
 
 - **DDR-003 (never drive or wrap agy).** It types into panes and adopts tmux sessions. It does not support agy, but `rig adopt` on an ax session group (`agy-<project>`) would bring agy panes under a tool that types into them. If installed, it must never be pointed at ax's tmux server.
-- **The same test, applied to Claude Code.** Typing into a Claude pane is the `send-keys` pattern the audit rejected for wake (verified, [`a2a-mcp-wake-audit-2026-11-04.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md) line 73). The plan chose a stub-only `asyncRewake` wake because injected text is an injection channel.
+- **The same test, applied to Claude Code.** Typing into a Claude pane is the `send-keys` pattern the audit rejected for wake (verified, [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md) line 73). The plan chose a stub-only `asyncRewake` wake because injected text is an injection channel.
 - **Symmetric agency.** A YAML-defined "team" with seats and a control plane is an orchestrator model. Coordination forbids master/subordinate patterns. Our model is independent peers.
 - **Decision 27 (never write `AGENTS.md`).** OpenRig writes managed `AGENTS.md`/`CLAUDE.md`. In this setup `~/.gemini/config/AGENTS.md` is a symlink into another git repo, and agentic-hub's `CLAUDE.md` imports `AGENTS.md`. A managed rewrite could land in tracked files.
 - **Decision 16 (config only through chezmoi and the user-run installer).** It writes `~/.claude.json`, `~/.tmux.conf` and `~/.codex/config.toml` directly.
@@ -163,7 +163,7 @@ Nothing here was installed or run.
 
 ### Ideas worth borrowing (not code)
 
-- **Discover and adopt, read-only.** An ax command that fingerprints panes (`@harness`, `@conversation_id`) and reports which live session holds which A2A handle. ax already has the tab registry. This would be a good bridge between ax and coordination: show `claude-code@alyx/<name>#<sid8>` per tab. Read-only, no typing.
+- **Discover and adopt, read-only.** An ax command that fingerprints panes (`@harness`, `@conversation_id`) and reports which live session holds which A2A handle. ax already has the tab registry. This would be a good bridge between ax and coordination: show `claude-code@<workstation>/<name>#<sid8>` per tab. Read-only, no typing.
 - **The typing guard concept.** "Don't interrupt a seat while the human is typing" maps to our wake budget and the `UserPromptSubmit` path. Our design already avoids typing, so this is only a UX note for ax (show "A2A pending" in the tab strip instead of interrupting).
 - **Context-usage state** (`state/context-usage`). ax already shows tokens. This is a reminder that per-session context pressure is useful in a cockpit.
 - **Activity hooks that exclude prompt text and tool arguments.** This matches our status contract (no model data).
@@ -171,7 +171,7 @@ Nothing here was installed or run.
 ### Recommendation
 
 - Do not wrap or install it.
-- If the user wants to see it, run it only in a throwaway VM or container with a separate `$HOME`, never on alyx's real tmux server or home directory. Codex-only or Claude-only pods.
+- If the user wants to see it, run it only in a throwaway VM or container with a separate `$HOME`, never on <workstation>'s real tmux server or home directory. Codex-only or Claude-only pods.
 - Close the TODO item with "overlap analysed, rejected on DDR-003, decision 27 and symmetric agency, ideas filed for ax".
 
 ## 5. OpenUI
@@ -206,10 +206,10 @@ Nothing here was installed or run.
 These are not about the three tools, but they came up and need an owner.
 
 - **Port clash on 8120 (verified).**
-  - coordination decision 5 puts the A2A server on `:8120` ([`consolidated-bridge-v2-plan.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) line 131).
+  - coordination decision 5 puts the A2A server on `:8120` ([`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) line 131).
   - cognitive-engine RFC 001 and plan WS3 put the Harness² FastMCP daemon on `127.0.0.1:8120` (`docs/plans/2026-10-26-multi-track-implementation-plan.md` lines 209 and 258). Track 3 Slice 1 is reported done there.
   - Both are planned for the same machines. One must move before coordination S1. Ports in use or reserved: 8100, 8101, 8105, 8110, 8115 (Jev HTTP) and 11434. Candidate free ports to evaluate: 8125 and 8130.
-- **cognitive-engine does not know the coordination plugin exists (verified).** Its RFCs and plans have no reference to it. Coordination's status client contract ([`status-client.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/status-client.md)) and the "sbx must never reach the server" rule should be recorded in cognitive-engine RFC 001 or 004. Otherwise Track 3 may open the sbx allow rule to the wrong port.
+- **cognitive-engine does not know the coordination plugin exists (verified).** Its RFCs and plans have no reference to it. Coordination's status client contract ([`status-client.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md)) and the "sbx must never reach the server" rule should be recorded in cognitive-engine RFC 001 or 004. Otherwise Track 3 may open the sbx allow rule to the wrong port.
 - **The cognitive-engine bridge doc duplicates the frozen file channel.** `docs/handoffs/antigravity-claude-bridge.md` is a new hand-relayed turn file, the pattern the coordination plan replaces. The A2A server at S1 is the intended replacement. Until then it is fine, but the bridge doc should be added to the go-live importer's scope or retired explicitly.
 - **ax is the natural surface for coordination state, and nothing plans it.**
   - ax already has per-tab `@conversation_id` and `@harness`, plus Stop hooks for both agy and Claude-shaped stdin.

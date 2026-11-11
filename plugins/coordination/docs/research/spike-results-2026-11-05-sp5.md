@@ -1,7 +1,7 @@
 # Spike results: SP5, a2a-python on SQLite (2026-11-05)
 
-- Spike: [`spikes.md`](file:///home/rockad/projects/agentic-hub/plugins/coordination/docs/specs/spikes.md) section 8 (SP5), steps D1 to D12.
-- Run by: a helper Claude Code session on alyx (WSL2). No harness session of the user's was involved. No harness config file was touched.
+- Spike: [`spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md) section 8 (SP5), steps D1 to D12.
+- Run by: a helper Claude Code session on <workstation> (WSL2). No harness session of the user's was involved. No harness config file was touched.
 - Run date: 2026-11-05, about 08:20 to 09:50 EET.
 - Labels: **verified** (observed by this run), **reported** (a project or doc claim, not reproduced), **unverified** (not tested).
 - Scratch code and raw logs (kept, outside every git repo): `~/scratch/a2a-spikes/sp5/` (`spike/` server, `driver/` load and test drivers, `tests/` in-container tests, `logs/` raw output, `Dockerfile`, `pyproject.toml`, `uv.lock`).
@@ -44,7 +44,7 @@
 
 ## 2. Environment, versions, exact setup
 
-- Host: alyx, WSL2, kernel 6.18.54.1-microsoft-standard-WSL2, 16 cores, 16 GB. Docker 29.9.3 rootless (overlayfs). `uv` 0.11.31.
+- Host: <workstation>, WSL2, kernel 6.18.54.1-microsoft-standard-WSL2, 16 cores, 16 GB. Docker 29.9.3 rootless (overlayfs). `uv` 0.11.31.
 - Server image: `a2a-spike-sp5:latest`, built from `python:3.12-slim` (pulled for this spike), with `sqlite3` CLI added by `apt`. Single uvicorn worker, pure `asyncio` loop and `h11` (no `uvloop`, no `httptools`), so the numbers are pessimistic.
 - Versions as run in the container [verified]:
   - Python 3.12.16

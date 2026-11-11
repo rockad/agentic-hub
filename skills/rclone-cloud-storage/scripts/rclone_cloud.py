@@ -186,12 +186,12 @@ def main():
 
     # Subcommand: quota / about
     p_about = subparsers.add_parser("about", help="Check storage quota for a remote")
-    p_about.add_argument("remote", help="Remote name (e.g. gdrive-aleks: or onedrive:)")
+    p_about.add_argument("remote", help="Remote name (e.g. gdrive: or onedrive:)")
     p_about.set_defaults(func=cmd_about)
 
     # Subcommand: ls
     p_ls = subparsers.add_parser("ls", help="List files or directories in remote path")
-    p_ls.add_argument("path", help="Remote path (e.g. gdrive-aleks:Inbox/)")
+    p_ls.add_argument("path", help="Remote path (e.g. gdrive:Inbox/)")
     p_ls.add_argument("-r", "--recursive", action="store_true", help="List recursively")
     p_ls.add_argument("--dirs-only", action="store_true", help="List directories only")
     p_ls.add_argument("--files-only", action="store_true", help="List files only")

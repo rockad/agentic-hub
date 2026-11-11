@@ -115,7 +115,7 @@ describe('Governance & Harness Model Tier Ranking (Argon, Fable, Antigravity)', 
     });
 
     it('returns antigravity when ANTIGRAVITY_APP_DATA_DIR is set and resolves Antigravity models', () => {
-      process.env.ANTIGRAVITY_APP_DATA_DIR = '/home/rockad/.gemini/antigravity-cli';
+      process.env.ANTIGRAVITY_APP_DATA_DIR = '/home/user/.gemini/antigravity-cli';
 
       expect(detectActiveHarness()).toBe('antigravity');
       expect(getHarnessModels()).toEqual({

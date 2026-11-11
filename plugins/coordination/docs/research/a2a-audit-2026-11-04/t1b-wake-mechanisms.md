@@ -2,9 +2,9 @@
 
 Date: 2026-11-04. Read-only audit. Clones (never executed, built or installed):
 
-- `/tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/amahpour-switchboard` (HEAD d6cfd32, 2026-11-03)
-- `/tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/zb-ss-agent-group-mcp` (HEAD 3b3dc2a, 2026-10-25)
-- `/tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/wilfreddenton-interlink` (HEAD 01edda0, 2026-11-03)
+- `/tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/amahpour-switchboard` (HEAD d6cfd32, 2026-11-03)
+- `/tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/zb-ss-agent-group-mcp` (HEAD 3b3dc2a, 2026-10-25)
+- `/tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/wilfreddenton-interlink` (HEAD 01edda0, 2026-11-03)
 - Official docs saved as read-only text under `.../audit/docs-cc/` (hooks.md, channels-reference.md, xsm.md, changelog.md)
 
 Labels: verified = read in source or official docs this session; reported = the project's own claim (tests, PR text) that I did not reproduce; unverified = inference or not documented.

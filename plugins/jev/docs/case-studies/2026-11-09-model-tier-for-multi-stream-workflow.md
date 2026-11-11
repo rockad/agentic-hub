@@ -4,7 +4,7 @@ Status: analysis done, outcome section open. Labels used below: **verified** (ch
 
 Sources:
 
-- Transcript: `~/.claude/projects/-home-rockad-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694.jsonl` (cited as `T:<line>`)
+- Transcript: `~/.claude/projects/-home-<user>-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694.jsonl` (cited as `T:<line>`)
 - Hook decisions log: `~/.config/jev/claude_decisions.jsonl`
 - Code paths cited are relative to `plugins/jev/`
 
@@ -318,10 +318,10 @@ Purpose: another Claude Code session can continue the Jev work from this section
 
 Where things are:
 
-- This document: `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` in the `agentic-hub` repo (`/home/rockad/projects/agentic-hub`, branch `main`), linked from `plugins/jev/README.md`.
+- This document: `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` in the `agentic-hub` repo (`~/projects/agentic-hub`, branch `main`), linked from `plugins/jev/README.md`.
 - Jev plugin source: `plugins/jev/` (hook `claude/hook.ts`, logic `claude/logic.ts`, hook registration `claude/hooks.json`, governance `src/core/governance.ts`, dispatch `src/tools/dispatch.ts`, tests `tests/claude-hook.test.ts`).
 - Jev's decision log: `~/.config/jev/claude_decisions.jsonl`; mode config `~/.config/jev/config.json` (mode `on` for all harnesses on 2026-11-09).
-- Source session transcript (large JSONL, search with `rg`, never print whole): `/home/rockad/.claude/projects/-home-rockad-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694.jsonl`. Workflow script and journal: `/home/rockad/.claude/projects/-home-rockad-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694/workflows/scripts/fold-postgres-and-clarify-decisions-wf_461d006e-32d.js` and `.../subagents/workflows/wf_461d006e-32d/journal.jsonl`.
+- Source session transcript (large JSONL, search with `rg`, never print whole): `~/.claude/projects/-home-<user>-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694.jsonl`. Workflow script and journal: `~/.claude/projects/-home-<user>-projects-doppelganger/09b30315-6696-4462-a75e-6f14304fd694/workflows/scripts/fold-postgres-and-clarify-decisions-wf_461d006e-32d.js` and `.../subagents/workflows/wf_461d006e-32d/journal.jsonl`.
 
 Where the fixes go (verified 2026-11-09 against `cognitive-engine` `origin/main` at `9fd9af1` after a fetch; confirmed by the owner of the cognitive-engine plan):
 

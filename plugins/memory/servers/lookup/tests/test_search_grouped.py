@@ -136,7 +136,7 @@ class McpSearchToolTests(unittest.TestCase):
     def test_tool_description_tells_the_caller_to_read_every_group(self):
         tool = next(t for t in mcp.TOOLS if t["name"] == "search_archive")
         self.assertIn("GROUPED BY SOURCE", tool["description"])
-        # The old description described core's corpus and demanded FTS5 syntax.
+        # The old description described the storage host's corpus and demanded FTS5 syntax.
         self.assertNotIn("Query syntax is SQLite FTS5", tool["description"])
         self.assertEqual(tool["inputSchema"]["properties"]["limit"]["default"], 3)
 

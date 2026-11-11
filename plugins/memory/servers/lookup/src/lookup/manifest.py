@@ -176,7 +176,7 @@ class Source:
     # Several addresses that name the SAME location. Decision 2026-09-07:
     # "check that lookup sources include aliases for the sources, as
     # smb://core/knowledge-archive/ is the same as
-    # smb://192.168.1.90/knowledge-archive/."
+    # smb://192.0.2.10/knowledge-archive/."
     #
     # Purely declarative. Document identity is already address-independent --
     # sha1(source|path|key) with `path` relative to a root -- so listing an
@@ -342,7 +342,7 @@ def _expand(raw: str) -> Path:
     archive specifically, I should be able to add new source also."*
 
     `config.PLACEHOLDERS` still resolves the legacy `PI_*` names, because
-    `sources.toml` (core's manifest, built on a different machine) uses them and
+    `sources.toml` (the storage host's manifest, built on a different machine) uses them and
     is not this file's to rewrite. Environment variables win where both apply,
     since they are the mechanism a user actually reaches for.
 
@@ -417,7 +417,7 @@ def normalise_address(addr: str) -> str:
     """Reduce an SMB address to the `//host/share` form the cifs driver wants.
 
     `smb://core/knowledge-archive/`, `//core/knowledge-archive` and
-    `\\\\core\\knowledge-archive` are one location written three ways, and the
+    `\\\\nas\\knowledge-archive` are one location written three ways, and the
     kernel accepts only the middle one. The host is lowercased because DNS is
     case-insensitive; the share is not, because SMB shares can be.
 

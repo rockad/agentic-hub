@@ -24,7 +24,7 @@ Purpose: let two live, interactive sessions (Claude Code and Antigravity) see wh
   "harness": "claude-code",
   "session_id": "012hq2t9CJjJdCY9JySndAEj",
   "name": "macp",
-  "host": "alyx",
+  "host": "<workstation>",
   "pid": 12345,
   "started_at": "2026-11-03T13:50:00+02:00",
   "updated_at": "2026-11-03T15:30:12+02:00",

@@ -119,7 +119,7 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       });
 
       delete process.env.ANTIGRAVITY_AGENT;
-      process.env.ANTIGRAVITY_APP_DATA_DIR = '/home/rockad/.gemini/antigravity-cli';
+      process.env.ANTIGRAVITY_APP_DATA_DIR = '/home/user/.gemini/antigravity-cli';
       expect(detectActiveHarness()).toBe('antigravity');
       expect(getHarnessModels()).toEqual({
         free: 'openrouter/free',

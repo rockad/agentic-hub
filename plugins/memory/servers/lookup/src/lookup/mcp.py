@@ -18,7 +18,7 @@ capability the other lacks. **Nothing deploys it.**
 ⚠️ **And nothing should.** A stdio MCP server means one server process per
 session. This project's earlier incarnation shipped that as `docker run --rm -i`
 per session, and `--rm` does not fire when a session dies without closing
-stdin — so containers accumulated on `core` with nothing reaping them, which is
+stdin — so containers accumulated on the storage host with nothing reaping them, which is
 what got it scrapped. The same leak was reproduced during the 2026-09-07
 evaluation in an unrelated tool, so it belongs to `run --rm` plus a stdio MCP
 server rather than to this code. Whatever serves real traffic must be ONE

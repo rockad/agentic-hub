@@ -76,7 +76,7 @@ flowchart TD
 ---
 
 ### Phase 2: Script Adaptation in `memory.sh`
-Update [`scripts/memory.sh`](file:///home/rockad/projects/doppelganger/scripts/memory.sh) to detect which tool version the server exposes:
+Update [`scripts/memory.sh`](~/projects/doppelganger/scripts/memory.sh) to detect which tool version the server exposes:
 ```bash
 # Check whether server exposes bm_read (v1) or read_note (v0.x)
 available_tools=$(curl -s -X POST "${RECALL_URL}" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
@@ -95,7 +95,7 @@ Adapt payload formatting:
 ---
 
 ### Phase 3: Update Agent Skills & Tool Declarations
-Update [`skills/recall/SKILL.md`](file:///home/rockad/.gemini/antigravity-cli/skills/recall/SKILL.md) in both Antigravity and Claude Code scopes:
+Update [`skills/recall/SKILL.md`](~/.gemini/antigravity-cli/skills/recall/SKILL.md) in both Antigravity and Claude Code scopes:
 - Document `bm_read`, `bm_write`, `bm_search`, `bm_context`.
 - Include examples with `path`, `lines`, and `content`.
 

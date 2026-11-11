@@ -6,8 +6,8 @@ Labels: verified = read in code (file:line cited); reported = README or comments
 
 Clone paths:
 
-- /tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/toshiotomikawa-a2a-bridge
-- /tmp/claude-1000/-home-rockad-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/mgcrea-mcp-a2a
+- /tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/toshiotomikawa-a2a-bridge
+- /tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/mgcrea-mcp-a2a
 
 Verdicts at a glance:
 
@@ -41,7 +41,7 @@ Verdicts at a glance:
 
 - Spec version targeted: v1.0 (verified: `server.py:91` `"protocolVersion": "1.0"`, `"protocolBinding": "JSONRPC"`). It also keeps pre-1.0 aliases `message/send`, `tasks/get`, `tasks/list`, `tasks/cancel` (verified: `server.py:27-30`).
 - Hand-rolled: it serves JSON-RPC with `http.server` and does not use the official SDK (verified: no dependencies; `server.py:335-383` hand-written dispatch).
-- The 11 core operations, as dispatched at `server.py:371-383`:
+- The 11 @@C@@ operations, as dispatched at `server.py:371-383`:
   - SendMessage: yes (verified, `server.py:371`)
   - GetTask: yes (`server.py:374`)
   - ListTasks: yes (`server.py:376`)
@@ -150,7 +150,7 @@ The central design is exactly what the plan prohibits: inbound A2A messages are 
   - SubscribeToTask: no (same)
   - Create/Get/List/Delete TaskPushNotificationConfig: not served; card `pushNotifications: false` (`card.ts:47`) and no push store is wired (verified by absence: no `pushNotificationStore` in `src`); README `Known boundaries` agrees. SDK behaviour for these methods when no store is wired is unverified.
   - GetExtendedAgentCard: no, `extendedAgentCard: false` (`card.ts:49`).
-- Outbound client side (what the MCP tools call on a peer): sendMessage, getTask, cancelTask, createTaskPushNotificationConfig, deleteTaskPushNotificationConfig (`client/peer.ts:187,202,214,226,243`), plus the `a2a_request` escape hatch that can reach GetTask, ListTasks, Get/List push config, GetExtendedAgentCard, SendMessage, CancelTask, Create/Delete push config (`tools/request.ts:12-24`). So outbound coverage is 9 of the 11 core operations (all except the two streaming ones), inbound coverage is 4 of 11.
+- Outbound client side (what the MCP tools call on a peer): sendMessage, getTask, cancelTask, createTaskPushNotificationConfig, deleteTaskPushNotificationConfig (`client/peer.ts:187,202,214,226,243`), plus the `a2a_request` escape hatch that can reach GetTask, ListTasks, Get/List push config, GetExtendedAgentCard, SendMessage, CancelTask, Create/Delete push config (`tools/request.ts:12-24`). So outbound coverage is 9 of the 11 @@C@@ operations (all except the two streaming ones), inbound coverage is 4 of 11.
 - Agent Card fields (verified, `card.ts:30-78`): name, description, supportedInterfaces (JSONRPC, `tenant: ""`, SDK protocolVersion), version, capabilities (streaming false, pushNotifications false, extendedAgentCard false, extensions empty), defaultInputModes and defaultOutputModes (`text/plain`, `application/json`), skills (one `delegate-task` skill), empty provider, empty signatures.
 - Gap: the card advertises `securitySchemes: {}` and `securityRequirements: []` (`card.ts:50-51`) even when the daemon enforces a bearer token (`daemon.ts:93-100`). A peer cannot learn from the card that auth is needed (verified).
 

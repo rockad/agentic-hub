@@ -565,7 +565,7 @@ def cmd_mounts(a) -> int:
     if a.write:
         # ⚠️ Refuse to write a file that cannot be right. With no .env loaded and
         # no LOOKUP_MANIFEST set, this command once fell back to the packaged
-        # sources.toml -- core's manifest, whose roots are in-container paths --
+        # sources.toml -- the storage host's manifest, whose roots are in-container paths --
         # generated mounts for /data/converted and friends, and exited 0. A
         # wrong override that looks plausible is worse than a crash, and every
         # root being absent is the signature of exactly that mistake.
@@ -606,7 +606,7 @@ def cmd_mcp(a) -> int:
 
     stdio is one server process per client, which is fine for `uv run` on a
     workstation. A container must use --http: a per-session container is what
-    leaked on core and got the earlier incarnation scrapped, and one resident
+    leaked on the storage host and got the earlier incarnation scrapped, and one resident
     HTTP server has no reaping problem to solve.
     """
     from .mcp import serve, serve_http

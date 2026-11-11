@@ -1,6 +1,6 @@
 # T2: cognitive-engine session reply (2026-11-04), read-only, from origin refs, PR #13 not read
 
-Verdict: fit as an EXTERNAL peer, never inside core.
+Verdict: fit as an EXTERNAL peer, never inside <storage-host>.
 
 1. Touch points
 - harness2 sweep lifecycle maps to A2A states: plan=submitted; awaiting typed approval=input-required; sessions=working; sweep ok/fail=completed/failed; approval gate refusal=rejected; human Ctrl-C=canceled (teardown non-interruptible). Refs: packages/harness2/README.md ~468 (ExecutionGrant), session_runner.py, sbx_session.py (SweepBudget hard gate), audit.jsonl + report.json.

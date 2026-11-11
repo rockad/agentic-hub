@@ -3,7 +3,7 @@
     "gitea": {
       "command": "gitea-mcp",
       "env": {
-        "GITEA_HOST": "${GITEA_SERVER_URL:-https://git.bigrockad.com}",
+        "GITEA_HOST": "${GITEA_SERVER_URL:-https://gitea.example.com}",
         "GITEA_ACCESS_TOKEN": "${GITEA_SERVER_TOKEN}"
       }
     }

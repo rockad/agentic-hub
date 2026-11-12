@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.3.2-brightgreen)](https://github.com/rockad/agentic-hub)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.3-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.3.2  
+**Version:** 2.3.3  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 
@@ -407,15 +407,41 @@ What the hooks do **not** do:
 Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
 
 **Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
-prompt, either a model named as a word (`opus`, `sonnet`, `haiku`) or a cost intent (`minimal viable model`,
-`cheapest`, `cheap model`, which lowers the tier one step); (2) the mode guard (a `pro` recommendation is
-capped at the session model and the turn context tells the assistant to ask before using `opus`; naming `opus`
-satisfies it, and no permission dialog is involved); (3) the default
-rule (Jev's tier mapped to a model). The `PreToolUse` guard does not ask about a model the user named in the
-current prompt. Jev cannot read the user-level `CLAUDE.md`, so the standing rule is only reflected by the
-default rule.
+prompt, either a model named in an imperative (`use opus`, `run an opus subagent`) or a cost intent (`minimal
+viable model`, `cheapest`, `as cheap as possible`); the effect is at most one tier step from the router's tier;
+(2) the Jev guard (a `pro` recommendation on a session below opus: the turn context tells the assistant to ask
+before using `opus` and to offer the cheaper option; naming `opus` satisfies it); (3) the standing rule (the
+router's tier; on an opus session a `pro` recommendation is within the ceiling and needs no approval). The
+turn context names the rule that applied (`rule: per your instruction | per the Jev guard | per standing rule`).
+The `PreToolUse` guard does not ask about a model the user named in the current prompt. Jev cannot read the
+user-level `CLAUDE.md`, so the standing rule is only reflected by the router's tier.
 
 ### Release notes
+
+- **2.3.3** (backport of the cognitive-engine advisor work, see `docs/plans/parity-audit-2026-11-12.md`):
+  - The intent parser ignores quoted, code-span, fenced, questioned, "if"-supposed, first-person and
+    pasted-speaker text, and negated models ("do not use opus", "instead of opus", "not the cheapest");
+    "compare with opus" is not an instruction and two models in one clause are ambiguous; "as cheap as possible"
+    is a cost intent. A named model moves the tier at most one step from the router's tier. The advice and the
+    log carry `by` and `routerTier`.
+  - One ceiling sentence on every path (including "allows it" on an opus session) and a `rule:` label; a `pro`
+    recommendation on a sonnet session now advises opus with an ask instead of capping at sonnet.
+  - No advice and no Jev call for `<task-notification>`, `<bash-*>`, `<local-command-*>`, `<system-reminder>`
+    turns, status turns and prompts over 20 000 characters; the task sent to Jev is trimmed to 2 000 characters.
+  - Narrow, negation-aware edit rule for the read-only personas; whole-word keywords in the effort heuristic,
+    the local pre-filter and the scaffold detector (`isFormattingTask`).
+  - The decisions log gains `session_id` next to `session` (both kept), `event: 'agent_call'`, `user_intent`
+    and `by`; the turn state gains `mode`, `at` and `staged`; the telemetry event gains `modelRecommended`
+    (`modelUsed` stays as a deprecated alias). One `env_notice` field names a remapped `ANTHROPIC_DEFAULT_*_MODEL`
+    alias or a `CLAUDE_CODE_EFFORT_LEVEL` override (names only, never blocking).
+  - Pre-flight: `PreToolUse` now matches `Agent|Task|Workflow` and reminds once on a Workflow, on the third
+    Agent call of a staged session, or on a turn that named a workflow, when no successful dispatch call from
+    Claude Code is logged in the last 30 minutes. Whether Claude Code fires `PreToolUse` for the agents a
+    Workflow launches is unverified. Dispatch telemetry lines now carry `harness: 'claude-code'` there.
+  - The hook waits up to 1 s for pending telemetry appends before it exits, and creates its state directory
+    and files owner-only (0700 / 0600). `jev_batch_dispatch` reads `tiers.free.concurrencyCap` (default 10).
+  - Not in this release (2.3.4): the stage rubric in the router criteria, `kind` / `needsEdit` on batch stages,
+    and Claude-aware `jev_dispatch` / `jev_batch_dispatch` wording and session model.
 
 - **2.3.2** (see `docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md`): `PreToolUse` on `Agent`
   no longer opens a permission dialog when Jev rates the task `pro`. The dialog fired on every delegation

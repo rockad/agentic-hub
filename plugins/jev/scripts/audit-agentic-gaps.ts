@@ -13,6 +13,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { evaluateDrift, type DriftReport } from '../src/audit/drift-detector.js';
+import { PRIVATE_FILE_MODE, privateDir, privateFile } from '../src/core/private-fs.js';
 
 interface CliArgs {
   all: boolean;
@@ -361,7 +362,7 @@ async function main() {
 
   // Save report to disk
   const reportDir = path.join(os.homedir(), '.config', 'jev');
-  if (!fsSync.existsSync(reportDir)) fsSync.mkdirSync(reportDir, { recursive: true });
+  privateDir(reportDir);
   const reportPath = path.join(reportDir, 'audit_report.json');
 
   const finalOutput = {
@@ -372,7 +373,9 @@ async function main() {
     driftReport
   };
 
-  await fs.writeFile(reportPath, JSON.stringify(finalOutput, null, 2), 'utf8');
+  // Incident details quote up to 160 characters of transcript text, so the report is owner-only.
+  await fs.writeFile(reportPath, JSON.stringify(finalOutput, null, 2), { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
+  privateFile(reportPath);
   console.log(`\n\x1b[32m✔ Full audit report saved to:\x1b[0m ${reportPath}\n`);
 }
 

@@ -3,6 +3,7 @@
  */
 export * from './client.js';
 export * from './config.js';
+export * from './private-fs.js';
 export * from './telemetry.js';
 export * from './governance.js';
 export * from './discovery.js';

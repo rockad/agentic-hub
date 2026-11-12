@@ -29,6 +29,9 @@ import {
   checkEgress,
   egressContextDirs,
   TELEMETRY_FILE,
+  PRIVATE_FILE_MODE,
+  privateDir,
+  privateFile,
   type JevMode,
   type JevTelemetryEvent
 } from '../src/shared.js';
@@ -69,28 +72,6 @@ const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
 const DECISIONS_LOG = path.join(JEV_DIR, 'claude_decisions.jsonl');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-/** Owner-only modes for what the hook creates under `~/.config/jev`; an existing directory or file keeps its mode. */
-const PRIVATE_DIR_MODE = 0o700;
-const PRIVATE_FILE_MODE = 0o600;
-
-/** Create `dir` (and parents) owner-only, and tighten it when it already existed with looser modes. Never throws. */
-function privateDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  try {
-    fs.chmodSync(dir, PRIVATE_DIR_MODE);
-  } catch {
-    // best-effort: not our file, or a filesystem without modes
-  }
-}
-
-/** Tighten a state or log file to owner-only after a write: `mode` on write applies only when the file is created. Never throws. */
-function privateFile(file: string): void {
-  try {
-    fs.chmodSync(file, PRIVATE_FILE_MODE);
-  } catch {
-    // best-effort
-  }
-}
 /** Well inside Claude Code's 30 s UserPromptSubmit budget; a slow Jev must not stall the prompt. */
 const JEV_HOOK_TIMEOUT_MS = 1500;
 

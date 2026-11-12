@@ -1,16 +1,62 @@
-# Stage s1 only: the coordination service. The Postgres service is S1-PG and the dump
-# sidecar is S1-BKP. Spec: docs/specs/server-api.md 1.4 and 1.5.
+# Stage s1: the coordination service and its Postgres (S1-PG). The dump sidecar is S1-BKP.
+# Spec: docs/specs/server-api.md 1.4 and 1.5.
+#
+# Secrets live on the host, outside the repo, in one directory (mode 0700):
+#   ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/a2a_db_password    server and Postgres
+#   ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/pg_dump_password   the dump_ro role (S1-BKP declares it)
+# Each file is mode 0600. servers/coordination/README.md says how to create them.
+#
+# Compose outside Swarm bind-mounts a file secret as it is on the host: owner and mode are not
+# changed (uid, gid and mode on a service secret are ignored). The server therefore has to run as
+# the user that owns the 0600 file. Rootful Docker: A2A_UID=$(id -u) A2A_GID=$(id -g). Rootless
+# Docker (the host user is container root): A2A_UID=0 A2A_GID=0. The default 10001 is the image's
+# own user, right for a secret file owned by that uid.
 name: coordination
 
 services:
+  postgres:
+    # Exact tag plus the digest SP5b recorded; the same image runs in S1, S2 and S3 (R3).
+    # No major-only tag, no latest. An upgrade is deliberate: pg_dump, upgrade, restore test.
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    # No "ports:" key: reachable only on the compose network.
+    environment:
+      POSTGRES_USER: coordination
+      POSTGRES_DB: coordination
+      POSTGRES_PASSWORD_FILE: /run/secrets/a2a_db_password
+      # No trust anywhere: password (scram-sha-256) on the unix socket and on TCP, including
+      # 127.0.0.1 inside the container. The entrypoint exports PGPASSWORD for its own init
+      # psql calls and unsets it afterwards.
+      POSTGRES_INITDB_ARGS: "--auth-local=scram-sha-256 --auth-host=scram-sha-256"
+    secrets:
+      - a2a_db_password
+    volumes:
+      - a2a-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # TCP on 127.0.0.1, not the socket: during first-time init the entrypoint runs a temporary
+      # server that listens on the socket only, and a socket check would report healthy too early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U coordination -d coordination"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   coordination:
     build: ./servers/coordination
     image: coordination:local
     init: true
+    user: "${A2A_UID:-10001}:${A2A_GID:-10001}"
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       # Host loopback only, at every stage. The 8121 mapping starts at stage s2 (S2-LISTEN).
       - "127.0.0.1:${A2A_PORT:-8120}:8120"
+    secrets:
+      - a2a_db_password
     environment:
+      A2A_DB_URL: ${A2A_DB_URL:-postgresql+asyncpg://coordination@postgres:5432/coordination}  # no password in the URL
+      A2A_DB_PASSWORD_FILE: /run/secrets/a2a_db_password
       A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://127.0.0.1:8120}
       A2A_DEPLOY_HOST: ${A2A_DEPLOY_HOST:-local}  # a label, never a trust input
       A2A_ENV: ${A2A_ENV:-dev}
@@ -21,7 +67,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /run/a2a:uid=10001,gid=10001,mode=0700
+      - /run/a2a:uid=${A2A_UID:-10001},gid=${A2A_GID:-10001},mode=0700
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 20s
@@ -33,5 +79,10 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+secrets:
+  a2a_db_password:
+    file: ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/a2a_db_password
+
 volumes:
   a2a-data:
+  a2a-pgdata:

@@ -10,6 +10,7 @@ import {
   dropDisplayNameAliases,
   turnId,
   hasRecentDispatch,
+  preflightReminder,
   PREFLIGHT_REMINDER,
   NO_INTENT,
   CLAUDE_SUBAGENT_CRITERIA,
@@ -119,12 +120,15 @@ describe('parseUserIntent (5.1)', () => {
 describe('resolveModel precedence (5.9): instruction, then mode guard, then default rule', () => {
   const cases: Array<{ name: string; intent?: UserIntent; rec: Dispatch; session: string | null; tier: string; model: string; source: string; approval: boolean }> = [
     { name: 'named opus beats the guard', intent: { models: ['opus'] }, rec: flashRec, session: 'claude-sonnet-5', tier: 'pro', model: 'opus', source: 'user-instruction', approval: false },
-    { name: 'named haiku beats a pro recommendation', intent: { models: ['haiku'] }, rec: proRec, session: 'claude-opus-5', tier: 'flash_lite', model: 'haiku', source: 'user-instruction', approval: false },
+    // 2.3.3: a named model moves the tier at most one step from the router's (pro to flash, not to flash_lite).
+    { name: 'named haiku moves a pro recommendation one step, to sonnet', intent: { models: ['haiku'] }, rec: proRec, session: 'claude-opus-5', tier: 'flash', model: 'sonnet', source: 'user-instruction', approval: false },
     { name: 'minimal viable lowers pro to sonnet', intent: { models: [], cost: 'minimal' }, rec: proRec, session: 'claude-opus-5', tier: 'flash', model: 'sonnet', source: 'user-instruction', approval: false },
     { name: 'minimal viable lowers flash to haiku', intent: { models: [], cost: 'minimal' }, rec: flashRec, session: 'claude-sonnet-5', tier: 'flash_lite', model: 'haiku', source: 'user-instruction', approval: false },
     { name: 'minimal viable never goes below flash_lite', intent: { models: [], cost: 'minimal' }, rec: { ...flashRec, tier: 'flash_lite', model: 'haiku' }, session: null, tier: 'flash_lite', model: 'haiku', source: 'user-instruction', approval: false },
-    { name: 'no instruction, pro, opus session: guard asks', intent: NO_INTENT, rec: proRec, session: 'claude-opus-5', tier: 'pro', model: 'opus', source: 'mode-guard', approval: true },
-    { name: 'no instruction, pro, sonnet session: capped at sonnet, asks', intent: NO_INTENT, rec: proRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'mode-guard', approval: true },
+    // 2.3.3 (5.9): on an opus session the pro tier is within the ceiling, so it is the standing rule and needs no approval.
+    { name: 'no instruction, pro, opus session: standing rule, no approval', intent: NO_INTENT, rec: proRec, session: 'claude-opus-5', tier: 'pro', model: 'opus', source: 'default-rule', approval: false },
+    // 2.3.3 (5.9): below opus the guard rule advises opus and asks, as cognitive-engine #22 does; it no longer caps the advice.
+    { name: 'no instruction, pro, sonnet session: guard rule, opus advised with approval', intent: NO_INTENT, rec: proRec, session: 'claude-sonnet-5', tier: 'pro', model: 'opus', source: 'mode-guard', approval: true },
     { name: 'no instruction, flash: sonnet by the default rule', intent: NO_INTENT, rec: flashRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'default-rule', approval: false }
   ];
 
@@ -145,7 +149,7 @@ describe('buildDirective with an explicit user instruction (5.1)', () => {
   it('names opus and the explicit user request when the user asked for opus', () => {
     const directive = buildDirective(flashRec, 'claude-sonnet-5', 'normal', { models: ['opus'] });
 
-    expect(directive).toContain('You asked for opus (explicit user request).');
+    expect(directive).toContain('You asked for opus (explicit user request: "opus")');
     expect(directive).toContain('model="opus"');
   });
 
@@ -163,7 +167,7 @@ describe('buildDirective with an explicit user instruction (5.1)', () => {
 });
 
 describe('Claude adapter ceiling (5.2): one sentence, consistent with the tier', () => {
-  it('under a sonnet session a pro recommendation is capped and names the ceiling once', () => {
+  it('under a sonnet session a pro recommendation names the ceiling once', () => {
     const directive = buildDirective(proRec, 'claude-sonnet-5', 'normal');
 
     expect(directive.split('is the hard ceiling').length - 1).toBe(1);
@@ -175,10 +179,11 @@ describe('Claude adapter ceiling (5.2): one sentence, consistent with the tier',
     expect(directive).not.toContain('present the cheaper');
   });
 
-  it('reports the capped tier and model in the recommendation', () => {
+  it('reports the pro tier and opus, with the ask, under a sonnet session (2.3.3: no longer capped)', () => {
     const directive = buildDirective(proRec, 'claude-sonnet-5', 'normal');
 
-    expect(directive).toContain('tier="flash", model="sonnet"');
+    expect(directive).toContain('tier="pro", model="opus"');
+    expect(directive).toContain('ask the user before delegating on opus');
   });
 
   it('keeps "let the user choose" when the session is unknown', () => {
@@ -187,10 +192,11 @@ describe('Claude adapter ceiling (5.2): one sentence, consistent with the tier',
     expect(directive).toContain('let the user choose');
   });
 
-  it('keeps "let the user choose" when the session is already opus', () => {
+  it('says the session "allows it" and does not ask when the session is already opus (2.3.3)', () => {
     const directive = buildDirective(proRec, 'claude-opus-5', 'normal');
 
-    expect(directive).toContain('let the user choose');
+    expect(directive).toContain('allows it');
+    expect(directive).not.toContain('let the user choose');
   });
 });
 
@@ -359,19 +365,37 @@ describe('recommended versus used logging (5.7)', () => {
 
 describe('pre-flight reminder at PreToolUse (5.10)', () => {
   const agentCall = { session_id: 's1', tool_name: 'Agent', tool_input: { model: 'sonnet', prompt: 'Wrap the findings' } };
+  // 2.3.3: a reminder is for staged work: a Workflow, the third Agent call in the window, or a turn that named a workflow.
+  const workflowCall = { session_id: 's1', tool_name: 'Workflow', tool_input: {} };
 
-  it('reminds when no dispatch call was logged recently', async () => {
+  it('reminds a Workflow when no dispatch call was logged recently', async () => {
     const d = deps({ recentDispatch: () => false });
 
-    const out = await onPreToolUse(agentCall, d);
+    const out = await onPreToolUse(workflowCall, d);
 
-    expect(out?.hookSpecificOutput.additionalContext).toBe(PREFLIGHT_REMINDER);
+    expect(out?.hookSpecificOutput.additionalContext).toBe(preflightReminder('Workflow'));
+  });
+
+  it('does not remind on a lone Agent call', async () => {
+    const out = await onPreToolUse(agentCall, deps({ recentDispatch: () => false }));
+
+    expect(out).toBeNull();
+  });
+
+  it('reminds on the third Agent call of the window, once', async () => {
+    const calls = { count: 2, reminded: false };
+    const d = deps({ recentDispatch: () => false, recentAgentCalls: () => calls });
+
+    const third = await onPreToolUse(agentCall, d);
+    const afterReminder = await onPreToolUse(agentCall, deps({ recentDispatch: () => false, recentAgentCalls: () => ({ count: 3, reminded: true }) }));
+
+    expect([third?.hookSpecificOutput.additionalContext, afterReminder]).toEqual([PREFLIGHT_REMINDER, null]);
   });
 
   it('does not block: the reminder carries no permission decision', async () => {
     const d = deps({ recentDispatch: () => false });
 
-    const out = await onPreToolUse(agentCall, d);
+    const out = await onPreToolUse(workflowCall, d);
 
     expect(out?.hookSpecificOutput.permissionDecision).toBeUndefined();
   });
@@ -379,13 +403,13 @@ describe('pre-flight reminder at PreToolUse (5.10)', () => {
   it('stays silent when a dispatch call was logged recently', async () => {
     const d = deps({ recentDispatch: () => true });
 
-    const out = await onPreToolUse(agentCall, d);
+    const out = await onPreToolUse(workflowCall, d);
 
     expect(out).toBeNull();
   });
 
   it('is skipped when the dispatch check is unavailable', async () => {
-    const out = await onPreToolUse(agentCall, deps());
+    const out = await onPreToolUse(workflowCall, deps());
 
     expect(out).toBeNull();
   });
@@ -395,16 +419,18 @@ describe('pre-flight reminder at PreToolUse (5.10)', () => {
     let now = 1_000_000;
     const d = deps({ ...store, recentDispatch: () => false, now: () => now });
     await onUserPromptSubmit({ session_id: 's1', prompt: 'wrap the findings in the docs and commit' }, d);
-    const first = await onPreToolUse(agentCall, d);
+    const first = await onPreToolUse(workflowCall, d);
     now += 60_000;
 
-    const second = await onPreToolUse(agentCall, d);
+    const second = await onPreToolUse(workflowCall, d);
 
     expect([first !== null, second]).toEqual([true, null]);
   });
 
   it('puts the reminder next to an ask decision without replacing it', async () => {
-    const d = deps({ recentDispatch: () => false });
+    const store = turnStore();
+    const d = deps({ ...store, recentDispatch: () => false });
+    await onUserPromptSubmit({ session_id: 's1', prompt: 'wrap the findings of the workflow and its workstreams' }, d);
 
     const out = await onPreToolUse({ ...agentCall, tool_input: { model: 'opus', prompt: 'Wrap the findings' } }, d);
 
@@ -415,7 +441,7 @@ describe('pre-flight reminder at PreToolUse (5.10)', () => {
     const logs: Array<Record<string, unknown>> = [];
     const d = deps({ recentDispatch: () => false, log: (e) => logs.push(e) });
 
-    await onPreToolUse(agentCall, d);
+    await onPreToolUse(workflowCall, d);
 
     expect(logs[0].preflight_reminder).toBe(true);
   });
@@ -423,10 +449,10 @@ describe('pre-flight reminder at PreToolUse (5.10)', () => {
   it('finds a dispatch line inside the window and ignores an old one', () => {
     const now = Date.parse('2026-11-09T12:00:00Z');
     const lines = [
-      JSON.stringify({ tool: 'jev_batch_dispatch', timestamp: '2026-11-09T11:55:00Z' }),
-      JSON.stringify({ tool: 'jev_dispatch', timestamp: '2026-11-09T09:00:00Z' }),
+      JSON.stringify({ tool: 'jev_batch_dispatch', harness: 'claude-code', timestamp: '2026-11-09T11:55:00Z' }),
+      JSON.stringify({ tool: 'jev_dispatch', harness: 'claude-code', timestamp: '2026-11-09T09:00:00Z' }),
       'not json',
-      JSON.stringify({ tool: 'jev_judge', timestamp: '2026-11-09T11:59:00Z' })
+      JSON.stringify({ tool: 'jev_judge', harness: 'claude-code', timestamp: '2026-11-09T11:59:00Z' })
     ];
 
     expect([hasRecentDispatch(lines, now, 10 * 60 * 1000), hasRecentDispatch(lines.slice(1), now, 10 * 60 * 1000)]).toEqual([true, false]);

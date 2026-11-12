@@ -4,7 +4,11 @@
  *
  *   session-start | post-model-switch  remember the session model (the ceiling)
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
- *   pre-tool-use (matcher "Agent")     ask before a delegation runs above the ceiling; nothing else asks
+ *   pre-tool-use (matcher "Agent|Task|Workflow")
+ *                                      ask before an Agent delegation runs above the ceiling (nothing else asks),
+ *                                      log the call next to the last recommendation, and remind once before staged
+ *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
+ *                                      for the agents a Workflow launches is UNVERIFIED)
  *
  * Active only in Jev mode "on" (~/.config/jev/mode.json). Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
@@ -27,17 +31,26 @@ import {
   type JevTelemetryEvent
 } from '../src/shared.js';
 import {
+  AGENT_WINDOW_MS,
   NO_INTENT,
-  PREFLIGHT_REMINDER,
   PREFLIGHT_WINDOW_MS,
+  STAGED_AGENT_CALLS,
   buildDirective,
   decideAgentCall,
   dispatchQuestions,
   hasRecentDispatch,
+  isHostInjectedPrompt,
+  isNonTaskPrompt,
+  isStagedPrompt,
+  isStatusTurn,
   parseDispatch,
   parseUserIntent,
+  preflightReminder,
   resolveClaudeSubagentCriteria,
+  resolveModel,
   safeSessionId,
+  storedIntent,
+  trimTask,
   turnId,
   type AgentCall,
   type Dispatch,
@@ -48,6 +61,9 @@ const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
 const DECISIONS_LOG = path.join(JEV_DIR, 'claude_decisions.jsonl');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Owner-only modes for what the hook creates under `~/.config/jev`; an existing directory or file keeps its mode. */
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 /** Well inside Claude Code's 30 s UserPromptSubmit budget; a slow Jev must not stall the prompt. */
 const JEV_HOOK_TIMEOUT_MS = 1500;
 
@@ -74,8 +90,12 @@ export type HookDeps = {
   /** The current turn's state (user intent, last recommendation), written at UserPromptSubmit. */
   readTurn?: (sessionId: string | null) => TurnState | null;
   saveTurn?: (sessionId: string | null, state: TurnState) => void;
-  /** Whether a jev_dispatch or jev_batch_dispatch call was logged within the window; absent skips the reminder. */
+  /** Drop the stored turn, for a turn that runs with Jev off: what was stored before is no longer this turn's. */
+  forgetTurn?: (sessionId: string | null) => void;
+  /** Whether a successful jev_dispatch or jev_batch_dispatch call from Claude Code was logged within the window; absent skips the reminder. */
   recentDispatch?: (windowMs: number) => boolean;
+  /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
+  recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
   now?: () => number;
 };
 
@@ -99,34 +119,66 @@ export function withTimeout<T>(
 }
 
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
-  if ((await deps.readMode()) !== 'on') return null;
-  const task = (input.prompt || '').trim();
   const sessionId = safeSessionId(input.session_id);
-  // The user's own words about a model or cost are stored first, so the Agent guard of this
-  // turn can honour them even when the prompt is short or Jev is unreachable.
+  if ((await deps.readMode()) !== 'on') {
+    // This turn runs without the advisor: nothing stored for an earlier turn may speak for it.
+    safely(() => deps.forgetTurn?.(sessionId));
+    return null;
+  }
+  const task = (input.prompt || '').trim();
+  // A host-injected turn (a task notification, a local command) is not a new user turn: it keeps the
+  // marker of the prompt it belongs to, asks Jev nothing and gets no advice.
+  if (isHostInjectedPrompt(task)) return null;
+  // The user's own words about a model or cost are stored first, before anything can return early, so
+  // the Agent guard of this turn can honour them even when the prompt is short or Jev is unreachable,
+  // and never reads an earlier turn's state.
   const intent = parseUserIntent(task);
   const turn = turnId(task);
-  safely(() => deps.saveTurn?.(sessionId, { turn, intent }));
+  safely(() =>
+    deps.saveTurn?.(sessionId, { turn, mode: 'on', intent: storedIntent(intent), at: new Date().toISOString() })
+  );
   if (task.length < 8) return null;
+  // A pasted blob carries no task: no advice and no Jev call.
+  if (isNonTaskPrompt(task)) return null;
   if (deps.egressAllowed && !deps.egressAllowed(input.cwd)) {
-    deps.log({ hook: 'UserPromptSubmit', session: sessionId, egress: 'blocked' });
+    deps.log({ hook: 'UserPromptSubmit', session: sessionId, session_id: sessionId, egress: 'blocked' });
     return null;
   }
   const quotaStrategy = await deps.readQuotaStrategy();
   const criteria = await resolveClaudeSubagentCriteria();
-  const rec = await deps.dispatch(task, quotaStrategy, criteria);
+  const rec = await deps.dispatch(trimTask(task), quotaStrategy, criteria);
   if (!rec) return null;
+  // A status turn ("A3 completed the run") gets no line. An instruction in the prompt always does.
+  if (isStatusTurn(rec, task, intent)) return null;
   const sessionModel = deps.readSessionModel(sessionId);
+  const { advised, rule } = resolveModel({ intent, rec, sessionModel });
+  const staged = isStagedPrompt(task);
   safely(() =>
-    deps.saveTurn?.(sessionId, { turn, intent, rec: { subagent: rec.subagent, tier: rec.tier, model: rec.model } })
+    deps.saveTurn?.(sessionId, {
+      turn,
+      mode: 'on',
+      intent: storedIntent(intent),
+      rec: { subagent: advised.subagent, tier: advised.tier, model: advised.model, ...(advised.by ? { by: advised.by } : {}) },
+      ...(staged ? { staged: true } : {}),
+      at: new Date().toISOString()
+    })
   );
   deps.log({
     hook: 'UserPromptSubmit',
+    // `session` is the 2.3.2 key and stays for existing readers; `session_id` is the key the case study
+    // and the other Jev harnesses use. Both hold the same value.
     session: sessionId,
+    session_id: sessionId,
     turn,
-    ...rec,
-    recommended_model: rec.model,
-    user_intent: intent,
+    subagent: advised.subagent,
+    tier: advised.tier,
+    effort: advised.effort,
+    confidence: advised.confidence,
+    ...(advised.routerTier ? { routerTier: advised.routerTier } : {}),
+    ...(advised.by ? { by: advised.by } : {}),
+    recommended_model: advised.model,
+    rule,
+    user_intent: storedIntent(intent),
     quota: quotaStrategy,
     sessionModel
   });
@@ -150,26 +202,39 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
 }
 
 export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<HookOutput> {
-  if (input.tool_name !== 'Agent' && input.tool_name !== 'Task') return null;
-  if ((await deps.readMode()) !== 'on') return null;
+  const tool = input.tool_name;
+  if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Workflow') return null;
+  const mode = await deps.readMode();
+  if (mode !== 'on') return null;
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
   const sessionModel = deps.readSessionModel(sessionId);
-  const state = safely(() => deps.readTurn?.(sessionId)) ?? null;
+  // A turn stored under another mode (the mode was flipped mid-turn) is stale: its advice and intent are not this turn's.
+  const stored = safely(() => deps.readTurn?.(sessionId)) ?? null;
+  const state = stored && (stored.mode === undefined || stored.mode === mode) ? stored : null;
   // What the user said in this turn's prompt (a named model, a cost intent) outranks the guard.
   const intent = state?.intent ?? NO_INTENT;
   // The one gate is the deterministic ceiling check: a model stronger than the session's. It needs no
   // network and sends no task text anywhere. Jev's tier rating is not a gate (see decideAgentCall): it
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
-  const verdict = decideAgentCall(call, sessionModel, intent);
+  // A Workflow carries no model of its own, so it is never gated.
+  const verdict = tool === 'Workflow' ? null : decideAgentCall(call, sessionModel, intent);
 
-  // Pre-flight reminder: only when the dispatch check is available, at most once per window, never blocks.
+  // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
+  // agent call in the window, or a turn whose prompt named a workflow), at most once, never blocks.
   const now = (deps.now ?? Date.now)();
+  const recent = safely(() => deps.recentAgentCalls?.(sessionId)) ?? { count: 0, reminded: false };
+  const staged = tool === 'Workflow' || recent.count >= STAGED_AGENT_CALLS || state?.staged === true;
+  const remindedRecently = recent.reminded || (state?.remindedAt !== undefined && now - state.remindedAt < AGENT_WINDOW_MS);
   let reminder: string | null = null;
-  const remindedRecently = state?.remindedAt !== undefined && now - state.remindedAt < PREFLIGHT_WINDOW_MS;
-  if (deps.recentDispatch && !remindedRecently && !(safely(() => deps.recentDispatch!(PREFLIGHT_WINDOW_MS)) ?? true)) {
-    reminder = PREFLIGHT_REMINDER;
-    safely(() => deps.saveTurn?.(sessionId, { turn: state?.turn ?? '', intent, rec: state?.rec, remindedAt: now }));
+  if (
+    staged &&
+    deps.recentDispatch &&
+    !remindedRecently &&
+    !(safely(() => deps.recentDispatch!(PREFLIGHT_WINDOW_MS)) ?? true)
+  ) {
+    reminder = preflightReminder(tool);
+    if (state) safely(() => deps.saveTurn?.(sessionId, { ...state, remindedAt: now }));
   }
 
   // Recommended versus used, joined by the turn id of the prompt that started this turn. The
@@ -177,13 +242,17 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const recommended = state?.rec ?? null;
   deps.log({
     hook: 'PreToolUse',
+    event: 'agent_call',
     session: sessionId,
+    session_id: sessionId,
+    tool_name: tool,
     turn: state?.turn ?? null,
-    subagent_type: call.subagent_type,
+    subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
     model: call.model ?? null,
-    requested_model: call.model ?? null,
+    requested_model: typeof call.model === 'string' ? call.model : null,
     tier: recommended?.tier ?? null,
     recommended_model: recommended?.model ?? null,
+    user_intent: state?.intent ?? null,
     sessionModel,
     reason: verdict?.reason ?? null,
     preflight_reminder: reminder !== null
@@ -212,10 +281,11 @@ export function onModelKnown(input: HookInput): void {
   const sessionId = safeSessionId(input.session_id);
   const model = input.to_model || input.model;
   if (!sessionId || !model) return;
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+  fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
   fs.writeFileSync(
     path.join(SESSIONS_DIR, `${sessionId}.json`),
-    JSON.stringify({ model, updated_at: new Date().toISOString() }) + '\n'
+    JSON.stringify({ model, updated_at: new Date().toISOString() }) + '\n',
+    { mode: PRIVATE_FILE_MODE }
   );
   pruneOldSessions();
 }
@@ -254,8 +324,13 @@ function readTurn(sessionId: string | null): TurnState | null {
 
 function saveTurn(sessionId: string | null, state: TurnState): void {
   if (!sessionId) return;
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-  fs.writeFileSync(turnFile(sessionId), JSON.stringify(state) + '\n');
+  fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+  fs.writeFileSync(turnFile(sessionId), JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
+}
+
+function forgetTurn(sessionId: string | null): void {
+  if (!sessionId) return;
+  fs.rmSync(turnFile(sessionId), { force: true });
 }
 
 /**
@@ -265,16 +340,7 @@ function saveTurn(sessionId: string | null, state: TurnState): void {
 function recentDispatch(windowMs: number): boolean {
   try {
     if (!fs.existsSync(TELEMETRY_FILE)) return false;
-    const size = fs.statSync(TELEMETRY_FILE).size;
-    const length = Math.min(size, 256 * 1024);
-    const fd = fs.openSync(TELEMETRY_FILE, 'r');
-    try {
-      const buf = Buffer.alloc(length);
-      fs.readSync(fd, buf, 0, length, size - length);
-      return hasRecentDispatch(buf.toString('utf8').split('\n'), Date.now(), windowMs);
-    } finally {
-      fs.closeSync(fd);
-    }
+    return hasRecentDispatch(tailLines(TELEMETRY_FILE), Date.now(), windowMs);
   } catch {
     return true;
   }
@@ -309,8 +375,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
   return {
     harness: 'claude',
     toolOrHook: String(entry.hook || 'hook'),
-    sessionId: typeof entry.session === 'string' ? entry.session : null,
-    taskSummary: typeof entry.subagent === 'string' ? `subagent: ${entry.subagent}` : undefined,
+    sessionId: str(entry.session_id) ?? str(entry.session) ?? null,
+    taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
     tierRecommended: str(entry.tier),
     turn: str(entry.turn),
     ...(isPrompt
@@ -324,14 +390,70 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
   };
 }
 
+/** Telemetry appends in flight: the process must wait for them before it exits, or the lines are lost. */
+const pendingLogs: Promise<unknown>[] = [];
+
+/** How long the process waits for the pending telemetry appends before it exits anyway. */
+export const LOG_FLUSH_TIMEOUT_MS = 1000;
+
+/** Wait for every telemetry append started so far. Never throws and never waits longer than the budget. */
+export async function flushPendingLogs(ms: number = LOG_FLUSH_TIMEOUT_MS): Promise<void> {
+  try {
+    await withTimeout(Promise.allSettled(pendingLogs.splice(0)), ms);
+  } catch {
+    // best-effort
+  }
+}
+
 function appendLog(entry: Record<string, unknown>): void {
   try {
-    fs.mkdirSync(JEV_DIR, { recursive: true });
-    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n');
-    void logJevTelemetry(telemetryEvent(entry));
+    // Never prompt text: an entry holds the recommendation, model names, a tier and a prompt hash only.
+    fs.mkdirSync(JEV_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+    fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n', { mode: PRIVATE_FILE_MODE });
+    pendingLogs.push(logJevTelemetry(telemetryEvent(entry)));
   } catch {
     // logging is best-effort
   }
+}
+
+/** The parsed JSON lines in the last 256 KiB of a file. Unreadable or missing: none. Never throws. */
+function tailLines(file: string): string[] {
+  try {
+    const size = fs.statSync(file).size;
+    const length = Math.min(size, 256 * 1024);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(length);
+      fs.readSync(fd, buf, 0, length, size - length);
+      const lines = buf.toString('utf8').split('\n');
+      if (length < size) lines.shift(); // cut mid-record
+      return lines;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+}
+
+/** The session's `agent_call` records in the decisions log within the agent window, and whether one carried a reminder. */
+function recentAgentCalls(sessionId: string | null): { count: number; reminded: boolean } {
+  if (!sessionId) return { count: 0, reminded: false };
+  const now = Date.now();
+  let count = 0;
+  let reminded = false;
+  for (const line of tailLines(DECISIONS_LOG)) {
+    try {
+      const e = JSON.parse(line) as Record<string, unknown>;
+      const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
+      if (e.event !== 'agent_call' || e.session_id !== sessionId || !Number.isFinite(at) || now - at > AGENT_WINDOW_MS) continue;
+      count++;
+      if (e.preflight_reminder === true) reminded = true;
+    } catch {
+      // skip a malformed line
+    }
+  }
+  return { count, reminded };
 }
 
 const liveDeps: HookDeps = {
@@ -348,7 +470,9 @@ const liveDeps: HookDeps = {
   log: appendLog,
   readTurn,
   saveTurn,
+  forgetTurn,
   recentDispatch,
+  recentAgentCalls,
   egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd])).allowed
 };
 
@@ -371,5 +495,7 @@ if (import.meta.main) {
   } catch {
     // never fail the host turn on Jev
   }
+  // process.exit would drop the async telemetry appends still in flight.
+  await flushPendingLogs();
   process.exit(0);
 }

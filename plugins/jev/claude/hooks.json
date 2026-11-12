@@ -23,7 +23,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Agent|Task",
+        "matcher": "Agent|Task|Workflow",
         "hooks": [
           { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" pre-tool-use", "timeout": 5 }
         ]

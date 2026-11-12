@@ -80,7 +80,7 @@ describe('harness style table (5.11), via buildExecutionGuidance', () => {
     }
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('speaks Agent() and agent() on Claude Code, with no Antigravity vocabulary', () => {
     const text = [
       buildExecutionGuidance('claude-code', false, 'code-engineer', 'sonnet').executionGuidance,
@@ -93,14 +93,14 @@ describe('harness style table (5.11), via buildExecutionGuidance', () => {
     expect(text).not.toMatch(/invoke_subagent|Gemini/);
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('maps the self persona to general-purpose on Claude Code', () => {
     expect(buildExecutionGuidance('claude-code', false, 'self', 'haiku').executionGuidance).toContain('subagent_type: "general-purpose"');
   });
 });
 
 describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('maps judgement, settled-edit and mechanical stages to opus, sonnet and haiku', () => {
     const plan = runTool('claude-code', { tool: 'batch', args: stages() }, claudeEnv());
 
@@ -111,7 +111,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     ]);
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('returns Agent() guidance and the stored session model, not the Antigravity ones', () => {
     const plan = runTool('claude-code', { tool: 'batch', args: stages() }, claudeEnv());
 
@@ -123,7 +123,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     }
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('flags opus as above the session model instead of clamping it away', () => {
     const plan = runTool('claude-code', { tool: 'batch', args: stages() }, claudeEnv());
 
@@ -155,7 +155,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     expect(b.subagent).toBe('Plan');
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('asks the router for the tier of a stage with no kind, under the rubric', () => {
     const args = { tasks: [{ id: 'a', task: 'Reconcile two disagreeing designs' }] };
 
@@ -164,7 +164,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     expect([plan.tasks[0].tier, plan.tasks[0].tierSource]).toEqual(['pro', 'router']);
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11); the tier is flash already, but the case also asserts tierSource: 'keyword' (5.11), which 2.3.3 does not return
   it.skip('falls back to whole-word keywords offline, so "information" is not formatting', () => {
     const args = { tasks: [{ id: 'a', task: 'Collect the information and transformation notes' }] };
 
@@ -173,7 +173,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     expect([plan.tasks[0].tier, plan.tasks[0].tierSource]).toEqual(['flash', 'keyword']);
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('keeps a needsEdit stage off the free tier', () => {
     const args = { tasks: [{ id: 'a', task: 'Scaffold the boilerplate files', needsEdit: true }, { id: 'b', task: 'Scaffold the boilerplate files' }] };
 
@@ -184,7 +184,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     expect(plan.tasks[1].executionGuidance).not.toContain('Gemini');
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('keeps a stage whose wording says it edits off the free tier, unless needsEdit is false', () => {
     const task = 'Scaffold the boilerplate files and update the README';
     const args = { tasks: [{ id: 'a', task }, { id: 'b', task, needsEdit: false }] };
@@ -195,7 +195,7 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
     expect(plan.tasks[0].executionTool).not.toBe('jev_execute_free');
   });
 
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('offers the router only real subagent types', () => {
     const args = { tasks: [{ id: 'a', task: 'Write it', kind: 'mechanical' }] };
 
@@ -254,7 +254,7 @@ describe('Antigravity and OpenCode are unchanged (5.11)', () => {
 });
 
 describe('jev_dispatch on Claude Code (5.11)', () => {
-  // 2.3.4: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
+  // 2.3.5: batch dispatch kind/needsEdit and Claude-aware dispatch tools (5.4, 5.11)
   it.skip('returns Agent() guidance, the session model and an opus escalation note', () => {
     const res = runTool('claude-code', { tool: 'single', args: { task: 'Reconcile two disagreeing designs' }, answers: { recommendedSubagent: 'self', recommendedTier: 'pro' } }, claudeEnv());
 

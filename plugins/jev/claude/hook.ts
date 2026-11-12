@@ -65,6 +65,25 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Owner-only modes for what the hook creates under `~/.config/jev`; an existing directory or file keeps its mode. */
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
+
+/** Create `dir` (and parents) owner-only, and tighten it when it already existed with looser modes. Never throws. */
+function privateDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  try {
+    fs.chmodSync(dir, PRIVATE_DIR_MODE);
+  } catch {
+    // best-effort: not our file, or a filesystem without modes
+  }
+}
+
+/** Tighten a state or log file to owner-only after a write: `mode` on write applies only when the file is created. Never throws. */
+function privateFile(file: string): void {
+  try {
+    fs.chmodSync(file, PRIVATE_FILE_MODE);
+  } catch {
+    // best-effort
+  }
+}
 /** Well inside Claude Code's 30 s UserPromptSubmit budget; a slow Jev must not stall the prompt. */
 const JEV_HOOK_TIMEOUT_MS = 1500;
 
@@ -213,7 +232,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
   const sessionModel = deps.readSessionModel(sessionId);
-  // A turn stored under another mode (the mode was flipped mid-turn) is stale: its advice and intent are not this turn's.
+  // A turn stored under another mode is stale: its advice and intent are not this turn's. In the live hook a
+  // turn that ran with Jev off is already dropped by forgetTurn, so this check is a second line of defence
+  // for a state written under another mode (and for injected stores); a state with no `mode` is accepted.
   const stored = safely(() => deps.readTurn?.(sessionId)) ?? null;
   const state = stored && (stored.mode === undefined || stored.mode === mode) ? stored : null;
   // What the user said in this turn's prompt (a named model, a cost intent) outranks the guard.
@@ -285,12 +306,10 @@ export function onModelKnown(input: HookInput): void {
   const sessionId = safeSessionId(input.session_id);
   const model = input.to_model || input.model;
   if (!sessionId || !model) return;
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
-  fs.writeFileSync(
-    path.join(SESSIONS_DIR, `${sessionId}.json`),
-    JSON.stringify({ model, updated_at: new Date().toISOString() }) + '\n',
-    { mode: PRIVATE_FILE_MODE }
-  );
+  privateDir(SESSIONS_DIR);
+  const file = path.join(SESSIONS_DIR, `${sessionId}.json`);
+  fs.writeFileSync(file, JSON.stringify({ model, updated_at: new Date().toISOString() }) + '\n', { mode: PRIVATE_FILE_MODE });
+  privateFile(file);
   pruneOldSessions();
 }
 
@@ -328,8 +347,9 @@ function readTurn(sessionId: string | null): TurnState | null {
 
 function saveTurn(sessionId: string | null, state: TurnState): void {
   if (!sessionId) return;
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+  privateDir(SESSIONS_DIR);
   fs.writeFileSync(turnFile(sessionId), JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
+  privateFile(turnFile(sessionId));
 }
 
 function forgetTurn(sessionId: string | null): void {
@@ -417,8 +437,9 @@ export async function flushPendingLogs(ms: number = LOG_FLUSH_TIMEOUT_MS): Promi
 function appendLog(entry: Record<string, unknown>): void {
   try {
     // Never prompt text: an entry holds the recommendation, model names, a tier and a prompt hash only.
-    fs.mkdirSync(JEV_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+    privateDir(JEV_DIR);
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(DECISIONS_LOG);
     trackPendingLog(logJevTelemetry(telemetryEvent(entry)));
   } catch {
     // logging is best-effort

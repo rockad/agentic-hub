@@ -129,10 +129,13 @@ export function isReadOnlySubagent(name: string): boolean {
 /**
  * True when the task text asks for a change to files. Deliberately narrow: clear editing verbs only,
  * in their imperative, third-person and gerund forms. Not "review", "check", "find", "explain",
- * "create", "commit" or "port", which are as often about reading as about writing.
+ * "commit" or "port", which are as often about reading as about writing. "remove", "modify", "patch",
+ * "amend" and "create" stay edit verbs until `needsEdit` exists on batch stages (2.3.5): "create" only
+ * with a file-like object ("Create a picture of the flow" is not an edit), and "patch" only as a verb
+ * ("how the patch works" is not).
  */
 const EDIT_VERB =
-  /\b(?:edit|edits|editing|implement|implements|implementing|fix|fixes|fixing|refactor|refactors|refactoring|write|writes|writing|rewrite|rewrites|rewriting|add|adds|adding|update|updates|updating|rename|renames|renaming|migrate|migrates|migrating|delete|deletes|deleting|apply|applies|applying)\b/i;
+  /\b(?:edit|edits|editing|implement|implements|implementing|fix|fixes|fixing|refactor|refactors|refactoring|write|writes|writing|rewrite|rewrites|rewriting|add|adds|adding|update|updates|updating|rename|renames|renaming|migrate|migrates|migrating|delete|deletes|deleting|apply|applies|applying|remove|removes|removing|modify|modifies|modifying|amend|amends|amending|(?<!\b(?:the|a|an|this|that|these|those|its|my|our)\s+)patch(?:es|ing)?|creat(?:e|es|ing)\s+(?:an?\s+|the\s+|new\s+|another\s+)*(?:new\s+)?(?:files?|modules?|tests?|scripts?|docs?|documents?|directory|folder|class|function|config|component|readme|section|entry|note|tasklist))\b/i;
 
 /** "no edits", "without writing", "do not update": the verb is named to rule it out. */
 const NEGATED_EDIT = /\b(?:no|not|never|without|don'?t|avoid)\s+(?:\w+\s+)?$/i;

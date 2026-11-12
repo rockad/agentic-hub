@@ -170,7 +170,7 @@ export const INTENT_SCAN_CHARS = 1500;
 // the work going ("run it with sonnet", "go with haiku"), never as "compare with opus". A full id
 // ("use claude-opus-5-5") names its family.
 const MODEL_IMPERATIVE =
-  /\b(?:(?:use|using|run|launch|spawn|start|delegate(?:\s+(?:it|this|that|them))?\s+to|dispatch(?:\s+(?:it|this|that|them))?\s+to|go\s+with|switch\s+to|want|need|prefer|choose|pick|select)|(?:(?:do|run|launch|start|proceed|go)\s+(?:it|this|that|them|these)?\s*with)|(?<=^|[.!?\n,;:]\s*)with)\s+(?:an?\s+|the\s+|only\s+)?(?:claude-)?(haiku|sonnet|opus)(?:-\d+(?:-\d+)?)?(?:-\d{8})?\b/gi;
+  /\b(?:(?:use|using|run|launch|spawn|start|delegate(?:\s+(?:it|this|that|them))?\s+to|dispatch(?:\s+(?:it|this|that|them))?\s+to|go\s+with|switch\s+to|want|prefer|choose|pick|select)|(?:(?:do|run|launch|start|proceed|go)\s+(?:it|this|that|them|these)?\s*with)|(?<=^|[.!?\n,;:]\s*)with)\s+(?:an?\s+|the\s+|only\s+)?(?:claude-)?(haiku|sonnet|opus)(?:-\d+(?:-\d+)?)?(?:-\d{8})?\b/gi;
 // `--model opus` is an instruction only in an imperative clause ("run with --model opus"), never in prose about the flag.
 const MODEL_FLAG = /(?<![\w-])--model(?:=|\s+)(?:claude-)?(haiku|sonnet|opus)(?:-\d+(?:-\d+)?)?(?:-\d{8})?\b/gi;
 const FLAG_VERB = /\b(?:use|using|run|launch|start|spawn|invoke|execute|pass|call|go)\b[^.!?\n]{0,40}$/i;
@@ -183,10 +183,20 @@ const REPLACED = /\b(?:over|instead\s+of|rather\s+than)\s+(?:[\w'-]+\s+){0,2}$/i
 // A statement about what someone will do, not an instruction to do it ("I will use opus", "the agent can use haiku").
 const STATEMENT_SUBJECT =
   /\b(?:i|we|you|he|she|they|it|agent|assistant|claude)\s*(?:'ll|'d|\s+(?:will|would|shall|can|could|might|may|did|does|had|has|have|am\s+going\s+to|are\s+going\s+to|is\s+going\s+to|was\s+going\s+to|'m\s+going\s+to))\s+(?:\w+\s+){0,1}$/i;
+// A subject right before the verb makes it a description, not a command ("We use haiku for the classifier",
+// "Users who use opus see errors", "When I switch to sonnet it breaks"). "You" is left out: "you use opus" can be an order.
+const DIRECT_SUBJECT = /\b(?:i|we|they|users?|people|folks|everyone|who|that|which|team)\s+$/i;
+// A noun or pronoun plus a modal of obligation before the verb ("the agent should use opus only for judges").
+const MODAL_SUBJECT =
+  /\b(?:we|they|users?|people|who|he|she|it|agent|agents|assistant|claude|team)\s+(?:\w+\s+){0,1}(?:should|must|needs?\s+to|has\s+to|have\s+to|ought\s+to)\s+$/i;
+// A verb that voices the user's own wish ("I want opus", "I'd prefer sonnet") stays an instruction after "I".
+const WISH_VERB = /^(?:want|prefer|choose|pick|select)$/i;
 // A line a speaker label or a quote marker says was said by someone else (a pasted log or reply).
 const PASTED_LINE = /^\s*(?:>|(?:[-*]\s*)?(?:agent|assistant|claude|ai|bot|model|jev|system|tool|log|output|stdout|stderr)\s*[:>])/i;
 // A sentence that asks or supposes rather than instructs.
-const NON_INSTRUCTION_SENTENCE = /^\W*(?:if|should|what|why|how)\s/i;
+const NON_INSTRUCTION_SENTENCE = /^\W*(?:if|should|what|why|how|when|whenever)\s/i;
+// "This is the cheapest fix": a cost word after a copula or a comparison describes something, it does not ask for it.
+const DESCRIPTIVE_BEFORE = /\b(?:is|was|are|were|be|been|being|as|than|it's|that's|this's)\s+(?:the\s+|a\s+|an\s+)?$/i;
 // Literary uses of the two model names that are poetic forms: "a haiku about spring", "use haiku format", "sonnet 130".
 const LITERARY_TAIL = /^(?:[-\s]*(?:about|by|format|formats|style|styled|poem|poems|poetry|form|stanza|stanzas|syllable|syllables|contest|collection|sequence|cycle|writing|verse)\b|\s+\d{2,}\b(?!\.\d))/i;
 const MINIMAL_COST =
@@ -247,7 +257,9 @@ export function parseUserIntent(prompt: string | undefined | null): UserIntent {
     const after = text.slice(at + m[0].length);
     if (!instructive(text, at)) continue;
     if (NEGATION.test(text.slice(Math.max(0, at - 30), at))) continue;
-    if (STATEMENT_SUBJECT.test(text.slice(Math.max(0, at - 40), at))) continue;
+    const lead = text.slice(Math.max(0, at - 40), at);
+    if (STATEMENT_SUBJECT.test(lead) || MODAL_SUBJECT.test(lead)) continue;
+    if (!WISH_VERB.test(m[0].trim().split(/\s+/)[0]) && DIRECT_SUBJECT.test(lead)) continue;
     if (flag && !FLAG_VERB.test(text.slice(Math.max(0, at - 60), at))) continue;
     if ((family === 'haiku' || family === 'sonnet') && LITERARY_TAIL.test(after)) continue;
     named.set(family, m[0].trim());
@@ -256,15 +268,16 @@ export function parseUserIntent(prompt: string | undefined | null): UserIntent {
     for (const other of clause.matchAll(ANY_MODEL)) {
       const o = other[1].toLowerCase() as NamedModel;
       if (o === family) continue;
-      const lead = text.slice(Math.max(0, at + m[0].length + other.index! - 30), at + m[0].length + other.index!);
-      if (NEGATION.test(lead) || REPLACED.test(lead)) continue;
+      const otherLead = text.slice(Math.max(0, at + m[0].length + other.index! - 30), at + m[0].length + other.index!);
+      if (NEGATION.test(otherLead) || REPLACED.test(otherLead)) continue;
       named.set(o, other[0].trim());
     }
   }
   const intent: UserIntent = { models: [...named.keys()] };
   if (named.size === 1) intent.phrase = [...named.values()][0];
   for (const cost of text.matchAll(MINIMAL_COST)) {
-    if (!instructive(text, cost.index!) || NEGATION.test(text.slice(Math.max(0, cost.index! - 30), cost.index!))) continue;
+    const before = text.slice(Math.max(0, cost.index! - 30), cost.index!);
+    if (!instructive(text, cost.index!) || NEGATION.test(before) || DESCRIPTIVE_BEFORE.test(before)) continue;
     intent.cost = 'minimal';
     intent.phrase ??= cost[0];
     break;
@@ -371,6 +384,14 @@ function exceedsSession(model: string, sessionModel: string | null): boolean {
   return wanted > session;
 }
 
+/** A pro rating capped at the session model (2.3.2 behaviour); an unknown session model leaves it alone. */
+function capToSession<T extends RecLike>(rec: T, sessionModel: string | null): T {
+  const rank = modelRank(sessionModel);
+  if (rec.tier !== 'pro' || rank === null || rank >= (modelRank('opus') as number)) return rec;
+  const tier: JevTier = rank <= 1 ? 'flash_lite' : 'flash';
+  return { ...rec, tier, model: TIER_TO_CLAUDE[tier] };
+}
+
 /** The rule that decided an already-resolved recommendation. */
 export function appliedRule(rec: Pick<Dispatch, 'tier' | 'by'>, sessionModel: string | null): AppliedRule {
   if (rec.by) return 'instruction';
@@ -396,9 +417,11 @@ const RULE_SOURCE: Readonly<Record<AppliedRule, Resolution['source']>> = {
 };
 
 /**
- * One precedence order for the model of a delegation (see AppliedRule). The Claude Code PreToolUse
- * guard cannot read the prompt: above the session model it shows its own one approval prompt, and
- * that prompt is the user's approval, so a named model above the session is never asked about twice.
+ * One precedence order for the model of a delegation (see AppliedRule). The user's own instruction is
+ * stored at UserPromptSubmit and read by the PreToolUse guard, which does not ask for the model the
+ * user named: that instruction is the approval. Under the guard rule (a pro rating on a session below
+ * opus) the advised model is capped at the session model, as in 2.3.2, and `needsApproval` is true;
+ * 2.3.4 replaces the cap with the elevation clamp and advises opus.
  */
 export function resolveModel(args: {
   intent?: UserIntent | null;
@@ -406,8 +429,9 @@ export function resolveModel(args: {
   sessionModel: string | null;
 }): Resolution {
   const { intent, rec, sessionModel } = args;
-  const advised = applyUserIntent(rec, intent) as Dispatch;
-  const rule = appliedRule(advised, sessionModel);
+  const applied = applyUserIntent(rec, intent) as Dispatch;
+  const rule = appliedRule(applied, sessionModel);
+  const advised = rule === 'guard' ? capToSession(applied, sessionModel) : applied;
   return {
     tier: advised.tier,
     model: advised.model ?? TIER_TO_CLAUDE[advised.tier],
@@ -451,9 +475,12 @@ export function buildDirective(
   intent?: UserIntent | null
 ): string {
   const advised = applyUserIntent(rec, intent);
+  // The head shows the model Jev advises: for a pro rating on a session below opus it is capped at the
+  // session model (as in 2.3.2) while the sentences below still report the opus-level rating and the ask.
+  const { advised: shown, rule } = resolveModel({ intent, rec, sessionModel });
   const head =
-    `[JEV] cost-tiered recommendation (quota=${quotaStrategy}; ${RULE_LABEL[appliedRule(advised, sessionModel)]}): ` +
-    `subagent="${advised.subagent}", tier="${advised.tier}", model="${advised.model}", effort="${advised.effort}".`;
+    `[JEV] cost-tiered recommendation (quota=${quotaStrategy}; ${RULE_LABEL[rule]}): ` +
+    `subagent="${shown.subagent}", tier="${shown.tier}", model="${shown.model}", effort="${shown.effort}".`;
   const limit = `The session model${sessionModel ? ` "${sessionModel}"` : ''}`;
   const ceiling = sessionModel
     ? `${limit} is the hard ceiling: never delegate to a stronger model without explicit user approval.`
@@ -465,11 +492,13 @@ export function buildDirective(
     const asked = advised.asked
       ? `You asked for ${advised.asked} (explicit user request: "${phrase}"), but Jev moves at most one tier step from its own recommendation (${advised.routerTier}): delegate to ${subagent} with model "${advised.model}".`
       : `You asked for ${advised.model} (explicit user request: "${phrase}"): delegate to ${subagent} with model "${advised.model}".`;
-    // The PreToolUse guard cannot read the prompt, so above the ceiling it still shows its one prompt.
-    // Tell the assistant not to ask first: that prompt is the user's confirmation.
-    return exceedsSession(advised.model, sessionModel)
-      ? `${head} ${asked} The Jev guard shows the user one approval prompt for a model above the session model; do not ask separately before it.`
-      : `${head} ${ceiling} ${asked}`;
+    if (!exceedsSession(advised.model, sessionModel)) return `${head} ${ceiling} ${asked}`;
+    // Above the session model. The PreToolUse guard lifts its ask when the call requests the model the
+    // user named (the stored intent), so then the user's own instruction is the approval. When the
+    // one-step cap advised a different model than the one named, the guard still asks about that one.
+    return advised.asked
+      ? `${head} ${asked} That model is above the session model, so the Jev guard shows the user one approval prompt for it; do not ask separately before it.`
+      : `${head} ${asked} The user's own instruction is the approval for a model above the session model and the Jev guard will not ask about it; do not ask separately.`;
   }
 
   const costNote =
@@ -612,7 +641,7 @@ export function preflightReminder(toolName: string): string {
   return (
     `[JEV] ${toolName} is about to delegate, and no jev_dispatch or jev_batch_dispatch call from Claude Code shows in the last 30 minutes. ` +
     `For staged work, call jev_batch_dispatch with one task per stream first and follow its tiers. ${STAGE_RUBRIC_TEXT} ` +
-    'The session model stays the ceiling and a model you named wins. This is a reminder, not a block.'
+    "The session model stays the ceiling, and a model you named is used within one tier step of Jev's recommendation. This is a reminder, not a block."
   );
 }
 

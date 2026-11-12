@@ -22,7 +22,7 @@ agentic-hub/
 │   └── subagents/        # Specialised engineering, QA, research and operations subagents
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
-│   ├── handoff/          # Living HANDOFF.md for a project, with an optional drift hook
+│   ├── handoff/          # Living HANDOFF.md (optional HANDOFF_DIR), switch mode, optional drift hook
 │   ├── markdown-convert/ # PDF, Office, and EML to Markdown converter via local OCR
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
@@ -85,7 +85,7 @@ agentic-hub/
 - **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.
 - **`skills/cplain`**: Plain-English variant of `clarify` (no jargon, intuitive mental models).
 - **`skills/celi5`**: "Explain like I'm five" variant of `clarify`.
-- **`skills/handoff`**: Keep a project's `HANDOFF.md` (state, decisions with what was rejected, deferred branches with triggers, next actions) so a new session can continue without the original conversation; optional SessionStart hook that reminds you when it falls behind the project's files. File-based, so it works without the memory daemons; complements `plugins/memory`'s `session-handoff`.
+- **`skills/handoff`**: Keep a project's `HANDOFF.md` (state, decisions with what was rejected, deferred branches with triggers, next actions) so a new session can continue without the original conversation; the file can live outside the repository when `HANDOFF_DIR` is set (unset, it silently lands in the project root; see the skill's Gotchas); `/handoff switch` carries work across a change of login or subscription; optional SessionStart hook that reminds you when it falls behind the project's files. File-based, so it works without the memory daemons; complements `plugins/memory`'s `session-handoff`.
 - **`skills/markdown-convert`**: Convert PDFs, Office documents, and `.eml` emails to Markdown sidecar files with offline OCR fallback.
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.

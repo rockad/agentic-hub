@@ -27,7 +27,7 @@ agentic-hub/
 │   ├── celi5/            # Plain-English (explain like I'm five) variant of clarify
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── cplain/           # Plain-English variant of clarify
-│   ├── handoff/          # Living HANDOFF.md for a project, with an optional drift hook
+│   ├── handoff/          # Living HANDOFF.md (optional HANDOFF_DIR), switch mode, optional drift hook
 │   ├── markdown-convert/ # Document to Markdown converter
 │   ├── mcp-toggle/       # Toggle on-demand MCP plugins to save context tokens
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint

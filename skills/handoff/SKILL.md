@@ -1,14 +1,16 @@
 ---
 name: handoff
 description: >-
-  Create or update a project's living handoff document (HANDOFF.md): where the work
+  Create or update a project's living handoff document (HANDOFF.md, in the project root
+  or in a directory named by the HANDOFF_DIR environment variable): where the work
   stands, decisions with their reasons and what was rejected, deferred branches with
   their triggers, open questions, next actions. A new session, another person or a
-  cheaper model can continue from it without the original conversation. Optionally
-  installs a SessionStart hook that reminds you when HANDOFF.md has fallen behind the
-  project's files.
+  cheaper model can continue from it without the original conversation. The mode
+  "/handoff switch" carries the work across a change of login or subscription.
+  Optionally installs a SessionStart hook that reminds you when HANDOFF.md has fallen
+  behind the project's files.
 when_to_use: >-
-  Only when the user invokes it by name ("/handoff", "run the handoff skill"). Do not
+  Only when the user invokes it by name ("/handoff", "/handoff switch", "run the handoff skill"). Do not
   start it on indirect phrases such as "save the context" or "write down where we are":
   the user decides when the handoff format is wanted.
 disable-model-invocation: true
@@ -16,7 +18,7 @@ disable-model-invocation: true
 
 # handoff: the living handoff document
 
-You keep the project's HANDOFF.md: the file from which a session that never saw the original conversation recovers EVERYTHING it needs to continue. It records STATE ("where we are, what is decided, what is next"), not procedures and not the train of thought.
+You keep the project's handoff file (`HANDOFF.md` in the project root, or in `$HANDOFF_DIR`; see Step 1): the file from which a session that never saw the original conversation recovers EVERYTHING it needs to continue. It records STATE ("where we are, what is decided, what is next"), not procedures and not the train of thought.
 
 ## When not to use it
 
@@ -28,7 +30,15 @@ A handoff answers "where are we and what is next", not "how does it work" and no
 
 ## Step 1: find the file
 
-The target is `HANDOFF.md` in the root of the current project, or the path the user names. If it EXISTS, read it in full: you continue it, you do not rewrite it. If it does NOT, create it from the structure below.
+Resolve the target in this order and use the first that applies:
+
+1. A path the user names.
+2. `$HANDOFF_DIR/<repo>-HANDOFF.md`, when the environment variable `HANDOFF_DIR` is set and non-empty. `<repo>` is the repository's directory name: the parent directory of the git common dir, so every worktree of one repository shares one file. Make it filename-safe (replace anything but letters, digits, `.`, `_` and `-` with `-`). Outside git, use the current directory's name.
+3. `HANDOFF.md` in the root of the current project. This is the behaviour when `HANDOFF_DIR` is unset, unchanged.
+
+If `HANDOFF_DIR` is set and a root `HANDOFF.md` also exists, do not leave two copies. If the `HANDOFF_DIR` path does not exist yet, move the root file there. If both exist, tell the user and ask which to keep; do not merge them yourself. Never `git add` a file that lives outside the repository.
+
+If the target EXISTS, read it in full: you continue it, you do not rewrite it. If it does NOT, create it from the structure below.
 
 ## Step 2: collect the state
 
@@ -103,8 +113,51 @@ If the hook is not installed yet (search for `handoff-drift` in `~/.claude/setti
 3. If a `handoff-drift` entry already exists, do NOTHING: the hook is global and already covers this project.
 4. Tell the user it only takes effect from the NEXT session (SessionStart is read at start), and that it stays silent when the handoff is fresh OR the project has no HANDOFF.md: silence is normal.
 
+## Mode: switch (carry work across a change of login or subscription)
+
+Invoked as `/handoff switch`. Text only: there is no script, no index and no per-switch note. The state file plus the session transcript carry the work. The steps below are the same in every harness; the commands differ, so each step says where to find them.
+
+### Skeleton
+
+1. **Run the normal handoff first** (Steps 1 to 3), so the state file is current before anything changes.
+2. **Finish or stop background work.** Details in the file for your harness.
+3. **Change the login.** Details in the file for your harness.
+4. **Verify the new login is live.** Details in the file for your harness.
+5. **Continue the work:** resume the session, or start a fresh one. Details in the file for your harness.
+6. **Verify the state against git before trusting anything**, whichever way you continued.
+
+### "Start here" prompt for a fresh session
+
+Give the user this text to paste into the new session, with `<handoff-file>` filled in with the resolved path from Step 1:
+
+```
+Read <handoff-file> in full. Then verify before you act:
+- git branch --show-current
+- git status --short
+- git log --oneline -8
+Check every claim in the file against evidence. Label each statement you rely on as
+verified (you checked it just now), reported (the file says so, not re-checked) or
+unverified. First action: report the branch, the git state and the next action in three
+lines, then wait for me.
+```
+
+### Files per harness
+
+| Harness | File | Status |
+| --- | --- | --- |
+| Claude Code | `skills/handoff/switch/claude-code.md` | written |
+| Antigravity | `skills/handoff/switch/antigravity.md` | not written yet: ask the owner; to be written by an agent running in that harness |
+| OpenCode | `skills/handoff/switch/opencode.md` | not written yet: ask the owner; to be written by an agent running in that harness |
+
+If the file for your harness does not exist, say so and stop at the steps you can do harness-neutrally (1 and 6, and the "Start here" prompt); do not invent commands.
+
 ## Gotchas
 
+- **An unset `HANDOFF_DIR` silently puts `HANDOFF.md` back in the repository.** The design keeps today's behaviour when the variable is unset (Step 1, item 3), so there is no warning and no error: the file lands in the project root. In a public repository a stray `HANDOFF.md` can end up in a commit. Before relying on the setting:
+  - set `HANDOFF_DIR` where every session sees it (the harness's own environment settings, not only an interactive shell), because it is unverified whether sessions started by a daemon or by other tools receive it;
+  - run `/handoff` once in each kind of session you use, including a background one, and check that no `HANDOFF.md` appeared in the repository root (`git status --short`);
+  - never `git add` a handoff file.
+- **The optional drift hook does not know `HANDOFF_DIR`.** With `HANDOFF_DIR` set, the hook (Step 4) finds no `HANDOFF.md` above the working directory and stays silent.
 - **The drift hook is global, one per machine.** It is self-locating (the project comes from cwd). A second `/handoff` in another project does NOT register it again: grep for `handoff-drift` in `~/.claude/settings.json` first.
 - **A silent hook is normal.** It fires only from the next session and only when the handoff is behind the files. It is silent when the handoff is fresh or there is no HANDOFF.md.
 - **The chronology is append-only.** Rewriting it after the fact loses the history: add the new, leave the old.

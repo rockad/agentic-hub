@@ -129,8 +129,8 @@ describe('resolveModel precedence (5.9): instruction, then mode guard, then defa
     { name: 'minimal viable never goes below flash_lite', intent: { models: [], cost: 'minimal' }, rec: { ...flashRec, tier: 'flash_lite', model: 'haiku' }, session: null, tier: 'flash_lite', model: 'haiku', source: 'user-instruction', approval: false },
     // 2.3.3 (5.9): on an opus session the pro tier is within the ceiling, so it is the standing rule and needs no approval.
     { name: 'no instruction, pro, opus session: standing rule, no approval', intent: NO_INTENT, rec: proRec, session: 'claude-opus-5', tier: 'pro', model: 'opus', source: 'default-rule', approval: false },
-    // 2.3.3 (5.9): below opus the guard rule asks; 2.3.4 advises opus uncapped (the elevation clamp covers the call).
-    { name: 'no instruction, pro, sonnet session: advises opus, needs approval', intent: NO_INTENT, rec: proRec, session: 'claude-sonnet-5', tier: 'pro', model: 'opus', source: 'mode-guard', approval: true },
+    // 2.3.3 (5.9): below opus the guard rule asks; the advice stays capped at the session model (kept in 2.3.4 with the clamp).
+    { name: 'no instruction, pro, sonnet session: capped at sonnet, asks', intent: NO_INTENT, rec: proRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'mode-guard', approval: true },
     { name: 'no instruction, flash: sonnet by the default rule', intent: NO_INTENT, rec: flashRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'default-rule', approval: false }
   ];
 
@@ -181,10 +181,10 @@ describe('Claude adapter ceiling (5.2): one sentence, consistent with the tier',
     expect(directive).not.toContain('present the cheaper');
   });
 
-  it('reports the uncapped tier and model (2.3.4, was capped at sonnet) in the recommendation, with the opus-level rating and the ask', () => {
+  it('reports the capped tier and model in the recommendation, with the opus-level rating and the ask', () => {
     const directive = buildDirective(proRec, 'claude-sonnet-5', 'normal');
 
-    expect(directive).toContain('tier="pro", model="opus"');
+    expect(directive).toContain('tier="flash", model="sonnet"');
     expect(directive).toContain('Jev rates this opus-level');
     expect(directive).toContain('ask the user before delegating on opus');
   });

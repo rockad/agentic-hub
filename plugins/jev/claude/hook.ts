@@ -38,6 +38,8 @@ import {
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
   buildDirective,
+  aliasRemapped,
+  callSignature,
   classifyElevation,
   clampElevation,
   dispatchQuestions,
@@ -125,11 +127,12 @@ export type HookDeps = {
   /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
   recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
   /**
-   * Atomically claim the one clamp of a prompt: true for the first caller with this key (session id plus
-   * prompt id), false for every later one. Absent or throwing means the state is unavailable, and the call
-   * then asks (the 2.3.3 behaviour) instead of clamping.
+   * Atomically claim the one clamp of a prompt: `first` is true for the first caller with this key (session id
+   * plus prompt id) and false for every later one, which also gets the signature the first caller stored (the
+   * delegation that was clamped). Absent or throwing means the state is unavailable, and the call then asks
+   * (the 2.3.3 behaviour) instead of clamping.
    */
-  claimClamp?: (sessionId: string, promptKey: string) => boolean;
+  claimClamp?: (sessionId: string, promptKey: string, signature: string) => { first: boolean; signature?: string };
   now?: () => number;
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
   env?: Record<string, string | undefined>;
@@ -170,8 +173,9 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   // and never reads an earlier turn's state.
   const intent = parseUserIntent(task);
   const turn = turnId(task);
+  const promptIdField = typeof input.prompt_id === 'string' && input.prompt_id ? { promptId: input.prompt_id } : {};
   safely(() =>
-    deps.saveTurn?.(sessionId, { turn, mode: 'on', intent: storedIntent(intent), at: new Date().toISOString() })
+    deps.saveTurn?.(sessionId, { turn, ...promptIdField, mode: 'on', intent: storedIntent(intent), at: new Date().toISOString() })
   );
   if (task.length < 8) return null;
   // A pasted blob carries no task: no advice and no Jev call.
@@ -184,7 +188,8 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   const criteria = await resolveClaudeSubagentCriteria();
   const rec = await deps.dispatch(trimTask(task), quotaStrategy, criteria);
   if (!rec) return null;
-  // A status turn ("A3 completed the run") gets no line. An instruction in the prompt always does.
+  // A status turn ("A3 completed the run") gets no line. An instruction in the prompt always does. The check
+  // needs the recommendation, so a status turn has already sent its trimmed text to Jev by here.
   if (isStatusTurn(rec, task, intent)) return null;
   const sessionModel = deps.readSessionModel(sessionId);
   const { advised, rule } = resolveModel({ intent, rec, sessionModel });
@@ -192,6 +197,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   safely(() =>
     deps.saveTurn?.(sessionId, {
       turn,
+      ...promptIdField,
       mode: 'on',
       intent: storedIntent(intent),
       rec: { subagent: advised.subagent, tier: advised.tier, model: advised.model, ...(advised.by ? { by: advised.by } : {}) },
@@ -252,7 +258,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const stored = safely(() => deps.readTurn?.(sessionId)) ?? null;
   const state = stored && (stored.mode === undefined || stored.mode === mode) ? stored : null;
   // What the user said in this turn's prompt (a named model, a cost intent) outranks the guard.
-  const intent = state?.intent ?? NO_INTENT;
+  // A stored instruction belongs to the prompt it was written for: when both ids are known and differ (a
+  // host-injected turn, a later prompt that did not reach UserPromptSubmit), it is not an instruction now.
+  // An id missing on either side keeps the old behaviour (the marker alone).
+  const intentIsStale =
+    typeof input.prompt_id === 'string' && !!input.prompt_id && !!state?.promptId && input.prompt_id !== state.promptId;
+  const intent = intentIsStale ? NO_INTENT : (state?.intent ?? NO_INTENT);
   // The one gate is the deterministic ceiling check: a model stronger than the session's. It needs no
   // network and sends no task text anywhere. Jev's tier rating is not a gate (see decideAgentCall): it
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
@@ -260,17 +271,26 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const elevation = tool === 'Workflow' ? null : classifyElevation(call, sessionModel, intent);
   // First elevating call of a prompt: run it on the session model (allow + updatedInput), no dialog.
   // A repeat in the same prompt asks, and that dialog is the request to elevate. An instructed call passes.
-  let clamp: ReturnType<typeof clampElevation> = null;
+  let clamp: ReturnType<typeof clampElevation> | null = null;
   let verdict: AgentDecision = null;
   let elevationState: 'clamped' | 'asked' | 'instructed' | null = elevation?.kind === 'instructed' ? 'instructed' : null;
+  let clampSkipped: string | null = null;
   if (elevation?.kind === 'elevating') {
     const promptKey = (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || null;
-    // Anything that stops us proving this is the first call of the prompt (no id, no state, a failing store) asks.
-    const first = sessionId && promptKey && elevation.sessionAlias ? (safely(() => deps.claimClamp?.(sessionId, promptKey)) ?? false) : false;
-    clamp = first ? clampElevation(call as Record<string, unknown>, elevation) : null;
+    const signature = callSignature(call as Record<string, unknown>);
+    let clampedEarlier = false;
+    if (aliasRemapped(elevation.sessionAlias, deps.env)) {
+      // The alias the clamp would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the session model.
+      clampSkipped = 'alias-remapped';
+    } else if (sessionId && promptKey) {
+      // Anything that stops us proving this is the first call of the prompt (no id, no state, a failing store) asks.
+      const claim = safely(() => deps.claimClamp?.(sessionId, promptKey, signature));
+      if (claim?.first) clamp = clampElevation(call as Record<string, unknown>, elevation);
+      else clampedEarlier = !!claim && claim.signature === signature;
+    }
     if (clamp) elevationState = 'clamped';
     else {
-      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation, clampedEarlier) };
       elevationState = 'asked';
     }
   }
@@ -311,6 +331,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     sessionModel,
     reason: verdict?.reason ?? (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
+    ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
+    ...(intentIsStale ? { intent_stale: true } : {}),
     ...(clamp && elevation ? { clamped_from: elevation.requested, clamped_to: elevation.sessionAlias } : {}),
     preflight_reminder: reminder !== null
   });
@@ -390,10 +412,12 @@ function saveTurn(sessionId: string | null, state: TurnState): void {
 
 /**
  * The one clamp of a prompt, claimed with an exclusive create (`wx`) so two Agent calls fired in parallel
- * cannot both be "first". One marker file per session: a claim for another prompt id removes the old ones.
- * Throws when the store cannot be written; the caller treats that as "ask".
+ * cannot both be "first". One marker file per session; its content is the signature of the delegation that was
+ * clamped, so a later call can tell whether it is that same delegation. A claim for another prompt id removes
+ * the old marker; markers that are left are pruned after 7 days at SessionStart. Throws when the store cannot
+ * be written; the caller treats that as "ask".
  */
-function claimClamp(sessionId: string, promptKey: string): boolean {
+function claimClamp(sessionId: string, promptKey: string, signature: string): { first: boolean; signature?: string } {
   privateDir(SESSIONS_DIR);
   const prefix = `${sessionId}.clamp-`;
   const mine = `${prefix}${promptKey}`;
@@ -402,12 +426,14 @@ function claimClamp(sessionId: string, promptKey: string): boolean {
   }
   try {
     const file = path.join(SESSIONS_DIR, mine);
-    fs.writeFileSync(file, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
+    fs.writeFileSync(file, signature, { flag: 'wx', mode: PRIVATE_FILE_MODE });
     privateFile(file);
-    return true;
+    return { first: true };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw err;
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    // The first caller may still be writing: an empty marker means "unknown", which says nothing about the signature.
+    const stored = fs.readFileSync(path.join(SESSIONS_DIR, mine), 'utf8').trim();
+    return { first: false, ...(stored ? { signature: stored } : {}) };
   }
 }
 

@@ -141,7 +141,8 @@ const EDIT_VERB =
 const NEGATED_EDIT = /\b(?:no|not|never|without|don'?t|avoid)\s+(?:\w+\s+)?$/i;
 
 export function taskNeedsEdit(taskText: string): boolean {
-  const text = taskText || '';
+  // A typographic apostrophe is an apostrophe: "Don’t update the files" is the same negation as "Don't".
+  const text = (taskText || '').replace(/[‘’ʼ]/g, "'");
   const verb = new RegExp(EDIT_VERB.source, 'gi');
   for (const m of text.matchAll(verb)) {
     if (!NEGATED_EDIT.test(text.slice(Math.max(0, m.index! - 20), m.index!))) return true;

@@ -202,6 +202,11 @@ const LITERARY_TAIL = /^(?:[-\s]*(?:about|by|format|formats|style|styled|poem|po
 const MINIMAL_COST =
   /\b(?:minimal|minimum)[\s-]+viable\b(?![\s-]+products?\b)|\b(?:minimal|minimum|smallest|lowest)[\s-]+(?:cost|tier|model)\b|\bcheapest\b|\bleast\s+expensive\b|\bas\s+cheap(?:ly)?\s+as\b|\bcheap(?:er)?\s+models?\b|\blowest[- ]cost\b/gi;
 
+/** The typographic apostrophes and single quotes as ASCII "'", one character for one, so every index stays where it was. */
+export function normalizeApostrophes(text: string): string {
+  return text.replace(/[‘’ʼ]/g, "'");
+}
+
 /** Blank out `re` matches with spaces, keeping every index and newline where it was. */
 function blank(text: string, re: RegExp): string {
   return text.replace(re, (m) => m.replace(/[^\n]/g, ' '));
@@ -245,7 +250,8 @@ function instructive(text: string, index: number): boolean {
  * clause are ambiguous (`models` then holds both and `namedModel` is null). Task notifications carry none.
  */
 export function parseUserIntent(prompt: string | undefined | null): UserIntent {
-  const text = withoutQuotedText((prompt ?? '').trimStart().slice(0, INTENT_SCAN_CHARS));
+  // A typographic apostrophe (U+2018, U+2019, U+02BC) is an apostrophe: "Don’t use opus" is the same negation as "Don't".
+  const text = withoutQuotedText(normalizeApostrophes((prompt ?? '').trimStart().slice(0, INTENT_SCAN_CHARS)));
   const named = new Map<NamedModel, string>();
   const candidates = [
     ...[...text.matchAll(MODEL_IMPERATIVE)].map((m) => ({ m, flag: false })),
@@ -384,6 +390,14 @@ function exceedsSession(model: string, sessionModel: string | null): boolean {
   return wanted > session;
 }
 
+/** A pro rating capped at the session model (2.3.2 behaviour); an unknown session model leaves it alone. */
+function capToSession<T extends RecLike>(rec: T, sessionModel: string | null): T {
+  const rank = modelRank(sessionModel);
+  if (rec.tier !== 'pro' || rank === null || rank >= (modelRank('opus') as number)) return rec;
+  const tier: JevTier = rank <= 1 ? 'flash_lite' : 'flash';
+  return { ...rec, tier, model: TIER_TO_CLAUDE[tier] };
+}
+
 /** The rule that decided an already-resolved recommendation. */
 export function appliedRule(rec: Pick<Dispatch, 'tier' | 'by'>, sessionModel: string | null): AppliedRule {
   if (rec.by) return 'instruction';
@@ -412,9 +426,9 @@ const RULE_SOURCE: Readonly<Record<AppliedRule, Resolution['source']>> = {
  * One precedence order for the model of a delegation (see AppliedRule). The user's own instruction is
  * stored at UserPromptSubmit and read by the PreToolUse guard, which passes the model the user named
  * unchanged: that instruction is the approval. Under the guard rule (a pro rating on a session below
- * opus) the advice is NOT capped at the session model (2.3.4): `needsApproval` is true, and a call that
- * then asks for the stronger model without an instruction is clamped to the session model on first use
- * and asked about on a repeat (the elevation clamp).
+ * opus) the advised model stays capped at the session model, as in 2.3.2, and `needsApproval` is true.
+ * 2.3.4 adds the elevation clamp at PreToolUse but keeps the cap: an opus header made the assistant call
+ * for opus straight after a clamp.
  */
 export function resolveModel(args: {
   intent?: UserIntent | null;
@@ -424,9 +438,7 @@ export function resolveModel(args: {
   const { intent, rec, sessionModel } = args;
   const applied = applyUserIntent(rec, intent) as Dispatch;
   const rule = appliedRule(applied, sessionModel);
-  // 2.3.4: the advice is not capped at the session model under the guard rule. A call that asks for the
-  // stronger model without an instruction is clamped on first use and asked about on a repeat.
-  const advised = applied;
+  const advised = rule === 'guard' ? capToSession(applied, sessionModel) : applied;
   return {
     tier: advised.tier,
     model: advised.model ?? TIER_TO_CLAUDE[advised.tier],
@@ -445,6 +457,8 @@ export function turnId(prompt: string): string {
 /** Per-session state written at UserPromptSubmit and read at PreToolUse. */
 export type TurnState = {
   turn: string;
+  /** The host's id of the prompt this state was written for (2.3.4); PreToolUse ignores the stored instruction when its own prompt id differs. */
+  promptId?: string;
   intent: UserIntent;
   /** What was advised for this turn, after the user's instruction was applied. */
   rec?: { subagent: string; tier: JevTier; model: ClaudeModelAlias; by?: Dispatch['by'] };
@@ -470,8 +484,8 @@ export function buildDirective(
   intent?: UserIntent | null
 ): string {
   const advised = applyUserIntent(rec, intent);
-  // The head shows the model Jev advises: for a pro rating on a session below opus that is opus (2.3.4: not
-  // capped; the elevation clamp runs a call for it on the session model the first time).
+  // The head shows the model Jev advises: for a pro rating on a session below opus it is capped at the
+  // session model (as in 2.3.2) while the sentences below still report the opus-level rating and the ask.
   const { advised: shown, rule } = resolveModel({ intent, rec, sessionModel });
   const head =
     `[JEV] cost-tiered recommendation (quota=${quotaStrategy}; ${RULE_LABEL[rule]}): ` +
@@ -554,8 +568,8 @@ export type Elevation = {
   kind: 'elevating' | 'instructed';
   requested: string;
   sessionModel: string;
-  /** The alias the call is clamped to: the session model's own. Null when it has none (a model above opus). */
-  sessionAlias: ClaudeModelAlias | null;
+  /** The alias the call is clamped to: the session model's own. */
+  sessionAlias: ClaudeModelAlias;
 };
 
 /**
@@ -568,41 +582,61 @@ export function classifyElevation(call: AgentCall, sessionModel: string | null, 
   const requested = modelRank(call.model);
   const ceiling = modelRank(sessionModel);
   if (requested === null || ceiling === null || requested <= ceiling || !call.model || !sessionModel) return null;
+  // The instruction check is `>=`: a named model covers a weaker request too ("use opus" covers a sonnet call).
   const instructed = !!intent && intent.models.some((m) => (modelRank(m) ?? 0) >= requested);
-  return { kind: instructed ? 'instructed' : 'elevating', requested: call.model, sessionModel, sessionAlias: modelAlias(sessionModel) };
+  // A model with a rank always has an alias (the two tables match), so there is always something to clamp to.
+  const sessionAlias = modelAlias(sessionModel);
+  if (!sessionAlias) return null;
+  return { kind: instructed ? 'instructed' : 'elevating', requested: call.model, sessionModel, sessionAlias };
+}
+
+/**
+ * Pure: a stable signature of what a delegation is (subagent type and description), hashed, so the
+ * clamp marker can say "the same delegation" without storing task text.
+ */
+export function callSignature(call: Record<string, unknown>): string {
+  const part = (v: unknown): string => (typeof v === 'string' ? v : '');
+  return createHash('sha1').update(`${part(call.subagent_type)}\u0000${part(call.description)}`).digest('hex').slice(0, 16);
+}
+
+/**
+ * Pure: is the alias the clamp would use remapped for this session? `ANTHROPIC_DEFAULT_<ALIAS>_MODEL`
+ * makes Claude Code resolve "sonnet" to some other model, so clamping to the alias would not run on the
+ * session model. The hook then asks instead of clamping.
+ */
+export function aliasRemapped(alias: string, env: Record<string, string | undefined> | undefined): boolean {
+  return !!env && !!env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`];
 }
 
 /**
  * The wording of the permission dialog for a REPEATED elevating call (the first one is clamped, see
- * `clampElevation`). Claude Code shows `ask` with Yes and No; No is a rejection of this one call, so it
- * says what each answer does and that the clamped run already happened.
+ * `clampElevation`). It says what each answer does: in Claude Code No cancels the call and stops the turn,
+ * and a comment typed with No lets the assistant continue. `clamped` is true only when a clamp ran for the
+ * same delegation in this prompt; only then does the reason say that a run on the session model happened.
  */
-export function elevationAskReason(e: Elevation): string {
-  const ran = e.sessionAlias ?? e.sessionModel;
+export function elevationAskReason(e: Elevation, clamped = false): string {
   return (
     `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
-    `Yes runs it on ${e.requested}. No cancels the delegation (this one only); ` +
-    `the earlier run of this request on ${ran} has already happened, and the assistant does not retry on a cheaper model by itself.`
+    `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue.` +
+    (clamped ? ` The same delegation already ran on ${e.sessionAlias} earlier in this prompt.` : '')
   );
 }
 
-/** The note the assistant gets with a clamped call: what Jev did, and the one way to ask for the stronger model. */
+/** The note the assistant gets with a clamped call: what Jev did, and what to do next (report, ask in chat, no re-call). */
 export function elevationClampContext(e: Elevation): string {
-  const ran = e.sessionAlias ?? e.sessionModel;
   return (
-    `[jev] Jev ran this delegation on ${ran} instead of ${e.requested}, because ${e.requested} is stronger than the session model ` +
-    `"${e.sessionModel}" and you did not ask for it in this prompt. If the task really needs ${e.requested}, call the agent again with ` +
-    `model "${e.requested}" and the user will be asked to approve. Do not retry on your own on a cheaper or stronger model without that.`
+    `[jev] Jev ran this delegation on ${e.sessionAlias} instead of ${e.requested}, because ${e.requested} is stronger than the session model ` +
+    `"${e.sessionModel}" and the user did not ask for it in this prompt. Do not call it again on your own. Report the result, and if ` +
+    `${e.requested} is really needed, ask the user in chat; a reply naming ${e.requested} passes without another prompt.`
   );
 }
 
 /**
  * The PreToolUse output that runs the call on the session model with no dialog: `allow` plus the whole
  * original tool input with `model` replaced (`updatedInput` replaces the input, so every original field is
- * copied) plus the note for the assistant. Null when the session model has no alias to clamp to.
+ * copied) plus the note for the assistant.
  */
-export function clampElevation(call: Record<string, unknown>, e: Elevation): { hookSpecificOutput: Record<string, unknown> } | null {
-  if (!e.sessionAlias) return null;
+export function clampElevation(call: Record<string, unknown>, e: Elevation): { hookSpecificOutput: Record<string, unknown> } {
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -632,7 +666,7 @@ export function clampElevation(call: Record<string, unknown>, e: Elevation): { h
 export function decideAgentCall(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): AgentDecision {
   const e = classifyElevation(call, sessionModel, intent);
   if (!e || e.kind !== 'elevating') return null;
-  return { decision: 'ask', reason: elevationAskReason(e) };
+  return { decision: 'ask', reason: elevationAskReason(e, false) };
 }
 
 /**
@@ -743,6 +777,7 @@ const WORK_VERB =
 /**
  * A status or acknowledgement turn: Jev says `self` on a cheap tier and the prompt holds no verb of
  * work ("A3 completed the run", "thanks, looks good"). The user's explicit instruction always counts.
+ * It needs Jev's recommendation, so the call to Jev has already been made when this is asked.
  */
 export function isStatusTurn(rec: Pick<Dispatch, 'subagent' | 'tier'>, task: string, intent: UserIntent = NO_INTENT): boolean {
   if (intent.models.length > 0 || intent.cost) return false;

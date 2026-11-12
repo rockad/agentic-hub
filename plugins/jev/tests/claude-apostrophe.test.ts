@@ -36,7 +36,7 @@ describe('the guard after a curly-apostrophe negation', () => {
       readQuotaStrategy: async () => 'unknown',
       dispatch: async () => flashRec,
       log: () => {},
-      env: {},
+      env: { JEV_ELEVATION: 'dialog' }, // the 2.3.4 behaviour under test; the default is now the choice flow
       readTurn: (s) => turns.get(s ?? '') ?? null,
       saveTurn: (s, st) => void (saved.push(st), turns.set(s ?? '', st))
     };

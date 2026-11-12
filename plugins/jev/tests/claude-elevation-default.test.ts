@@ -1,7 +1,7 @@
 /**
- * Jev 2.3.4, DEFAULT mode (JEV_ELEVATION unset): an Agent call that names a model stronger than the session
+ * Jev 2.3.4 behaviour, now JEV_ELEVATION=dialog (the default became "choice"; see claude-elevation-choice.test.ts): an Agent call that names a model stronger than the session
  * model, with no instruction naming it, asks (a permission dialog) on EVERY such call, as in 2.3.3. The
- * opt-in clamp (JEV_ELEVATION=clamp) is covered in claude-elevation.test.ts.
+ * opt-in clamp (JEV_ELEVATION=clamp) is covered in claude-elevation.test.ts. Every test here runs with JEV_ELEVATION=dialog.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
@@ -27,8 +27,9 @@ function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[]; c
     claimClamp: (_s, _p, sig) => (claims.push(sig), { first: true }),
     readTurn: (s) => turns.get(s ?? '') ?? null,
     saveTurn: (s, st) => void turns.set(s ?? '', st),
-    env: {},
-    ...overrides
+    ...overrides,
+    // These tests cover the 2.3.4 dialog behaviour: it is no longer the default, so it is selected explicitly.
+    env: 'env' in overrides && overrides.env === undefined ? undefined : { JEV_ELEVATION: 'dialog', ...(overrides.env ?? {}) }
   };
   return { d, logs, claims };
 }
@@ -132,6 +133,8 @@ describe('default mode: the clamp store is never used', () => {
 
     const o = out(await onPreToolUse(call(), d));
 
+    // These values mean "choice" now (not "dialog"); this file has no approvals store, so the call falls back to the dialog.
+    // What matters here is that none of them is the clamp.
     expect([o.permissionDecision, claims]).toEqual(['ask', []]);
   });
 
@@ -145,8 +148,8 @@ describe('default mode: the clamp store is never used', () => {
       else process.env.JEV_ELEVATION = saved;
     });
 
-    it('unset: asks', async () => {
-      delete process.env.JEV_ELEVATION;
+    it('JEV_ELEVATION=dialog: asks', async () => {
+      process.env.JEV_ELEVATION = 'dialog';
       const { d } = setup({ env: undefined });
 
       const o = out(await onPreToolUse(call(), d));
@@ -218,7 +221,7 @@ describe('the live hook process in default mode', () => {
 
   const run = (event: string, input: object) => {
     const env: Record<string, string | undefined> = { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' };
-    delete env.JEV_ELEVATION;
+    env.JEV_ELEVATION = 'dialog';
     return Bun.spawnSync(['bun', HOOK, event], { stdin: new TextEncoder().encode(JSON.stringify(input)), env });
   };
 

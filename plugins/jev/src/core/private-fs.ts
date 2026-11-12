@@ -5,7 +5,9 @@
  */
 import * as fs from 'node:fs';
 
+/** Mode of a directory Jev creates, and of one `privateDir` tightens: owner-only. */
 export const PRIVATE_DIR_MODE = 0o700;
+/** Mode of a file Jev creates, and of one `privateFile` tightens: owner-only. */
 export const PRIVATE_FILE_MODE = 0o600;
 
 /** Create `dir` (and parents) owner-only, and tighten it when it already existed with looser modes. The chmod never throws. */

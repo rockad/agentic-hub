@@ -121,12 +121,20 @@ describe('personas match real subagent types (5.6)', () => {
 
   describe('against a discovered directory', () => {
     let dir = '';
+    let savedHarness: string | undefined;
     beforeEach(() => {
+      // Agent discovery reads .claude/agents only on the Claude Code harness: say so instead of inheriting it from the shell.
+      savedHarness = process.env.JEV_HARNESS;
+      process.env.JEV_HARNESS = 'claude-code';
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-persona-'));
       fs.mkdirSync(path.join(dir, '.claude', 'agents'), { recursive: true });
       fs.writeFileSync(path.join(dir, '.claude', 'agents', 'code-engineer.md'), '---\nname: Code Engineer\ndescription: "Scripts and tests"\n---\n');
     });
-    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+    afterEach(() => {
+      if (savedHarness === undefined) delete process.env.JEV_HARNESS;
+      else process.env.JEV_HARNESS = savedHarness;
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
 
     it('offers only code-engineer for a discovered "Code Engineer"', async () => {
       const criteria = await resolveClaudeSubagentCriteria(dir);

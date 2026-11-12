@@ -1,5 +1,7 @@
 /**
- * Jev 2.3.4, the elevation clamp. An Agent call whose model is stronger than the session model:
+ * Jev 2.3.4. An Agent call whose model is stronger than the session model, with no instruction naming it,
+ * ASKS by default (a permission dialog on every such call; see the 'default mode' block at the end). The
+ * rest of this file is the OPT-IN elevation clamp (env JEV_ELEVATION=clamp):
  *  - first one in a prompt, no instruction naming it: allow + updatedInput on the session model, no dialog
  *  - a second one in the same prompt: ask (that dialog is the request to elevate)
  *  - the user named that model (or a stronger one) in the prompt: passes, logged as "instructed"
@@ -17,7 +19,8 @@ const flashRec: Dispatch = { subagent: 'general-purpose', tier: 'flash', model: 
 
 type Log = Record<string, unknown>;
 
-function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[] } {
+/** The clamp is opt-in (JEV_ELEVATION=clamp, read from deps.env): these tests run with it on unless the mode is 'default'. */
+function setup(overrides: Partial<HookDeps> = {}, mode: 'clamp' | 'default' = 'clamp'): { d: HookDeps; logs: Log[] } {
   const logs: Log[] = [];
   const turns = new Map<string, any>();
   const d: HookDeps = {
@@ -29,7 +32,8 @@ function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[] } 
     claimClamp: memoryClaim(),
     readTurn: (s) => turns.get(s ?? '') ?? null,
     saveTurn: (s, st) => void turns.set(s ?? '', st),
-    ...overrides
+    ...overrides,
+    env: { ...(mode === 'clamp' ? { JEV_ELEVATION: 'clamp' } : {}), ...(overrides.env ?? {}) }
   };
   return { d, logs };
 }
@@ -550,7 +554,7 @@ describe('the live hook process (private state dir, real claim)', () => {
   const run = (event: string, input: object) =>
     Bun.spawnSync(['bun', HOOK, event], {
       stdin: new TextEncoder().encode(JSON.stringify(input)),
-      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
+      env: { ...process.env, JEV_ELEVATION: 'clamp', HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
     });
   const parse = (p: ReturnType<typeof run>) => (p.stdout.toString() ? JSON.parse(p.stdout.toString()).hookSpecificOutput : null);
   const sessions = () => path.join(home, '.config', 'jev', 'claude-sessions');

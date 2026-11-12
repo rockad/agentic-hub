@@ -5,9 +5,9 @@
  *   session-start | post-model-switch  remember the session model (the ceiling)
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
  *   pre-tool-use (matcher "Agent|Task|Workflow")
- *                                      Agent delegation above the ceiling: the first one in a prompt is clamped to the
- *                                      session model (allow + updatedInput, no dialog), a repeat asks, a model the user
- *                                      named passes (nothing else asks),
+ *                                      Agent delegation above the ceiling: asks (permission dialog), a model the user
+ *                                      named passes (nothing else asks); opt-in JEV_ELEVATION=clamp runs the first one
+ *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
  *                                      log the call next to the last recommendation, and remind once before staged
  *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
  *                                      for the agents a Workflow launches is UNVERIFIED)
@@ -269,13 +269,19 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
   // A Workflow carries no model of its own, so it is never gated.
   const elevation = tool === 'Workflow' ? null : classifyElevation(call, sessionModel, intent);
-  // First elevating call of a prompt: run it on the session model (allow + updatedInput), no dialog.
-  // A repeat in the same prompt asks, and that dialog is the request to elevate. An instructed call passes.
+  // An elevating call (a model stronger than the session's, no instruction naming it) asks: a permission dialog
+  // on every such call, as in 2.3.3. Opt-in clamp (env JEV_ELEVATION=clamp, no config key): the first one per
+  // prompt runs on the session model (allow + updatedInput, no dialog) and only a repeat in the same prompt asks.
+  // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
   let verdict: AgentDecision = null;
   let elevationState: 'clamped' | 'asked' | 'instructed' | null = elevation?.kind === 'instructed' ? 'instructed' : null;
   let clampSkipped: string | null = null;
-  if (elevation?.kind === 'elevating') {
+  const clampMode = (deps.env ?? process.env).JEV_ELEVATION === 'clamp';
+  if (elevation?.kind === 'elevating' && !clampMode) {
+    verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+    elevationState = 'asked';
+  } else if (elevation?.kind === 'elevating') {
     const promptKey = (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || null;
     const signature = callSignature(call as Record<string, unknown>);
     let clampedEarlier = false;

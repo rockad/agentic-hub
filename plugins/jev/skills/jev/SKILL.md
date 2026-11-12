@@ -66,11 +66,11 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 ### 4. In Claude Code
 
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
-- The session model is the ceiling. In mode `on`, a `PreToolUse` hook (elevation clamp, 2.3.4) handles an `Agent` call that names a model stronger than the session model, and nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt.
-  - The first such call in a prompt runs on the session model instead: the hook rewrites `model` and lets it run with no dialog, and adds a note saying so. Do not call it again on your own, on a cheaper or a stronger model. Report the result and, if the stronger model is really needed, ask the user in chat; a reply naming that model passes without another prompt.
-  - A repeat elevating call in the same prompt asks the user (a backstop): Yes runs it on the stronger model; No cancels the call and stops the turn, and a comment typed with No lets you continue. If the session model's alias is remapped (`ANTHROPIC_DEFAULT_*_MODEL`) the first call asks too.
+- The session model is the ceiling. In mode `on`, a `PreToolUse` hook handles an `Agent` call that names a model stronger than the session model, and nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt.
+  - Default (2.3.4): the user is asked in a permission dialog on every such call. Yes runs it on the stronger model. No cancels the call and stops the turn; a comment typed with No lets you continue (for example "continue on sonnet"), so carry on with the work on the session model rather than retrying on a cheaper model.
   - A model the user named in their prompt (`use opus`, `run an opus subagent`), or a stronger one, passes unchanged with no dialog: that instruction is the approval, so do not ask separately.
-  - In Claude Code No cancels that one call and stops the turn; a comment typed with No lets you continue. Carry on with the work already done on the session model rather than retrying on a cheaper model.
+  - Opt-in clamp (`JEV_ELEVATION=clamp` in the environment, off by default): the first such call in a prompt runs on the session model instead, with no dialog, and a note says so. Do not call it again on your own; report the result and, if the stronger model is really needed, ask the user in chat (a reply naming that model passes). A repeat in the same prompt asks. In interactive sessions the clamp restarts on every new prompt (a background agent's notification is a new prompt), so it asks only for a repeat inside one prompt.
+  - If the session model's alias is remapped (`ANTHROPIC_DEFAULT_*_MODEL`), the call asks in both modes.
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
 - Mode state is read directly from `~/.config/jev/config.json`.
 

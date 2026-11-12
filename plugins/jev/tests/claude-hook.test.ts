@@ -13,7 +13,6 @@ import {
   type Dispatch
 } from '../claude/logic.ts';
 import { onUserPromptSubmit, onPreToolUse, type HookDeps } from '../claude/hook.ts';
-import { memoryClaim } from './elevation-helpers.ts';
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
 
@@ -27,7 +26,6 @@ function deps(overrides: Partial<HookDeps> = {}): HookDeps {
     readQuotaStrategy: async () => 'unknown',
     dispatch: async () => flashRec,
     log: () => {},
-    claimClamp: memoryClaim(),
     ...overrides
   };
 }
@@ -169,22 +167,14 @@ describe('PreToolUse never turns a tier rating into a permission dialog (case st
     expect(entries[0]).toMatchObject({ tier: 'pro', recommended_model: 'opus', requested_model: 'sonnet', reason: null });
   });
 
-  // 2.3.4: the first elevating call of a prompt is clamped; the dialog is for the repeat. These two
-  // asserted the dialog on the first call (2.3.2/2.3.3) and now make the call twice.
-  it('still asks for a repeated model above the ceiling, and says what No does (2.3.4: cancels the call and stops the turn)', async () => {
-    const d = deps({ readTurn: () => proTurn });
-    await onPreToolUse(agentCall('opus'), d);
-
-    const out = await onPreToolUse(agentCall('opus'), d);
+  it('still asks for a model above the ceiling, and says what No does', async () => {
+    const out = await onPreToolUse(agentCall('opus'), deps({ readTurn: () => proTurn }));
 
     expect(String(out?.hookSpecificOutput.permissionDecisionReason)).toContain('No cancels the call and stops the turn; type a comment with No to let the assistant continue');
   });
 
   it('does not tell a rejected delegation to be retried on a cheaper model by itself', async () => {
-    const d = deps({ readTurn: () => proTurn });
-    await onPreToolUse(agentCall('opus'), d);
-
-    const out = await onPreToolUse(agentCall('opus'), d);
+    const out = await onPreToolUse(agentCall('opus'), deps({ readTurn: () => proTurn }));
 
     expect(String(out?.hookSpecificOutput.permissionDecisionReason)).not.toContain('deny and re-run');
   });
@@ -225,13 +215,10 @@ describe('onUserPromptSubmit', () => {
 });
 
 describe('onPreToolUse', () => {
-  // 2.3.4: was "returns an ask decision for an Agent call above the ceiling" on the first call.
-  it('returns an ask decision for a repeated Agent call above the ceiling', async () => {
-    const input = { session_id: 's1', prompt_id: 'p1', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Refactor the parser' } };
-    const d = deps();
-    await onPreToolUse(input, d);
+  it('returns an ask decision for an Agent call above the ceiling', async () => {
+    const input = { session_id: 's1', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Refactor the parser' } };
 
-    const out = await onPreToolUse(input, d);
+    const out = await onPreToolUse(input, deps());
 
     expect(out?.hookSpecificOutput.permissionDecision).toBe('ask');
   });

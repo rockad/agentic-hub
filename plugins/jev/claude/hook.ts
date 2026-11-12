@@ -38,6 +38,7 @@ import {
   buildDirective,
   decideAgentCall,
   dispatchQuestions,
+  envNotice,
   hasRecentDispatch,
   isHostInjectedPrompt,
   isNonTaskPrompt,
@@ -97,6 +98,8 @@ export type HookDeps = {
   /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
   recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
   now?: () => number;
+  /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
+  env?: Record<string, string | undefined>;
 };
 
 export function withTimeout<T>(
@@ -180,7 +183,8 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     rule,
     user_intent: storedIntent(intent),
     quota: quotaStrategy,
-    sessionModel
+    sessionModel,
+    ...(deps.env ? { env_notice: envNotice(deps.env) } : {})
   });
 
   let additionalContext = buildDirective(rec, sessionModel, quotaStrategy, intent);
@@ -396,6 +400,11 @@ const pendingLogs: Promise<unknown>[] = [];
 /** How long the process waits for the pending telemetry appends before it exits anyway. */
 export const LOG_FLUSH_TIMEOUT_MS = 1000;
 
+/** Register an append that the process must wait for before it exits. */
+export function trackPendingLog(p: Promise<unknown>): void {
+  pendingLogs.push(p);
+}
+
 /** Wait for every telemetry append started so far. Never throws and never waits longer than the budget. */
 export async function flushPendingLogs(ms: number = LOG_FLUSH_TIMEOUT_MS): Promise<void> {
   try {
@@ -410,7 +419,7 @@ function appendLog(entry: Record<string, unknown>): void {
     // Never prompt text: an entry holds the recommendation, model names, a tier and a prompt hash only.
     fs.mkdirSync(JEV_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
     fs.appendFileSync(DECISIONS_LOG, JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n', { mode: PRIVATE_FILE_MODE });
-    pendingLogs.push(logJevTelemetry(telemetryEvent(entry)));
+    trackPendingLog(logJevTelemetry(telemetryEvent(entry)));
   } catch {
     // logging is best-effort
   }
@@ -473,6 +482,7 @@ const liveDeps: HookDeps = {
   forgetTurn,
   recentDispatch,
   recentAgentCalls,
+  env: process.env,
   egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd])).allowed
 };
 

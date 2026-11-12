@@ -1,9 +1,9 @@
-# Stage s1: the coordination service and its Postgres (S1-PG). The dump sidecar is S1-BKP.
+# Stage s1: the coordination service and its Postgres (S1-PG) and the dump sidecar (S1-BKP, profile backup).
 # Spec: docs/specs/server-api.md 1.4 and 1.5.
 #
 # Secrets live on the host, outside the repo, in one directory (mode 0700):
 #   ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/a2a_db_password    server and Postgres
-#   ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/pg_dump_password   the dump_ro role (S1-BKP declares it)
+#   ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/pg_dump_password   the dump_ro role, mounted only into the dump service (profile backup)
 # Each file is mode 0600. servers/coordination/README.md says how to create them.
 #
 # Compose outside Swarm bind-mounts a file secret as it is on the host: owner and mode are not
@@ -62,8 +62,10 @@ services:
       A2A_ENV: ${A2A_ENV:-dev}
       A2A_EXPOSURE_STAGE: ${A2A_EXPOSURE_STAGE:-s1}
       A2A_ALLOW_WRITES: ${A2A_ALLOW_WRITES:-0}
+      A2A_DUMP_LAST_OK_FILE: /var/lib/a2a-backup/last_ok  # written by the dump sidecar (S1-BKP), read-only here
     volumes:
       - a2a-data:/data  # go-live import run artefacts only, not the database
+      - a2a-backup-state:/var/lib/a2a-backup:ro  # the sidecar's last_ok file; the server only reads it
     read_only: true
     tmpfs:
       - /tmp
@@ -79,10 +81,52 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # The dump sidecar (S1-BKP). Profile "backup": a plain `docker compose up` does not start it
+  # and does not need the file pg_dump_password (S1 dev). On the storage host the stack runs with
+  # COMPOSE_PROFILES=backup. One dump now: `docker compose --profile backup run --rm dump once`.
+  # Only pg_dump and pg_restore are in the image; it logs in as the read-only role dump_ro
+  # (created by `a2a-coord db init-dump-role`) and is the only service that mounts pg_dump_password.
+  dump:
+    profiles: ["backup"]
+    build: ./servers/backup
+    image: coordination-backup:local
+    init: true
+    user: "${A2A_UID:-10001}:${A2A_GID:-10001}"  # the owner of the 0600 secret file, as for the server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No "ports:" key: nothing listens in this container.
+    secrets:
+      - pg_dump_password
+    environment:
+      PGHOST: postgres
+      PGDATABASE: coordination
+      PGUSER: dump_ro  # the password comes from the secret file via a PGPASSFILE the script builds in /tmp
+      PG_DUMP_PASSWORD_FILE: /run/secrets/pg_dump_password
+      TZ: ${A2A_TZ:-UTC}  # the nightly time (default 02:00, BACKUP_AT) is in this time zone
+      BACKUP_AT: ${A2A_BACKUP_AT:-02:00}
+    volumes:
+      # Dump files: a host directory outside the repo. Create it first, owned by the user that runs
+      # the stack. On the storage host it is <media-root>/backup/a2a (set A2A_DUMP_DIR).
+      - ${A2A_DUMP_DIR:-${HOME}/.local/share/a2a-coord/dumps}:/dumps
+      # last_ok lives in a named volume (a single-file bind mount of a missing file becomes a
+      # directory); the server mounts the same volume read-only.
+      - a2a-backup-state:/state
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    command: ["loop"]
+
 secrets:
   a2a_db_password:
     file: ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/a2a_db_password
+  pg_dump_password:  # mounted only into the dump service
+    file: ${A2A_SECRETS_DIR:-${HOME}/.config/a2a-coord/secrets}/pg_dump_password
 
 volumes:
   a2a-data:
   a2a-pgdata:
+  a2a-backup-state:  # last_ok written by the sidecar, read-only in the server

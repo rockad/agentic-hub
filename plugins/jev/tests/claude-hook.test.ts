@@ -171,13 +171,13 @@ describe('PreToolUse never turns a tier rating into a permission dialog (case st
 
   // 2.3.4: the first elevating call of a prompt is clamped; the dialog is for the repeat. These two
   // asserted the dialog on the first call (2.3.2/2.3.3) and now make the call twice.
-  it('still asks for a repeated model above the ceiling, and says what No does', async () => {
+  it('still asks for a repeated model above the ceiling, and says what No does (2.3.4: cancels the call and stops the turn)', async () => {
     const d = deps({ readTurn: () => proTurn });
     await onPreToolUse(agentCall('opus'), d);
 
     const out = await onPreToolUse(agentCall('opus'), d);
 
-    expect(String(out?.hookSpecificOutput.permissionDecisionReason)).toContain('No cancels the delegation');
+    expect(String(out?.hookSpecificOutput.permissionDecisionReason)).toContain('No cancels the call and stops the turn; type a comment with No to let the assistant continue');
   });
 
   it('does not tell a rejected delegation to be retried on a cheaper model by itself', async () => {

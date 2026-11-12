@@ -105,14 +105,17 @@ describe('1. the first elevating call of a prompt is clamped', () => {
     expect([o.permissionDecision, o.updatedInput.model]).toEqual(['allow', 'sonnet']);
   });
 
-  it('tells the assistant what happened and the one way to ask for the stronger model', async () => {
+  // 2.3.4 (review): the note no longer tells the assistant to call again (that made a loop); it reports and asks in chat.
+  it('tells the assistant what happened: no re-call, report, ask in chat, a reply naming the model passes', async () => {
     const { d } = setup();
 
     const ctx = String(out(await onPreToolUse(call(), d)).additionalContext);
 
     expect(ctx).toContain('Jev ran this delegation on sonnet instead of opus');
-    expect(ctx).toContain('call the agent again with model "opus" and the user will be asked to approve');
-    expect(ctx).toContain('Do not retry on your own on a cheaper or stronger model without that');
+    expect(ctx).toContain('Do not call it again on your own');
+    expect(ctx).toContain('Report the result');
+    expect(ctx).toContain('ask the user in chat; a reply naming opus passes without another prompt');
+    expect(ctx).not.toContain('call the agent again');
   });
 
   it('keeps the context to one short paragraph', async () => {
@@ -144,15 +147,46 @@ describe('2. a second elevating call in the same prompt asks', () => {
     expect(o.updatedInput).toBeUndefined();
   });
 
-  it('says what each answer does, and that the clamped run already happened', async () => {
+  it('says what each answer does, and that the same delegation already ran when it did', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
 
     const reason = String(out(await onPreToolUse(call(), d)).permissionDecisionReason);
 
     expect(reason).toContain('Yes runs it on opus');
-    expect(reason).toContain('No cancels the delegation');
-    expect(reason).toContain('on sonnet has already happened');
+    expect(reason).toContain('No cancels the call and stops the turn; type a comment with No to let the assistant continue');
+    expect(reason).toContain('The same delegation already ran on sonnet earlier in this prompt');
+  });
+
+  it('does not say a run happened when the repeat is a different delegation', async () => {
+    const { d } = setup();
+    await onPreToolUse(call(), d);
+
+    const reason = String(out(await onPreToolUse(call({ ...FULL_INPUT, description: 'WS2: something else' }), d)).permissionDecisionReason);
+
+    expect(reason).toContain('Yes runs it on opus');
+    expect(reason).not.toContain('already ran');
+  });
+
+  it('does not say a run happened when no clamp ran (no prompt key, failing store, absent store)', async () => {
+    const noKey = out(await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: FULL_INPUT }, setup().d));
+    const broken = out(
+      await onPreToolUse(call(), setup({ claimClamp: () => { throw new Error('disk full'); } }).d)
+    );
+    const absent = out(await onPreToolUse(call(), setup({ claimClamp: undefined }).d));
+
+    for (const o of [noKey, broken, absent]) {
+      expect(o.permissionDecision).toBe('ask');
+      expect(String(o.permissionDecisionReason)).not.toContain('already ran');
+    }
+  });
+
+  it('does not say a run happened when a parallel call cannot tell what the first one was', async () => {
+    const { d } = setup({ claimClamp: () => ({ first: false }) });
+
+    const reason = String(out(await onPreToolUse(call(), d)).permissionDecisionReason);
+
+    expect(reason).not.toContain('already ran');
   });
 
   it('keeps asking on a third call', async () => {
@@ -234,6 +268,89 @@ describe('2. a second elevating call in the same prompt asks', () => {
     const b = out(await onPreToolUse(call(), broken.d));
 
     expect([a.permissionDecision, b.permissionDecision]).toEqual(['ask', 'ask']);
+  });
+});
+
+describe('2b. a remapped session alias asks instead of clamping', () => {
+  it.each([
+    ['sonnet', 'claude-sonnet-5', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
+    ['haiku', 'claude-haiku-4', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
+    ['opus', 'claude-opus-5-5', 'ANTHROPIC_DEFAULT_OPUS_MODEL']
+  ])('%s session with %s remapped: the first elevating call asks, never clamps', async (_alias, session, variable) => {
+    const requested = session.includes('opus') ? 'fable' : 'opus';
+    const { d, logs } = setup({ readSessionModel: () => session, env: { [variable]: 'some-other-model-id' } });
+
+    const o = out(await onPreToolUse(call({ ...FULL_INPUT, model: requested }), d));
+
+    expect(o.permissionDecision).toBe('ask');
+    expect(o.updatedInput).toBeUndefined();
+    expect(logs.at(-1)).toMatchObject({ elevation: 'asked', clamp_skipped: 'alias-remapped' });
+  });
+
+  it('a remap of a different alias does not stop the clamp', async () => {
+    const { d } = setup({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'x', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'y' } });
+
+    const o = out(await onPreToolUse(call(), d));
+
+    expect(o.permissionDecision).toBe('allow');
+  });
+
+  it('a remap does not use up the clamp claim', async () => {
+    const claims: string[] = [];
+    const { d } = setup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'x' }, claimClamp: (s, p, sig) => (claims.push(sig), { first: true }) });
+
+    await onPreToolUse(call(), d);
+
+    expect(claims).toEqual([]);
+  });
+
+  it('an empty variable is not a remap', async () => {
+    const { d } = setup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: '' } });
+
+    const o = out(await onPreToolUse(call(), d));
+
+    expect(o.permissionDecision).toBe('allow');
+  });
+});
+
+describe('2c. a stored instruction belongs to its own prompt (stale intent)', () => {
+  it('a host-injected turn with a new prompt_id does not inherit the previous prompt\'s "use opus"', async () => {
+    const { d, logs } = setup();
+    await onUserPromptSubmit({ session_id: 's1', prompt_id: 'p1', prompt: 'run an opus subagent to wrap findings, then commit' }, d);
+
+    const o = out(await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p2' }), d));
+
+    expect(o.permissionDecision).toBe('allow');
+    expect(o.updatedInput.model).toBe('sonnet');
+    expect(logs.at(-1)).toMatchObject({ elevation: 'clamped', intent_stale: true });
+  });
+
+  it('the same prompt_id keeps the instruction', async () => {
+    const { d } = setup();
+    await onUserPromptSubmit({ session_id: 's1', prompt_id: 'p1', prompt: 'run an opus subagent to wrap findings, then commit' }, d);
+
+    const o = await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p1' }), d);
+
+    expect(o).toBeNull();
+  });
+
+  it('UserPromptSubmit stores the prompt_id in the turn state', async () => {
+    const saved: any[] = [];
+    const { d } = setup({ saveTurn: (_s, st) => void saved.push(st) });
+
+    await onUserPromptSubmit({ session_id: 's1', prompt_id: 'p9', prompt: 'wrap the findings in the docs and commit' }, d);
+
+    expect(saved.length).toBeGreaterThan(0);
+    expect(saved.every((st) => st.promptId === 'p9')).toBe(true);
+  });
+
+  it('a state with no promptId (or a call with no prompt_id) keeps the marker-only behaviour', async () => {
+    const { d } = setup();
+    await onUserPromptSubmit({ session_id: 's1', prompt: 'run an opus subagent to wrap findings, then commit' }, d);
+
+    const o = await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p2' }), d);
+
+    expect(o).toBeNull();
   });
 });
 

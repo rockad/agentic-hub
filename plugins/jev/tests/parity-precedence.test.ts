@@ -17,9 +17,9 @@ describe('precedence: instruction, then guard, then standing rule (5.9)', () => 
   const table: Array<[string, Dispatch, string, keyof typeof RULE, string, boolean]> = [
     ['run an opus subagent to wrap findings', flashRec, 'claude-sonnet-5-5', 'instruction', 'opus', false],
     ['choose minimal viable model for each stream', proRec, 'claude-sonnet-5-5', 'instruction', 'sonnet', false],
-    // #22 advises opus here. 2.3.2/2.3.3 capped the advice at sonnet; 2.3.4 uncaps it, because the elevation clamp
-    // runs an opus call on the session model the first time and asks on a repeat.
-    ['write the storage layer design', proRec, 'claude-sonnet-5-5', 'guard', 'opus', true],
+    // #22 advises opus here (model 'opus'). Kept at the 2.3.2 cap (sonnet) with the ask: 2.3.4 ships the elevation clamp
+    // but keeps the header capped, because an opus header made the assistant call for opus again after a clamp (a loop).
+    ['write the storage layer design', proRec, 'claude-sonnet-5-5', 'guard', 'sonnet', true],
     ['write the storage layer design', proRec, 'claude-opus-5-5', 'standing', 'opus', false],
     ['find where the quota file is written', flashRec, 'claude-sonnet-5-5', 'standing', 'sonnet', false]
   ];

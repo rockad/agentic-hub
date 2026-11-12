@@ -71,25 +71,26 @@ describe('the directive keeps its promise about the Jev guard', () => {
   });
 });
 
-// 2.3.4: these four asserted the 2.3.2/2.3.3 cap of the advice at the session model; the clamp replaces it.
+// 2.3.4 ships the elevation clamp and keeps the 2.3.3 cap of the advice at the session model (an opus header
+// made the assistant call for opus again after a clamp).
 describe('a pro rating on a session below opus (5.9, with the 2.3.4 clamp)', () => {
-  it('advises opus uncapped and still needs approval', () => {
+  it('keeps the advised model capped at the session model and still asks', () => {
     const res = resolveModel({ rec: proRec, sessionModel: 'claude-sonnet-5-5' });
 
-    expect([res.tier, res.model, res.source, res.needsApproval]).toEqual(['pro', 'opus', 'mode-guard', true]);
+    expect([res.tier, res.model, res.source, res.needsApproval]).toEqual(['flash', 'sonnet', 'mode-guard', true]);
   });
 
-  it('advises opus on a haiku session too', () => {
+  it('caps a haiku session at haiku', () => {
     const res = resolveModel({ rec: proRec, sessionModel: 'claude-haiku-5-5' });
 
-    expect([res.tier, res.model]).toEqual(['pro', 'opus']);
+    expect([res.tier, res.model]).toEqual(['flash_lite', 'haiku']);
   });
 
-  it('the head shows opus and the text keeps the opus-level rating and the ask', () => {
+  it('the head shows the capped model while the text keeps the opus-level rating and the ask', () => {
     const text = buildDirective(proRec, 'claude-sonnet-5-5', 'unknown');
 
     expect(text).toContain('rule: per the Jev guard');
-    expect(text).toContain('tier="pro", model="opus"');
+    expect(text).toContain('tier="flash", model="sonnet"');
     expect(text).toContain('Jev rates this opus-level');
     expect(text).toContain('ask the user before delegating on opus');
   });

@@ -540,6 +540,21 @@ export function decideAgentCall(call: AgentCall, sessionModel: string | null, in
   };
 }
 
+/**
+ * Warn-only notice for settings that change what a recommendation means: an `ANTHROPIC_DEFAULT_*_MODEL`
+ * variable remaps a model alias (the advice says "opus", Claude Code runs something else) and
+ * `CLAUDE_CODE_EFFORT_LEVEL` overrides the effort the advice names. Names only, never values.
+ * It is logged, never shown to the user and never blocks. Undefined when nothing is set.
+ */
+export function envNotice(env: Record<string, string | undefined>): string | undefined {
+  const remaps = ['HAIKU', 'SONNET', 'OPUS'].map((m) => `ANTHROPIC_DEFAULT_${m}_MODEL`).filter((k) => env[k]);
+  const notes = [
+    ...(remaps.length ? [`${remaps.join(', ')} remaps the model alias`] : []),
+    ...(env.CLAUDE_CODE_EFFORT_LEVEL ? ['CLAUDE_CODE_EFFORT_LEVEL overrides the advised effort'] : [])
+  ];
+  return notes.length ? notes.join('; ') : undefined;
+}
+
 /** Keep only characters that are safe in a file name. */
 export function safeSessionId(id: unknown): string | null {
   if (typeof id !== 'string') return null;

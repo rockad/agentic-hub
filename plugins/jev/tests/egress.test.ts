@@ -20,6 +20,7 @@ import {
 } from '../src/shared.ts';
 import { onUserPromptSubmit, onPreToolUse, type HookDeps } from '../claude/hook.ts';
 import type { Dispatch } from '../claude/logic.ts';
+import { memoryClaim } from './elevation-helpers.ts';
 import { initTracingSync } from '../src/tracing.ts';
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, '..');
@@ -357,6 +358,7 @@ describe('egress policy: Claude Code hook', () => {
       return rec;
     },
     log: () => {},
+    claimClamp: memoryClaim(),
     egressAllowed: () => allowed
   });
 
@@ -379,11 +381,12 @@ describe('egress policy: Claude Code hook', () => {
   });
 
   it('PreToolUse still enforces the model ceiling when egress is blocked', async () => {
-    const input = { session_id: 's1', cwd: '/x', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Refactor the parser' } };
+    const input = { session_id: 's1', prompt_id: 'p1', cwd: '/x', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Refactor the parser' } };
 
     const out = await onPreToolUse(input, deps(false));
 
-    expect(out?.hookSpecificOutput.permissionDecision).toBe('ask');
+    // 2.3.4: the first elevating call is clamped to the session model (was: asked); the ceiling still holds with egress blocked.
+    expect([out?.hookSpecificOutput.permissionDecision, (out?.hookSpecificOutput.updatedInput as { model: string }).model]).toEqual(['allow', 'sonnet']);
   });
 
   it('the live hook checks the cwd from the hook input', async () => {

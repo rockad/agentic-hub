@@ -384,14 +384,6 @@ function exceedsSession(model: string, sessionModel: string | null): boolean {
   return wanted > session;
 }
 
-/** A pro rating capped at the session model (2.3.2 behaviour); an unknown session model leaves it alone. */
-function capToSession<T extends RecLike>(rec: T, sessionModel: string | null): T {
-  const rank = modelRank(sessionModel);
-  if (rec.tier !== 'pro' || rank === null || rank >= (modelRank('opus') as number)) return rec;
-  const tier: JevTier = rank <= 1 ? 'flash_lite' : 'flash';
-  return { ...rec, tier, model: TIER_TO_CLAUDE[tier] };
-}
-
 /** The rule that decided an already-resolved recommendation. */
 export function appliedRule(rec: Pick<Dispatch, 'tier' | 'by'>, sessionModel: string | null): AppliedRule {
   if (rec.by) return 'instruction';
@@ -418,10 +410,11 @@ const RULE_SOURCE: Readonly<Record<AppliedRule, Resolution['source']>> = {
 
 /**
  * One precedence order for the model of a delegation (see AppliedRule). The user's own instruction is
- * stored at UserPromptSubmit and read by the PreToolUse guard, which does not ask for the model the
- * user named: that instruction is the approval. Under the guard rule (a pro rating on a session below
- * opus) the advised model is capped at the session model, as in 2.3.2, and `needsApproval` is true;
- * 2.3.5 replaces the cap with the elevation clamp and advises opus.
+ * stored at UserPromptSubmit and read by the PreToolUse guard, which passes the model the user named
+ * unchanged: that instruction is the approval. Under the guard rule (a pro rating on a session below
+ * opus) the advice is NOT capped at the session model (2.3.4): `needsApproval` is true, and a call that
+ * then asks for the stronger model without an instruction is clamped to the session model on first use
+ * and asked about on a repeat (the elevation clamp).
  */
 export function resolveModel(args: {
   intent?: UserIntent | null;
@@ -431,7 +424,9 @@ export function resolveModel(args: {
   const { intent, rec, sessionModel } = args;
   const applied = applyUserIntent(rec, intent) as Dispatch;
   const rule = appliedRule(applied, sessionModel);
-  const advised = rule === 'guard' ? capToSession(applied, sessionModel) : applied;
+  // 2.3.4: the advice is not capped at the session model under the guard rule. A call that asks for the
+  // stronger model without an instruction is clamped on first use and asked about on a repeat.
+  const advised = applied;
   return {
     tier: advised.tier,
     model: advised.model ?? TIER_TO_CLAUDE[advised.tier],
@@ -475,8 +470,8 @@ export function buildDirective(
   intent?: UserIntent | null
 ): string {
   const advised = applyUserIntent(rec, intent);
-  // The head shows the model Jev advises: for a pro rating on a session below opus it is capped at the
-  // session model (as in 2.3.2) while the sentences below still report the opus-level rating and the ask.
+  // The head shows the model Jev advises: for a pro rating on a session below opus that is opus (2.3.4: not
+  // capped; the elevation clamp runs a call for it on the session model the first time).
   const { advised: shown, rule } = resolveModel({ intent, rec, sessionModel });
   const head =
     `[JEV] cost-tiered recommendation (quota=${quotaStrategy}; ${RULE_LABEL[rule]}): ` +
@@ -493,12 +488,10 @@ export function buildDirective(
       ? `You asked for ${advised.asked} (explicit user request: "${phrase}"), but Jev moves at most one tier step from its own recommendation (${advised.routerTier}): delegate to ${subagent} with model "${advised.model}".`
       : `You asked for ${advised.model} (explicit user request: "${phrase}"): delegate to ${subagent} with model "${advised.model}".`;
     if (!exceedsSession(advised.model, sessionModel)) return `${head} ${ceiling} ${asked}`;
-    // Above the session model. The PreToolUse guard lifts its ask when the call requests the model the
-    // user named (the stored intent), so then the user's own instruction is the approval. When the
-    // one-step cap advised a different model than the one named, the guard still asks about that one.
-    return advised.asked
-      ? `${head} ${asked} That model is above the session model, so the Jev guard shows the user one approval prompt for it; do not ask separately before it.`
-      : `${head} ${asked} The user's own instruction is the approval for a model above the session model and the Jev guard will not ask about it; do not ask separately.`;
+    // Above the session model. The PreToolUse guard passes a call whose model is the one the user named, or
+    // weaker than it (the stored intent), with no clamp and no dialog: the user's own instruction is the
+    // approval. That covers the model the one-step cap advised when it is below the one named.
+    return `${head} ${asked} The user's own instruction is the approval for a model above the session model: the Jev guard passes it without clamping or asking; do not ask separately. A call for a model you were not asked for runs on the session model the first time in a prompt, and asks the user on a repeat.`;
   }
 
   const costNote =
@@ -511,14 +504,14 @@ export function buildDirective(
     // One sentence, never the ceiling line plus an ask line that contradict each other.
     const pro = sessionAllowsOpus(sessionModel)
       ? `Jev rates this opus-level and the session model "${sessionModel}" allows it: delegate to ${subagent} with model "opus".`
-      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on opus: offer the cheaper option and let the user choose.`;
+      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on opus: offer the cheaper option and let the user choose. If you delegate on opus without the user asking for it, Jev runs the first such call in a prompt on the session model and asks the user on a repeat; a model the user names in the prompt passes.`;
     return `${head} ${costNote}${pro}`;
   }
 
   // A paid delegation on a model above the session model: one ceiling sentence, not the hard-ceiling
   // line followed by a "delegate to <stronger model>" action that contradicts it.
   if (advised.tier !== 'openrouter_free' && advised.subagent !== 'self' && exceedsSession(advised.model, sessionModel)) {
-    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose.`;
+    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose. If you delegate on ${advised.model} without the user asking for it, Jev runs the first such call in a prompt on the session model and asks the user on a repeat.`;
   }
 
   const action =
@@ -541,14 +534,95 @@ export type AgentCall = {
 
 export type AgentDecision = { decision: 'ask'; reason: string } | null;
 
+/** The Claude alias for a model id or alias (`claude-sonnet-5` gives `sonnet`); null when unknown or "inherit". */
+export function modelAlias(model: string | undefined | null): ClaudeModelAlias | null {
+  if (!model) return null;
+  const hit = MODEL_ALIASES.find(([pattern]) => pattern.test(model));
+  return hit ? hit[1] : null;
+}
+
+const MODEL_ALIASES: ReadonlyArray<readonly [RegExp, ClaudeModelAlias]> = [
+  [/haiku/i, 'haiku'],
+  [/sonnet/i, 'sonnet'],
+  [/opus/i, 'opus'],
+  [/fable/i, 'fable']
+];
+
+/** What an Agent call's model means against the session model. */
+export type Elevation = {
+  /** `instructed`: above the session model, but the user named that model or a stronger one in this prompt. `elevating`: above it, no instruction. */
+  kind: 'elevating' | 'instructed';
+  requested: string;
+  sessionModel: string;
+  /** The alias the call is clamped to: the session model's own. Null when it has none (a model above opus). */
+  sessionAlias: ClaudeModelAlias | null;
+};
+
 /**
- * The only gate on an Agent tool call, and it is deterministic: ask when the requested model is
- * stronger than the session's. A missing model or "inherit" runs on the session model and is never
+ * Pure: is this Agent call asking for a model stronger than the session's? Null for a call with no
+ * model or "inherit" (it runs on the session model), a model at or below the session model, and an
+ * unknown or missing session model. A model the user named in the current prompt, or a stronger one, is
+ * their explicit request: `instructed`, never `elevating`.
+ */
+export function classifyElevation(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): Elevation | null {
+  const requested = modelRank(call.model);
+  const ceiling = modelRank(sessionModel);
+  if (requested === null || ceiling === null || requested <= ceiling || !call.model || !sessionModel) return null;
+  const instructed = !!intent && intent.models.some((m) => (modelRank(m) ?? 0) >= requested);
+  return { kind: instructed ? 'instructed' : 'elevating', requested: call.model, sessionModel, sessionAlias: modelAlias(sessionModel) };
+}
+
+/**
+ * The wording of the permission dialog for a REPEATED elevating call (the first one is clamped, see
+ * `clampElevation`). Claude Code shows `ask` with Yes and No; No is a rejection of this one call, so it
+ * says what each answer does and that the clamped run already happened.
+ */
+export function elevationAskReason(e: Elevation): string {
+  const ran = e.sessionAlias ?? e.sessionModel;
+  return (
+    `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
+    `Yes runs it on ${e.requested}. No cancels the delegation (this one only); ` +
+    `the earlier run of this request on ${ran} has already happened, and the assistant does not retry on a cheaper model by itself.`
+  );
+}
+
+/** The note the assistant gets with a clamped call: what Jev did, and the one way to ask for the stronger model. */
+export function elevationClampContext(e: Elevation): string {
+  const ran = e.sessionAlias ?? e.sessionModel;
+  return (
+    `[jev] Jev ran this delegation on ${ran} instead of ${e.requested}, because ${e.requested} is stronger than the session model ` +
+    `"${e.sessionModel}" and you did not ask for it in this prompt. If the task really needs ${e.requested}, call the agent again with ` +
+    `model "${e.requested}" and the user will be asked to approve. Do not retry on your own on a cheaper or stronger model without that.`
+  );
+}
+
+/**
+ * The PreToolUse output that runs the call on the session model with no dialog: `allow` plus the whole
+ * original tool input with `model` replaced (`updatedInput` replaces the input, so every original field is
+ * copied) plus the note for the assistant. Null when the session model has no alias to clamp to.
+ */
+export function clampElevation(call: Record<string, unknown>, e: Elevation): { hookSpecificOutput: Record<string, unknown> } | null {
+  if (!e.sessionAlias) return null;
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: `[jev] Elevation clamped: ${e.requested} to ${e.sessionAlias} (the session model).`,
+      updatedInput: { ...call, model: e.sessionAlias },
+      additionalContext: elevationClampContext(e)
+    }
+  };
+}
+
+/**
+ * The deterministic check on an Agent tool call: is it a model stronger than the session's with no
+ * instruction from the user? A missing model or "inherit" runs on the session model and is never
  * stronger, so it passes, and so does a model pinned at or below the session model. A model the user
- * named in the current prompt is their explicit request and never asks.
+ * named in the current prompt (or a stronger one) is their explicit request and is not asked about.
  *
- * Claude Code shows `ask` as a permission dialog with Yes and No. No is a rejection: the tool call is
- * cancelled and the assistant is told to stop and wait, so the reason must not promise a retry.
+ * Since 2.3.4 the hook does not ask on the FIRST such call of a prompt: it clamps it to the session model
+ * (`clampElevation`), and only a repeat asks. Claude Code shows `ask` as a permission dialog with Yes and
+ * No. No is a rejection: the tool call is cancelled, so the reason says what each answer does.
  *
  * Jev's tier rating of the task is deliberately not a gate. It is advice (the UserPromptSubmit
  * directive) and telemetry (`recommended_model` in the PreToolUse log). A `pro` rating is not a
@@ -556,17 +630,9 @@ export type AgentDecision = { decision: 'ask'; reason: string } | null;
  * delegation pinned to the session model (case study 2026-11-11).
  */
 export function decideAgentCall(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): AgentDecision {
-  const requested = modelRank(call.model);
-  const ceiling = modelRank(sessionModel);
-  if (requested === null || ceiling === null || requested <= ceiling) return null;
-  if (intent && intent.models.some((m) => modelRank(m) === requested)) return null;
-  return {
-    decision: 'ask',
-    reason:
-      `[jev] This delegation asks for model "${call.model}", stronger than the session model "${sessionModel}". ` +
-      'Yes runs it on the stronger model. No cancels the delegation and the assistant waits for your instruction; ' +
-      'it does not retry on a cheaper model by itself.'
-  };
+  const e = classifyElevation(call, sessionModel, intent);
+  if (!e || e.kind !== 'elevating') return null;
+  return { decision: 'ask', reason: elevationAskReason(e) };
 }
 
 /**

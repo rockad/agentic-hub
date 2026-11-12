@@ -58,34 +58,38 @@ describe('the directive keeps its promise about the Jev guard', () => {
     expect(decideAgentCall({ model: 'opus' }, 'claude-sonnet-5-5', intent)).toBeNull();
   });
 
-  it('when the cap advised another model than the one named, the guard still asks about that one', () => {
+  // 2.3.4: was "the guard still asks about that one". The one-step cap advised sonnet while the user named
+  // opus; a named model covers a weaker one, so the guard passes the advised call (no clamp, no dialog).
+  it('when the cap advised another model than the one named, the guard passes the advised one too', () => {
     const intent = parseUserIntent('use opus');
     const lite: Dispatch = { ...flashRec, tier: 'flash_lite', model: 'haiku' };
     const text = buildDirective(lite, 'claude-haiku-5-5', 'unknown', intent);
 
-    expect(text).toContain('the Jev guard shows the user one approval prompt');
-    expect(decideAgentCall({ model: 'sonnet' }, 'claude-haiku-5-5', intent)?.decision).toBe('ask');
+    expect(text).toContain("The user's own instruction is the approval");
+    expect(text).not.toContain('shows the user one approval prompt');
+    expect(decideAgentCall({ model: 'sonnet' }, 'claude-haiku-5-5', intent)).toBeNull();
   });
 });
 
-describe('a pro rating on a session below opus (5.9, until the 2.3.5 clamp)', () => {
-  it('keeps the advised model capped at the session model and still asks', () => {
+// 2.3.4: these four asserted the 2.3.2/2.3.3 cap of the advice at the session model; the clamp replaces it.
+describe('a pro rating on a session below opus (5.9, with the 2.3.4 clamp)', () => {
+  it('advises opus uncapped and still needs approval', () => {
     const res = resolveModel({ rec: proRec, sessionModel: 'claude-sonnet-5-5' });
 
-    expect([res.tier, res.model, res.source, res.needsApproval]).toEqual(['flash', 'sonnet', 'mode-guard', true]);
+    expect([res.tier, res.model, res.source, res.needsApproval]).toEqual(['pro', 'opus', 'mode-guard', true]);
   });
 
-  it('caps a haiku session at haiku', () => {
+  it('advises opus on a haiku session too', () => {
     const res = resolveModel({ rec: proRec, sessionModel: 'claude-haiku-5-5' });
 
-    expect([res.tier, res.model]).toEqual(['flash_lite', 'haiku']);
+    expect([res.tier, res.model]).toEqual(['pro', 'opus']);
   });
 
-  it('the head shows the capped model while the text keeps the opus-level rating and the ask', () => {
+  it('the head shows opus and the text keeps the opus-level rating and the ask', () => {
     const text = buildDirective(proRec, 'claude-sonnet-5-5', 'unknown');
 
     expect(text).toContain('rule: per the Jev guard');
-    expect(text).toContain('tier="flash", model="sonnet"');
+    expect(text).toContain('tier="pro", model="opus"');
     expect(text).toContain('Jev rates this opus-level');
     expect(text).toContain('ask the user before delegating on opus');
   });

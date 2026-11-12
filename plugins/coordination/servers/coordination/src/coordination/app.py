@@ -1,4 +1,6 @@
-"""ASGI application entry point. S1-SCAF serves `/healthz` only; later streams mount routers here."""
+"""ASGI application entry point. S1-SCAF serves `/healthz` only; later streams mount routers here.
+
+`main` checks that the database answers (S1-PG) before it serves. `create_app` does not touch it."""
 
 from __future__ import annotations
 
@@ -24,7 +26,12 @@ def create_app(config: Config | None = None) -> Starlette:
 def main() -> None:
     import uvicorn
 
+    from coordination.store.connect import check_database
+
     config = load()
+    # S1-PG: exit non-zero, with a message that carries no password, if Postgres does not answer.
+    # S1-STORE replaces this with the pool start. /healthz stays a liveness check.
+    check_database(config)
     host, port = config.listen_host_port
     # Exactly one worker is a requirement (spec 1.1): listeners and rate counters live in memory.
     uvicorn.run(create_app(config), host=host, port=port, workers=1, log_level=config.log_level)

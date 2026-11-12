@@ -215,7 +215,7 @@ services:
     volumes:
       - a2a-data:/data                          # run artefacts only (go-live import runs, go-live-migration.md), not the database
       - ./config:/config:ro
-      - <media-root>/backup/a2a:/dumps:ro      # read-only: the server only reads last_ok for dump_age_h in /status [R5]; host path on <storage-host> [R9]
+      - a2a-backup-state:/var/lib/a2a-backup:ro  # named volume the dump sidecar writes last_ok into; read-only here, the server only reads last_ok for dump_age_h in /status [R5]; amended by S1-BKP (a single-file bind mount of a missing file becomes a directory)
     read_only: true
     tmpfs: ["/tmp", "/run/a2a"]
     cap_drop: [ALL]
@@ -251,7 +251,7 @@ services:
       - a2a_pg_dump_password                    # the dump_ro secret, mounted only here; a2a_db_password (the server's role) is never in this service [R11]; secret name is [design]
     volumes:
       - <media-root>/backup/a2a:/dumps         # user-owned host directory on <storage-host>, collected by the second restic job (tag a2a-dumps) [R9]
-    # loop [design]: about 02:00 nightly pg_dump -Fc to /dumps/a2a-<UTC timestamp>.dump; pg_restore --list on the new file; only if it passes keep 14 daily and 3 monthly (never pre-import-*.dump) and write /dumps/last_ok [R5, R12]
+    # loop [design]: about 02:00 nightly pg_dump -Fc to /dumps/a2a-<UTC timestamp>.dump; pg_restore --list on the new file; only if it passes (also a full read with `pg_restore -f /dev/null`, added by S1-BKP) write /state/last_ok, then keep 14 daily and 3 monthly (never pre-import-*.dump); `once` runs one dump, `loop` is the default command [R5, R12]
     restart: unless-stopped
 secrets:
   a2a_db_password:
@@ -268,7 +268,7 @@ Container rules [design]:
 - Base image `python:3.14-slim` to match `servers/lookup` (dev box and image on the same interpreter). `a2a-sdk` itself needs only Python 3.10 or later [verified].
 - Dependencies installed with `uv sync --frozen`. `uv.lock` is committed. Tests run in the build stage.
 - Run as a non-root user. The image creates `/data` owned by that user, so a fresh named volume inherits the ownership on first mount.
-- Root filesystem read-only; writable only `/data`, `/tmp`, `/run/a2a`. `/dumps` is mounted read-only (the server reads `last_ok` only) [R5].
+- Root filesystem read-only; writable only `/data`, `/tmp`, `/run/a2a`. `/var/lib/a2a-backup` (the dump sidecar's `a2a-backup-state` volume) is mounted read-only (the server reads `last_ok` only) [R5].
 - Port `8120` inside and outside (tailnet listener), and `8121` inside and outside for the public listener, started from s2 and published on host loopback only [D-F, R8]. 8100 to 8110 and 11434 are taken or reserved [verified, `t2` section 4]. `:8120` was seen free on <workstation>-wsl on 2026-11-04 with `ss -ltn` [reported by the synthesis; checked by that session, not the cognitive-engine one]. On <storage-host>, nothing listened on 8120 on 2026-11-04 [verified by Claude Code: the Cloudflare route returned 502]. The image contains no host name; where it runs is configuration (`A2A_PUBLIC_URL`, `A2A_DEPLOY_HOST`) [D23].
 - The container is not attached to any sbx network and is not on the sbx one-host allow rule [D13].
 - On SIGTERM the server answers parked listeners with `503` and `Retry-After: 5` so scripts back off instead of seeing a reset.
@@ -285,7 +285,7 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_PUBLIC_LISTEN` | `0.0.0.0:8121` in container, started at `A2A_EXPOSURE_STAGE=s2` and `s3`, not at `s1` [R8] | public listener (published on host loopback only; the tunnel route, created only at the S3 go, is what exposes it): `remote-peer` keys only, only `/a2a/v1` and the public Agent Card; the only listener that trusts `CF-Connecting-IP` (8.4.1) [D-F, design for the variable name] |
 | `A2A_DB_URL` | `postgresql+asyncpg://coordination@postgres:5432/coordination` [design for user and database names] | SQLAlchemy URL of the Postgres service in the compose project, no password in it [D-A, D-B] |
 | `A2A_DB_PASSWORD_FILE` | `/run/secrets/a2a_db_password` | secret file holding the database password (mode 0600 on the host, outside the repo; never logged); the server reads it and composes its SQLAlchemy connection at start-up. The Postgres service reads the same file through `POSTGRES_PASSWORD_FILE`. There is no password environment variable and no `trust` authentication [D-B, R2; design for the variable name and the mechanism] |
-| `A2A_DUMP_LAST_OK_FILE` | `/dumps/last_ok` [design for the variable name and the path] | the `last_ok` timestamp file the dump sidecar writes, on a read-only mount of the host directory `<media-root>/backup/a2a/` [R9]; the server derives `dump_age_h` from it for `/status` (3.6); older than 36 h is stale [R5]; `null` before the first successful dump [R12]; `last_ok` is written only after `pg_restore --list` passes on the new file [R12] |
+| `A2A_DUMP_LAST_OK_FILE` | `/var/lib/a2a-backup/last_ok` (compose sets it; code default unchanged) [design for the variable name; the path changed with S1-BKP] | the `last_ok` timestamp file the dump sidecar writes into the named volume `a2a-backup-state`, mounted read-only into the server; the server derives `dump_age_h` from it for `/status` (3.6); older than 36 h is stale [R5]; `null` before the first successful dump [R12]; `last_ok` is written only after `pg_restore --list` passes on the new file [R12] |
 | `COMPOSE_PROFILES` | unset at `s1`; `backup` at S2 on <storage-host> | a Docker Compose variable, not a server variable: `backup` starts the dump sidecar service (1.2, 1.4) [R14]. A mis-set profile is caught by the `dump_age_h` stale flag |
 | `A2A_PUBLIC_URL` | `http://127.0.0.1:8120` | origin written into card interfaces; must be `https://` at S2 (the tailnet name) and S3 (`https://<a2a-host>`) |
 | `A2A_DEPLOY_HOST` | `<workstation>` | label of the host that runs the container (`<workstation>` for S1, `<storage-host>` in production); shown in `status` and `audit`; never used for a trust decision [D23] |
@@ -1403,7 +1403,7 @@ S2 gate checks, public listener [R8]. The 8121 listener runs from s2 on host loo
 - quarantine live, rate limits live, honest card
 - handle enumeration oracle: unknown, ended and disallowed handles are indistinguishable to a remote-peer key, repeated "not available" answers trip the guess counter and write an audit row [R1, R10], and no handle list is reachable through port 8121 [D-H]
 - guess counter [X3: handle-addressed sends only; card-addressed sends are not counted]: 10 "not available" answers within 60 s trip the per-key limit, a handle-addressed send then gets `429` with `Retry-After: 60`, one `handle_probe_limited` audit row is written with `key_id` and `window_count`, and the counter clears after 60 s (the test above) [R1, R10]
-- backup (SP5b D7 and the S2 deploy): `docker compose --profile backup run --rm dump` writes `a2a-<UTC timestamp>.dump` into `<media-root>/backup/a2a/`, `pg_restore --list` passes before `last_ok` is written, `pg_restore` into a scratch database passes the integrity and row-count check, and `dump_age_h` is `null` before the first dump and under 36 h after it; the `dump_ro` role exists before the run, created by `a2a-coord db init-dump-role` and not by an init script (retest through this route is the SP5b follow-up, spikes.md 8b) [R9, R11, R12, R14, X2]
+- backup (SP5b D7 and the S2 deploy): `docker compose --profile backup run --rm dump once` writes `a2a-<UTC timestamp>.dump` into `<media-root>/backup/a2a/`, `pg_restore --list` passes before `last_ok` is written, `pg_restore` into a scratch database passes the integrity and row-count check, and `dump_age_h` is `null` before the first dump and under 36 h after it; the `dump_ro` role exists before the run, created by `a2a-coord db init-dump-role` and not by an init script (retest through this route is the SP5b follow-up, spikes.md 8b) [R9, R11, R12, R14, X2]
 - the sidecar reaches Postgres as `dump_ro` only: the server's secret file is not mounted in the sidecar and the `dump_ro` secret file is not mounted in the server [R11]
 - the sbx isolation test covers port 8121 as well as 8120 [R1]
 

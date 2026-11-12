@@ -32,6 +32,12 @@ RUN groupadd --system --gid 10001 a2a && \
     mkdir /data /run/a2a && \
     chown a2a:a2a /data /run/a2a
 
+# Mount point of the dump sidecar's `a2a-backup-state` volume (S1-BKP), mounted read-only here.
+# The sidecar writes last_ok as whatever user owns its secret file, so the directory is
+# world-writable; the volume copies owner and mode from whichever image mounts it first, and
+# the sidecar image sets the same mode for /state.
+RUN mkdir /var/lib/a2a-backup && chmod 0777 /var/lib/a2a-backup
+
 COPY --from=build /app/.venv /app/.venv
 
 ENV PATH=/app/.venv/bin:$PATH \

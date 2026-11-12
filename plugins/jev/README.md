@@ -424,8 +424,14 @@ user-level `CLAUDE.md`, so the standing rule is only reflected by the router's t
     "compare with opus" is not an instruction and two models in one clause are ambiguous; "as cheap as possible"
     is a cost intent. A named model moves the tier at most one step from the router's tier. The advice and the
     log carry `by` and `routerTier`.
-  - One ceiling sentence on every path (including "allows it" on an opus session) and a `rule:` label; a `pro`
-    recommendation on a sonnet session now advises opus with an ask instead of capping at sonnet.
+  - One ceiling sentence on every path (including "allows it" on an opus session) and a `rule:` label. On an
+    opus session a `pro` rating is the standing rule and needs no approval. On a session below opus the ask
+    stays and the advised model stays capped at the session model (as in 2.3.2) until the elevation clamp
+    ships in 2.3.5; the directive still reports the opus-level rating. A named model is the user's own
+    approval: the Jev guard does not ask about it.
+  - Log changes to know about: the `UserPromptSubmit` record no longer carries a `model` key (use
+    `recommended_model`), and `tier` now means the advised tier, with `routerTier` present only when the
+    user's instruction made it differ from the router's.
   - No advice and no Jev call for `<task-notification>`, `<bash-*>`, `<local-command-*>`, `<system-reminder>`
     turns, status turns and prompts over 20 000 characters; the task sent to Jev is trimmed to 2 000 characters.
   - Narrow, negation-aware edit rule for the read-only personas; whole-word keywords in the effort heuristic,
@@ -440,7 +446,7 @@ user-level `CLAUDE.md`, so the standing rule is only reflected by the router's t
     Workflow launches is unverified. Dispatch telemetry lines now carry `harness: 'claude-code'` there.
   - The hook waits up to 1 s for pending telemetry appends before it exits, and creates its state directory
     and files owner-only (0700 / 0600). `jev_batch_dispatch` reads `tiers.free.concurrencyCap` (default 10).
-  - Not in this release (2.3.4): the stage rubric in the router criteria, `kind` / `needsEdit` on batch stages,
+  - Not in this release (2.3.5): the stage rubric in the router criteria, `kind` / `needsEdit` on batch stages,
     and Claude-aware `jev_dispatch` / `jev_batch_dispatch` wording and session model.
 
 - **2.3.2** (see `docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md`): `PreToolUse` on `Agent`

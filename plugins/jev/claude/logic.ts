@@ -421,7 +421,7 @@ const RULE_SOURCE: Readonly<Record<AppliedRule, Resolution['source']>> = {
  * stored at UserPromptSubmit and read by the PreToolUse guard, which does not ask for the model the
  * user named: that instruction is the approval. Under the guard rule (a pro rating on a session below
  * opus) the advised model is capped at the session model, as in 2.3.2, and `needsApproval` is true;
- * 2.3.4 replaces the cap with the elevation clamp and advises opus.
+ * 2.3.5 replaces the cap with the elevation clamp and advises opus.
  */
 export function resolveModel(args: {
   intent?: UserIntent | null;

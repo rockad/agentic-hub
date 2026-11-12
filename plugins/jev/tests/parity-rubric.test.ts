@@ -32,7 +32,7 @@ const PASTE_SKIP_CHARS = 20_000;
 const TASK_TRIM_CHARS = 2000;
 
 describe('stage rubric (5.3)', () => {
-  // 2.3.4: stage rubric in the router criteria (5.3)
+  // 2.3.5: stage rubric in the router criteria (5.3)
   it.skip('puts every rubric line into the tier criteria the router sees', () => {
     expect(TIER_CRITERIA.flash_lite).toContain(RUBRIC.mechanical);
     expect(TIER_CRITERIA.flash).toContain(RUBRIC.settled);
@@ -48,7 +48,7 @@ describe('stage rubric (5.3)', () => {
     expect([rec?.subagent, rec?.tier, rec?.model]).toEqual(['Plan', 'flash_lite', 'haiku']);
   });
 
-  // 2.3.4: stage rubric in the UserPromptSubmit directive (5.3)
+  // 2.3.5: stage rubric in the UserPromptSubmit directive (5.3)
   it.skip('adds the rubric to the line on a delegation turn only', () => {
     expect(buildDirective(flashRec, SESSION, 'normal')).toContain(STAGE_RUBRIC_TEXT);
     expect(buildDirective(selfLite, SESSION, 'normal')).not.toContain('Stage rubric');

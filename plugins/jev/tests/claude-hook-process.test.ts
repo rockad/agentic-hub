@@ -106,6 +106,23 @@ describe('private state', () => {
     expect(JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n')[0])).toMatchObject({ event: 'agent_call', session: 's1', session_id: 's1' });
   });
 
+  it('tightens a directory and files that already exist with looser modes', () => {
+    const sessions = path.join(jevDir(), 'claude-sessions');
+    const log = path.join(jevDir(), 'claude_decisions.jsonl');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(log, '');
+    fs.writeFileSync(path.join(sessions, 's1.json'), '{}\n');
+    fs.writeFileSync(path.join(sessions, 's1.turn.json'), '{}\n');
+    for (const d of [jevDir(), sessions]) fs.chmodSync(d, 0o755);
+    for (const f of [log, path.join(sessions, 's1.json'), path.join(sessions, 's1.turn.json')]) fs.chmodSync(f, 0o644);
+
+    run('session-start', { session_id: 's1', model: 'claude-sonnet-5-5' });
+    run('user-prompt-submit', { session_id: 's1', prompt: 'hello' });
+    run('pre-tool-use', { session_id: 's1', tool_name: 'Workflow', tool_input: {} });
+
+    expect([mode(jevDir()), mode(sessions), mode(log), mode(path.join(sessions, 's1.json')), mode(path.join(sessions, 's1.turn.json'))]).toEqual([0o700, 0o700, 0o600, 0o600, 0o600]);
+  });
+
   it('creates the session directory, the session file and the turn file owner-only', () => {
     run('session-start', { session_id: 's1', model: 'claude-sonnet-5-5' });
     run('user-prompt-submit', { session_id: 's1', prompt: 'hello' });

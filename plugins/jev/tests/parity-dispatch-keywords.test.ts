@@ -175,7 +175,7 @@ describe('read-only personas never own an editing task', () => {
     expect(c.editCapableSubagent('code-engineer', 'Edit the plan document', 'general-purpose')).toBe('code-engineer');
   });
 
-  // 2.3.4: conflicts with the 2.3.1 test 'falls back to self outside Claude Code' (tests/dispatch-keywords.test.ts); non-Claude harness behaviour is a maintainer decision
+  // 2.3.5: conflicts with the 2.3.1 test 'falls back to self outside Claude Code' (tests/dispatch-keywords.test.ts); non-Claude harness behaviour is a maintainer decision
   it.skip('resolveEditCapableSubagent swaps on Claude Code only', () => {
     const out = [resolveEditCapableSubagent('claude-code', 'Explore', 'Rewrite the notes'), resolveEditCapableSubagent('antigravity', 'Explore', 'Rewrite the notes')];
 
@@ -199,7 +199,7 @@ describe('read-only personas never own an editing task', () => {
     expect(['general-purpose', 'self']).toContain(plan.tasks[0].subagent);
   });
 
-  // 2.3.4: needsEdit on batch stages (5.4)
+  // 2.3.5: needsEdit on batch stages (5.4)
   it.skip('batch dispatch honours needsEdit: false over the wording', () => {
     const plan = runBatch('claude-code', [{ id: 'a', task: 'Plan how to update the tasklist', needsEdit: false }], ['Plan']);
 
@@ -213,7 +213,7 @@ describe('read-only personas never own an editing task', () => {
     expect(res.executionGuidance).toContain('Agent(subagent_type: "general-purpose", model: "sonnet")');
   });
 
-  // 2.3.4: same conflict as above (the 'self' fallback outside Claude Code)
+  // 2.3.5: same conflict as above (the 'self' fallback outside Claude Code)
   it.skip('single dispatch outside Claude Code is unchanged', () => {
     const res = runSingle('antigravity', { task: 'Edit the plan document', availableSubagents: ['Plan'] } as any, { recommendedSubagent: 'Plan', recommendedTier: 'flash' });
 

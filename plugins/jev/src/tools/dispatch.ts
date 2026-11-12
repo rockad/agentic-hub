@@ -137,6 +137,15 @@ export function ceilingModelForHarness(harness: JevHarness, quotaActiveModel: st
   return harness === 'claude-code' ? undefined : quotaActiveModel;
 }
 
+/**
+ * The `harness` field of a dispatch telemetry line. `logTelemetry` labels every line `antigravity` by
+ * default; a dispatch call made from Claude Code says so, so the Claude hook's pre-flight check can
+ * tell its own harness's dispatch calls from Antigravity's. Other harnesses keep the existing label.
+ */
+export function telemetryHarness(): { harness?: 'claude-code' } {
+  return detectActiveHarness() === 'claude-code' ? { harness: 'claude-code' } : {};
+}
+
 /** Read-only personas (Plan, Explore) never own an editing task; Claude Code gets general-purpose. */
 export function resolveEditCapableSubagent(harness: JevHarness, subagent: string, taskText: string): string {
   return editCapableSubagent(subagent, taskText, harness === 'claude-code' ? 'general-purpose' : 'self');
@@ -249,7 +258,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
       confidence = Math.min(saAnswer?.confidence ?? 0.85, tierAnswer?.confidence ?? 0.85);
     } catch (fallbackErr: any) {
       const latencyMs = Math.round(performance.now() - start);
-      await logTelemetry({ tool: 'jev_dispatch', status: 'error', error: String(fallbackErr), latencyMs });
+      await logTelemetry({ tool: 'jev_dispatch', ...telemetryHarness(), status: 'error', error: String(fallbackErr), latencyMs });
       throw new Error(
         `jev_dispatch: all dispatch tiers failed. Tier 1 (Jev Decisions API) and Tier 2 (${FALLBACK_MODEL}) both unavailable. ` +
         `Last error: ${fallbackErr.message}. Ensure OPENROUTER_API_KEY is set and valid in mcp_config.json.`
@@ -318,6 +327,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
 
   await logTelemetry({
     tool: 'jev_dispatch',
+    ...telemetryHarness(),
     task: task.slice(0, 100),
     ...result
   });
@@ -500,7 +510,10 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     });
   }
 
-  const concurrencyCap = Math.min(10, Math.max(1, freeTierCount));
+  // The free-tier cap comes from config (`tiers.free.concurrencyCap`); 10 stays the default (OpenRouter's 20 RPM).
+  const configuredCap = cfg.tiers?.free?.concurrencyCap;
+  const freeCap = typeof configuredCap === 'number' && configuredCap > 0 ? Math.floor(configuredCap) : 10;
+  const concurrencyCap = Math.min(freeCap, Math.max(1, freeTierCount));
   const stages = topologicalSortStages(plannedTasks);
 
   const manifest: BatchDispatchPlan = {
@@ -519,6 +532,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
   const latencyMs = Math.round(performance.now() - start);
   await logTelemetry({
     tool: 'jev_batch_dispatch',
+    ...telemetryHarness(),
     taskCount: plannedTasks.length,
     estimatedCostUsd: manifest.estimatedCostUsd,
     requiresUserApproval: anyProRequested,

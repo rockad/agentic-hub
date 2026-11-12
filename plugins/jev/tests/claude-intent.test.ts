@@ -19,7 +19,6 @@ import {
   type UserIntent
 } from '../claude/logic.ts';
 import { onUserPromptSubmit, onPreToolUse, telemetryEvent, type HookDeps } from '../claude/hook.ts';
-import { memoryClaim } from './elevation-helpers.ts';
 
 const flashRec: Dispatch = { subagent: 'general-purpose', tier: 'flash', model: 'sonnet', effort: 'medium', confidence: 0.9 };
 const proRec: Dispatch = { subagent: 'general-purpose', tier: 'pro', model: 'opus', effort: 'high', confidence: 0.8 };
@@ -31,7 +30,6 @@ function deps(overrides: Partial<HookDeps> = {}): HookDeps {
     readQuotaStrategy: async () => 'unknown',
     dispatch: async () => flashRec,
     log: () => {},
-    claimClamp: memoryClaim(),
     ...overrides
   };
 }
@@ -129,7 +127,7 @@ describe('resolveModel precedence (5.9): instruction, then mode guard, then defa
     { name: 'minimal viable never goes below flash_lite', intent: { models: [], cost: 'minimal' }, rec: { ...flashRec, tier: 'flash_lite', model: 'haiku' }, session: null, tier: 'flash_lite', model: 'haiku', source: 'user-instruction', approval: false },
     // 2.3.3 (5.9): on an opus session the pro tier is within the ceiling, so it is the standing rule and needs no approval.
     { name: 'no instruction, pro, opus session: standing rule, no approval', intent: NO_INTENT, rec: proRec, session: 'claude-opus-5', tier: 'pro', model: 'opus', source: 'default-rule', approval: false },
-    // 2.3.3 (5.9): below opus the guard rule asks; the advice stays capped at the session model (kept in 2.3.4 with the clamp).
+    // 2.3.3 (5.9): below opus the guard rule asks; the advice stays capped at the session model until the 2.3.5 elevation clamp.
     { name: 'no instruction, pro, sonnet session: capped at sonnet, asks', intent: NO_INTENT, rec: proRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'mode-guard', approval: true },
     { name: 'no instruction, flash: sonnet by the default rule', intent: NO_INTENT, rec: flashRec, session: 'claude-sonnet-5', tier: 'flash', model: 'sonnet', source: 'default-rule', approval: false }
   ];
@@ -240,15 +238,14 @@ describe('PreToolUse guard honours the current turn\'s instruction (5.1, 5.9)', 
     expect(out).toBeNull();
   });
 
-  // 2.3.4: without the instruction the first such call is clamped to the session model (was: asked).
-  it('end to end: without the instruction the same Agent call is clamped to the session model', async () => {
+  it('end to end: without the instruction the same Agent call is asked', async () => {
     const store = turnStore();
     const d = deps({ ...store });
     await onUserPromptSubmit({ session_id: 's1', prompt: 'wrap the findings in the docs and commit' }, d);
 
     const out = await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Wrap the findings' } }, d);
 
-    expect([out?.hookSpecificOutput.permissionDecision, (out?.hookSpecificOutput.updatedInput as { model: string }).model]).toEqual(['allow', 'sonnet']);
+    expect(out?.hookSpecificOutput.permissionDecision).toBe('ask');
   });
 
   it('end to end: the next prompt replaces the stored instruction', async () => {
@@ -259,8 +256,7 @@ describe('PreToolUse guard honours the current turn\'s instruction (5.1, 5.9)', 
 
     const out = await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: { model: 'opus', prompt: 'Tidy the notes' } }, d);
 
-    // 2.3.4: the stale instruction is gone, so the call is clamped (was: asked).
-    expect(out?.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(out?.hookSpecificOutput.permissionDecision).toBe('ask');
   });
 
   it('UserPromptSubmit injects the explicit-request wording into the directive', async () => {
@@ -432,17 +428,14 @@ describe('pre-flight reminder at PreToolUse (5.10)', () => {
     expect([first !== null, second]).toEqual([true, null]);
   });
 
-  // 2.3.4: the first elevating call is a clamp (allow), not an ask; the reminder rides next to it (was: next to an ask).
-  it('puts the reminder next to a clamp without replacing it', async () => {
+  it('puts the reminder next to an ask decision without replacing it', async () => {
     const store = turnStore();
     const d = deps({ ...store, recentDispatch: () => false });
     await onUserPromptSubmit({ session_id: 's1', prompt: 'wrap the findings of the workflow and its workstreams' }, d);
 
     const out = await onPreToolUse({ ...agentCall, tool_input: { model: 'opus', prompt: 'Wrap the findings' } }, d);
 
-    expect(out?.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(String(out?.hookSpecificOutput.additionalContext)).toContain('Jev ran this delegation on sonnet instead of opus');
-    expect(String(out?.hookSpecificOutput.additionalContext)).toContain(PREFLIGHT_REMINDER);
+    expect([out?.hookSpecificOutput.permissionDecision, out?.hookSpecificOutput.additionalContext]).toEqual(['ask', PREFLIGHT_REMINDER]);
   });
 
   it('records that the reminder was sent in the log entry', async () => {

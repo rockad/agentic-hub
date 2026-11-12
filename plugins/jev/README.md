@@ -395,13 +395,12 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Elevation clamp (2.3.4). A subagent that asks for a model stronger than the session model, when the prompt did not name that model, runs on the session model instead: the hook allows the call with the model rewritten (no dialog) and tells the assistant what it did. A repeat in the same prompt asks the user (Yes runs it on the stronger model; No cancels the call and stops the turn, and a comment typed with No lets the assistant continue). A model the user named in the prompt passes untouched. Jev's tier rating never opens a dialog; it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Asks the user (a permission dialog) before a subagent runs on a stronger model than the session's, when the prompt did not name that model; a model the user named passes. Yes runs it on the stronger model; No cancels the call and stops the turn, and a comment typed with No lets the assistant continue. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. Opt-in `JEV_ELEVATION=clamp` runs the first such call in a prompt on the session model instead (see "Elevation" below). |
 
 What the hooks do **not** do:
 
-- They change the model of a delegation in one case only: the first above-ceiling request of a prompt that
-  the user did not ask for is clamped to the session model (see "Elevation clamp" below). Otherwise cheaper
-  models are advised, not forced.
+- They never change the model of a delegation, except under the opt-in `JEV_ELEVATION=clamp` (see
+  "Elevation" below). Cheaper models are advised, not forced.
 - They never block a turn. Any failure (no key, Jev down, malformed input) prints nothing and exits 0.
 - They do not track Claude subscription limits. Claude Code exposes `rate_limits` only to the status
   line, not to hooks, so the quota strategy is whatever `readQuotaView` reports (usually `unknown`).
@@ -419,61 +418,78 @@ The `PreToolUse` guard passes a model the user named in the current prompt (or a
 clamp and no dialog, and logs it as `elevation: "instructed"`. Jev cannot read the
 user-level `CLAUDE.md`, so the standing rule is only reflected by the router's tier.
 
-### Elevation clamp (2.3.4)
+### Elevation (2.3.4)
 
-Until 2.3.3 an `Agent` call that named a model stronger than the session model opened a permission dialog. In
-Claude Code answering No rejects the call and the assistant waits, so there was no way to say "carry on, but
-not on the stronger model". From 2.3.4 the hook decides by what the user said in the current prompt:
+An `Agent` call that names a model stronger than the session model is the one thing the hook asks about. What
+happens depends on what the user said in the current prompt, and on one opt-in setting.
 
 | Situation | What happens |
 | :--- | :--- |
 | Model at or below the session model, no model, `inherit`, a `Workflow`, unknown session model | Untouched. |
 | The prompt names that model or a stronger one (`use opus`, `run an opus subagent`) | Passes unchanged, no dialog (the instruction is the approval). Logged as `elevation: "instructed"`. |
-| First call above the session model in a prompt, no such instruction | **Clamped.** The hook returns `allow` with `updatedInput` (every original field, `model` set to the session model alias, for example `sonnet`) and a short note for the assistant. No dialog; the work runs on the session model. Logged as `elevation: "clamped"` with `clamped_from` and `clamped_to`. |
-| A second call above the session model in the same prompt (a backstop) | **Ask.** The dialog says: Yes runs it on the requested model; No cancels the call and stops the turn, and a comment typed with No lets the assistant continue (per the Claude Code documentation). The reason mentions an earlier run on the session model only when a clamp ran for the same `subagent_type` and `description` in this prompt. Logged as `elevation: "asked"`. |
-| The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | **Ask, never clamp:** the alias the clamp would set would not run on the session model. Logged with `clamp_skipped: "alias-remapped"`. |
+| **Default:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
+| The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in both modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. |
 
 The instruction check is `>=`: a model the user named covers a request for that model or a weaker one (`use opus`
 covers an `opus` call and a `sonnet` call). A stored instruction counts only for its own prompt: the turn state
 holds the `prompt_id` it was written for, and when `PreToolUse` sees a different one (a host-injected turn, for
 example) the instruction is ignored and the call is logged with `intent_stale: true`. If either id is missing the
-marker alone decides, as before.
+marker alone decides, as before. The advice in the turn context stays capped at the session model, as in 2.3.3.
 
-The note to the assistant says Jev ran the delegation on the session model instead of the requested one, that it
-must not call again on its own, and that it should report the result and ask the user in chat; a reply naming the
-stronger model passes (it is an instruction in a new prompt). The advice in the turn context stays capped at the
-session model, as in 2.3.3, so the assistant is not steered towards the stronger model in the first place.
+#### Opt-in clamp: `JEV_ELEVATION=clamp`
+
+Set the environment variable `JEV_ELEVATION=clamp` (the hook reads it from its environment; there is no config
+key) and the first elevating call per session and prompt id is not asked about: the hook returns `allow` with
+`updatedInput` (every original field, `model` set to the session model alias, for example `sonnet`) and a short
+note for the assistant, so the work runs on the session model with no dialog. Logged as `elevation: "clamped"`
+with `clamped_from` and `clamped_to`; the telemetry `modelUsed` is the model it ran on. The note says Jev ran the
+delegation on the session model, that the assistant must not call again on its own, and that it should report the
+result and ask the user in chat; a reply naming the stronger model passes.
+
+**Limit, said plainly:** in an interactive session the clamp restarts on every new prompt. A background agent's
+completion notification starts a new prompt with a new `prompt_id`, so the next elevating call is a "first" call
+again and is clamped again. The dialog therefore appears only for a repeat inside the same prompt, and a user who
+never types a prompt of their own between calls may never be asked. That is why the clamp is off by default.
 
 The "once per prompt" state is one marker file per session in `~/.config/jev/claude-sessions/`
 (`<session>.clamp-<prompt_id>`, mode 0600 like the other state, holding a hash of the clamped delegation, never
 task text). It is created exclusively so parallel calls cannot both be first, and replaced when the prompt
 changes; markers left behind are pruned after 7 days at SessionStart. When the state cannot be read or written,
-or there is no prompt id, the call asks (the 2.3.3 behaviour) instead of clamping.
+or there is no prompt id, the call asks instead of clamping. A repeat's dialog mentions an earlier run on the
+session model only when a clamp ran for the same `subagent_type` and `description` in this prompt. The default
+mode never creates a marker and never returns `updatedInput`.
 
 Fail-open: a hook crash, invalid stdin or a timeout means no output, and the call runs unchanged (on the model it
 asked for).
 
 Not seen by the hook: an `Agent` call with no `model` whose agent definition has `model: opus` in its front matter.
-The hook only sees the tool input, so that call runs on opus with no clamp and no dialog.
+The hook only sees the tool input, so that call runs on opus with no dialog and no clamp.
 
 Not verified here: the permission dialog itself (it is shown by Claude Code), whether the assistant follows the
-note, and how an agent definition's own front-matter `model` or `CLAUDE_CODE_SUBAGENT_MODEL` interacts with the
-rewritten `model`.
+clamp note, and how an agent definition's own front-matter `model` or `CLAUDE_CODE_SUBAGENT_MODEL` interacts with
+the rewritten `model`.
 
 ### Release notes
 
-- **2.3.4** (elevation clamp, see the section above): the first `Agent` call in a prompt that asks for a model
-  stronger than the session model, without the user naming it, runs on the session model (`allow` plus
-  `updatedInput`, no dialog); a second one in the same prompt asks, with a reason that says what Yes and No do;
-  a model the user named (or a stronger one) passes. The decisions log gains `elevation`, `clamped_from` and
-  `clamped_to`; the telemetry `modelUsed` of a clamped call is the model it ran on. The prompt-time directive no
-  longer says a guard dialog follows a model the user named; the advice in the turn context stays capped at the
-  session model, as in 2.3.3. The ask says that No cancels the call and stops the turn (a comment typed with No
-  lets the assistant continue), and mentions an earlier clamped run only when one happened for the same
-  delegation. A remapped session alias (`ANTHROPIC_DEFAULT_*_MODEL`) asks instead of clamping. A stored
-  instruction is tied to its `prompt_id`. A typographic apostrophe no longer turns "Don’t use opus" or "Don’t
-  update the files" into an instruction (the intent parser and the edit-verb rule normalise U+2018, U+2019 and
-  U+02BC). Unchanged: `jev_batch_dispatch` and the stage rubric (2.3.5).
+- **2.3.4: elevation reasons, intent fixes, opt-in clamp** (see "Elevation" above):
+  - Default behaviour is the 2.3.3 dialog on every `Agent` call above the session model with no instruction
+    naming it. The reason now says what each answer does: Yes runs it on the requested model; No cancels the call
+    and stops the turn; a comment typed with No lets the assistant continue (for example "continue on sonnet").
+  - Opt-in elevation clamp, `JEV_ELEVATION=clamp` (environment only, off by default): the first elevating call
+    per session and prompt id runs on the session model (`allow` plus `updatedInput`, no dialog) and a repeat in
+    the same prompt asks. In interactive sessions it restarts on every new prompt (a background agent's
+    notification is a new prompt), so it asks only for a repeat inside one prompt; that is why it is not the
+    default. A remapped session alias asks instead of clamping.
+  - The decisions log gains `elevation` (`asked`, `clamped`, `instructed`), `clamped_from`, `clamped_to`,
+    `clamp_skipped` and `intent_stale`; the telemetry `modelUsed` of a clamped call is the model it ran on.
+  - A stored instruction is tied to its `prompt_id`: a different prompt id (a host-injected turn) does not
+    inherit the previous prompt's "use opus". A model the user named covers a weaker request (`>=`).
+  - A typographic apostrophe no longer turns "Don’t use opus" or "Don’t update the files" into an instruction
+    (the intent parser and the edit-verb rule normalise U+2018, U+2019 and U+02BC).
+  - The prompt-time directive no longer says a guard dialog follows a model the user named; the advice stays
+    capped at the session model, as in 2.3.3. Status turns still send their trimmed text to Jev (only
+    host-injected turns and pastes over 20 000 characters skip the call). Unchanged: `jev_batch_dispatch` and the
+    stage rubric (2.3.5).
 
 - **2.3.3** (backport of the cognitive-engine advisor work, see `docs/plans/parity-audit-2026-11-12.md`):
   - The intent parser ignores quoted, code-span, fenced, questioned, "if"-supposed, first-person and
@@ -484,7 +500,7 @@ rewritten `model`.
   - One ceiling sentence on every path (including "allows it" on an opus session) and a `rule:` label. On an
     opus session a `pro` rating is the standing rule and needs no approval. On a session below opus the ask
     stays and the advised model stays capped at the session model (as in 2.3.2) until the elevation clamp
-    ships in 2.3.4 (below); the directive still reports the opus-level rating. A named model is the user's own
+    ships in 2.3.4 (below), which keeps the cap; the directive still reports the opus-level rating. A named model is the user's own
     approval: the Jev guard does not ask about it.
   - Log changes to know about: the `UserPromptSubmit` record no longer carries a `model` key (use
     `recommended_model`), and `tier` now means the advised tier, with `routerTier` present only when the

@@ -6,7 +6,6 @@ import { describe, it, expect } from 'bun:test';
 import { onUserPromptSubmit, onPreToolUse, type HookDeps } from '../claude/hook.ts';
 import { parseUserIntent, type Dispatch } from '../claude/logic.ts';
 import { taskNeedsEdit } from '../src/core/heuristics.ts';
-import { memoryClaim } from './elevation-helpers.ts';
 
 const U2019 = '’';
 const U2018 = '‘';
@@ -28,7 +27,7 @@ describe('parseUserIntent', () => {
 });
 
 describe('the guard after a curly-apostrophe negation', () => {
-  it('stores an empty intent, clamps the first call and still asks on a repeat', async () => {
+  it('stores an empty intent and asks on every call (never an approval)', async () => {
     const saved: any[] = [];
     const turns = new Map<string, any>();
     const d: HookDeps = {
@@ -37,7 +36,7 @@ describe('the guard after a curly-apostrophe negation', () => {
       readQuotaStrategy: async () => 'unknown',
       dispatch: async () => flashRec,
       log: () => {},
-      claimClamp: memoryClaim(),
+      env: {},
       readTurn: (s) => turns.get(s ?? '') ?? null,
       saveTurn: (s, st) => void (saved.push(st), turns.set(s ?? '', st))
     };
@@ -48,8 +47,8 @@ describe('the guard after a curly-apostrophe negation', () => {
     const second = (await onPreToolUse(call, d))?.hookSpecificOutput as Record<string, any>;
 
     expect(saved.at(-1).intent.models).toEqual([]);
-    expect([first.permissionDecision, second.permissionDecision]).toEqual(['allow', 'ask']);
-    expect(first.updatedInput.model).toBe('sonnet');
+    expect([first.permissionDecision, second.permissionDecision]).toEqual(['ask', 'ask']);
+    expect(first).not.toHaveProperty('updatedInput');
   });
 });
 

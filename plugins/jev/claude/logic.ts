@@ -505,7 +505,7 @@ export function buildDirective(
     // Above the session model. The PreToolUse guard passes a call whose model is the one the user named, or
     // weaker than it (the stored intent), with no clamp and no dialog: the user's own instruction is the
     // approval. That covers the model the one-step cap advised when it is below the one named.
-    return `${head} ${asked} The user's own instruction is the approval for a model above the session model: the Jev guard passes it without clamping or asking; do not ask separately. A call for a model you were not asked for runs on the session model the first time in a prompt, and asks the user on a repeat.`;
+    return `${head} ${asked} The user's own instruction is the approval for a model above the session model: the Jev guard passes it without clamping or asking; do not ask separately.`;
   }
 
   const costNote =
@@ -518,14 +518,14 @@ export function buildDirective(
     // One sentence, never the ceiling line plus an ask line that contradict each other.
     const pro = sessionAllowsOpus(sessionModel)
       ? `Jev rates this opus-level and the session model "${sessionModel}" allows it: delegate to ${subagent} with model "opus".`
-      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on opus: offer the cheaper option and let the user choose. If you delegate on opus without the user asking for it, Jev runs the first such call in a prompt on the session model and asks the user on a repeat; a model the user names in the prompt passes.`;
+      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on opus: offer the cheaper option and let the user choose.`;
     return `${head} ${costNote}${pro}`;
   }
 
   // A paid delegation on a model above the session model: one ceiling sentence, not the hard-ceiling
   // line followed by a "delegate to <stronger model>" action that contradicts it.
   if (advised.tier !== 'openrouter_free' && advised.subagent !== 'self' && exceedsSession(advised.model, sessionModel)) {
-    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose. If you delegate on ${advised.model} without the user asking for it, Jev runs the first such call in a prompt on the session model and asks the user on a repeat.`;
+    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose.`;
   }
 
   const action =
@@ -609,15 +609,15 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
 }
 
 /**
- * The wording of the permission dialog for a REPEATED elevating call (the first one is clamped, see
- * `clampElevation`). It says what each answer does: in Claude Code No cancels the call and stops the turn,
+ * The wording of the permission dialog for an elevating call: every one by default, and a repeat in the same
+ * prompt under the opt-in clamp (`JEV_ELEVATION=clamp`, see `clampElevation`). It says what each answer does: in Claude Code No cancels the call and stops the turn,
  * and a comment typed with No lets the assistant continue. `clamped` is true only when a clamp ran for the
  * same delegation in this prompt; only then does the reason say that a run on the session model happened.
  */
 export function elevationAskReason(e: Elevation, clamped = false): string {
   return (
     `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
-    `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue.` +
+    `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
     (clamped ? ` The same delegation already ran on ${e.sessionAlias} earlier in this prompt.` : '')
   );
 }
@@ -654,9 +654,10 @@ export function clampElevation(call: Record<string, unknown>, e: Elevation): { h
  * stronger, so it passes, and so does a model pinned at or below the session model. A model the user
  * named in the current prompt (or a stronger one) is their explicit request and is not asked about.
  *
- * Since 2.3.4 the hook does not ask on the FIRST such call of a prompt: it clamps it to the session model
- * (`clampElevation`), and only a repeat asks. Claude Code shows `ask` as a permission dialog with Yes and
- * No. No is a rejection: the tool call is cancelled, so the reason says what each answer does.
+ * Every such call asks (the default, as in 2.3.3). Claude Code shows `ask` as a permission dialog with Yes and
+ * No. No cancels the call and stops the turn, and a comment typed with No lets the assistant continue, so
+ * the reason says what each answer does. Opt-in (`JEV_ELEVATION=clamp`, read by the hook): the first such
+ * call of a prompt is clamped to the session model (`clampElevation`) and only a repeat asks.
  *
  * Jev's tier rating of the task is deliberately not a gate. It is advice (the UserPromptSubmit
  * directive) and telemetry (`recommended_model` in the PreToolUse log). A `pro` rating is not a

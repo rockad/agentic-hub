@@ -127,7 +127,7 @@ Before picking up new workstreams, Claude Code should verify the committed state
 ## 7. Models and delegation
 
 - Claude Code: subagents default to Sonnet; Opus only for judgements whose error is expensive and for one final verification; pass the model explicitly. Antigravity: inherit the session model; the `pro` tier needs the user's approval. The mapping table is in the user-level `AGENTS.md` (`~/.gemini/config/AGENTS.md` and `~/.claude/CLAUDE.md`).
-- Jev mode is `on`: call `jev_batch_dispatch` before delegating non-trivial work and `jev_judge` on diffs, and say so. Known defects of the dispatch tool (a substring keyword rule, Antigravity vocabulary, wrong session model) are in `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md`; treat its output as advice, not an instruction.
+- Jev mode is `on`: call `jev_batch_dispatch` before delegating non-trivial work and `jev_judge` on diffs, and say so. Known defects of the dispatch tool (a substring keyword rule, Antigravity vocabulary, wrong session model) are in the case study `2026-11-09-model-tier-for-multi-stream-workflow.md` (now in `rockad/cognitive-engine`, `packages/jev/docs/case-studies/`; a pointer stays under `plugins/jev/docs/case-studies/`); treat its output as advice, not an instruction.
 - Docs workflows that edit many files should give each agent a disjoint file set and finish with a consistency pass: cross-file races produced stale references twice.
 
 ## 8. In flight / Commits on `main`

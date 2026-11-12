@@ -437,7 +437,7 @@ default rule.
   and skip the Antigravity ceiling when the harness is `claude-code`. Not in this release: stage plans for
   Workflow scripts (5.4) and the design check for Workflow agents (5.8).
 
-Case study: [Model tiers for a multi-stream docs workflow (2026-11-09)](docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md) shows where the hook and the batch dispatch fell short on a staged workflow, with proposed fixes.
+Case study: Model tiers for a multi-stream docs workflow (2026-11-09) shows where the hook and the batch dispatch fell short on a staged workflow, with proposed fixes. It moved to [`rockad/cognitive-engine`](https://github.com/rockad/cognitive-engine/blob/main/packages/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md), alongside the fixes (a pointer stays [here](docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md)).
 
 ---
 

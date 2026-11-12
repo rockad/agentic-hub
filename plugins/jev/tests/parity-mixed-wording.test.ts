@@ -33,7 +33,7 @@ describe('one ceiling sentence for any model above the session model', () => {
   it('session haiku and "use sonnet": the guard-prompt sentence, not the hard-ceiling line', () => {
     const text = advise('claude-haiku-5-5', rec('flash_lite', 'haiku'), 'Review the storage layer and use sonnet');
 
-    // #22 says "one approval prompt"; here the guard lifts its ask for a named model, so the instruction is the approval.
+    // #22 says "one approval prompt"; here the guard passes a named model, so the instruction is the approval.
     expect(text).toContain('is the approval');
     expect(text).not.toContain(NEVER);
   });

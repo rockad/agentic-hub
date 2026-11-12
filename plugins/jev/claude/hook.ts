@@ -5,7 +5,9 @@
  *   session-start | post-model-switch  remember the session model (the ceiling)
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
  *   pre-tool-use (matcher "Agent|Task|Workflow")
- *                                      ask before an Agent delegation runs above the ceiling (nothing else asks),
+ *                                      Agent delegation above the ceiling: the first one in a prompt is clamped to the
+ *                                      session model (allow + updatedInput, no dialog), a repeat asks, a model the user
+ *                                      named passes (nothing else asks),
  *                                      log the call next to the last recommendation, and remind once before staged
  *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
  *                                      for the agents a Workflow launches is UNVERIFIED)
@@ -36,8 +38,10 @@ import {
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
   buildDirective,
-  decideAgentCall,
+  classifyElevation,
+  clampElevation,
   dispatchQuestions,
+  elevationAskReason,
   envNotice,
   hasRecentDispatch,
   isHostInjectedPrompt,
@@ -54,6 +58,7 @@ import {
   trimTask,
   turnId,
   type AgentCall,
+  type AgentDecision,
   type Dispatch,
   type TurnState
 } from './logic.js';
@@ -94,7 +99,10 @@ export type HookInput = {
   model?: string;
   to_model?: string;
   tool_name?: string;
-  tool_input?: AgentCall;
+  /** The whole Agent input: `updatedInput` replaces it, so a clamp copies every field. */
+  tool_input?: AgentCall & Record<string, unknown>;
+  /** One id per user prompt; the clamp is once per prompt. */
+  prompt_id?: string;
 };
 
 export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
@@ -116,6 +124,12 @@ export type HookDeps = {
   recentDispatch?: (windowMs: number) => boolean;
   /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
   recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
+  /**
+   * Atomically claim the one clamp of a prompt: true for the first caller with this key (session id plus
+   * prompt id), false for every later one. Absent or throwing means the state is unavailable, and the call
+   * then asks (the 2.3.3 behaviour) instead of clamping.
+   */
+  claimClamp?: (sessionId: string, promptKey: string) => boolean;
   now?: () => number;
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
   env?: Record<string, string | undefined>;
@@ -243,7 +257,23 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // network and sends no task text anywhere. Jev's tier rating is not a gate (see decideAgentCall): it
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
   // A Workflow carries no model of its own, so it is never gated.
-  const verdict = tool === 'Workflow' ? null : decideAgentCall(call, sessionModel, intent);
+  const elevation = tool === 'Workflow' ? null : classifyElevation(call, sessionModel, intent);
+  // First elevating call of a prompt: run it on the session model (allow + updatedInput), no dialog.
+  // A repeat in the same prompt asks, and that dialog is the request to elevate. An instructed call passes.
+  let clamp: ReturnType<typeof clampElevation> = null;
+  let verdict: AgentDecision = null;
+  let elevationState: 'clamped' | 'asked' | 'instructed' | null = elevation?.kind === 'instructed' ? 'instructed' : null;
+  if (elevation?.kind === 'elevating') {
+    const promptKey = (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || null;
+    // Anything that stops us proving this is the first call of the prompt (no id, no state, a failing store) asks.
+    const first = sessionId && promptKey && elevation.sessionAlias ? (safely(() => deps.claimClamp?.(sessionId, promptKey)) ?? false) : false;
+    clamp = first ? clampElevation(call as Record<string, unknown>, elevation) : null;
+    if (clamp) elevationState = 'clamped';
+    else {
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+      elevationState = 'asked';
+    }
+  }
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
   // agent call in the window, or a turn whose prompt named a workflow), at most once, never blocks.
@@ -279,9 +309,15 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     recommended_model: recommended?.model ?? null,
     user_intent: state?.intent ?? null,
     sessionModel,
-    reason: verdict?.reason ?? null,
+    reason: verdict?.reason ?? (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : null),
+    ...(elevationState ? { elevation: elevationState } : {}),
+    ...(clamp && elevation ? { clamped_from: elevation.requested, clamped_to: elevation.sessionAlias } : {}),
     preflight_reminder: reminder !== null
   });
+  if (clamp) {
+    const out = clamp.hookSpecificOutput;
+    return { hookSpecificOutput: { ...out, additionalContext: reminder ? `${out.additionalContext}\n\n${reminder}` : out.additionalContext } };
+  }
   if (!verdict && !reminder) return null;
   return {
     hookSpecificOutput: {
@@ -352,6 +388,29 @@ function saveTurn(sessionId: string | null, state: TurnState): void {
   privateFile(turnFile(sessionId));
 }
 
+/**
+ * The one clamp of a prompt, claimed with an exclusive create (`wx`) so two Agent calls fired in parallel
+ * cannot both be "first". One marker file per session: a claim for another prompt id removes the old ones.
+ * Throws when the store cannot be written; the caller treats that as "ask".
+ */
+function claimClamp(sessionId: string, promptKey: string): boolean {
+  privateDir(SESSIONS_DIR);
+  const prefix = `${sessionId}.clamp-`;
+  const mine = `${prefix}${promptKey}`;
+  for (const name of fs.readdirSync(SESSIONS_DIR)) {
+    if (name.startsWith(prefix) && name !== mine) fs.rmSync(path.join(SESSIONS_DIR, name), { force: true });
+  }
+  try {
+    const file = path.join(SESSIONS_DIR, mine);
+    fs.writeFileSync(file, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
+    privateFile(file);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw err;
+  }
+}
+
 function forgetTurn(sessionId: string | null): void {
   if (!sessionId) return;
   fs.rmSync(turnFile(sessionId), { force: true });
@@ -409,7 +468,7 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
           // Deprecated alias kept for one release (case study 5.7): same value as modelRecommended.
           modelUsed: str(entry.recommended_model) ?? str(entry.model)
         }
-      : { modelUsed: str(entry.requested_model) ?? str(entry.model), modelRecommended: str(entry.recommended_model) }),
+      : { modelUsed: str(entry.clamped_to) ?? str(entry.requested_model) ?? str(entry.model), modelRecommended: str(entry.recommended_model) }),
     quotaStrategy: str(entry.quota)
   };
 }
@@ -501,6 +560,7 @@ const liveDeps: HookDeps = {
   readTurn,
   saveTurn,
   forgetTurn,
+  claimClamp,
   recentDispatch,
   recentAgentCalls,
   env: process.env,

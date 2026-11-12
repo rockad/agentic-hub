@@ -66,7 +66,10 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 ### 4. In Claude Code
 
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
-- The session model is the ceiling. In mode `on`, a `PreToolUse` hook asks the user before an `Agent` call runs on a stronger model, and for nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt. In Claude Code No is a rejection: stop and wait for the user instead of retrying on a cheaper model.
+- The session model is the ceiling. In mode `on`, a `PreToolUse` hook (elevation clamp, 2.3.4) handles an `Agent` call that names a model stronger than the session model, and nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt.
+  - The first such call in a prompt runs on the session model instead: the hook rewrites `model` and lets it run with no dialog, and adds a note saying so. Do not retry it on your own, on a cheaper or a stronger model. If the task really needs the stronger model, call again with that model: the user is then asked to approve (Yes runs it on the stronger model; No cancels that delegation, and the run on the session model has already happened).
+  - A model the user named in their prompt (`use opus`, `run an opus subagent`), or a stronger one, passes unchanged with no dialog: that instruction is the approval, so do not ask separately.
+  - In Claude Code No is a rejection of that one call: carry on with the work already done on the session model rather than waiting or retrying on a cheaper model.
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
 - Mode state is read directly from `~/.config/jev/config.json`.
 

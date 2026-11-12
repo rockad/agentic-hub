@@ -1,6 +1,6 @@
 # Jev consolidated plan (2026-11-12)
 
-Draft, not committed. Sources:
+Living plan; the latest status is in sections 18 and 19. Sources:
 
 - `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` (case 1, on `main`)
 - `plugins/jev/docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md` (case 2, on PR #33)

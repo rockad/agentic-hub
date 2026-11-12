@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.3.4-brightgreen)](https://github.com/rockad/agentic-hub)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.5-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.3.4  
+**Version:** 2.3.5  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 
@@ -485,6 +485,17 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
+  - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report
+    (`~/.config/jev/audit_report.json`) are written `0600` in `0700` directories. Files and directories that
+    already exist with looser modes are tightened at write time (best-effort, never blocking).
+  - `jev_dispatch` telemetry lines carry `taskLen` and `taskHash` (first 12 hex of the sha256) instead of up to
+    100 characters of task text in `task`. Lines already written keep their old `task` text: nothing deletes
+    them. To clear them, delete or truncate `~/.gemini/antigravity-cli/jev_telemetry.jsonl`.
+  - The `private-fs` helper (`privateDir`, `privateFile`) is shared by the Claude hook and the tools.
+  - Hermetic tests: a `bunfig.toml` preload (`tests/setup-home.ts`) gives every run a fresh temporary `HOME` and
+    clears the harness markers, so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
+    no longer change test results.
 - **2.3.4: elevation reasons, intent fixes, opt-in clamp** (see "Elevation" above):
   - Default behaviour is the 2.3.3 dialog on every `Agent` call above the session model with no instruction
     naming it. The reason now says what each answer does: Yes runs it on the requested model; No cancels the call

@@ -303,6 +303,102 @@ Jev maps execution tiers across supported agent harnesses to their native or con
 | **OpenCode** | `openrouter/free` | `~anthropic/claude-haiku-latest` | `~anthropic/claude-sonnet-latest` | `~anthropic/claude-opus-latest` |
 | **CLI** | `openrouter/free` | `google/gemma-4-31b-it:free` | `typesafe/jev-router` | `typesafe/jev-router` |
 
+### Model catalogue (core)
+
+> **Status: not yet read by the hooks.** The module (`src/core/catalogue.ts`, `src/core/lock.ts`) and its tests are in place, and the refresh below writes the catalogue file, but no hook reads it to choose a model yet. The tier map above stays the only thing the hooks use.
+
+The catalogue is a per-harness list of concrete model ids with a capability tier and a version, so a ladder can be built without a hard-coded model list. It lives in `~/.config/jev/models/<harness>.json` (directory `0700`, file `0600`, written atomically through a temp file and a rename):
+
+```json
+{
+  "version": 1,
+  "harness": "claude-code",
+  "updated_at": "2026-11-12T10:00:00.000Z",
+  "source": "probe",
+  "models": [
+    { "id": "claude-sonnet-5-5", "family": "sonnet", "version": [5, 5], "tier": "standard", "alias": "sonnet", "status": "ok", "strikes": 0, "last_ok": "2026-11-12T10:00:00.000Z" }
+  ]
+}
+```
+
+- `source` is `probe`, `openrouter`, `static` or `manual`; `status` is `ok`, `missing` or `needs-review`; `alias` is the native alias the harness resolves to that id, when known.
+- Reading never throws. A missing, unreadable, corrupt or wrong-version file reads as "no catalogue", and `resolveTier` then falls back to the shipped alias defaults from the tier map above (`haiku`, `sonnet`, `opus` for Claude Code).
+- A `-latest` version (`Infinity`) is stored as `null` in the file and revived on read.
+
+**Heuristic.** The tier comes from the family in the id: `haiku` is `cheap`, `sonnet` is `standard`, `opus` and `fable` are `deep`. Any other family is `needs-review`: it is listed by `unknownIds` for a warning and never used by the ladder. Inside a tier a higher version is stronger, compared as number arrays (`claude-sonnet-5` < `claude-sonnet-5-5`, `claude-haiku-4-5` < `claude-haiku-5-5`); a new id such as `claude-sonnet-6` slots in without code changes. Ids parsed: `claude-<family>-<major>[-<minor>]`, a trailing date stamp is ignored, OpenRouter forms (`anthropic/claude-sonnet-4.5`, `~anthropic/claude-sonnet-latest`, `google/gemini-2.5-pro`, `openrouter/free`) and bare aliases (no version; `resolveAlias` maps one to the newest usable id of its family).
+
+**Overrides.** An optional `models.overrides` object in `~/.config/jev/config.json`, read by a small tolerant reader (`loadOverrides`) that leaves the config loader and its `models` strings (`decision`, `router`, `fallback`) alone:
+
+```json
+{ "models": { "overrides": { "claude-sonnet-5": { "pin": true }, "claude-opus-4-5": { "ignore": true }, "claude-zephyr-1": { "tier": "standard" }, "claude-sonnet-4-5": { "rank": 10 } } } }
+```
+
+- `ignore` removes the id from the ladder.
+- `tier` replaces the heuristic tier, and also makes a `needs-review` id usable.
+- `rank` replaces version order inside the tier: ranked ids come first, higher rank first.
+- `pin` puts the id first in its tier, ahead of ranked ids. A pin never revives a `missing` id.
+
+**List prices.** A model entry may carry `price`: `{ "inputPerM": 2, "outputPerM": 10, "source": "openrouter", "at": "<ISO refresh time>" }`, USD per million tokens (`$2/$10 per 1M` in `jev-models list`, and in `--json`). It comes from the `pricing` fields of the public OpenRouter model list (`anthropic/claude-sonnet-5.5` maps to `claude-sonnet-5-5`; `:batch` and other `:` variants are ignored) and is attached by `refresh` only to a model the probe or list verified, never creating an entry. It is a proxy, not the real cost: on a subscription the cost is quota weight, so call it the **list price**. `priceOf(model)` is `inputPerM + outputPerM` (a deliberately simple figure) or `null` when unknown, and `cheaperThan(a, b)` is true only when both have a price and `a` is strictly lower; a downgrade offer should use these and say nothing about price when either is unknown. When OpenRouter cannot be reached the refresh still succeeds and keeps the previous prices. Prices are never fetched at hook time, only by `refresh`. Files without `price` load as before and a malformed price is dropped on read. Antigravity entries are not on OpenRouter and have none.
+
+**Strikes rule** (`buildCatalogue`, one call per refresh round). A failed probe marks the id `missing` at once, and the ladder skips it from that moment; `strikes` counts consecutive failed probes and the id is deleted at the third. A successful probe resets `strikes` to 0, sets `status` to `ok` and updates `last_ok`. `markSuspect` (for a harness "model not found" report) sets `missing` and raises `strikes` to 1 at most, without touching `updated_at`. Ids not probed in a round are carried over unchanged.
+
+**API** (exported from `src/core/index.ts`): `parseModelId`, `heuristicTier`, `compareVersions`, `compareModels`, `resolveAlias`, `loadOverrides`, `loadCatalogue`, `saveCatalogue`, `buildCatalogue`, `ladder`, `unknownIds`, `priceOf`, `cheaperThan`, `isStale` (older than 7 days) and `isVeryStale` (older than 3 times that), `resolveTier` (`{ ids, alias?, source: 'catalogue' | 'defaults', stale, veryStale }`), `markSuspect`, and the lock helper `tryLock(path, staleMs)` / `unlock(path)` for the future background refresh (exclusive create with pid and timestamp, stale or dead-owner takeover, never throws). Pure functions take `now` and `dir` so tests are deterministic; there is no network access and no process spawning.
+
+### Model catalogue refresh
+
+The refresh fills `~/.config/jev/models/<harness>.json` (the file described above). It is a command, a skill and an optional background job; the hooks do not use the result yet.
+
+**Commands** (run with bun from the plugin directory, or `${CLAUDE_PLUGIN_ROOT}`):
+
+```bash
+bun scripts/jev-models.ts refresh [--harness claude-code|opencode|antigravity] [--max-calls N] [--quiet]
+bun scripts/jev-models.ts status  [--harness ...]
+bun scripts/jev-models.ts list    [--harness ...] [--json]
+```
+
+- The default harness is `claude-code`. `refresh` prints what is new, missing, recovered, removed and in need of review; `--quiet` prints nothing. `status` shows the file, age, source and ids by status. `list` shows the ladder per tier.
+- The `/jev-refresh` skill runs `refresh` and summarises the output.
+
+**What each harness does**
+
+| Harness | Source | How | Cost |
+| :--- | :--- | :--- | :--- |
+| Claude Code | `probe` | Runs `claude -p "Reply OK" --model <id>` for each candidate, one after another. An id is available when the JSON result has `is_error: false` and `modelUsage` contains that id. The four aliases (`haiku`, `sonnet`, `opus`, `fable`) are probed first, so the catalogue records which concrete id each one resolves to and that id is verified by the same call. | Paid, capped |
+| OpenCode | `openrouter` | `GET https://openrouter.ai/api/v1/models` (public, 10 s timeout): every `anthropic/*` id plus the ids already in the tier map. If the request fails, or the list has no `anthropic/*` id while the old catalogue had some, the old catalogue stays. Ids with characters outside the model-id set, or longer than 100, are ignored, and at most 200 `anthropic/*` ids are taken. | Free |
+| Antigravity | `static` | Builds the catalogue from the configured tier map (`harnesses.antigravity.models`); each id gets the tier of its map key. | Free |
+
+**Claude Code candidates.** Previous catalogue ids, then the built-in known ids (`claude-haiku-5-5`, `claude-haiku-4-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-5`, `claude-fable-5-2`), then `models.refresh.candidates`, then generated neighbours: for each family the next minor and the next major of its newest known version (`claude-sonnet-5-6`, `claude-sonnet-6`). A probe never records a failure for a speculative id the catalogue never had; a failure for an id the catalogue did have counts as a strike (missing at once, deleted after three refreshes in a row; a strike is counted once per successful refresh round, not once per probe). A probe counts as a failure only when it returned a JSON result with `is_error: true` and the narrow model-rejection message ("issue with the selected model ... may not exist or you may not have access"); free text without a parsed JSON result (a wrapper printing `node: not found`, a login prompt) is inconclusive. A probe that gets no answer at all (timeout, offline, rate limit, `claude` not installed) says nothing about the model and leaves it as it was; three such probes in a row stop the run. A round with no successful probe at all (aliases included) is inconclusive as a whole: it exits 1 and leaves the catalogue and its `updated_at` untouched.
+
+**Cost cap.** `--max-calls` (default 20, hard, at most 25, so that the worst case of 25 probes at the 60 s timeout stays under the 30 minute lock stale time) limits the probe calls of one refresh, aliases included. A full default run is about 17 calls; the ids the cap cuts off are logged and listed as `not probed (call cap)` and are carried over unchanged. A real run of the four alias probes cost about $0.19 and took 13 seconds; the larger models cost more because of the cached system prompt, not the answer. A probe is kept lean: `--strict-mcp-config` with an empty `--mcp-config` (no MCP server starts), `--tools ""`, `--disable-slash-commands` and a one-line `--system-prompt`, which cut the request from about 14,000 input tokens to about 600. Measured per call with the installed Claude Code 2.1.323 (cold-cache figures vary with the prompt cache): `sonnet` $0.0149 before, $0.0063 with the MCP, tools and slash-command flags, $0.0024 with the system prompt too; `opus` $0.0299, $0.0131, $0.0048. That is about 84% less per probe, and the probe still reports the concrete model in `modelUsage`. Probes run with `--setting-sources project`, a temporary settings file that sets `disableAllHooks` and disables `jev@agentic-hub`, `--no-session-persistence`, a 60 s timeout that is enforced end to end (the probe runs in its own process group and the whole group is killed), stdin from `/dev/null`, and one stable empty working directory (`~/.config/jev/probe-cwd`, owner-only, reused, so Claude Code keeps a single project entry instead of one per probe), so a probe never triggers Jev's own hooks. The probe gets an allowlisted environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `SHELL`, `XDG_*`, `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, proxy and certificate variables), never `JEV_*` or `OPENROUTER_*` keys, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so it writes no memory.
+
+**Config keys** (all optional, under `models.refresh` in `~/.config/jev/config.json`; read by a tolerant reader, the config schema is unchanged):
+
+```json
+{ "models": { "refresh": { "enabled": true, "maxAgeDays": 7, "maxCalls": 20, "minRetryHours": 6, "useApiKey": false, "candidates": ["claude-sonnet-5-1"] } } }
+```
+
+- `enabled`: `false` turns the background refresh off (default on). The command and `/jev-refresh` still work.
+- `maxAgeDays`: age after which the background refresh runs again (default 7).
+- `maxCalls`: probe cap per refresh (default 20); `--max-calls` overrides it.
+- `minRetryHours`: minimum hours between two background refresh attempts, whatever their result (default 6).
+- `useApiKey`: probes use your subscription login and never see `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (an exported key would make every `claude -p` probe bill the API account, and the catalogue would describe that account); set it to `true` only for an API-key-only setup, and `jev-models status` points to it when the probes get no answer without a key (default `false`, boolean only).
+- `candidates`: extra model ids to probe; ids with characters outside `A-Z a-z 0-9 . _ : / ~ -`, or longer than 100, are ignored.
+
+**Background refresh.** At a Claude Code `SessionStart`, the hook starts a refresh in a detached process (`bun scripts/jev-models.ts refresh --harness claude-code --quiet`, stdio ignored) and returns at once. It starts only when all of these hold:
+
+- Jev mode is `on` for Claude Code.
+- `models.refresh.enabled` is not `false`, and the environment does not set `JEV_MODEL_REFRESH=off`.
+- The Claude Code catalogue is missing or older than `maxAgeDays`.
+- No refresh was attempted in the last `minRetryHours` (default 6). The trigger writes an attempt stamp (`~/.config/jev/models/claude-code.attempt.json`, time and result) when it starts a refresh, and the refresh writes it again when it ends, whatever the result, so a broken environment is not retried at every session start.
+- No other refresh holds the lock (`~/.config/jev/models/claude-code.lock`, a pid, a timestamp and a heartbeat). A lock is taken over when its owner process is dead, or when both its timestamp and its heartbeat are older than 30 minutes; the refresh rewrites the heartbeat (atomically) after every probe, so a long run is never taken over. The hook hands the lock to the process it starts, so two sessions starting together run one refresh.
+- `bun` and the script are found; otherwise it skips silently.
+
+It never blocks and never throws, and a failure leaves the previous catalogue in place. A refresh run by hand while a background one is running exits with "another refresh is running" and probes nothing.
+
+**To disable it:** set `models.refresh.enabled` to `false`, or run Jev in a mode other than `on`, or export `JEV_MODEL_REFRESH=off`. (`JEV_REFRESH_SCRIPT` points the trigger at another script instead of `scripts/jev-models.ts`; it exists for tests.)
+
+**Notice** (`catalogueNotice(harness, modelId)` in `claude/refresh-trigger.ts`, not wired into the hooks yet): returns one line ending in "run /jev-refresh" when the catalogue is missing, the id is not in it, the id is marked missing or needs review, or the catalogue is older than `maxAgeDays`; otherwise null.
+
 ### Outbound Data Control & Privacy (optional)
 
 By default jev sends requests exactly as before. To keep some of your work away from OpenRouter, create `~/.config/jev/egress.json`. jev reads this file but never writes it:
@@ -583,6 +679,20 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.7: model catalogue and refresh** (see "Model catalogue (core)" and "Model catalogue refresh" above):
+  - New per-harness catalogue of concrete model ids with a capability tier (`free`, `cheap`, `standard`, `deep`) and
+    a version, in `~/.config/jev/models/<harness>.json` (`0600`, written atomically). Ids that stop being listed are
+    marked suspect and dropped only after three refreshes in a row miss them. Overrides and a lock are included.
+  - A `SessionStart` hook starts a detached background refresh when the catalogue is missing or older than
+    `models.refresh.maxAgeDays` (default 7). It probes the Claude Code aliases with a capped `claude` run in a stable
+    working directory and a minimal environment, and lists OpenRouter models. At most 25 probe calls per refresh, a
+    6 hour back-off between attempts (`models.refresh.minRetryHours`), a lock with a heartbeat, a process-group kill
+    on timeout. A round where no probe gives a clear answer leaves the catalogue untouched.
+  - New `jev-models` CLI (`refresh`, `status`, `list`) and `/jev-refresh` skill. Off with `JEV_MODEL_REFRESH=off` or
+    `models.refresh.enabled: false`.
+  - Nothing reads the catalogue yet: the hooks rank models as before. A later release uses it for the downgrade
+    choice and ranking.
+  - Not verified here: a refresh on an account that serves `fable`, and the Antigravity discoverer (needs a live run).
 - **2.3.6: elevation choice** (see "Elevation choice (default)" above):
   - New default `JEV_ELEVATION=choice`: an `Agent` call above the session model with no instruction naming it and
     no valid approval is denied (the turn goes on) with a reason that prescribes one `AskUserQuestion` whose text

@@ -21,7 +21,7 @@ afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 function run(event: string, input: object) {
   return Bun.spawnSync(['bun', HOOK, event], {
     stdin: new TextEncoder().encode(JSON.stringify(input)),
-    env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
+    env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '', JEV_MODEL_REFRESH: 'off' }
   });
 }
 
@@ -129,5 +129,88 @@ describe('private state', () => {
     const sessions = path.join(jevDir(), 'claude-sessions');
 
     expect([mode(sessions), mode(path.join(sessions, 's1.json')), mode(path.join(sessions, 's1.turn.json'))]).toEqual([0o700, 0o600, 0o600]);
+  });
+});
+
+describe('background catalogue refresh from the SessionStart hook', () => {
+  it('starts the refresh process: with mode on and the refresh not switched off, the hook runs the (stub) refresh script', async () => {
+    const marker = path.join(home, 'refresh-ran');
+    const stub = path.join(home, 'stub-refresh.ts');
+    fs.writeFileSync(stub, `import * as fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));`);
+    // Deliberately no JEV_MODEL_REFRESH=off here: the real trigger runs, pointed at the stub instead of the real refresh.
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: home,
+      JEV_CONFIG_FILE: path.join(home, 'config.json'),
+      JEV_OPENROUTER_API_KEY: '',
+      JEV_REFRESH_SCRIPT: stub
+    };
+    delete env.JEV_MODEL_REFRESH;
+    const proc = Bun.spawnSync(['bun', HOOK, 'session-start'], {
+      stdin: new TextEncoder().encode(JSON.stringify({ session_id: 's-refresh', source: 'startup' })),
+      env
+    });
+    expect(proc.exitCode).toBe(0);
+    for (let i = 0; i < 100 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.readFileSync(marker, 'utf8')).toBe('refresh --harness claude-code --quiet');
+    // the trigger stamped the attempt in the temp HOME, so the next session start backs off
+    const stamp = JSON.parse(fs.readFileSync(path.join(home, '.config', 'jev', 'models', 'claude-code.attempt.json'), 'utf8'));
+    expect(stamp.result).toBe('started');
+  });
+
+  it('does not run it when JEV_MODEL_REFRESH=off', () => {
+    const marker = path.join(home, 'refresh-ran');
+    const stub = path.join(home, 'stub-refresh.ts');
+    fs.writeFileSync(stub, `import * as fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'x');`);
+    const proc = Bun.spawnSync(['bun', HOOK, 'session-start'], {
+      stdin: new TextEncoder().encode(JSON.stringify({ session_id: 's-off', source: 'startup' })),
+      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '', JEV_MODEL_REFRESH: 'off', JEV_REFRESH_SCRIPT: stub }
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(path.join(home, '.config', 'jev', 'models'))).toBe(false);
+  });
+
+  describe('a real `claude` on PATH', () => {
+    /** A fake `claude` first on PATH that records every call; mode on, empty HOME (no catalogue, so a refresh is due). */
+    function withFakeClaude(): { marker: string; env: Record<string, string | undefined> } {
+      const bin = path.join(home, 'fake-bin');
+      const marker = path.join(home, 'claude-called');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(marker)}\nexit 1\n`, { mode: 0o755 });
+      return {
+        marker,
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
+      };
+    }
+    const startSession = (env: Record<string, string | undefined>) =>
+      Bun.spawnSync(['bun', HOOK, 'session-start'], { stdin: new TextEncoder().encode(JSON.stringify({ session_id: 's-claude', source: 'startup' })), env });
+
+    it('the test preload switches the refresh off, so no test process starts a paid probe', async () => {
+      expect(process.env.JEV_MODEL_REFRESH).toBe('off');
+      const { marker, env } = withFakeClaude();
+      expect(startSession(env).exitCode).toBe(0);
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(fs.existsSync(path.join(home, '.config', 'jev', 'models'))).toBe(false);
+    });
+
+    it('control: without the switch the same setup does call `claude` (the fake), so the test above is not vacuous', async () => {
+      const { marker, env } = withFakeClaude();
+      delete env.JEV_MODEL_REFRESH;
+      expect(startSession(env).exitCode).toBe(0);
+      const stamp = path.join(home, '.config', 'jev', 'models', 'claude-code.attempt.json');
+      const finished = (): boolean => {
+        try {
+          return JSON.parse(fs.readFileSync(stamp, 'utf8')).result !== 'started';
+        } catch {
+          return false;
+        }
+      };
+      // wait for the detached refresh to end (it stops after three probes in a row without an answer)
+      for (let i = 0; i < 200 && !finished(); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(fs.existsSync(marker)).toBe(true);
+      expect(fs.readFileSync(marker, 'utf8')).toContain('--model');
+    });
   });
 });

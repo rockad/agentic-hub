@@ -220,7 +220,7 @@ describe('the live hook process in default mode', () => {
   afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
   const run = (event: string, input: object) => {
-    const env: Record<string, string | undefined> = { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' };
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '', JEV_MODEL_REFRESH: 'off' };
     env.JEV_ELEVATION = 'dialog';
     return Bun.spawnSync(['bun', HOOK, event], { stdin: new TextEncoder().encode(JSON.stringify(input)), env });
   };

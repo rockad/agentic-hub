@@ -93,7 +93,7 @@ describe('argument parsing', () => {
 
 describe('refresh config reader', () => {
   it('defaults: enabled, 7 days, 20 calls, no extra candidates', () => {
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: DEFAULT_MAX_CALLS, minRetryHours: 6, candidates: [] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: DEFAULT_MAX_CALLS, minRetryHours: 6, useApiKey: false, candidates: [] });
     expect(DEFAULT_MAX_CALLS).toBe(20);
   });
 
@@ -108,13 +108,22 @@ describe('refresh config reader', () => {
 
   it('reads the four keys and drops invalid values', () => {
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { enabled: false, maxAgeDays: 3, maxCalls: 8, candidates: ['claude-sonnet-6', 'claude-sonnet-6', 7, '', 'bad id; rm', '--model'] } } }));
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: false, maxAgeDays: 3, maxCalls: 8, minRetryHours: 6, candidates: ['claude-sonnet-6'] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: false, maxAgeDays: 3, maxCalls: 8, minRetryHours: 6, useApiKey: false, candidates: ['claude-sonnet-6'] });
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { enabled: 'no', maxAgeDays: -2, maxCalls: 'many', candidates: 'x' } } }));
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, candidates: [] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, useApiKey: false, candidates: [] });
     fs.writeFileSync(configFile, '{ not json');
     expect(loadRefreshConfig(configFile).enabled).toBe(true);
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: [] } }));
     expect(loadRefreshConfig(configFile).maxCalls).toBe(20);
+  });
+
+  it('reads useApiKey as a boolean only: true turns it on, anything else leaves it off', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { useApiKey: true } } }));
+    expect(loadRefreshConfig(configFile).useApiKey).toBe(true);
+    for (const bad of ['true', 1, 'yes', null, {}, [], false]) {
+      fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { useApiKey: bad } } }));
+      expect(loadRefreshConfig(configFile).useApiKey).toBe(false);
+    }
   });
 
   it('caps maxCalls at 25 (25 probes at the 60 s timeout stay under the 30 minute lock stale time)', () => {
@@ -241,6 +250,65 @@ describe('refresh command (Claude Code)', () => {
     expect(loadCatalogue('claude-code', dir)).toEqual(before);
     expect(h.err.join('\n')).toContain('catalogue unchanged');
     expect(fs.existsSync(refreshLockPath('claude-code', dir))).toBe(false);
+  });
+
+  describe('API key handling', () => {
+    const KEYS = { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_AUTH_TOKEN: 'tok' };
+    const AUTH_FAIL = JSON.stringify({ type: 'result', is_error: true, result: 'Invalid API key - Please run /login', total_cost_usd: 0, modelUsage: {} });
+
+    it('the probes run without ANTHROPIC_API_KEY by default and with it when models.refresh.useApiKey is true', async () => {
+      const seen: NodeJS.ProcessEnv[] = [];
+      const spawn: Spawner = async (_c, args, o) => {
+        seen.push(o.env!);
+        return done(okJson(ALIASES[args[args.indexOf('--model') + 1]] ?? 'claude-sonnet-5-5'));
+      };
+      await runCli(['refresh', '--max-calls', '1'], harness({ spawn, env: KEYS }).deps);
+      expect(seen[0].ANTHROPIC_API_KEY).toBeUndefined();
+      expect(seen[0].ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { useApiKey: true } } }));
+      await runCli(['refresh', '--max-calls', '1'], harness({ spawn, env: KEYS }).deps);
+      expect(seen[1].ANTHROPIC_API_KEY).toBe('sk-test');
+      expect(seen[1].ANTHROPIC_AUTH_TOKEN).toBe('tok');
+    });
+
+    it('an inconclusive refresh without the key says that probes use the subscription login only and names the opt-in', async () => {
+      const h = harness({ spawn: async () => done(AUTH_FAIL), env: KEYS });
+      expect(await runCli(['refresh'], h.deps)).toBe(1);
+      const text = h.err.join('\n');
+      expect(text).toContain('subscription login only');
+      expect(text).toContain('models.refresh.useApiKey');
+    });
+
+    it('an inconclusive refresh with useApiKey on does not give that hint', async () => {
+      fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { useApiKey: true } } }));
+      const h = harness({ spawn: async () => done(AUTH_FAIL), env: KEYS });
+      expect(await runCli(['refresh'], h.deps)).toBe(1);
+      expect(h.err.join('\n')).not.toContain('useApiKey');
+    });
+
+    it('status gives the hint after an inconclusive attempt, also when there is no catalogue, and not after a good one', async () => {
+      await runCli(['refresh'], harness({ spawn: async () => done(AUTH_FAIL), env: KEYS }).deps);
+      expect(readAttempt('claude-code', dir)).toMatchObject({ result: 'inconclusive' });
+      const bad = harness();
+      await runCli(['status'], bad.deps);
+      expect(bad.text()).toContain('catalogue: none');
+      expect(bad.text()).toContain('subscription login only');
+      expect(bad.text()).toContain('models.refresh.useApiKey');
+
+      await runCli(['refresh'], harness({ spawn: fakeClaude(['claude-sonnet-5-5']).spawn, env: KEYS }).deps);
+      expect(readAttempt('claude-code', dir)).toMatchObject({ result: 'ok' });
+      const good = harness();
+      await runCli(['status'], good.deps);
+      expect(good.text()).not.toContain('useApiKey');
+    });
+
+    it('status stays quiet about it when the opt-in is already on', async () => {
+      fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { useApiKey: true } } }));
+      await runCli(['refresh'], harness({ spawn: async () => done(AUTH_FAIL), env: KEYS }).deps);
+      const h = harness();
+      await runCli(['status'], h.deps);
+      expect(h.text()).not.toContain('useApiKey');
+    });
   });
 
   it('a round where every probe says "command not found" leaves a good catalogue and its age alone, and exits 1', async () => {

@@ -3,7 +3,7 @@
  * named by `JEV_CONFIG_FILE`). Same style as `loadOverrides`: the shared config schema is left alone, this reads
  * the one key it needs, drops anything invalid and never throws.
  *
- *   { "models": { "refresh": { "enabled": true, "maxAgeDays": 7, "maxCalls": 20, "candidates": ["claude-sonnet-6"] } } }
+ *   { "models": { "refresh": { "enabled": true, "maxAgeDays": 7, "maxCalls": 20, "useApiKey": false, "candidates": ["claude-sonnet-6"] } } }
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -28,6 +28,12 @@ export interface RefreshConfig {
   maxCalls: number;
   /** Minimum hours between two background refresh attempts, whatever their outcome. */
   minRetryHours: number;
+  /**
+   * Opt-in (`models.refresh.useApiKey: true`): pass `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` to the probes.
+   * Off by default: `claude -p` always prefers an exported key over the subscription login, so with the key the
+   * probes would be billed to the API account and the catalogue would describe that account.
+   */
+  useApiKey: boolean;
   /** User-added candidate ids for the Claude Code probe. */
   candidates: string[];
 }
@@ -105,6 +111,7 @@ export function loadRefreshConfig(configFile?: string): RefreshConfig {
     maxAgeDays: DEFAULT_MAX_AGE_DAYS,
     maxCalls: DEFAULT_MAX_CALLS,
     minRetryHours: DEFAULT_MIN_RETRY_HOURS,
+    useApiKey: false,
     candidates: []
   };
   let raw: any;
@@ -115,6 +122,7 @@ export function loadRefreshConfig(configFile?: string): RefreshConfig {
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   if (raw.enabled === false) out.enabled = false;
+  if (raw.useApiKey === true) out.useApiKey = true;
   const age = positiveNumber(raw.maxAgeDays);
   if (age !== null) out.maxAgeDays = age;
   const calls = positiveNumber(raw.maxCalls);

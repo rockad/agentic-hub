@@ -229,6 +229,8 @@ export interface ProbeOptions {
   cwd?: string;
   /** The environment to filter into the probe's (default `process.env`). */
   env?: NodeJS.ProcessEnv;
+  /** Pass `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` through (`models.refresh.useApiKey`); default false. */
+  useApiKey?: boolean;
 }
 
 /** The probe's working directory when none is given. */
@@ -239,19 +241,28 @@ export function defaultProbeCwd(): string {
 
 /**
  * Environment names a probe may inherit: what `claude` needs to run and to reach the same account (PATH, HOME,
- * locale, proxy and certificate settings, the Anthropic and Claude auth variables). Everything else, notably
- * `JEV_*` and `OPENROUTER_*` keys and unrelated cloud credentials, is left out.
+ * locale, proxy and certificate settings, the other `ANTHROPIC_*` variables and the Claude login). Everything else,
+ * notably `JEV_*` and `OPENROUTER_*` keys and unrelated cloud credentials, is left out.
  */
 const PROBE_ENV_ALLOW = /^(PATH|HOME|USER|LANG|TERM|TMPDIR|SHELL|XDG_.+|ANTHROPIC_.+|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|https_proxy|http_proxy|no_proxy|SSL_CERT_.+|NODE_EXTRA_CA_CERTS)$/;
 
 /**
- * The probe's environment: the allowlisted part of `base`, with auto-memory off
- * (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, an environment variable of Claude Code) so a probe never writes a memory entry.
+ * The two credentials that make `claude -p` bill the API account instead of the user's subscription login: an
+ * exported key always wins in print mode. Left out of the probe environment unless `useApiKey` is set.
  */
-export function probeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+const PROBE_API_CREDENTIALS = /^ANTHROPIC_(API_KEY|AUTH_TOKEN)$/;
+
+/**
+ * The probe's environment: the allowlisted part of `base` without `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`
+ * (unless `useApiKey`), with auto-memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, an environment variable of
+ * Claude Code) so a probe never writes a memory entry.
+ */
+export function probeEnv(base: NodeJS.ProcessEnv = process.env, opts: { useApiKey?: boolean } = {}): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) {
-    if (v !== undefined && PROBE_ENV_ALLOW.test(k)) out[k] = v;
+    if (v === undefined || !PROBE_ENV_ALLOW.test(k)) continue;
+    if (!opts.useApiKey && PROBE_API_CREDENTIALS.test(k)) continue;
+    out[k] = v;
   }
   out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
   return out;
@@ -278,7 +289,7 @@ export async function probeModel(model: string, opts: ProbeOptions): Promise<Pro
     const res = await opts.spawn(opts.claudeBin ?? 'claude', probeArgs(model, settings), {
       cwd,
       timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
-      env: probeEnv(opts.env ?? process.env)
+      env: probeEnv(opts.env ?? process.env, { useApiKey: opts.useApiKey })
     });
     return parseProbeOutput(res, model);
   } catch (err: any) {

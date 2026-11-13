@@ -9,7 +9,7 @@
       "id": "jev",
       "name": "TypeSafe Jev Decision Engine",
       "description": "System 1 pre-flight routing, free-tier offloading, thinking effort governance, and quality gates.",
-      "version": "2.3.9",
+      "version": "2.3.10",
       "path": "plugins/jev",
       "skills": ["plugins/jev/skills/jev"]
     },

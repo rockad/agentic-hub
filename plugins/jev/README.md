@@ -860,7 +860,7 @@ the rewritten `model`.
 
 ### Release notes
 
-- **next: session-model fallback** (found by live verification of 2.3.8; additive, fail-open):
+- **2.3.10: session-model fallback** (found by live verification of 2.3.8; additive, fail-open):
   - A session whose `SessionStart` / `PostModelSwitch` never ran (plugins reloaded mid-session, a resumed or
     headless session) had no stored session model, so the elevation guard and the downgrade evaluation skipped
     every call: a model-less Agent call for "run date" in a Sonnet session passed with no question. The hook now

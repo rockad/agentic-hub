@@ -36,7 +36,14 @@ export const defaultSpawner: Spawner = (cmd, args, opts) =>
     };
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      // detached: the child leads its own process group, so a timeout can kill it together with anything it started
+      child = spawn(cmd, args, {
+        cwd: opts.cwd,
+        env: opts.env ?? process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        windowsHide: true
+      });
     } catch (err: any) {
       resolve({ code: null, stdout: '', stderr: '', timedOut: false, error: String(err?.message ?? err) });
       return;
@@ -44,10 +51,19 @@ export const defaultSpawner: Spawner = (cmd, args, opts) =>
     timer = setTimeout(() => {
       timedOut = true;
       try {
-        child.kill('SIGKILL');
+        if (typeof child.pid === 'number' && process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
       } catch {
-        // already gone
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already gone
+        }
       }
+      // Do not wait for 'close': it waits for pipes a grandchild may still hold open.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      done({ code: null });
     }, opts.timeoutMs);
     child.stdout?.on('data', (d) => {
       if (stdout.length < MAX_OUTPUT) stdout += String(d);

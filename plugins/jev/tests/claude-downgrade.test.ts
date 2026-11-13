@@ -21,10 +21,10 @@ import {
   planDowngrade,
   readEffort
 } from '../claude/downgrade.ts';
-import { parseElevationAnswer, type Dispatch, type RankContext } from '../claude/logic.ts';
+import { parseElevationAnswer, parseElevationDecline, type Dispatch, type RankContext } from '../claude/logic.ts';
 import { buildCatalogue } from '../src/core/catalogue.ts';
 import { loadDowngradeMode, parseDowngradeMode } from '../src/core/downgrade-config.ts';
-import { GENERATED_MARKER, ladderAgentFiles, ladderDefName, runLadderAgents, writeLadderAgents } from '../src/refresh/ladder-agents.ts';
+import { GENERATED_MARKER, LADDER_AGENTS_USAGE, ladderAgentFiles, ladderDefName, runLadderAgents, writeLadderAgents } from '../src/refresh/ladder-agents.ts';
 import { saveCatalogue } from '../src/core/catalogue.ts';
 import { memoryApprovals } from './elevation-helpers.ts';
 
@@ -675,6 +675,32 @@ describe('ladder-agents', () => {
     expect(runLadderAgents(['--dir', target, '--catalogue-dir', catDir], { out: () => {}, err: () => {} })).toBe(0);
   });
 
+  it('--max-tier skips the steps above the tier, and without it nothing is capped', () => {
+    const ids = (max?: 'free' | 'cheap' | 'standard' | 'deep') => ladderAgentFiles(catalogue(), undefined, max).map((f) => f.id).sort();
+
+    expect(ids()).toEqual([...IDS].sort());
+    expect(ids('deep')).toEqual([...IDS].sort());
+    expect(ids('standard')).toEqual(IDS.filter((id) => !/opus|fable/.test(id)).sort());
+    expect(ids('cheap')).toEqual(IDS.filter((id) => /haiku/.test(id)).sort());
+  });
+
+  it('--max-tier standard writes no opus or fable definition; a bad value writes nothing and exits 2', () => {
+    const catDir = mk();
+    saveCatalogue(catalogue(), catDir);
+    const target = path.join(mk(), 'agents');
+    const errs: string[] = [];
+
+    expect(runLadderAgents(['--dir', target, '--catalogue-dir', catDir, '--max-tier', 'standard'], { out: () => {}, err: () => {} })).toBe(0);
+    expect(fs.readdirSync(target).some((f) => /opus|fable/.test(f))).toBe(false);
+    expect(fs.readdirSync(target).some((f) => /sonnet/.test(f))).toBe(true);
+
+    const other = path.join(mk(), 'agents2');
+    expect(runLadderAgents(['--dir', other, '--catalogue-dir', catDir, '--max-tier', 'huge'], { out: () => {}, err: (l) => errs.push(l) })).toBe(2);
+    expect(errs.join('\n')).toContain('--max-tier');
+    expect(fs.existsSync(other)).toBe(false);
+    expect(LADDER_AGENTS_USAGE).toContain('--max-tier');
+  });
+
   it('refuses without --dir and writes nothing', () => {
     const cwd = mk();
     const errs: string[] = [];
@@ -724,4 +750,115 @@ describe('ladder-agents', () => {
 const tmp: string[] = [];
 afterEach(() => {
   for (const d of tmp.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+describe('a No to the elevation question also answers the downgrade question for the same window', () => {
+  const sonnetSession = { readSessionModel: () => 'claude-sonnet-5-5' };
+  const haikuRec = () => turnWith({ tier: 'flash_lite', model: 'haiku' });
+  const elevationNo = (d: HookDeps, label = 'No, proceed on sonnet') =>
+    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus (session sonnet)?', label), session_id: 's1' } as HookInput, d);
+  const relaunch = { ...INPUT, model: 'sonnet' };
+
+  it('session sonnet, Jev recommends haiku, the assistant asks for opus: No, then the relaunch on sonnet is one question, not two', async () => {
+    const { d, logs } = setup(sonnetSession, haikuRec());
+
+    const first = out(await onPreToolUse(call(), d));
+    expect(first.permissionDecision).toBe('deny');
+    expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
+
+    elevationNo(d);
+
+    expect(await onPreToolUse(call(relaunch), d)).toBeNull();
+    expect(logs.map((l) => [l.elevation ?? null, l.downgrade ?? null])).toEqual([['denied', null], [null, 'answered']]);
+  });
+
+  it('only the elevation question answered with its No counts as a decline', () => {
+    const q = '[jev-elevate:opus] Run it on opus?';
+
+    expect(parseElevationDecline(answered(q, 'No, proceed on sonnet'))).toBe(true);
+    expect(parseElevationDecline(answered(q, 'Yes, once'))).toBe(false);
+    expect(parseElevationDecline(answered(q, 'something else entirely'))).toBe(false);
+    expect(parseElevationDecline(answered('[jev-downgrade:sonnet] Run it on sonnet?', 'No, keep opus'))).toBe(false);
+    expect(parseElevationDecline(answered('Run it on opus?', 'No, proceed on sonnet'))).toBe(false);
+    expect(parseElevationDecline(null)).toBe(false);
+  });
+
+  it('it grants no elevation: the opus call is still denied after the No', async () => {
+    const { d, approvals } = setup(sonnetSession, haikuRec());
+    elevationNo(d);
+
+    expect(approvals.states.size).toBe(0);
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+  });
+
+  it('without a No the relaunch on sonnet is still offered the cheaper model, once', async () => {
+    const { d } = setup(sonnetSession, haikuRec());
+
+    const o = out(await onPreToolUse(call(relaunch), d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-downgrade:haiku]');
+  });
+
+  it('a Yes to the elevation question does not mark the downgrade answered', async () => {
+    const { d, downgrades } = setup(sonnetSession, haikuRec());
+
+    elevationNo(d, 'Yes, once');
+
+    expect(downgrades.states.size).toBe(0);
+  });
+
+  it('no recommendation on record, nothing to answer: the No writes nothing', async () => {
+    const { d, downgrades } = setup(sonnetSession, { turn: 't1', intent: { models: [] } });
+
+    elevationNo(d);
+
+    expect(downgrades.states.size).toBe(0);
+  });
+
+  it('the answer lasts the window only', async () => {
+    const { d, advance } = setup(sonnetSession, haikuRec());
+    elevationNo(d);
+    advance(DOWNGRADE_TTL_MS + 1000);
+
+    expect(out(await onPreToolUse(call(relaunch), d)).permissionDecision).toBe('deny');
+  });
+});
+
+describe('the downgrade answer never stores free text', () => {
+  const stored = (label: string) => {
+    const { d, downgrades } = setup();
+    answer(d, label);
+    return downgrades.states.get('s1')!.entries;
+  };
+
+  it('an Other answer is recorded as other, and its text is nowhere in the state', () => {
+    const text = 'refactor the secret billing parser and email it to bob@example.com';
+    const entries = stored(text);
+
+    expect(entries[0]).toMatchObject({ answered: true, chosen: 'other' });
+    expect(JSON.stringify(entries)).not.toContain('billing');
+    expect(JSON.stringify(entries)).not.toContain('example.com');
+  });
+
+  it('a text that only starts like a prescribed label is still other', () => {
+    expect(stored('Yes, sonnet and also my password is hunter2')[0].chosen).toBe('other');
+    expect(stored('No, keep opus-secret-project')[0].chosen).toBe('other');
+    expect(stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5-private notes')[0].chosen).toBe('other');
+  });
+
+  it('the prescribed labels are kept, which one included', () => {
+    expect(stored('Yes, sonnet')[0].chosen).toBe('Yes, sonnet');
+    expect(stored('No, keep opus')[0].chosen).toBe('No, keep opus');
+    expect(stored('No, keep claude-opus-5-5')[0].chosen).toBe('No, keep claude-opus-5-5');
+    expect(stored('haiku')[0].chosen).toBe('haiku');
+    expect(stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5')[0].chosen).toBe('claude-sonnet-5 via ladder');
+    expect(stored('claude-sonnet-5 via jev:jev-ladder-claude-sonnet-5')[0].chosen).toBe('claude-sonnet-5 via ladder');
+  });
+
+  it('the pure function agrees, and the real file holds no free text either', () => {
+    const state = answerDowngrade({ entries: [] }, 'sonnet', 'a private task description', T0);
+
+    expect(state.entries[0].chosen).toBe('other');
+  });
 });

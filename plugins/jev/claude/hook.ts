@@ -68,6 +68,7 @@ import {
   elevationMode,
   normalizeApprovalState,
   parseElevationAnswer,
+  parseElevationDecline,
   CHOICE_DENIALS_BEFORE_ASK,
   envNotice,
   hasRecentDispatch,
@@ -89,7 +90,7 @@ import {
   type Approval,
   type ApprovalState,
   type Dispatch,
-  compareClaudeModels,
+  compareFamilyFirst,
   modelAlias,
   type RankContext,
   type TurnState
@@ -104,6 +105,7 @@ import {
   downgradeMode,
   downgradeReason,
   normalizeDowngradeState,
+  ELEVATION_DECLINED,
   parseDowngradeAnswer,
   planDowngrade,
   readEffort,
@@ -306,7 +308,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     const sessionAlias = modelAlias(sessionModel);
     if (!sessionModel || !sessionAlias || advised.by || advised.subagent === 'self' || advised.tier === 'openrouter_free') return;
     if (modelAlias(advised.model) === sessionAlias) return;
-    if ((compareClaudeModels(advised.model, sessionModel, deps.rankContext?.() ?? null) ?? 0) >= 0) return;
+    if ((compareFamilyFirst(advised.model, sessionModel, deps.rankContext?.() ?? null) ?? 0) >= 0) return;
     additionalContext +=
       ' ' +
       downgradeDirective({
@@ -562,7 +564,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
  * Ignores any question without the `[jev-elevate:<model>]` marker, a "No", and malformed input. Never throws and
  * prints nothing.
  */
-export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now'>): void {
+export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now' | 'readTurn'>): void {
   const sessionId = safeSessionId(input?.session_id);
   if (!sessionId) return;
   const nowMs = (deps.now ?? Date.now)();
@@ -573,6 +575,17 @@ export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals'
     }
   } catch {
     // best-effort: a failed record only means the assistant is denied again and asks again
+  }
+  // A No to the elevation question ("proceed on the session model") is the user's final word on this delegation's model:
+  // the relaunch on the session model must not be asked again about a cheaper one (two questions in a row). It is recorded
+  // as an answered downgrade question for the turn's recommendation, for the same window; it grants nothing.
+  try {
+    if (deps.downgrades && parseElevationDecline(input)) {
+      const rec = deps.readTurn?.(sessionId)?.rec;
+      if (rec?.model) deps.downgrades.answer(sessionId, rec.model, ELEVATION_DECLINED, nowMs);
+    }
+  } catch {
+    // best-effort: without the record the relaunch is asked about the cheaper model once
   }
   // The downgrade question (marker [jev-downgrade:<alias>]): any answer, Yes or No, records that this delegation was
   // answered so the retried call is not denied again. It is its own store and never grants an elevation.

@@ -31,16 +31,18 @@ export interface LadderAgentFile {
   content: string;
 }
 
-/** Every ladder step of the catalogue (all tiers), cheapest tier first, strongest first inside a tier. */
-export function ladderIds(cat: Catalogue | null | undefined, overrides?: ModelOverrides): string[] {
-  const tiers: CatalogueTier[] = ['free', 'cheap', 'standard', 'deep'];
+const ALL_TIERS: readonly CatalogueTier[] = ['free', 'cheap', 'standard', 'deep'];
+
+/** Every ladder step of the catalogue, cheapest tier first, strongest first inside a tier; `maxTier` leaves out the tiers above it (default: all). */
+export function ladderIds(cat: Catalogue | null | undefined, overrides?: ModelOverrides, maxTier?: CatalogueTier): string[] {
+  const tiers = maxTier ? ALL_TIERS.slice(0, ALL_TIERS.indexOf(maxTier) + 1) : ALL_TIERS;
   return [...new Set(tiers.flatMap((t) => ladder(cat, t, overrides)))];
 }
 
-/** Pure: the definition files for a catalogue, one per ladder step. An id that cannot be a plain file name is left out. */
-export function ladderAgentFiles(cat: Catalogue | null | undefined, overrides?: ModelOverrides): LadderAgentFile[] {
+/** Pure: the definition files for a catalogue, one per ladder step (up to `maxTier`). An id that cannot be a plain file name is left out. */
+export function ladderAgentFiles(cat: Catalogue | null | undefined, overrides?: ModelOverrides, maxTier?: CatalogueTier): LadderAgentFile[] {
   const out: LadderAgentFile[] = [];
-  for (const id of ladderIds(cat, overrides)) {
+  for (const id of ladderIds(cat, overrides, maxTier)) {
     // The model id goes into front matter unquoted: only the characters a Claude model id has.
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) continue;
     const name = ladderDefName(id);
@@ -85,9 +87,10 @@ export function writeLadderAgents(dir: string, files: readonly LadderAgentFile[]
 }
 
 export const LADDER_AGENTS_USAGE =
-  'usage: jev-models ladder-agents --dir <directory> [--harness claude-code]\n' +
+  'usage: jev-models ladder-agents --dir <directory> [--harness claude-code] [--max-tier free|cheap|standard|deep]\n' +
   '  Writes jev-ladder-<id>.md (a general-purpose clone pinned to one ladder model id, tools inherited) per ladder step\n' +
-  '  of the model catalogue into <directory>. It writes nowhere without --dir and installs nothing by itself.';
+  '  of the model catalogue into <directory>. It writes nowhere without --dir and installs nothing by itself.\n' +
+  '  --max-tier skips the steps above that tier (default: no cap); `standard` writes no opus or fable definition.';
 
 /** The value of `--name value` or `--name=value`; undefined when absent, null when the flag has no value. */
 function flag(argv: readonly string[], name: string): string | null | undefined {
@@ -119,10 +122,17 @@ export function runLadderAgents(argv: readonly string[], io: CliIo = { out: cons
     io.err(LADDER_AGENTS_USAGE);
     return 2;
   }
+  const maxTierFlag = flag(argv, '--max-tier');
+  if (maxTierFlag !== undefined && !(ALL_TIERS as readonly string[]).includes(maxTierFlag ?? '')) {
+    io.err(`ladder-agents: --max-tier must be one of ${ALL_TIERS.join(', ')}; nothing was written.`);
+    io.err(LADDER_AGENTS_USAGE);
+    return 2;
+  }
+  const maxTier = maxTierFlag as CatalogueTier | undefined;
   const harness = flag(argv, '--harness') ?? 'claude-code';
   const catDir = flag(argv, '--catalogue-dir') ?? undefined;
   const cat = loadCatalogue(harness, catDir);
-  const files = ladderAgentFiles(cat, cat ? loadOverrides() : undefined);
+  const files = ladderAgentFiles(cat, cat ? loadOverrides() : undefined, maxTier);
   if (!cat || files.length === 0) {
     io.err(`ladder-agents: no usable catalogue for harness "${harness}" (or no ladder step in it). Refresh the catalogue first; nothing was written.`);
     return 1;

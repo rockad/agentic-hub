@@ -13,6 +13,7 @@ import {
   claimApproval,
   classifyElevation,
   compareClaudeModels,
+  compareFamilyFirst,
   modelRank,
   type RankContext
 } from '../claude/logic.ts';
@@ -169,7 +170,7 @@ describe('claimApproval with a catalogue', () => {
     expect(claimApproval(state, 'sonnet', 5).approval).not.toBeNull();
     expect(claimApproval(state, 'sonnet', 5, ctx()).approval).not.toBeNull();
     expect(claimApproval(state, 'fable', 5).approval).toBeNull();
-    // Inside the deep tier the catalogue orders by version (opus 5.5 is above fable 5.2), the family rank does not.
+    // The family ladder wins across families (an opus approval does not cover fable, whatever the versions say).
     expect(claimApproval({ approvals: [{ model: 'haiku', scope: 'session', created_at: 1 }] }, 'sonnet', 5, ctx()).approval).toBeNull();
   });
 
@@ -226,5 +227,180 @@ describe('PreToolUse with a catalogue', () => {
   it('modelRank itself is unchanged (family only, null for unknown)', () => {
     expect(modelRank('claude-sonnet-5')).toBe(modelRank('claude-sonnet-5-5'));
     expect(modelRank('claude-zephyr-1')).toBeNull();
+  });
+});
+
+describe('the family ladder (fable > opus > sonnet > haiku) holds whatever the catalogue versions say', () => {
+  // The catalogue puts opus 5.5 and fable 5.2 in one tier and orders them by version: opus 5.5 above fable 5.2.
+  it('the catalogue alone really does put opus above fable (the premise of the fix)', () => {
+    expect(compareClaudeModels('claude-opus-5-5', 'claude-fable-5-2', ctx())).toBe(1);
+  });
+
+  it('compareFamilyFirst puts fable above opus and leaves same-family steps to the catalogue', () => {
+    expect(compareFamilyFirst('claude-fable-5-2', 'claude-opus-5-5', ctx())).toBe(1);
+    expect(compareFamilyFirst('claude-opus-5-5', 'claude-fable-5-2', ctx())).toBe(-1);
+    expect(compareFamilyFirst('opus', 'fable', ctx())).toBe(-1);
+    expect(compareFamilyFirst('claude-sonnet-5', 'sonnet', ctx())).toBe(-1);
+    expect(compareFamilyFirst('claude-zephyr-1', 'sonnet', ctx())).toBeNull();
+    expect(compareFamilyFirst('claude-opus-5-5', 'claude-fable-5-2')).toBe(-1);
+  });
+
+  it('a tier override still moves an id across families', () => {
+    const o = { 'claude-sonnet-5': { tier: 'deep' as const, rank: 99 } };
+
+    expect(compareFamilyFirst('claude-sonnet-5', 'claude-opus-5-5', ctx(o))).toBe(1);
+  });
+
+  it('an Opus 5.5 session calling fable is elevating', () => {
+    const e = classifyElevation({ model: 'fable' }, 'claude-opus-5-5', undefined, ctx());
+
+    expect(e?.kind).toBe('elevating');
+    expect(e?.sessionAlias).toBe('opus');
+  });
+
+  it('a Fable session calling opus is not elevating', () => {
+    expect(classifyElevation({ model: 'opus' }, 'claude-fable-5-2', undefined, ctx())).toBeNull();
+    expect(classifyElevation({ model: 'claude-opus-5-5' }, 'claude-fable-5-2', undefined, ctx())).toBeNull();
+  });
+
+  it('naming opus does not instruct a fable call, naming fable instructs an opus one', () => {
+    expect(classifyElevation({ model: 'fable' }, 'claude-sonnet-5-5', { models: ['opus'] }, ctx())?.kind).toBe('elevating');
+    expect(classifyElevation({ model: 'opus' }, 'claude-sonnet-5-5', { models: ['fable'] }, ctx())?.kind).toBe('instructed');
+  });
+
+  it('an opus approval does not cover fable, a fable approval covers opus', () => {
+    const opus = { approvals: [{ model: 'opus' as const, scope: 'session' as const, created_at: 1 }] };
+    const fable = { approvals: [{ model: 'fable' as const, scope: 'session' as const, created_at: 1 }] };
+
+    expect(claimApproval(opus, 'fable', 5, ctx()).approval).toBeNull();
+    expect(claimApproval(opus, 'claude-fable-5-2', 5, ctx()).approval).toBeNull();
+    expect(claimApproval(fable, 'opus', 5, ctx()).approval).not.toBeNull();
+  });
+});
+
+describe('PreToolUse with a catalogue: the family ladder and the approvals store', () => {
+  const flashRec = { subagent: 'general-purpose', tier: 'flash' as const, model: 'sonnet' as const };
+  const setup = (session: string) => {
+    const approvals = memoryApprovals();
+    const deps: HookDeps = {
+      readMode: async () => 'on',
+      readSessionModel: () => session,
+      readQuotaStrategy: async () => 'unknown',
+      dispatch: async () => null,
+      log: () => {},
+      readTurn: () => ({ turn: 't1', intent: { models: [] }, rec: flashRec }),
+      rankContext: () => ctx(),
+      approvals,
+      env: {}
+    };
+    return { deps, approvals };
+  };
+  const call = (model: string): HookInput => ({ session_id: 's1', prompt_id: 'p1', tool_name: 'Agent', tool_input: { description: 'd', prompt: 'p', subagent_type: 'code-engineer', model } });
+  const decision = async (deps: HookDeps, model: string) => ((await onPreToolUse(call(model), deps))?.hookSpecificOutput as any)?.permissionDecision ?? null;
+
+  it('an Opus 5.5 session calling fable is denied with the question, not run silently', async () => {
+    expect(await decision(setup('claude-opus-5-5').deps, 'fable')).toBe('deny');
+  });
+
+  it('a Fable session calling opus is not asked about', async () => {
+    expect(await decision(setup('claude-fable-5-2').deps, 'opus')).toBeNull();
+  });
+
+  it('an opus approval does not let a fable call through', async () => {
+    const { deps, approvals } = setup('claude-sonnet-5-5');
+    approvals.record('s1', { model: 'opus', scope: 'session', created_at: 1 });
+
+    expect(await decision(deps, 'opus')).toBeNull();
+    expect(await decision(deps, 'fable')).toBe('deny');
+  });
+
+  it('the store gets the catalogue: an approval for sonnet 5 does not cover the sonnet alias (5.5)', async () => {
+    const { deps, approvals } = setup('claude-haiku-5-5');
+    approvals.record('s1', { model: 'claude-sonnet-5' as any, scope: 'session', created_at: 1 });
+
+    expect(await decision(deps, 'sonnet')).toBe('deny');
+  });
+});
+
+describe('a ladder-pinned subagent carries its model in its name (jev-ladder-<id>), and the elevation guard reads it', () => {
+  const flashRec = { subagent: 'general-purpose', tier: 'flash' as const, model: 'sonnet' as const };
+  const setup = (session = 'claude-sonnet-5-5', withCatalogue = true) => {
+    const deps: HookDeps = {
+      readMode: async () => 'on',
+      readSessionModel: () => session,
+      readQuotaStrategy: async () => 'unknown',
+      dispatch: async () => null,
+      log: () => {},
+      readTurn: () => ({ turn: 't1', intent: { models: [] }, rec: flashRec }),
+      ...(withCatalogue ? { rankContext: () => ctx() } : {}),
+      approvals: memoryApprovals(),
+      env: {}
+    };
+    return deps;
+  };
+  const agent = (subagent_type: string, extra: Record<string, unknown> = {}): HookInput => ({
+    session_id: 's1',
+    prompt_id: 'p1',
+    tool_name: 'Agent',
+    tool_input: { description: 'd', prompt: 'p', subagent_type, ...extra }
+  });
+  const decision = async (deps: HookDeps, input: HookInput) => ((await onPreToolUse(input, deps))?.hookSpecificOutput as any)?.permissionDecision ?? null;
+
+  it('an opus ladder agent in a sonnet session is elevating, with and without a catalogue', async () => {
+    for (const withCatalogue of [true, false]) {
+      const d = setup('claude-sonnet-5-5', withCatalogue);
+
+      expect(await decision(d, agent('jev-ladder-claude-opus-5-5'))).toBe('deny');
+      expect(await decision(d, agent('jev-ladder-claude-fable-5-2'))).toBe('deny');
+    }
+  });
+
+  it('a plugin-qualified name is read the same way', async () => {
+    expect(await decision(setup(), agent('jev:jev-ladder-claude-opus-5-5'))).toBe('deny');
+  });
+
+  it('the deny names the pinned model: marker, and the elevation is for opus', async () => {
+    const o = (await onPreToolUse(agent('jev-ladder-claude-opus-5-5'), setup()))?.hookSpecificOutput as any;
+
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+  });
+
+  it('a sonnet ladder agent in a sonnet session is not elevating, nor is an older sonnet', async () => {
+    expect(await decision(setup(), agent('jev-ladder-claude-sonnet-5-5'))).toBeNull();
+    expect(await decision(setup(), agent('jev-ladder-claude-sonnet-5'))).toBeNull();
+    expect(await decision(setup(), agent('jev-ladder-claude-haiku-5-5'))).toBeNull();
+  });
+
+  it('an opus session running an opus ladder agent is not elevating', async () => {
+    expect(await decision(setup('claude-opus-5-5'), agent('jev-ladder-claude-opus-5-5'))).toBeNull();
+  });
+
+  it('an approval for opus lets the opus ladder agent through', async () => {
+    const d = setup();
+    d.approvals!.record('s1', { model: 'opus', scope: 'session', created_at: 1 });
+
+    expect(await decision(d, agent('jev-ladder-claude-opus-5-5'))).toBeNull();
+    expect(await decision(d, agent('jev-ladder-claude-fable-5-2'))).toBe('deny');
+  });
+
+  it('an explicit model on the call still decides: it overrides the definition', async () => {
+    expect(await decision(setup(), agent('jev-ladder-claude-opus-5-5', { model: 'sonnet' }))).toBeNull();
+  });
+
+  it('a custom agent with no model, a made-up ladder suffix and an unrelated name are unchanged', async () => {
+    const d = setup();
+
+    expect(await decision(d, agent('code-engineer'))).toBeNull();
+    expect(await decision(d, agent('general-purpose'))).toBeNull();
+    expect(await decision(d, agent('jev-ladder-notes'))).toBeNull();
+    expect(await decision(d, agent('my-jev-ladder-claude-opus-5-5'))).toBeNull();
+  });
+
+  it('classifyElevation reads the pinned id: requested is the id from the name', () => {
+    const e = classifyElevation({ subagent_type: 'jev-ladder-claude-opus-5-5' }, 'claude-sonnet-5-5', undefined, ctx());
+
+    expect(e).toMatchObject({ kind: 'elevating', requested: 'claude-opus-5-5', sessionAlias: 'sonnet' });
+    expect(classifyElevation({ subagent_type: 'jev-ladder-claude-sonnet-5-5' }, 'claude-sonnet-5-5', undefined, ctx())).toBeNull();
+    expect(classifyElevation({ subagent_type: 'jev-ladder-claude-opus-5-5' }, 'claude-sonnet-5-5', { models: ['opus'] }, ctx())?.kind).toBe('instructed');
   });
 });

@@ -11,8 +11,8 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
   return {
     states,
     record: (s, approval) => void states.set(s, addApproval(get(s), approval, approval.created_at)),
-    claim: (s, requested, nowMs) => {
-      const { state, approval } = claimApproval(get(s), requested, nowMs);
+    claim: (s, requested, nowMs, ctx) => {
+      const { state, approval } = claimApproval(get(s), requested, nowMs, ctx);
       states.set(s, state);
       return approval;
     },

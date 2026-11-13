@@ -682,8 +682,11 @@ recommendation) appears in the question text and the directive, and the log reco
 **Ranking.** The comparison uses the model catalogue (`~/.config/jev/models/claude-code.json`, "Model catalogue
 (core)" above) when a usable one exists and knows both ids: tier first, then version, then the user's overrides.
 Otherwise it falls back to the family-only regex rank (`haiku` < `sonnet` < `opus` < `fable`). Two details of the
-catalogue order are worth knowing: inside the `deep` tier it is by version (opus 5.5 ranks above fable 5.2), so a
-downgrade step counts only when the family rank agrees; and an alias is the newest id of its family. A missing,
+catalogue order are worth knowing: inside the `deep` tier it is by version (opus 5.5 ranks above fable 5.2), so the
+elevation guard, the approvals and a downgrade step all let the family ladder decide across families (an Opus 5.5
+session calling `fable` is an elevation, a Fable session calling `opus` is not, an `opus` approval does not cover
+`fable`) and use the catalogue only for versions inside one family and for ids a tier override moved; and an alias is
+the newest id of its family. A missing,
 corrupt or empty catalogue, or an id it does not list, falls back silently and never throws. A requested model that
 nothing can rank is **unranked**: the downgrade logic ignores it, and with a catalogue in use the elevation guard
 asks about it (the permission dialog) instead of letting it pass.
@@ -705,10 +708,14 @@ plugin). So:
 **`ladder-agents`.** Writes the definitions for the catalogue's ladder steps into a directory you name:
 
 ```
-bun scripts/jev-models.ts ladder-agents --dir <directory> [--harness claude-code]
+bun scripts/jev-models.ts ladder-agents --dir <directory> [--harness claude-code] [--max-tier free|cheap|standard|deep]
 ```
 
-One `jev-ladder-<id>.md` per ladder step (all tiers; `missing` and `needs-review` ids and unsafe ids are left out):
+One `jev-ladder-<id>.md` per ladder step (all tiers by default; `--max-tier standard` skips the opus and fable
+definitions, and a bad tier writes nothing and exits 2; `missing` and `needs-review` ids and unsafe ids are left out).
+The elevation guard reads a ladder definition's name: a call with no `model` whose `subagent_type` is
+`jev-ladder-<id>` (or `<plugin>:jev-ladder-<id>`) is judged as a call for `<id>`, so an opus definition launched from a
+sonnet session goes through the same choice flow as `model: "opus"`. Each definition has:
 front matter `name`, `description` and `model: <full id>`, **no `tools` field**, a short general-purpose body. It writes
 nowhere without `--dir` (exit 2), exits 1 with no usable catalogue, creates the directory if needed, overwrites only
 files it generated (they carry a marker line) and skips any other file with the same name. Point `--dir` at a
@@ -718,7 +725,9 @@ beside it.
 
 **State and logs.** `<session_id>.downgrade.json` in `~/.config/jev/claude-sessions/` (0700 directory, 0600 file),
 written atomically under its own per-session lock; it holds the question's signature hash, the recommendation, the
-chosen label and expiry, never task text. The `agent_call` record gains `downgrade` (`asked`, `answered`, `applied`,
+which prescribed label was chosen (a free-text "Other" answer is stored as `other`, never its text) and expiry, never
+task text. A No to the elevation question (`No, proceed on <session model>`) also marks the turn's downgrade
+recommendation answered for the same window, so the relaunch on the session model is not asked about again. The `agent_call` record gains `downgrade` (`asked`, `answered`, `applied`,
 `skipped`), `downgrade_skip`, `downgrade_from`, `downgrade_to`, `effort_suggested` and `effort_session`; every
 existing field stays. In telemetry the `modelUsed` of an applied downgrade is the model it ran on.
 
@@ -726,7 +735,7 @@ existing field stays. In telemetry the `modelUsed` of an applied downgrade is th
 
 - The flow needs the assistant to ask the prescribed question; if it does not, the retry passes after the first deny.
 - The recorder trusts the answer the harness reports for a question that starts with the marker, and does not check
-  the wording or the options. A multi-select or free-text "Other" answer is recorded only if the harness reports it as a string.
+  the wording or the options. A multi-select or free-text "Other" answer marks the question answered if the harness reports it as a string; the text is not stored.
 - Interactive only: a headless run has nobody to answer, so the one deny is followed by the passing retry; use
   `JEV_DOWNGRADE=off` or `auto` there.
 - Not verified here: the whole flow end to end in a real interactive session, whether the assistant follows the

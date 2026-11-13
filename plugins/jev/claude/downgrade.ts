@@ -286,6 +286,33 @@ export function claimDowngrade(
   return { state: { entries: [...entries, added].slice(-MAX_ENTRIES) }, result: 'first' };
 }
 
+/** What is stored for a No to the elevation question that answered the downgrade question too (see `onPostToolUse`). */
+export const ELEVATION_DECLINED = 'elevation declined';
+
+const MODEL = '(haiku|sonnet|opus|fable|claude-(?:haiku|sonnet|opus|fable)(?:-\\d{1,3}){0,3})';
+const PRESCRIBED: ReadonlyArray<{ re: RegExp; label: (m: RegExpExecArray) => string }> = [
+  { re: new RegExp(`^(Yes, )?${MODEL}$`), label: (m) => `${m[1] ?? ''}${m[2]}` },
+  { re: new RegExp(`^No, keep ${MODEL}$`), label: (m) => `No, keep ${m[1]}` },
+  // `<id> via <definition>`: the definition name is not kept (it is any text the user could have typed)
+  { re: new RegExp(`^${MODEL} via (?:[a-z0-9-]+:)?jev-ladder-claude-[a-z0-9-]{1,40}$`), label: (m) => `${m[1]} via ladder` }
+];
+
+/**
+ * Pure: the only part of an answer the state keeps. A prescribed label (`Yes, <alias>`, `<alias>`, `No, keep <model>`,
+ * `<id> via <definition>`) is kept in a normalised form that names the model and nothing else; anything else, an
+ * "Other" free-text answer in particular, is stored as `other`. The text itself never reaches the file: it can hold
+ * task content, and nothing reads it back (an answer of any kind just marks the question answered).
+ */
+export function prescribedChoice(answer: string): string {
+  const text = typeof answer === 'string' ? answer.trim() : '';
+  if (text === ELEVATION_DECLINED) return ELEVATION_DECLINED;
+  for (const { re, label } of PRESCRIBED) {
+    const m = re.exec(text);
+    if (m) return label(m);
+  }
+  return 'other';
+}
+
 /**
  * Pure: record the user's answer to a downgrade question for the recommendation `from`. Every pending question of that
  * recommendation is marked answered (Yes variants and No alike: the retried call must not be asked again). With no
@@ -293,7 +320,7 @@ export function claimDowngrade(
  */
 export function answerDowngrade(state: DowngradeState, from: string, chosen: string, nowMs: number): DowngradeState {
   const entries = live(state, nowMs);
-  const label = chosen.trim().slice(0, 120);
+  const label = prescribedChoice(chosen);
   let matched = false;
   const next = entries.map((e) => {
     if (e.answered || e.from !== from) return e;

@@ -554,7 +554,7 @@ describe('the live hook process (private state dir, real claim)', () => {
   const run = (event: string, input: object) =>
     Bun.spawnSync(['bun', HOOK, event], {
       stdin: new TextEncoder().encode(JSON.stringify(input)),
-      env: { ...process.env, JEV_ELEVATION: 'clamp', HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
+      env: { ...process.env, JEV_ELEVATION: 'clamp', HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '', JEV_MODEL_REFRESH: 'off' }
     });
   const parse = (p: ReturnType<typeof run>) => (p.stdout.toString() ? JSON.parse(p.stdout.toString()).hookSpecificOutput : null);
   const sessions = () => path.join(home, '.config', 'jev', 'claude-sessions');

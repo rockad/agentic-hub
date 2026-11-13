@@ -21,7 +21,7 @@ afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 function run(event: string, input: object) {
   return Bun.spawnSync(['bun', HOOK, event], {
     stdin: new TextEncoder().encode(JSON.stringify(input)),
-    env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '' }
+    env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, 'config.json'), JEV_OPENROUTER_API_KEY: '', JEV_MODEL_REFRESH: 'off' }
   });
 }
 

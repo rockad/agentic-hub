@@ -308,6 +308,7 @@ describe('PreToolUse with a catalogue: the family ladder and the approvals store
 
   it('an opus approval does not let a fable call through', async () => {
     const { deps, approvals } = setup('claude-sonnet-5-5');
+    approvals.deny('s1', 'opus', 1);
     approvals.record('s1', { model: 'opus', scope: 'session', created_at: 1 });
 
     expect(await decision(deps, 'opus')).toBeNull();
@@ -377,6 +378,7 @@ describe('a ladder-pinned subagent carries its model in its name (jev-ladder-<id
 
   it('an approval for opus lets the opus ladder agent through', async () => {
     const d = setup();
+    d.approvals!.deny('s1', 'opus', 1);
     d.approvals!.record('s1', { model: 'opus', scope: 'session', created_at: 1 });
 
     expect(await decision(d, agent('jev-ladder-claude-opus-5-5'))).toBeNull();

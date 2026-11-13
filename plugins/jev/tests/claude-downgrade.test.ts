@@ -454,6 +454,7 @@ describe('elevation and downgrade are independent', () => {
 
   it('an elevation approval does not answer a downgrade question', async () => {
     const { d, approvals, downgrades } = setup();
+    d.approvals!.deny('s1', 'opus', (d.now ?? Date.now)());
     onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
     expect(approvals.states.get('s1')?.approvals.length).toBe(1);
     expect(downgrades.states.size).toBe(0);
@@ -462,6 +463,7 @@ describe('elevation and downgrade are independent', () => {
 
   it('an approved elevation is not asked a second question', async () => {
     const { d, logs } = setup({ readSessionModel: () => 'claude-sonnet-5-5' });
+    d.approvals!.deny('s1', 'opus', (d.now ?? Date.now)());
     onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
     expect(await onPreToolUse(call(), d)).toBeNull();
     expect(logs[0].elevation).toBe('approved');
@@ -470,6 +472,7 @@ describe('elevation and downgrade are independent', () => {
 
   it('a downgrade answer leaves an approval already on record alone', async () => {
     const { d, approvals } = setup();
+    d.approvals!.deny('s1', 'opus', (d.now ?? Date.now)());
     onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
     const before = JSON.stringify(approvals.states.get('s1'));
     answer(d, 'Yes, sonnet');

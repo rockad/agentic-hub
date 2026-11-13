@@ -468,7 +468,7 @@ Free community models on OpenRouter (e.g. `openrouter/free`, `google/gemma-4-31b
 
 #### 🗂️ Local Telemetry & Log Files
 
-Jev writes three local logs outside the Claude hook state. None holds prompt text.
+Jev writes three local logs outside the Claude hook state. None holds prompt text. The audit report is the exception: `~/.config/jev/audit_report.json` (written by `scripts/audit-agentic-gaps.ts`) still quotes up to 160 characters of transcript text per incident, so it is not text-free like the other logs and is only protected by its `0600` mode.
 
 | File | Written by | Content |
 | :--- | :--- | :--- |
@@ -477,6 +477,7 @@ Jev writes three local logs outside the Claude hook state. None holds prompt tex
 | `~/.config/jev/claude_decisions.jsonl` | the Claude hook | recommendation, model names, tier and a prompt hash |
 
 - Every file is created `0600` and its directory `0700`. Files and directories that already exist with looser modes (older releases wrote `0644` / `0755`) are tightened on the next write. The chmod is best-effort and never blocks or fails the caller.
+- `privateDir` also tightens `~/.gemini/antigravity-cli/` to `0700`, a directory Antigravity owns (it holds the telemetry log); anything else that reads that directory as another user or group loses access.
 - **Field change in `jev_telemetry.jsonl`:** `jev_dispatch` lines no longer carry `task` (the first 100 characters of the prompt). They carry `taskLen` (the task's length in characters) and `taskHash` (the first 12 hex characters of its sha256, stable for equal text) instead. Every other field is unchanged. Lines already in an existing file keep their old `task` text: delete or truncate the file if that matters to you.
 - Nothing in the plugin reads the old `task` field; `src/audit/drift-detector.ts` and `scripts/audit-agentic-gaps.ts` use `tool`, `recommendedTier`, `timestamp` and `sessionId`.
 
@@ -549,8 +550,10 @@ to the chosen option label in `tool_response.answers`.
    - `Yes, for this session`
    - `No, proceed on <session model>`
 2. The user picks. The recorder (`hook.ts post-tool-use`, registered in `claude/hooks.json`) reads the question
-   and the answer from the harness's `tool_response.answers` (falling back to `tool_input.answers`) and writes an
-   approval for a Yes. A No records nothing.
+   and the answer from the harness's `tool_response.answers` only (`tool_input` is what the assistant sent, so it
+   never records anything) and writes an approval for a Yes, but only when Jev prescribed the question for that
+   model (or a stronger one) in the last 15 minutes: by a deny, or by the turn directive. Any other answer is
+   ignored. A No records nothing.
 3. On a Yes the assistant launches the delegation again with the same model; the hook finds the approval and lets
    the call through with no dialog (logged `elevation: "approved"` with `approval_scope`). On a No it launches
    on the session model, or does the work directly. The next elevating call asks again.
@@ -598,8 +601,9 @@ apostrophe and stale-intent fixes.
 
 **State.** `<session_id>.approvals.json` in `~/.config/jev/claude-sessions/` (directory 0700, file 0600), written
 atomically (temporary file, then rename) under a per-session lock (an exclusive `mkdir`; a lock older than 3
-seconds is treated as stale). It holds the approvals (model, scope, creation time, expiry) and the denied-attempt
-counter, never task text. Files left behind are pruned after 7 days at `SessionStart`. The recorder never throws,
+seconds is treated as stale; the holder writes a token file in it and removes it only while the token is still its
+own). It holds the approvals (model, scope, creation time, expiry), the models Jev prescribed the question for
+(model to time, kept 15 minutes) and the denied-attempt counter, never task text. Files left behind are pruned after 7 days at `SessionStart`. The recorder never throws,
 always exits 0, prints nothing, and ignores any question without the marker and any malformed input.
 
 **Limits, said plainly.**
@@ -851,14 +855,18 @@ the rewritten `model`.
 - **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
   - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report
     (`~/.config/jev/audit_report.json`) are written `0600` in `0700` directories. Files and directories that
-    already exist with looser modes are tightened at write time (best-effort, never blocking).
+    already exist with looser modes are tightened at write time (best-effort, never blocking). The audit report
+    still quotes up to 160 characters of transcript text per incident, so it is not text-free like the other logs.
+    `privateDir` also tightens `~/.gemini/antigravity-cli/`, a directory Antigravity owns.
   - `jev_dispatch` telemetry lines carry `taskLen` and `taskHash` (first 12 hex of the sha256) instead of up to
     100 characters of task text in `task`. Lines already written keep their old `task` text: nothing deletes
     them. To clear them, delete or truncate `~/.gemini/antigravity-cli/jev_telemetry.jsonl`.
   - The `private-fs` helper (`privateDir`, `privateFile`) is shared by the Claude hook and the tools.
-  - Hermetic tests: a `bunfig.toml` preload (`tests/setup-home.ts`) gives every run a fresh temporary `HOME` and
-    clears the harness markers, so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
-    no longer change test results.
+  - Hermetic tests: run `bun run test`, which starts bun with a fresh temporary `HOME` (bun fixes `os.homedir()`
+    at startup, so only a `HOME` set before it starts moves it). A `bunfig.toml` preload (`tests/setup-home.ts`)
+    also clears the harness markers, `JEV_*` variables and credentials (`OPENROUTER_API_KEY`, anything matching
+    KEY, TOKEN or SECRET), so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
+    no longer change test results. Plain `bun test` still passes but prints a warning that `os.homedir()` is real.
 - **2.3.4: elevation reasons, intent fixes, opt-in clamp** (see "Elevation" above):
   - Default behaviour is the 2.3.3 dialog on every `Agent` call above the session model with no instruction
     naming it. The reason now says what each answer does: Yes runs it on the requested model; No cancels the call
@@ -957,6 +965,6 @@ Operating modes and status are managed via the in-chat `/jev` slash command / sk
 # Install dependencies
 bun install
 
-# Run the test suite
-bun test
+# Run the test suite (fresh temporary HOME; plain `bun test` would see your real home)
+bun run test
 ```

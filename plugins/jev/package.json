@@ -1,6 +1,6 @@
 {
   "name": "jev",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "description": "TypeSafe Jev System 1 coprocessor, OpenRouter Decisions API gateway, and free-tier execution",
   "type": "module",
   "main": "src/index.ts",
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "start": "bun run src/index.ts",
-    "test": "bun test"
+    "test": "bun run scripts/run-tests.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",

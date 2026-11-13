@@ -2,7 +2,9 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createHash } from 'node:crypto';
 import { fetchWithTimeout } from './client.js';
+import { PRIVATE_FILE_MODE, privateDir, privateFile } from './private-fs.js';
 
 export const JEV_TELEMETRY_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl');
 export const TELEMETRY_DIR = path.join(os.homedir(), '.gemini', 'antigravity-cli');
@@ -28,15 +30,28 @@ export interface JevTelemetryEvent {
   [key: string]: unknown;
 }
 
+/**
+ * What a telemetry line may say about a task instead of the task itself: its length and the first 12 hex of
+ * its sha256. The hash is stable, so repeated tasks can be counted without keeping their text.
+ */
+export function taskFingerprint(task: string): { taskLen: number; taskHash: string } {
+  return { taskLen: task.length, taskHash: createHash('sha256').update(task).digest('hex').slice(0, 12) };
+}
+
+/** Append one line to the telemetry file, owner-only: the directory 0700 and the file 0600, tightened even when they pre-exist. */
+async function appendPrivate(file: string, line: string): Promise<void> {
+  privateDir(path.dirname(file));
+  await fs.appendFile(file, line, { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
+  privateFile(file);
+}
+
 export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
   try {
-    const dir = path.dirname(JEV_TELEMETRY_FILE);
-    if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
     const payload = {
       timestamp: entry.timestamp || new Date().toISOString(),
       ...entry
     };
-    await fs.appendFile(JEV_TELEMETRY_FILE, JSON.stringify(payload) + '\n', 'utf8');
+    await appendPrivate(JEV_TELEMETRY_FILE, JSON.stringify(payload) + '\n');
   } catch {
     // telemetry is best-effort
   }
@@ -47,15 +62,12 @@ export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
  */
 export async function logTelemetry(entry: Record<string, unknown>): Promise<void> {
   try {
-    if (!fsSync.existsSync(TELEMETRY_DIR)) {
-      await fs.mkdir(TELEMETRY_DIR, { recursive: true });
-    }
     const payload = {
       timestamp: new Date().toISOString(),
       harness: 'antigravity',
       ...entry
     };
-    await fs.appendFile(TELEMETRY_FILE, JSON.stringify(payload) + '\n', 'utf8');
+    await appendPrivate(TELEMETRY_FILE, JSON.stringify(payload) + '\n');
   } catch {
     // Non-blocking telemetry
   }

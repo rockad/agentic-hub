@@ -3,10 +3,10 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bundler-bun-478636?logo=bun)](https://bun.sh/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Stable-v2.3.4-brightgreen)](https://github.com/rockad/agentic-hub)
+[![Status](https://img.shields.io/badge/Status-Stable-v2.3.5-brightgreen)](https://github.com/rockad/agentic-hub)
 
 **Path:** `agentic-hub/plugins/jev`  
-**Version:** 2.3.4  
+**Version:** 2.3.5  
 **Runtime:** Bun / Node (ESM)  
 **Dependencies:** TypeScript, Zod, OpenRouter SDK, Agent Framework Adapters
 
@@ -373,6 +373,21 @@ Free community models on OpenRouter (e.g. `openrouter/free`, `google/gemma-4-31b
 - In **`on` mode**, Jev protects your proprietary codebase and system reasoning by enforcing ZDR on decision routing (`jev_dispatch`, `jev_judge`, `jev_route`) while still permitting $0.00 mechanical offloading (scaffolding, formatting, commits) to free endpoints. Each outbound offload records `"zdr_policy": "on"` and `"zdr_applied": false` in `~/.config/jev/egress-log.jsonl` for compliance auditing.
 - In **`strict` mode**, Jev adopts a zero-trust posture: any attempt to route to an endpoint without verified ZDR compliance fails closed with a typed `JEV_ZDR_UNAVAILABLE` error (`EGRESS_ZDR_UNAVAILABLE_CODE`). No tokens leave the machine to unverified endpoints.
 
+#### 🗂️ Local Telemetry & Log Files
+
+Jev writes three local logs outside the Claude hook state. None holds prompt text. The audit report is the exception: `~/.config/jev/audit_report.json` (written by `scripts/audit-agentic-gaps.ts`) still quotes up to 160 characters of transcript text per incident, so it is not text-free like the other logs and is only protected by its `0600` mode.
+
+| File | Written by | Content |
+| :--- | :--- | :--- |
+| `~/.gemini/antigravity-cli/jev_telemetry.jsonl` | every MCP tool, and the Claude hook | tool, harness, tier, model, latency, cost, quota fields |
+| `~/.config/jev/egress-log.jsonl` | the egress guard while a policy or ZDR is active | host, model, byte count, session directories, ZDR markers |
+| `~/.config/jev/claude_decisions.jsonl` | the Claude hook | recommendation, model names, tier and a prompt hash |
+
+- Every file is created `0600` and its directory `0700`. Files and directories that already exist with looser modes (older releases wrote `0644` / `0755`) are tightened on the next write. The chmod is best-effort and never blocks or fails the caller.
+- `privateDir` also tightens `~/.gemini/antigravity-cli/` to `0700`, a directory Antigravity owns (it holds the telemetry log); anything else that reads that directory as another user or group loses access.
+- **Field change in `jev_telemetry.jsonl`:** `jev_dispatch` lines no longer carry `task` (the first 100 characters of the prompt). They carry `taskLen` (the task's length in characters) and `taskHash` (the first 12 hex characters of its sha256, stable for equal text) instead. Every other field is unchanged. Lines already in an existing file keep their old `task` text: delete or truncate the file if that matters to you.
+- Nothing in the plugin reads the old `task` field; `src/audit/drift-detector.ts` and `scripts/audit-agentic-gaps.ts` use `tool`, `recommendedTier`, `timestamp` and `sessionId`.
+
 ---
 
 ## 🤖 Claude Code
@@ -471,6 +486,21 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
+  - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report
+    (`~/.config/jev/audit_report.json`) are written `0600` in `0700` directories. Files and directories that
+    already exist with looser modes are tightened at write time (best-effort, never blocking). The audit report
+    still quotes up to 160 characters of transcript text per incident, so it is not text-free like the other logs.
+    `privateDir` also tightens `~/.gemini/antigravity-cli/`, a directory Antigravity owns.
+  - `jev_dispatch` telemetry lines carry `taskLen` and `taskHash` (first 12 hex of the sha256) instead of up to
+    100 characters of task text in `task`. Lines already written keep their old `task` text: nothing deletes
+    them. To clear them, delete or truncate `~/.gemini/antigravity-cli/jev_telemetry.jsonl`.
+  - The `private-fs` helper (`privateDir`, `privateFile`) is shared by the Claude hook and the tools.
+  - Hermetic tests: run `bun run test`, which starts bun with a fresh temporary `HOME` (bun fixes `os.homedir()`
+    at startup, so only a `HOME` set before it starts moves it). A `bunfig.toml` preload (`tests/setup-home.ts`)
+    also clears the harness markers, `JEV_*` variables and credentials (`OPENROUTER_API_KEY`, anything matching
+    KEY, TOKEN or SECRET), so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
+    no longer change test results. Plain `bun test` still passes but prints a warning that `os.homedir()` is real.
 - **2.3.4: elevation reasons, intent fixes, opt-in clamp** (see "Elevation" above):
   - Default behaviour is the 2.3.3 dialog on every `Agent` call above the session model with no instruction
     naming it. The reason now says what each answer does: Yes runs it on the requested model; No cancels the call
@@ -569,6 +599,6 @@ Operating modes and status are managed via the in-chat `/jev` slash command / sk
 # Install dependencies
 bun install
 
-# Run the test suite
-bun test
+# Run the test suite (fresh temporary HOME; plain `bun test` would see your real home)
+bun run test
 ```

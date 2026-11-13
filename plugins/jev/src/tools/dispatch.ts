@@ -23,6 +23,7 @@ import {
   JEV_INPUT_COST_PER_MILLION,
   FALLBACK_INPUT_COST_PER_MILLION,
   logTelemetry,
+  taskFingerprint,
   type SubTask,
   type BatchDispatchPlan
 } from '../core/index.js';
@@ -328,7 +329,8 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   await logTelemetry({
     tool: 'jev_dispatch',
     ...telemetryHarness(),
-    task: task.slice(0, 100),
+    // Metadata only: the prompt text never reaches the telemetry file.
+    ...taskFingerprint(task),
     ...result
   });
 

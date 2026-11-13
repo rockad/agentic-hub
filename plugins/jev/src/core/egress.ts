@@ -16,6 +16,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { PRIVATE_FILE_MODE, privateDir, privateFile } from './private-fs.js';
 
 export type ZdrPolicy = 'off' | 'on' | 'strict';
 
@@ -210,8 +211,9 @@ function isZdrApplied(body: unknown): boolean {
 function logEgress(entry: Record<string, unknown>): void {
   try {
     const file = egressLogFile();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n');
+    privateDir(path.dirname(file));
+    fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(file);
   } catch {
     // the log is best-effort; the decision itself never depends on it
   }

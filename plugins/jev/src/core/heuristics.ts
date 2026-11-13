@@ -130,8 +130,8 @@ export function isReadOnlySubagent(name: string): boolean {
  * True when the task text asks for a change to files. Deliberately narrow: clear editing verbs only,
  * in their imperative, third-person and gerund forms. Not "review", "check", "find", "explain",
  * "commit" or "port", which are as often about reading as about writing. "remove", "modify", "patch",
- * "amend" and "create" stay edit verbs until `needsEdit` exists on batch stages (2.3.5): "create" only
- * with a file-like object ("Create a picture of the flow" is not an edit), and "patch" only as a verb
+ * "amend" and "create" stay edit verbs, safe because a Claude Code batch stage can now override the
+ * wording with `needsEdit: false`: "create" only with a file-like object ("Create a picture of the flow" is not an edit), and "patch" only as a verb
  * ("how the patch works" is not).
  */
 const EDIT_VERB =

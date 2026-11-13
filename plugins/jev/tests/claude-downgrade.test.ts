@@ -714,9 +714,9 @@ describe('what is not evaluated', () => {
     expect(logs[0]).toMatchObject({ downgrade: 'skipped', downgrade_skip: 'none-cheaper' });
   });
 
-  it('a Workflow is never evaluated', async () => {
+  it('a Workflow is never rated (no downgrade evaluation, whatever its script holds)', async () => {
     const { d, rated } = setup();
-    expect(await onPreToolUse(call(INPUT, { tool_name: 'Workflow' }), d)).toBeNull();
+    expect(await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), d)).toBeNull();
     expect(rated).toHaveLength(0);
   });
 

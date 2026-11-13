@@ -27,6 +27,12 @@
         "hooks": [
           { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" post-tool-use", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          { "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/claude/hook.ts\" post-tool-use", "timeout": 5 }
+        ]
       }
     ],
     "PreToolUse": [

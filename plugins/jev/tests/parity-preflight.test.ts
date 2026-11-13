@@ -36,20 +36,20 @@ function pre(overrides: Partial<HookDeps> = {}, log: Record<string, unknown>[] =
 
 describe('pre-flight reminder (5.10)', () => {
   it('reminds on a Workflow when no dispatch call is recent, and names the tool', async () => {
-    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: {} }, pre());
+    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: { script: "await agent('p')" } }, pre());
 
     expect(out?.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(String(out?.hookSpecificOutput.additionalContext)).toContain('jev_batch_dispatch');
   });
 
   it('names the stage rubric exactly as #22 words it', async () => {
-    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: {} }, pre());
+    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: { script: "await agent('p')" } }, pre());
 
     expect(String(out?.hookSpecificOutput.additionalContext)).toContain(STAGE_RUBRIC_TEXT);
   });
 
   it('gives no reminder when a recent jev_batch_dispatch exists', async () => {
-    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: {} }, pre({ recentDispatch: () => true }));
+    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: { script: "await agent('p')" } }, pre({ recentDispatch: () => true }));
 
     expect(out).toBeNull();
   });
@@ -61,7 +61,7 @@ describe('pre-flight reminder (5.10)', () => {
   });
 
   it('never asks, denies or blocks', async () => {
-    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: {} }, pre());
+    const out = await onPreToolUse({ session_id: 's1', tool_name: 'Workflow', tool_input: { script: "await agent('p')" } }, pre());
 
     expect(Object.keys(out!.hookSpecificOutput).sort()).toEqual(['additionalContext', 'hookEventName']);
     expect(PREFLIGHT_REMINDER).toContain('not a block');

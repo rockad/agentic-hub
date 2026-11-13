@@ -933,6 +933,10 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.12: edit-capable persona swap on Claude Code only** (as in the reference, cognitive-engine #22; decided by the user):
+  - `resolveEditCapableSubagent` leaves a read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity,
+    OpenCode and the CLI, in single and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code
+    keeps the swap to `general-purpose`. The two parity cases that pinned this are un-skipped.
 - **2.3.11: workflow guard** (additive; Jev mode `on` only):
   - The agents a `Workflow` script launches never pass through `PreToolUse` (verified on Claude Code 2.1.323), so
     `agent(..., {model: 'opus'})` in a script bypassed the elevation guard. `PreToolUse` on `Workflow` now reads the
@@ -987,9 +991,6 @@ the rewritten `model`.
     session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
     says the Jev guard will ask before it runs; the tier is never lowered. `jev_dispatch` also reports
     `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
-  - Edit-capable persona swap now Claude Code only (as in the reference): `resolveEditCapableSubagent` leaves a
-    read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity, OpenCode and the CLI, in single
-    and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code keeps `general-purpose`.
   - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
     ceiling.
 

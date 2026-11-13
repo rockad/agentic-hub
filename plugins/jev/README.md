@@ -486,7 +486,9 @@ elevating attempts per session, `prompt_id` and delegation (subagent type and de
 of one delegation are denied; the **third attempt of the same delegation without an approval in the same prompt opens
 the permission dialog** (the 2.3.4 reason: Yes runs it on the stronger model; No
 cancels the call and stops the turn; a comment typed with No lets the assistant continue), logged
-`elevation: "asked"`. Different delegations count separately, so several workstreams that are each denied, answered and
+`elevation: "asked"`. A delegation whose description is reworded on every retry is a new delegation each time, so it
+never reaches the dialog; it is still denied every time, and 20 denials in one prompt open the dialog whatever the
+wording. Different delegations count separately, so several workstreams that are each denied, answered and
 retried never reach it; twenty denials in one prompt open it whatever they were. **A new `prompt_id` resets the count**,
 and background agent completions start new prompts, so the count restarts after each of those. A host that sends no
 `prompt_id` is keyed on the stored turn and the time it was stored, and that counter also restarts after five quiet

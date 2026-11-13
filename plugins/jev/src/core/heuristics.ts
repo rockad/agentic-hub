@@ -137,15 +137,34 @@ export function isReadOnlySubagent(name: string): boolean {
 const EDIT_VERB =
   /\b(?:edit|edits|editing|implement|implements|implementing|fix|fixes|fixing|refactor|refactors|refactoring|write|writes|writing|rewrite|rewrites|rewriting|add|adds|adding|update|updates|updating|rename|renames|renaming|migrate|migrates|migrating|delete|deletes|deleting|apply|applies|applying|remove|removes|removing|modify|modifies|modifying|amend|amends|amending|(?<!\b(?:the|a|an|this|that|these|those|its|my|our)\s+)patch(?:es|ing)?|creat(?:e|es|ing)\s+(?:an?\s+|the\s+|new\s+|another\s+)*(?:new\s+)?(?:files?|modules?|tests?|scripts?|docs?|documents?|directory|folder|class|function|config|component|readme|section|entry|note|tasklist))\b/i;
 
+/**
+ * "format", "reformat" and "insert" are edits only when the task also names a file-like object (FILE_LIKE):
+ * "Format this paragraph as bullet points" and "Insert a joke into the story" are text work, while
+ * "Reformat the table in docs/x.md" and "Format the JSON config" change a file. A noun "format" ("the output
+ * format", "dump format", "JSON format") is not the verb.
+ */
+const FILE_EDIT_VERB =
+  /\b(?:(?<!\b(?:the|a|an|this|that|these|those|its|my|our|output|dump|file|data|json|yaml|markdown|new|same|default|which|what)\s+)formats?|formatting|reformat(?:s|ting)?|inserts?|inserting)\b/i;
+
+/**
+ * A path, a name with a known extension, or one of the nouns file, files, config. A bare "a/b" is not a path
+ * ("and/or"): it needs a leading ./ ../ ~/ or /, two slashes, a well-known top-level directory, or an extension.
+ */
+const FILE_LIKE =
+  /(?:\b[\w-]+\.(?:md|markdown|json|jsonc|ya?ml|toml|ini|txt|csv|tsx?|jsx?|mjs|cjs|py|sh|rs|go|css|html?|xml|sql)\b|(?:^|\s)(?:\.{1,2}|~)?\/[\w.-]+|\b[\w-]+\/[\w.-]+\/[\w.-]+|\b(?:src|docs|lib|plugins|tests|scripts|skills|rules|claude)\/[\w.-]+|\bfiles?\b|\bconfigs?\b|\bconfiguration\b)/i;
+
 /** "no edits", "without writing", "do not update": the verb is named to rule it out. */
 const NEGATED_EDIT = /\b(?:no|not|never|without|don'?t|avoid)\s+(?:\w+\s+)?$/i;
 
 export function taskNeedsEdit(taskText: string): boolean {
   // A typographic apostrophe is an apostrophe: "Don’t update the files" is the same negation as "Don't".
   const text = (taskText || '').replace(/[‘’ʼ]/g, "'");
-  const verb = new RegExp(EDIT_VERB.source, 'gi');
-  for (const m of text.matchAll(verb)) {
-    if (!NEGATED_EDIT.test(text.slice(Math.max(0, m.index! - 20), m.index!))) return true;
+  const verbs = [new RegExp(EDIT_VERB.source, 'gi')];
+  if (FILE_LIKE.test(text)) verbs.push(new RegExp(FILE_EDIT_VERB.source, 'gi'));
+  for (const verb of verbs) {
+    for (const m of text.matchAll(verb)) {
+      if (!NEGATED_EDIT.test(text.slice(Math.max(0, m.index! - 20), m.index!))) return true;
+    }
   }
   return false;
 }

@@ -26,6 +26,7 @@ function deps(overrides: Partial<HookDeps> = {}): HookDeps {
     readQuotaStrategy: async () => 'unknown',
     dispatch: async () => flashRec,
     log: () => {},
+    env: { JEV_ELEVATION: 'dialog' }, // these tests assert the 2.3.4 dialog; the default is now the choice flow
     ...overrides
   };
 }

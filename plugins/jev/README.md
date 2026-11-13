@@ -410,7 +410,8 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Asks the user (a permission dialog) before a subagent runs on a stronger model than the session's, when the prompt did not name that model; a model the user named passes. Yes runs it on the stronger model; No cancels the call and stops the turn, and a comment typed with No lets the assistant continue. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. Opt-in `JEV_ELEVATION=clamp` runs the first such call in a prompt on the session model instead (see "Elevation" below). |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval. Prints nothing. |
 
 What the hooks do **not** do:
 
@@ -433,16 +434,112 @@ The `PreToolUse` guard passes a model the user named in the current prompt (or a
 clamp and no dialog, and logs it as `elevation: "instructed"`. Jev cannot read the
 user-level `CLAUDE.md`, so the standing rule is only reflected by the router's tier.
 
+### Elevation choice (default)
+
+Claude Code's permission dialog cannot offer "proceed without elevation": a plain No rejects the call and stops
+the turn. The choice flow gives the user two real answers, "Yes, proceed on the elevated model" and "No, proceed
+on the session model", and never "No, stop the turn". It rests on two verified facts: a `PreToolUse` hook
+`deny` with a reason does not stop the turn (the assistant receives the reason and keeps working), and a
+`PostToolUse` hook with matcher `AskUserQuestion` fires after the user has picked, with the question text mapped
+to the chosen option label in `tool_response.answers`.
+
+**The flow.**
+
+1. The assistant calls `Agent` with a model above the session model, the prompt did not name it, and no approval
+   covers it. The hook **denies** the call. The reason (under 800 characters) tells the assistant to ask the user
+   with `AskUserQuestion`: one question whose text starts with the marker `[jev-elevate:<model>]` followed by a
+   short question naming the `subagent_type`, the requested model, the session model and a 10-word task summary,
+   with exactly four options, in this order:
+   - `Yes, once`
+   - `Yes, for the next 5 minutes`
+   - `Yes, for this session`
+   - `No, proceed on <session model>`
+2. The user picks. The recorder (`hook.ts post-tool-use`, registered in `claude/hooks.json`) reads the question
+   and the answer from the harness's `tool_response.answers` only (`tool_input` is what the assistant sent, so it
+   never records anything) and writes an approval for a Yes, but only when Jev prescribed the question for that
+   model (or a stronger one) in the last 15 minutes: by a deny, or by the turn directive. Any other answer is
+   ignored. A No records nothing.
+3. On a Yes the assistant launches the delegation again with the same model; the hook finds the approval and lets
+   the call through with no dialog (logged `elevation: "approved"` with `approval_scope`). On a No it launches
+   on the session model, or does the work directly. The next elevating call asks again.
+
+The turn directive (`UserPromptSubmit`) prescribes the same question and options where Jev rates a task above the
+session model, so a well-behaved assistant asks before its first `Agent` call; the deny is the fallback. The
+directive keeps the `rule: per the Jev guard` label.
+
+**Scopes.**
+
+| Answer | Approval | Lasts |
+| :--- | :--- | :--- |
+| `Yes, once` | `scope: "once"` | One launch; 10 minutes to use it. Consumed atomically: of several parallel calls only one wins. |
+| `Yes, for the next 5 minutes` | `scope: "5min"` | Five minutes from the answer. |
+| `Yes, for this session` | `scope: "session"` | The session (bound to its `session_id`), no expiry. |
+| `No, proceed on <session model>` | none | The next elevating call asks again. |
+
+An approval for model M covers any requested model at or below M that is above the session model: an `opus`
+approval covers a `sonnet` call on a `haiku` session; a `sonnet` approval does not cover `opus`. When several
+approvals cover a call, a standing one (session, then 5 minutes) is used before a `once`, so the `once` is kept.
+Approvals of one session never apply to another.
+
+**Third-attempt backstop.** If the assistant does not ask the prescribed question, the hook counts denied
+elevating attempts per session, `prompt_id` and delegation (subagent type and description). The first two attempts
+of one delegation are denied; the **third attempt of the same delegation without an approval in the same prompt opens
+the permission dialog** (the 2.3.4 reason: Yes runs it on the stronger model; No
+cancels the call and stops the turn; a comment typed with No lets the assistant continue), logged
+`elevation: "asked"`. A delegation whose description is reworded on every retry is a new delegation each time, so it
+never reaches the dialog; it is still denied every time, and 20 denials in one prompt open the dialog whatever the
+wording. Different delegations count separately, so several workstreams that are each denied, answered and
+retried never reach it; twenty denials in one prompt open it whatever they were. **A new `prompt_id` resets the count**,
+and background agent completions start new prompts, so the count restarts after each of those. A host that sends no
+`prompt_id` is keyed on the stored turn and the time it was stored, and that counter also restarts after five quiet
+minutes. If the counter cannot be written, the call asks instead of being denied again.
+
+**`JEV_ELEVATION`** (environment only, read by the hook; there is no config key):
+
+| Value | Behaviour |
+| :--- | :--- |
+| unset, `choice`, or any other value | The choice flow described here. |
+| `dialog` | The 2.3.4 behaviour: the permission dialog on every elevating call (see "Elevation (2.3.4)" below). |
+| `clamp` | The 2.3.4 opt-in clamp (see "Opt-in clamp" below). |
+
+Unchanged: a call at or below the session model, with no model, a `Workflow`, an unknown or missing session
+model; a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
+apostrophe and stale-intent fixes.
+
+**State.** `<session_id>.approvals.json` in `~/.config/jev/claude-sessions/` (directory 0700, file 0600), written
+atomically (temporary file, then rename) under a per-session lock (an exclusive `mkdir`; a lock older than 3
+seconds is treated as stale; the holder writes a token file in it and removes it only while the token is still its
+own). It holds the approvals (model, scope, creation time, expiry), the models Jev prescribed the question for
+(model to time, kept 15 minutes) and the denied-attempt counter, never task text. Files left behind are pruned after 7 days at `SessionStart`. The recorder never throws,
+always exits 0, prints nothing, and ignores any question without the marker and any malformed input.
+
+**Limits, said plainly.**
+
+- The flow needs the assistant to ask the prescribed question. If it asks in another form, or in plain chat, no
+  approval is recorded and the call is denied again, until the third attempt opens the dialog.
+- The recorder trusts the answer the harness reports for a question that starts with the marker, not the
+  assistant's text about it; an assistant that fabricates a question still cannot answer for the user. It does
+  not check that the question's wording or options match the prescription, only the marker and the label.
+- A multi-select answer and a free-text "Other" answer record nothing.
+- Interactive and headless: the flow needs a user to answer `AskUserQuestion`. In a headless run (`claude -p`)
+  there is nobody to ask, so the assistant's question gets no real answer and the call keeps being denied until the
+  dialog backstop. Use `JEV_ELEVATION=dialog` or `clamp` there, or name the model in the prompt.
+- Not verified here: the whole flow end to end in a real interactive session (the pieces were verified
+  separately: the deny keeps the turn going, and the answer reaches the `PostToolUse` hook), whether the assistant
+  follows the prescription reliably, how a hook `ask` dialog behaves in `auto` permission mode, and whether Claude
+  Code fires `PreToolUse` for the agents a `Workflow` launches.
+
 ### Elevation (2.3.4)
 
-An `Agent` call that names a model stronger than the session model is the one thing the hook asks about. What
+This section describes the 2.3.4 behaviour, which is now `JEV_ELEVATION=dialog`; the default is the choice flow
+above. An `Agent` call that names a model stronger than the session model is the one thing the hook asks about. What
 happens depends on what the user said in the current prompt, and on one opt-in setting.
 
 | Situation | What happens |
 | :--- | :--- |
 | Model at or below the session model, no model, `inherit`, a `Workflow`, unknown session model | Untouched. |
 | The prompt names that model or a stronger one (`use opus`, `run an opus subagent`) | Passes unchanged, no dialog (the instruction is the approval). Logged as `elevation: "instructed"`. |
-| **Default:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
+| **`JEV_ELEVATION=dialog`:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
 | The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in both modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. |
 
 The instruction check is `>=`: a model the user named covers a request for that model or a weaker one (`use opus`
@@ -485,6 +582,23 @@ clamp note, and how an agent definition's own front-matter `model` or `CLAUDE_CO
 the rewritten `model`.
 
 ### Release notes
+
+- **2.3.6: elevation choice** (see "Elevation choice (default)" above):
+  - New default `JEV_ELEVATION=choice`: an `Agent` call above the session model with no instruction naming it and
+    no valid approval is denied (the turn goes on) with a reason that prescribes one `AskUserQuestion` whose text
+    starts with `[jev-elevate:<model>]` and whose four options are Yes once, Yes for the next 5 minutes, Yes for
+    this session, and No (proceed on the session model). There is no "No, stop the turn".
+  - New `PostToolUse` hook on `AskUserQuestion` (`hook.ts post-tool-use`, in `claude/hooks.json`) records the
+    user's real answer as an approval: `once` (10 minutes to use it, consumed atomically), `5min`, `session`. An
+    approval covers its model and anything below it above the session model. State is
+    `<session_id>.approvals.json` (0600 in a 0700 directory), written atomically under a lock.
+  - The third attempt of the same delegation without an approval in one prompt opens the 2.3.4 permission dialog; a new
+    `prompt_id` resets the count (background agent completions start new prompts).
+  - The turn directive prescribes the same question and options for a rating above the session model.
+  - `JEV_ELEVATION=dialog` is the 2.3.4 behaviour (the old default); `clamp` is unchanged. Any other value means
+    `choice`.
+  - The decisions log gains `elevation: "denied"` and `"approved"`, `approval_scope` and `elevation_attempt`.
+  - Not verified end to end: the real flow needs an interactive session.
 
 - **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
   - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report

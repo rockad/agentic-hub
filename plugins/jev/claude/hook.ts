@@ -4,9 +4,15 @@
  *
  *   session-start | post-model-switch  remember the session model (the ceiling)
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
+ *   post-tool-use (matcher "AskUserQuestion")
+ *                                      elevation choice recorder: the user's real answer to a question that starts with
+ *                                      [jev-elevate:<model>] becomes an approval (once, 5 minutes, session); no output
  *   pre-tool-use (matcher "Agent|Task|Workflow")
- *                                      Agent delegation above the ceiling: asks (permission dialog), a model the user
- *                                      named passes (nothing else asks); opt-in JEV_ELEVATION=clamp runs the first one
+ *                                      Agent delegation above the ceiling. Default (JEV_ELEVATION=choice): denied with a
+ *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
+ *                                      the third attempt of one delegation in a prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
+ *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
+ *                                      opt-in JEV_ELEVATION=clamp runs the first one
  *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
  *                                      log the call next to the last recommendation, and remind once before staged
  *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
@@ -16,6 +22,7 @@
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
  * carries on as if Jev were not installed.
  */
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -29,6 +36,7 @@ import {
   checkEgress,
   egressContextDirs,
   TELEMETRY_FILE,
+  PRIVATE_DIR_MODE,
   PRIVATE_FILE_MODE,
   privateDir,
   privateFile,
@@ -37,16 +45,26 @@ import {
 } from '../src/shared.js';
 import {
   AGENT_WINDOW_MS,
+  ATTEMPT_FALLBACK_WINDOW_MS,
   NO_INTENT,
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
   buildDirective,
   aliasRemapped,
+  bumpAttempts,
   callSignature,
+  claimApproval,
   classifyElevation,
   clampElevation,
   dispatchQuestions,
   elevationAskReason,
+  elevationChoiceReason,
+  elevationMode,
+  noteDenied,
+  normalizeApprovalState,
+  parseElevationAnswer,
+  recordApproval,
+  CHOICE_DENIALS_BEFORE_ASK,
   envNotice,
   hasRecentDispatch,
   isHostInjectedPrompt,
@@ -64,6 +82,8 @@ import {
   turnId,
   type AgentCall,
   type AgentDecision,
+  type Approval,
+  type ApprovalState,
   type Dispatch,
   type TurnState
 } from './logic.js';
@@ -84,8 +104,29 @@ export type HookInput = {
   tool_name?: string;
   /** The whole Agent input: `updatedInput` replaces it, so a clamp copies every field. */
   tool_input?: AgentCall & Record<string, unknown>;
-  /** One id per user prompt; the clamp is once per prompt. */
+  /** One id per user prompt; the clamp is once per prompt, and the choice flow counts denied attempts per prompt. */
   prompt_id?: string;
+  /** PostToolUse only: what the tool returned. For AskUserQuestion, `answers` maps the question text to the chosen label. */
+  tool_response?: unknown;
+};
+
+/**
+ * The per-session approvals store of the choice flow. Every method runs under one lock and never throws into the
+ * hook: a failing store means "no approval" (the call is denied, then asks on the third attempt).
+ */
+export type ApprovalStore = {
+  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. Throws when the store fails: nothing is recorded then. */
+  record: (sessionId: string, approval: Approval) => void;
+  /** Note that Jev prescribed the choice question for `model` (a deny, or the turn directive): the only thing that lets an answer record an approval. */
+  deny: (sessionId: string, model: string, nowMs: number) => void;
+  /** Find the approval covering `requested` and, for a `once`, consume it atomically (one parallel caller wins). */
+  claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
+  /**
+   * Count one denied elevating attempt of the delegation `signature` in this prompt; returns that delegation's count (a
+   * new prompt, or a new delegation, starts again at 1). `windowMs` is set when `promptKey` is not the host's prompt
+   * id: a counter quiet for longer than that starts again.
+   */
+  attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
 };
 
 export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
@@ -114,6 +155,8 @@ export type HookDeps = {
    * (the 2.3.3 behaviour) instead of clamping.
    */
   claimClamp?: (sessionId: string, promptKey: string, signature: string) => { first: boolean; signature?: string };
+  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call opens the permission dialog. */
+  approvals?: ApprovalStore;
   now?: () => number;
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
   env?: Record<string, string | undefined>;
@@ -207,7 +250,13 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     ...(deps.env ? { env_notice: envNotice(deps.env) } : {})
   });
 
-  let additionalContext = buildDirective(rec, sessionModel, quotaStrategy, intent);
+  let additionalContext = buildDirective(rec, sessionModel, quotaStrategy, intent, elevationMode(deps.env ?? process.env));
+  // A directive that prescribes the choice question counts as a denial for that model (the assistant asks before its first call).
+  if (sessionId) {
+    for (const m of additionalContext.matchAll(/\[jev-elevate:(sonnet|opus|haiku|fable)\]/g)) {
+      safely(() => deps.approvals?.deny(sessionId, m[1], (deps.now ?? Date.now)()));
+    }
+  }
   try {
     const memory = await withTimeout(fetchRecallMemory(), 600);
     if (memory && memory.activeGoal) {
@@ -256,10 +305,43 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
   let verdict: AgentDecision = null;
-  let elevationState: 'clamped' | 'asked' | 'instructed' | null = elevation?.kind === 'instructed' ? 'instructed' : null;
+  let elevationState: 'clamped' | 'asked' | 'instructed' | 'approved' | 'denied' | null =
+    elevation?.kind === 'instructed' ? 'instructed' : null;
   let clampSkipped: string | null = null;
-  const clampMode = (deps.env ?? process.env).JEV_ELEVATION === 'clamp';
-  if (elevation?.kind === 'elevating' && !clampMode) {
+  let approvalScope: string | null = null;
+  let attemptCount: number | null = null;
+  const elevMode = elevationMode(deps.env ?? process.env);
+  // The attempt counter's key: the host's prompt id; without one, the stored turn (a hash of the prompt text, so two
+  // prompts with the same text share it) plus the time that turn was stored, and without a turn the literal 'none'.
+  // Only those two fallbacks (`windowMs` set) also expire after a quiet window.
+  const hostPromptId = typeof input.prompt_id === 'string' ? safeSessionId(input.prompt_id) : null;
+  const promptKeyOf = (): string => hostPromptId || (state?.turn ? `${state.turn}@${state.at ?? ''}` : 'none');
+  const attemptWindowMs = hostPromptId ? undefined : ATTEMPT_FALLBACK_WINDOW_MS;
+  if (elevation?.kind === 'elevating' && elevMode === 'choice') {
+    // Choice flow (default): a covering approval lets the call through; otherwise the call is denied with the
+    // prescribed question (a deny does not stop the turn), and the third attempt of one delegation in a prompt opens the dialog.
+    const nowMs = (deps.now ?? Date.now)();
+    const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, elevation.requested, nowMs)) ?? null) : null;
+    if (hit) {
+      elevationState = 'approved';
+      approvalScope = hit.scope;
+    } else {
+      // Counted per delegation: several different workstreams, each answered, are not repeated attempts of one call.
+      const signature = callSignature(call as Record<string, unknown>);
+      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
+      attemptCount = typeof count === 'number' ? count : null;
+      // Without a working counter the deny could repeat for ever: fall back to the dialog.
+      if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
+        verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+        elevationState = 'asked';
+      } else {
+        verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type) };
+        elevationState = 'denied';
+        // The question is now prescribed for this model: only an answer after this can record an approval.
+        if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
+      }
+    }
+  } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
     verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating') {
@@ -319,6 +401,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     reason: verdict?.reason ?? (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
+    ...(approvalScope ? { approval_scope: approvalScope } : {}),
+    ...(attemptCount !== null ? { elevation_attempt: attemptCount } : {}),
     ...(intentIsStale ? { intent_stale: true } : {}),
     ...(clamp && elevation ? { clamped_from: elevation.requested, clamped_to: elevation.sessionAlias } : {}),
     preflight_reminder: reminder !== null
@@ -335,6 +419,24 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       ...(reminder ? { additionalContext: reminder } : {})
     }
   };
+}
+
+/**
+ * PostToolUse on AskUserQuestion: record the user's real answer to the elevation choice question as an approval.
+ * Reads only the harness's `tool_response.answers`, never the assistant's `tool_input` or text. Ignores any
+ * question that does not start with the `[jev-elevate:<model>]` marker (the marker is not a secret: any such
+ * question is accepted), a "No", malformed input, and an answer for a model Jev did not prescribe the question
+ * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
+ */
+export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'now'>): void {
+  try {
+    const sessionId = safeSessionId(input?.session_id);
+    if (!sessionId || !deps.approvals) return;
+    const approval = parseElevationAnswer(input, (deps.now ?? Date.now)());
+    if (approval) deps.approvals.record(sessionId, approval);
+  } catch {
+    // best-effort: a failed record only means the assistant is denied again and asks again
+  }
 }
 
 /** Run a best-effort side effect or read; a failure never reaches the host turn. */
@@ -362,7 +464,7 @@ function pruneOldSessions(): void {
   const cutoff = Date.now() - SESSION_TTL_MS;
   for (const name of fs.readdirSync(SESSIONS_DIR)) {
     const file = path.join(SESSIONS_DIR, name);
-    if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+    if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { recursive: true, force: true });
   }
 }
 
@@ -423,6 +525,108 @@ function claimClamp(sessionId: string, promptKey: string, signature: string): { 
     return { first: false, ...(stored ? { signature: stored } : {}) };
   }
 }
+
+const LOCK_WAIT_MS = 1500;
+const LOCK_STALE_MS = 3000;
+
+function approvalsFile(sessionId: string): string {
+  return path.join(SESSIONS_DIR, `${sessionId}.approvals.json`);
+}
+
+/**
+ * Run `fn` while holding the lock directory `lock` (an exclusive `mkdir`, atomic across processes). The holder
+ * writes a unique token file inside it. A lock older than `staleMs` belongs to a dead (or very slow) process and
+ * is broken by renaming it away, so a holder that outlives the limit cannot delete the next holder's lock: on
+ * release the directory is removed only while its token is still this holder's. Throws when the lock cannot be
+ * had in time.
+ */
+export function withLockDir<T>(lock: string, fn: () => T, opts: { waitMs?: number; staleMs?: number } = {}): T {
+  const { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = opts;
+  const token = `${process.pid}-${randomUUID()}`;
+  const tokenFile = path.join(lock, 'owner');
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      fs.mkdirSync(lock, { mode: PRIVATE_DIR_MODE });
+      try {
+        fs.writeFileSync(tokenFile, token, { mode: PRIVATE_FILE_MODE });
+      } catch (err) {
+        fs.rmSync(lock, { recursive: true, force: true });
+        throw err;
+      }
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) {
+          const broken = `${lock}.stale-${token}`;
+          fs.renameSync(lock, broken);
+          fs.rmSync(broken, { recursive: true, force: true });
+        }
+      } catch {
+        // the holder just released it, or another waiter broke it first
+      }
+      if (Date.now() > deadline) throw new Error('approvals lock timeout');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      if (fs.readFileSync(tokenFile, 'utf8') === token) fs.rmSync(lock, { recursive: true, force: true });
+    } catch {
+      // the lock was broken and taken over: it is not ours to remove
+    }
+  }
+}
+
+function withApprovalsLock<T>(sessionId: string, fn: () => T): T {
+  privateDir(SESSIONS_DIR);
+  return withLockDir(path.join(SESSIONS_DIR, `${sessionId}.approvals.lock`), fn);
+}
+
+function readApprovalState(sessionId: string): ApprovalState {
+  try {
+    return normalizeApprovalState(JSON.parse(fs.readFileSync(approvalsFile(sessionId), 'utf8')));
+  } catch {
+    return { approvals: [] };
+  }
+}
+
+/** Write atomically (temp file in the same directory, then rename), owner-only. */
+function writeApprovalState(sessionId: string, state: ApprovalState): void {
+  const file = approvalsFile(sessionId);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
+  privateFile(tmp);
+  fs.renameSync(tmp, file);
+  privateFile(file);
+}
+
+const approvalStore: ApprovalStore = {
+  record: (sessionId, approval) =>
+    withApprovalsLock(sessionId, () => {
+      // An unreadable state file reads as empty, which has no denial: nothing is recorded then.
+      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at);
+      if (next) writeApprovalState(sessionId, next);
+    }),
+  deny: (sessionId, model, nowMs) =>
+    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteDenied(readApprovalState(sessionId), model, nowMs))),
+  claim: (sessionId, requested, nowMs) =>
+    withApprovalsLock(sessionId, () => {
+      const { state, approval } = claimApproval(readApprovalState(sessionId), requested, nowMs);
+      // Persist only a change: a consumed `once` or a pruned expiry.
+      if (approval?.scope === 'once' || state.approvals.length !== readApprovalState(sessionId).approvals.length) writeApprovalState(sessionId, state);
+      return approval;
+    }),
+  attempt: (sessionId, promptKey, signature, nowMs, windowMs) =>
+    withApprovalsLock(sessionId, () => {
+      const { state, count } = bumpAttempts(readApprovalState(sessionId), promptKey, signature, nowMs, windowMs);
+      writeApprovalState(sessionId, state);
+      return count;
+    })
+};
 
 function forgetTurn(sessionId: string | null): void {
   if (!sessionId) return;
@@ -574,6 +778,7 @@ const liveDeps: HookDeps = {
   saveTurn,
   forgetTurn,
   claimClamp,
+  approvals: approvalStore,
   recentDispatch,
   recentAgentCalls,
   env: process.env,
@@ -585,6 +790,12 @@ async function main(event: string | undefined): Promise<void> {
   loadEnvFile(path.join(JEV_DIR, 'env'));
   loadEnvFile(path.resolve(import.meta.dir, '..', '.env'));
   const input = JSON.parse((await Bun.stdin.text()) || '{}') as HookInput;
+  if (event === 'post-tool-use') {
+    // The elevation recorder: no output, no mode check. It accepts any question that starts with the marker, but
+    // records an approval only for a model Jev prescribed the question for in the last 15 minutes.
+    onPostToolUse(input, liveDeps);
+    return;
+  }
   const output =
     event === 'user-prompt-submit' ? await onUserPromptSubmit(input, liveDeps)
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)

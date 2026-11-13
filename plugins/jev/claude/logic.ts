@@ -481,9 +481,17 @@ export function buildDirective(
   rec: Dispatch,
   sessionModel: string | null,
   quotaStrategy: string,
-  intent?: UserIntent | null
+  intent?: UserIntent | null,
+  elevation: ElevationMode = 'choice'
 ): string {
   const advised = applyUserIntent(rec, intent);
+  // Where a delegation above the session model needs the user's say, the choice flow prescribes the question
+  // (marker and four options) so the assistant asks before its first Agent call; other modes keep the 2.3.4 wording.
+  const askAbove = (model: string, fallback: string): string => {
+    if (elevation !== 'choice') return fallback;
+    const alias = modelAlias(sessionModel);
+    return `${elevationChoiceDirective(model, sessionModel, alias)}; let the user choose.`;
+  };
   // The head shows the model Jev advises: for a pro rating on a session below opus it is capped at the
   // session model (as in 2.3.2) while the sentences below still report the opus-level rating and the ask.
   const { advised: shown, rule } = resolveModel({ intent, rec, sessionModel });
@@ -518,14 +526,14 @@ export function buildDirective(
     // One sentence, never the ceiling line plus an ask line that contradict each other.
     const pro = sessionAllowsOpus(sessionModel)
       ? `Jev rates this opus-level and the session model "${sessionModel}" allows it: delegate to ${subagent} with model "opus".`
-      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on opus: offer the cheaper option and let the user choose.`;
+      : `Jev rates this opus-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ${askAbove('opus', 'ask the user before delegating on opus: offer the cheaper option and let the user choose.')}`;
     return `${head} ${costNote}${pro}`;
   }
 
   // A paid delegation on a model above the session model: one ceiling sentence, not the hard-ceiling
   // line followed by a "delegate to <stronger model>" action that contradicts it.
   if (advised.tier !== 'openrouter_free' && advised.subagent !== 'self' && exceedsSession(advised.model, sessionModel)) {
-    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose.`;
+    return `${head} ${costNote}Jev rates this ${advised.model}-level; ${limit.replace(/^The/, 'the')} is the hard ceiling, so ${askAbove(advised.model, `ask the user before delegating on ${advised.model}: offer a model within the ceiling and let the user choose.`)}`;
   }
 
   const action =
@@ -546,7 +554,7 @@ export type AgentCall = {
   model?: string;
 };
 
-export type AgentDecision = { decision: 'ask'; reason: string } | null;
+export type AgentDecision = { decision: 'ask' | 'deny'; reason: string } | null;
 
 /** The Claude alias for a model id or alias (`claude-sonnet-5` gives `sonnet`); null when unknown or "inherit". */
 export function modelAlias(model: string | undefined | null): ClaudeModelAlias | null {
@@ -620,6 +628,246 @@ export function elevationAskReason(e: Elevation, clamped = false): string {
     `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
     (clamped ? ` The same delegation already ran on ${e.sessionAlias} earlier in this prompt.` : '')
   );
+}
+
+/** How an elevating Agent call is handled. `choice` is the default; `dialog` is the 2.3.4 permission dialog; `clamp` is the 2.3.4 opt-in. */
+export type ElevationMode = 'choice' | 'dialog' | 'clamp';
+
+/** The value of `JEV_ELEVATION`: `dialog` and `clamp` are exact; anything else, including unset, means `choice`. */
+export function elevationMode(env: Record<string, string | undefined> | undefined): ElevationMode {
+  const v = env?.JEV_ELEVATION;
+  return v === 'dialog' || v === 'clamp' ? v : 'choice';
+}
+
+/** The marker the choice question starts with, and the PostToolUse recorder's pattern for it. */
+export const ELEVATE_MARKER_RE = /^\s*\[jev-elevate:(sonnet|opus|haiku|fable)\]/;
+
+/** Option labels of the choice question, in order. The last one names the session model's alias. */
+export const CHOICE_LABELS = {
+  once: 'Yes, once',
+  fiveMin: 'Yes, for the next 5 minutes',
+  session: 'Yes, for this session',
+  no: (sessionAlias: string): string => `No, proceed on ${sessionAlias}`
+} as const;
+
+/** Elevating attempts of one prompt that are denied before the permission dialog opens (the third one asks). */
+export const CHOICE_DENIALS_BEFORE_ASK = 2;
+
+/** A subagent type is model-supplied text that reaches the deny reason: keep only safe characters. */
+function safeTypeName(type: unknown): string {
+  const clean = typeof type === 'string' ? type.replace(/[^A-Za-z0-9:_.-]/g, '').slice(0, 60) : '';
+  return clean || 'general-purpose';
+}
+
+/**
+ * The deny reason of the choice flow. A PreToolUse `deny` does not stop the turn: the assistant receives this
+ * text, keeps working, and is told to ask the user the one prescribed question. The recorder
+ * (`parseElevationAnswer`) reads the user's real answer from the harness, not from the assistant's text.
+ */
+export function elevationChoiceReason(e: Elevation, subagentType?: unknown): string {
+  const alias = modelAlias(e.requested) ?? e.requested;
+  const l = CHOICE_LABELS;
+  return (
+    `[jev] "${alias}" is stronger than the session model "${e.sessionModel}" and the user has not approved it. ` +
+    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}] followed by a short question ` +
+    `naming the subagent_type (${safeTypeName(subagentType)}), the requested model, the session model and a 10-word task summary; ` +
+    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
+    `If the user picks a Yes, launch the delegation again with the same model; if No, launch it on ${e.sessionAlias} (or do the work directly); ` +
+    `do not stop and do not ask in any other form.`
+  );
+}
+
+/**
+ * The question to ask BEFORE the first Agent call, used by the UserPromptSubmit directive when the rating is
+ * above the session model. Same marker and four options as the deny reason.
+ */
+export function elevationChoiceDirective(model: string, sessionModel: string | null, sessionAlias: string | null): string {
+  const l = CHOICE_LABELS;
+  const alias = modelAlias(model) ?? model;
+  const no = sessionAlias ?? 'the session model';
+  return (
+    `ask the user before delegating on ${alias}, with AskUserQuestion: one question whose text STARTS with [jev-elevate:${alias}] followed by a short ` +
+    `question naming the subagent_type, the model, the session model${sessionModel ? ` "${sessionModel}"` : ''} and a 10-word task summary; ` +
+    `exactly four options in this order: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(no)}'. ` +
+    `On a Yes launch it on ${alias}; on No launch it on ${no} (or do the work directly)`
+  );
+}
+
+export type ApprovalScope = 'once' | '5min' | 'session';
+
+/** What the user approved: a model, for one launch, five minutes or the session. `expires_at` is epoch ms; a session approval has none. */
+export type Approval = { model: ClaudeModelAlias; scope: ApprovalScope; created_at: number; expires_at?: number };
+
+/**
+ * The per-session approvals file: the approvals, and the denied-attempt counter of one prompt. `count` is every
+ * denied attempt of the prompt, `counts` the same per delegation signature (`callSignature`), `at` the epoch ms of
+ * the last one. A file written before `counts` and `at` existed has neither.
+ * `denied` maps a model alias to the epoch ms Jev last prescribed the choice question for it (a deny, or the turn
+ * directive); a file written before it existed has none, so no answer records an approval until the next denial.
+ */
+export type ApprovalState = {
+  approvals: Approval[];
+  denied?: Record<string, number>;
+  attempts?: { prompt: string; count: number; counts?: Record<string, number>; at?: number };
+};
+
+export const ONCE_TTL_MS = 10 * 60 * 1000;
+export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Pure: the approval a PostToolUse payload for AskUserQuestion carries, or null. Only a question that starts with
+ * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and
+ * nothing else: `tool_input` is what the assistant sent, so it never records an approval.
+ * A "No", another label, a missing answer and malformed input give null.
+ */
+export function parseElevationAnswer(input: unknown, nowMs: number): Approval | null {
+  try {
+    const i = input as { tool_name?: unknown; tool_input?: any; tool_response?: any } | null;
+    if (!i || typeof i !== 'object') return null;
+    if (i.tool_name !== undefined && i.tool_name !== 'AskUserQuestion') return null;
+    const question = i.tool_input?.questions?.[0]?.question;
+    if (typeof question !== 'string') return null;
+    const m = ELEVATE_MARKER_RE.exec(question);
+    if (!m) return null;
+    const answer = i.tool_response?.answers?.[question];
+    if (typeof answer !== 'string') return null;
+    const model = m[1] as ClaudeModelAlias;
+    const label = answer.trim();
+    if (label.startsWith(CHOICE_LABELS.once)) return { model, scope: 'once', created_at: nowMs, expires_at: nowMs + ONCE_TTL_MS };
+    if (label.startsWith(CHOICE_LABELS.fiveMin)) return { model, scope: '5min', created_at: nowMs, expires_at: nowMs + FIVE_MIN_TTL_MS };
+    if (label.startsWith(CHOICE_LABELS.session)) return { model, scope: 'session', created_at: nowMs };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const SCOPE_PREFERENCE: Readonly<Record<ApprovalScope, number>> = { session: 0, '5min': 1, once: 2 };
+
+/** Pure: an approval is valid while it has no expiry or the expiry is ahead. */
+export function approvalValid(a: Approval, nowMs: number): boolean {
+  return a.expires_at === undefined || a.expires_at > nowMs;
+}
+
+/** Pure: read a state object of unknown shape into a clean one (a corrupt file gives an empty state). */
+export function normalizeApprovalState(raw: unknown): ApprovalState {
+  const r = raw as { approvals?: unknown; attempts?: unknown; denied?: unknown } | null;
+  const approvals = Array.isArray(r?.approvals)
+    ? (r!.approvals as unknown[]).filter((a): a is Approval => {
+        const x = a as Partial<Approval> | null;
+        return (
+          !!x &&
+          typeof x.model === 'string' &&
+          modelRank(x.model) !== null &&
+          (x.scope === 'once' || x.scope === '5min' || x.scope === 'session') &&
+          typeof x.created_at === 'number' &&
+          (x.expires_at === undefined || typeof x.expires_at === 'number')
+        );
+      })
+    : [];
+  const at = (r as { attempts?: { prompt?: unknown; count?: unknown; counts?: unknown; at?: unknown } } | null)?.attempts;
+  const perSignature =
+    at?.counts && typeof at.counts === 'object' && !Array.isArray(at.counts)
+      ? Object.fromEntries(Object.entries(at.counts).filter(([, n]) => typeof n === 'number' && Number.isFinite(n)))
+      : undefined;
+  const attempts =
+    at && typeof at.prompt === 'string' && typeof at.count === 'number'
+      ? {
+          prompt: at.prompt,
+          count: at.count,
+          ...(perSignature ? { counts: perSignature as Record<string, number> } : {}),
+          ...(typeof at.at === 'number' ? { at: at.at } : {})
+        }
+      : undefined;
+  const denied =
+    r?.denied && typeof r.denied === 'object' && !Array.isArray(r.denied)
+      ? Object.fromEntries(Object.entries(r.denied).filter(([m, t]) => modelRank(m) !== null && typeof t === 'number' && Number.isFinite(t)))
+      : undefined;
+  return { approvals, ...(attempts ? { attempts } : {}), ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {}) };
+}
+
+/** Pure: add an approval and drop the expired ones. */
+export function addApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState {
+  return { ...state, approvals: [...state.approvals.filter((a) => approvalValid(a, nowMs)), approval] };
+}
+
+/** How long after Jev prescribed the choice question for a model an answer to it can still record an approval. */
+export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
+
+/** Pure: note that the choice question was prescribed for `model` now, and drop the notes older than the window. */
+export function noteDenied(state: ApprovalState, model: string, nowMs: number): ApprovalState {
+  const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
+  return { ...state, denied: { ...Object.fromEntries(kept), [modelAlias(model) ?? model]: nowMs } };
+}
+
+/** Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? */
+export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+  const want = modelRank(model);
+  if (want === null) return false;
+  return Object.entries(state.denied ?? {}).some(([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS);
+}
+
+/** Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). */
+export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
+  return wasDeniedRecently(state, approval.model, nowMs) ? addApproval(state, approval, nowMs) : null;
+}
+
+/**
+ * Pure: find the approval that covers `requested` (an approved model covers itself and anything below it) and
+ * consume it when it is a `once`. A standing approval (session, then 5 minutes) is preferred over a `once`,
+ * so a once is not spent when something wider already covers the call. Expired approvals are dropped.
+ */
+export function claimApproval(
+  state: ApprovalState,
+  requested: string,
+  nowMs: number
+): { state: ApprovalState; approval: Approval | null } {
+  const want = modelRank(requested);
+  const live = state.approvals.filter((a) => approvalValid(a, nowMs));
+  const hit =
+    want === null
+      ? null
+      : live
+          .filter((a) => (modelRank(a.model) ?? 0) >= want)
+          .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
+  return { state: { ...state, approvals }, approval: hit };
+}
+
+/** All denied attempts of one prompt, over every delegation, after which the dialog opens whatever the signatures say. */
+export const ATTEMPT_TOTAL_CAP = 20;
+
+/**
+ * A prompt key that is not the host's prompt id (a stored turn without a timestamp, or none at all) cannot tell two
+ * prompts apart, so its counter also expires after this long without an attempt.
+ */
+export const ATTEMPT_FALLBACK_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Pure: count one denied elevating attempt of delegation `signature` in `prompt`, and return the count of that
+ * delegation (a different prompt starts again at one). Counting per delegation means three different workstreams
+ * that are each denied, answered and retried are three first attempts, not a third attempt; only the same
+ * delegation ignored again and again (or `ATTEMPT_TOTAL_CAP` denials of the prompt) reaches the dialog.
+ *
+ * With `windowMs` (the key is a fallback, not the host's prompt id) a counter whose last attempt is older than the
+ * window starts again, so two prompts with the same text do not share one.
+ */
+export function bumpAttempts(
+  state: ApprovalState,
+  prompt: string,
+  signature = '',
+  nowMs?: number,
+  windowMs?: number
+): { state: ApprovalState; count: number } {
+  const prev = state.attempts;
+  const stale = windowMs !== undefined && nowMs !== undefined && prev?.at !== undefined && nowMs - prev.at > windowMs;
+  const same = !!prev && prev.prompt === prompt && !stale;
+  const total = same ? prev.count + 1 : 1;
+  const counts = same ? { ...(prev.counts ?? {}) } : {};
+  const mine = (counts[signature] ?? 0) + 1;
+  if (signature in counts || Object.keys(counts).length < ATTEMPT_TOTAL_CAP) counts[signature] = mine;
+  const count = total > ATTEMPT_TOTAL_CAP ? Math.max(mine, CHOICE_DENIALS_BEFORE_ASK + 1) : mine;
+  return { state: { ...state, attempts: { prompt, count: total, counts, ...(nowMs !== undefined ? { at: nowMs } : {}) } }, count };
 }
 
 /** The note the assistant gets with a clamped call: what Jev did, and what to do next (report, ask in chat, no re-call). */

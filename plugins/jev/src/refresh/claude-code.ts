@@ -363,6 +363,8 @@ export async function discoverClaudeCode(opts: ClaudeDiscoverOptions): Promise<C
         out.aliases[model] = r.resolved;
         verified.add(r.resolved);
         const aliasMatches = parsed?.family === model;
+        // A different family served the alias: the id is verified, but it never takes this alias (`fable` served by
+        // opus must not erase the `opus` alias the opus probe reported; buildCatalogue merges the two results).
         out.results.push({ id: r.resolved, ok: true, ...(aliasMatches ? { alias: model } : {}) });
         log(`probe ${model}: ok, resolves to ${r.resolved}`);
         if (!aliasMatches) out.notes.push(`alias ${model} resolved to ${r.resolved}, a different family`);

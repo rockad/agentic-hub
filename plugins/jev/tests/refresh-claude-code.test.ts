@@ -333,6 +333,20 @@ describe('discoverClaudeCode', () => {
     expect(out.costUsd).toBeCloseTo(0.04, 5);
   });
 
+  it('keeps alias opus on the catalogue entry when the fable alias is served by opus', async () => {
+    const fake = fakeClaude(ACCOUNT, { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5', fable: 'claude-opus-5-5' });
+    const out = await discoverClaudeCode({ previous: null, spawn: fake.spawn, maxCalls: 4 });
+
+    expect(out.aliases.fable).toBe('claude-opus-5-5');
+    expect(out.notes.some((n) => n.includes('alias fable resolved to claude-opus-5-5'))).toBe(true);
+    // the fable probe only ever proves the id works: it never claims the alias `fable` for it
+    expect(out.results.some((r) => r.alias === 'fable')).toBe(false);
+
+    const cat = buildCatalogue('claude-code', out.results, 'probe');
+
+    expect(cat.models.find((m) => m.id === 'claude-opus-5-5')).toMatchObject({ alias: 'opus', status: 'ok' });
+  });
+
   it('never exceeds the call cap, logs what it dropped, and returns it', async () => {
     const fake = fakeClaude(ACCOUNT);
     const lines: string[] = [];

@@ -334,7 +334,8 @@ function sortEntries(models: CatalogueModel[]): CatalogueModel[] {
  *   failures the id is deleted
  * - an id with an unknown family is `needs-review` (success or failure); it is never used by the ladder
  * Ids from `previous` that were not probed this round are carried over unchanged. A `previous` for another
- * harness is ignored. Duplicate probe results for one id: the last wins.
+ * harness is ignored. Duplicate probe results for one id: the last verdict wins, and an alias reported by any of
+ * them is kept.
  */
 export function buildCatalogue(
   harness: string,
@@ -350,7 +351,11 @@ export function buildCatalogue(
 
   const latestResult = new Map<string, ProbeResult>();
   for (const r of probeResults) {
-    if (r && typeof r.id === 'string' && r.id.trim()) latestResult.set(r.id, r);
+    if (!r || typeof r.id !== 'string' || !r.id.trim()) continue;
+    // The last verdict wins, but an alias is never lost: the alias probe of another family that landed on this
+    // id (`fable` served by opus) reports it with no alias, after the probe that did carry one.
+    const alias = r.alias ?? latestResult.get(r.id)?.alias;
+    latestResult.set(r.id, alias && !r.alias ? { ...r, alias } : r);
   }
 
   for (const r of latestResult.values()) {

@@ -207,6 +207,20 @@ describe('buildCatalogue and ladder', () => {
     expect(r2.models[0].alias).toBe('sonnet');
   });
 
+  it('merges duplicate results for one id: an alias from any of them is kept, whatever the order', () => {
+    const withAlias = buildCatalogue('claude-code', [ok('claude-opus-5-5', 'opus'), ok('claude-opus-5-5')], 'probe', null, T0);
+    const aliasLast = buildCatalogue('claude-code', [ok('claude-opus-5-5'), ok('claude-opus-5-5', 'opus')], 'probe', null, T0);
+
+    expect(withAlias.models[0].alias).toBe('opus');
+    expect(aliasLast.models[0].alias).toBe('opus');
+  });
+
+  it('merging duplicates keeps the last verdict: a later failure still wins over an earlier success', () => {
+    const cat = buildCatalogue('claude-code', [ok('claude-opus-5-5', 'opus'), fail('claude-opus-5-5')], 'probe', null, T0);
+
+    expect(cat.models[0]).toMatchObject({ id: 'claude-opus-5-5', status: 'missing', alias: 'opus' });
+  });
+
   it('carries over ids that were not probed this round and ignores a catalogue for another harness', () => {
     const r1 = buildCatalogue('claude-code', [ok('claude-sonnet-5-5'), ok('claude-haiku-5-5')], 'probe', null, T0);
     const r2 = buildCatalogue('claude-code', [ok('claude-sonnet-5-5')], 'probe', r1, daysLater(1));

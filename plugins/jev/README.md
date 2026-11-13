@@ -577,17 +577,6 @@ the rewritten `model`.
 
 ### Release notes
 
-- **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
-  - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report
-    (`~/.config/jev/audit_report.json`) are written `0600` in `0700` directories. Files and directories that
-    already exist with looser modes are tightened at write time (best-effort, never blocking).
-  - `jev_dispatch` telemetry lines carry `taskLen` and `taskHash` (first 12 hex of the sha256) instead of up to
-    100 characters of task text in `task`. Lines already written keep their old `task` text: nothing deletes
-    them. To clear them, delete or truncate `~/.gemini/antigravity-cli/jev_telemetry.jsonl`.
-  - The `private-fs` helper (`privateDir`, `privateFile`) is shared by the Claude hook and the tools.
-  - Hermetic tests: a `bunfig.toml` preload (`tests/setup-home.ts`) gives every run a fresh temporary `HOME` and
-    clears the harness markers, so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
-    no longer change test results.
 - **2.3.6: elevation choice** (see "Elevation choice (default)" above):
   - New default `JEV_ELEVATION=choice`: an `Agent` call above the session model with no instruction naming it and
     no valid approval is denied (the turn goes on) with a reason that prescribes one `AskUserQuestion` whose text
@@ -605,6 +594,17 @@ the rewritten `model`.
   - The decisions log gains `elevation: "denied"` and `"approved"`, `approval_scope` and `elevation_attempt`.
   - Not verified end to end: the real flow needs an interactive session.
 
+- **2.3.5: telemetry privacy** (see "Local Telemetry & Log Files" above):
+  - The telemetry log (`~/.gemini/antigravity-cli/jev_telemetry.jsonl`), the egress log and the audit report
+    (`~/.config/jev/audit_report.json`) are written `0600` in `0700` directories. Files and directories that
+    already exist with looser modes are tightened at write time (best-effort, never blocking).
+  - `jev_dispatch` telemetry lines carry `taskLen` and `taskHash` (first 12 hex of the sha256) instead of up to
+    100 characters of task text in `task`. Lines already written keep their old `task` text: nothing deletes
+    them. To clear them, delete or truncate `~/.gemini/antigravity-cli/jev_telemetry.jsonl`.
+  - The `private-fs` helper (`privateDir`, `privateFile`) is shared by the Claude hook and the tools.
+  - Hermetic tests: a `bunfig.toml` preload (`tests/setup-home.ts`) gives every run a fresh temporary `HOME` and
+    clears the harness markers, so the real `~/.agents`, `~/.config/jev` and a Claude Code or Antigravity shell
+    no longer change test results.
 - **2.3.4: elevation reasons, intent fixes, opt-in clamp** (see "Elevation" above):
   - Default behaviour is the 2.3.3 dialog on every `Agent` call above the session model with no instruction
     naming it. The reason now says what each answer does: Yes runs it on the requested model; No cancels the call

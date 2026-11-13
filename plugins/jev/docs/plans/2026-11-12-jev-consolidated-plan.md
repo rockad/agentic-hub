@@ -440,3 +440,26 @@ Gate: one Opus review of the combined diff (the user's choice in section 22) fou
 Unverified until an interactive session: that the assistant follows the prescribed questions, the real dialog behaviour on No, the hook's effort field shape, plugin-qualified ladder agent names, a refresh on an account that serves `fable`, and the Antigravity discoverer and `define_subagent` model bypass (section 12).
 
 Next: the batch schema (5.3 rubric, 5.4 kind and `needsEdit`, 5.11 tool output, `editsFiles`) as 2.3.9, after the stack merges.
+
+## 25. Verification results (2026-11-13, Claude Code 2.1.323, Claude Pro account)
+
+**Headless (reported by a Sonnet agent, tree = #46 branch, installed jev disabled; evidence from `modelUsage`, the decisions log and stream-json; about $1.45 spent).**
+
+| Check | Result |
+| --- | --- |
+| H1 choice deny | Pass for the deny: an opus call in a sonnet session is denied, the reason prescribes the `[jev-elevate:opus]` question with the four labels, the turn goes on. The ask itself is untestable headless: `AskUserQuestion` does not exist in `claude -p` (the reason now says to launch on the session model when it is unavailable). |
+| H2 recorder | Pass with the recorded fixture. An answer only in `tool_input`, an approval for a model never denied, and an approval with no denial record nothing. |
+| H3 downgrade | Pass, run directly with a seeded turn (live rating did not recommend a cheaper model): deny with `[jev-downgrade:haiku]`, retry passes, a No answer lets the relaunch pass, `auto` rewrites to haiku, `off` does nothing. |
+| H4 ladder agents | Pass: `jev-ladder-claude-sonnet-5` ran on `claude-sonnet-5` (modelUsage); `jev-ladder-claude-opus-5-5` is denied in a sonnet session; `--max-tier standard` writes no deep agents. Project agents are bare `jev-ladder-<id>`; a plugin-shipped one is `<plugin>:<name>` and the hook handles both. |
+| H5 refresh | Pass: 8 models probed, aliases resolved (haiku 5-5, sonnet 5-5, opus 5-5, fable 5-2), ranking follows the family ladder, no stray directories or processes. |
+| H6 hook timing | Pass: pre-tool-use about 26 ms, user-prompt-submit about 262 ms, the refresh starts only at `SessionStart` and detached. |
+
+Findings fixed from it (PRs #45 and #46): the refresh probe cost about $0.015 to $0.03 each because it loaded the user's plugins and MCP servers; with an empty MCP config, no tools, no slash commands, plugins off and a one-line system prompt it is about 600 input tokens and about 84% cheaper. The downgrade recorder read `tool_input`; `planDowngrade` used the raw catalogue order (so fable asked with opus recommended never offered the downgrade).
+
+**Interactive (the user, session `jev-test-3`, sonnet session, `--plugin-dir` on the #46 tree; verified from the Jev decisions log and the session and subagent transcripts).**
+
+- Choice flow, No: an opus call was denied, the assistant asked the prescribed question (four labels), the user chose "No, proceed on sonnet", the subagent ran on `claude-sonnet-5-5`, the turn did not stop and no second question followed (an `elevation declined` entry was recorded).
+- Choice flow, Yes for 5 minutes: denied, asked, approved; the subagent ran on `claude-opus-5-5`, and a second opus call inside the window passed with no question (decisions log `elevation: approved`, `approval_scope: 5min`).
+- Downgrade, live: not exercised, because Jev rated the task `flash` (sonnet), the same as the session model. Needs a session above the recommendation (for example an opus session and a trivial task).
+
+Still unverified: the live downgrade question, a refresh on an account that serves `fable`, the Antigravity discoverer and `define_subagent` model bypass (section 12). Open design point: an Agent call with no `model` is never evaluated for downgrade.

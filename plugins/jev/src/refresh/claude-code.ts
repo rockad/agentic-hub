@@ -96,6 +96,15 @@ export function probeSettingsJson(): string {
   return JSON.stringify({ disableAllHooks: true, enabledPlugins: { 'jev@agentic-hub': false } });
 }
 
+/** An MCP config with no servers; with `--strict-mcp-config` it keeps every configured MCP server from starting. */
+export const PROBE_EMPTY_MCP = '{"mcpServers":{}}';
+/** The probe's whole system prompt: the default one is most of the 14k input tokens of a bare call. */
+export const PROBE_SYSTEM_PROMPT = 'Reply with OK.';
+
+/**
+ * The cheapest call that still reports the concrete model: no MCP servers, no tools, no skills or slash commands
+ * and a one-line system prompt, so the request is about 600 input tokens instead of about 14k.
+ */
 export function probeArgs(model: string, settingsFile: string): string[] {
   return [
     '-p',
@@ -106,6 +115,14 @@ export function probeArgs(model: string, settingsFile: string): string[] {
     'project',
     '--settings',
     settingsFile,
+    '--strict-mcp-config',
+    '--mcp-config',
+    PROBE_EMPTY_MCP,
+    '--tools',
+    '',
+    '--disable-slash-commands',
+    '--system-prompt',
+    PROBE_SYSTEM_PROMPT,
     '--no-session-persistence',
     '--output-format',
     'json'

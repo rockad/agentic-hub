@@ -85,6 +85,7 @@ import {
   type Dispatch,
   type TurnState
 } from './logic.js';
+import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
@@ -757,6 +758,7 @@ async function main(event: string | undefined): Promise<void> {
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
   if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
+  if (event === 'session-start') maybeStartCatalogueRefresh();
   if (output) process.stdout.write(JSON.stringify(output));
 }
 

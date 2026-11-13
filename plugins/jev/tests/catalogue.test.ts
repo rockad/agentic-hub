@@ -19,6 +19,10 @@ import {
   cataloguePath,
   markSuspect,
   resolveTier,
+  priceOf,
+  cheaperThan,
+  type CatalogueModel,
+  type ModelPrice,
   type Catalogue,
   type ProbeResult
 } from '../src/core/catalogue.js';
@@ -674,9 +678,130 @@ describe('resolveTier', () => {
   });
 });
 
+describe('list prices', () => {
+  const price = (inputPerM: number, outputPerM: number, at = T0.toISOString()): ModelPrice => ({ inputPerM, outputPerM, source: 'openrouter', at });
+  const model = (id: string, p?: ModelPrice): CatalogueModel => {
+    const m = buildCatalogue('claude-code', [ok(id)], 'probe', null, T0).models[0];
+    if (p) m.price = p;
+    return m;
+  };
+
+  describe('priceOf and cheaperThan', () => {
+    it('priceOf is input plus output per million, or null without a usable price', () => {
+      expect(priceOf(model('claude-sonnet-5-5', price(2, 10)))).toBe(12);
+      expect(priceOf(model('claude-haiku-5-5', price(0.1, 0.5)))).toBeCloseTo(0.6, 10);
+      expect(priceOf(model('claude-sonnet-5-5'))).toBeNull();
+      expect(priceOf(null)).toBeNull();
+      expect(priceOf(undefined)).toBeNull();
+      expect(priceOf({ price: { inputPerM: NaN, outputPerM: 1, source: 'openrouter', at: T0.toISOString() } } as any)).toBeNull();
+      expect(priceOf({ price: { inputPerM: -1, outputPerM: 1, source: 'openrouter', at: T0.toISOString() } } as any)).toBeNull();
+    });
+
+    it('a free model has a price of 0, not null', () => {
+      expect(priceOf(model('claude-sonnet-5-5', price(0, 0)))).toBe(0);
+    });
+
+    it('cheaperThan is true only when both have prices and a is strictly lower', () => {
+      const haiku = model('claude-haiku-5-5', price(0.1, 0.5));
+      const sonnet = model('claude-sonnet-5-5', price(2, 10));
+      const sonnet5 = model('claude-sonnet-5', price(2, 10));
+      const unpriced = model('claude-opus-5');
+      expect(cheaperThan(haiku, sonnet)).toBe(true);
+      expect(cheaperThan(sonnet, haiku)).toBe(false);
+      expect(cheaperThan(sonnet, sonnet5)).toBe(false); // equal is not cheaper
+      expect(cheaperThan(unpriced, sonnet)).toBe(false);
+      expect(cheaperThan(haiku, unpriced)).toBe(false);
+      expect(cheaperThan(unpriced, unpriced)).toBe(false);
+      expect(cheaperThan(null, sonnet)).toBe(false);
+      expect(cheaperThan(haiku, undefined)).toBe(false);
+      expect(cheaperThan(model('claude-haiku-5-5', price(0, 0)), sonnet)).toBe(true);
+    });
+
+    it('orders the observed ladder strictly by price', () => {
+      const ladderPrices: Array<[string, number, number]> = [
+        ['claude-haiku-5-5', 0.1, 0.5], ['claude-haiku-4-5', 1, 5], ['claude-sonnet-5-5', 2, 10],
+        ['claude-sonnet-4-5', 3, 15], ['claude-opus-5-5', 4, 20], ['claude-opus-5', 5, 25], ['claude-fable-5-2', 8, 40]
+      ];
+      const ms = ladderPrices.map(([id, i, o]) => model(id, price(i, o)));
+      for (let i = 0; i < ms.length - 1; i++) expect(cheaperThan(ms[i], ms[i + 1])).toBe(true);
+    });
+  });
+
+  describe('storage', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-price-')), 'models');
+    });
+    afterEach(() => fs.rmSync(path.dirname(dir), { recursive: true, force: true }));
+    const write = (body: unknown) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'claude-code.json'), JSON.stringify(body));
+    };
+    const fileWith = (extra: Record<string, unknown>) => {
+      const body = JSON.parse(JSON.stringify(buildCatalogue('claude-code', [ok('claude-sonnet-5-5')], 'probe', null, T0)));
+      Object.assign(body.models[0], extra);
+      return body;
+    };
+
+    it('round-trips a price and keeps the file version', () => {
+      const cat = buildCatalogue('claude-code', [ok('claude-sonnet-5-5')], 'probe', null, T0);
+      cat.models[0].price = price(2, 10);
+      expect(saveCatalogue(cat, dir)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'claude-code.json'), 'utf8')).version).toBe(1);
+      expect(loadCatalogue('claude-code', dir)!.models[0].price).toEqual(price(2, 10));
+    });
+
+    it('loads an old file with no price unchanged (no price key appears)', () => {
+      write(fileWith({}));
+      const m = loadCatalogue('claude-code', dir)!.models[0];
+      expect(m.id).toBe('claude-sonnet-5-5');
+      expect('price' in m).toBe(false);
+    });
+
+    it('drops a malformed price but keeps the model, never throwing', () => {
+      const bad: unknown[] = [
+        'cheap', 5, [], {}, null,
+        { inputPerM: '2', outputPerM: 10, source: 'openrouter', at: T0.toISOString() },
+        { inputPerM: 2, outputPerM: 10, source: 'guess', at: T0.toISOString() },
+        { inputPerM: 2, outputPerM: 10, source: 'openrouter', at: 'yesterday' },
+        { inputPerM: 2, outputPerM: 10, source: 'openrouter' },
+        { inputPerM: -2, outputPerM: 10, source: 'openrouter', at: T0.toISOString() },
+        { inputPerM: 2, outputPerM: Infinity, source: 'openrouter', at: T0.toISOString() }
+      ];
+      for (const price of bad) {
+        write(fileWith({ price }));
+        const cat = loadCatalogue('claude-code', dir)!;
+        expect(cat.models.length).toBe(1);
+        expect('price' in cat.models[0]).toBe(false);
+      }
+    });
+
+    it('ignores extra fields inside a price', () => {
+      write(fileWith({ price: { ...price(2, 10), note: 'x' } }));
+      expect(loadCatalogue('claude-code', dir)!.models[0].price).toEqual(price(2, 10));
+    });
+  });
+
+  describe('buildCatalogue', () => {
+    it('carries a previous price over when the id is probed again, ok or failed', () => {
+      const first = buildCatalogue('claude-code', [ok('claude-sonnet-5-5'), ok('claude-opus-5')], 'probe', null, T0);
+      for (const m of first.models) m.price = price(2, 10);
+      const next = buildCatalogue('claude-code', [ok('claude-sonnet-5-5'), fail('claude-opus-5')], 'probe', first, daysLater(1));
+      expect(next.models.find((m) => m.id === 'claude-sonnet-5-5')!.price).toEqual(price(2, 10));
+      expect(next.models.find((m) => m.id === 'claude-opus-5')!.price).toEqual(price(2, 10));
+    });
+
+    it('does not add a price to an id that never had one', () => {
+      const cat = buildCatalogue('claude-code', [ok('claude-sonnet-5-5')], 'probe', null, T0);
+      expect('price' in cat.models[0]).toBe(false);
+    });
+  });
+});
+
 describe('exports', () => {
   it('is reachable through src/core/index', () => {
     for (const name of [
+      'priceOf', 'cheaperThan',
       'parseModelId', 'heuristicTier', 'loadCatalogue', 'saveCatalogue', 'buildCatalogue', 'ladder', 'compareModels',
       'isStale', 'isVeryStale', 'resolveTier', 'markSuspect', 'unknownIds', 'tryLock', 'unlock'
     ]) {

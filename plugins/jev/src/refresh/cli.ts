@@ -27,7 +27,7 @@ import { getHarnessModels } from '../core/config.js';
 import { heartbeat, tryLock, unlock } from '../core/lock.js';
 import { ABSOLUTE_MAX_CALLS, loadRefreshConfig, refreshLockPath, writeAttempt } from './config.js';
 import { discoverClaudeCode, reconcileAliases } from './claude-code.js';
-import { discoverOpenRouter } from './openrouter.js';
+import { applyPrices, discoverOpenRouter, fetchOpenRouterPrices } from './openrouter.js';
 import { applyTierMap, discoverStatic } from './static.js';
 import { defaultSpawner, type Spawner } from './spawn.js';
 import type { DiscoveryOutcome } from './types.js';
@@ -122,6 +122,12 @@ function lockHeldBySelf(lockPath: string): boolean {
 
 const ids = (list: string[]): string => (list.length ? list.join(', ') : 'none');
 const usd = (n: number): string => `$${n.toFixed(4)}`;
+
+/** ` price=$2/$10 per 1M` (list price) for a model that has one, else an empty string. */
+function priceLabel(m: { price?: { inputPerM: number; outputPerM: number } }): string {
+  const p = m.price;
+  return p ? ` price=$${p.inputPerM}/$${p.outputPerM} per 1M` : '';
+}
 
 /** Entries by id, for the before/after comparison. */
 function statusMap(cat: Catalogue | null): Map<string, string> {
@@ -222,6 +228,19 @@ async function runRefresh(args: CliArgs, deps: CliDeps, out: (l: string) => void
     const cat = buildCatalogue(harness, outcome.results, outcome.source, outcome.source === 'static' ? null : previous, now);
     if (found.aliases) reconcileAliases(cat, found.aliases);
     if (found.map) applyTierMap(cat, found.map, now);
+    // List prices (a proxy for cost, from the public OpenRouter list). Best effort: when OpenRouter cannot be read
+    // the prices already in the catalogue stay (buildCatalogue carried them over) and the refresh still succeeds.
+    // Antigravity ids are not on OpenRouter. The OpenCode discoverer already read the list in its one request.
+    let priceNote: string | null = null;
+    if (harness !== 'antigravity') {
+      const prices = outcome.prices ?? (await fetchOpenRouterPrices({ fetch: deps.fetch }));
+      if (prices) {
+        const n = applyPrices(cat, prices, now);
+        priceNote = `list prices: ${n} of ${cat.models.length} models priced (USD per 1M tokens, from OpenRouter; a proxy for cost)`;
+      } else {
+        priceNote = 'list prices: OpenRouter unreachable, previous prices kept';
+      }
+    }
     if (!saveCatalogue(cat, deps.dir)) {
       err(`jev-models: could not write ${cataloguePath(harness, deps.dir) ?? 'the catalogue file'}`);
       return 1;
@@ -240,6 +259,7 @@ async function runRefresh(args: CliArgs, deps: CliDeps, out: (l: string) => void
       if (outcome.inconclusive.length) out(`no answer (left unchanged): ${ids(outcome.inconclusive)}`);
       if (outcome.aborted) out(`note: ${outcome.aborted}`);
       for (const n of outcome.notes) out(`note: ${n}`);
+      if (priceNote) out(priceNote);
     }
     attempt = 'ok';
     return 0;
@@ -289,7 +309,7 @@ function runList(args: CliArgs, deps: CliDeps, out: (l: string) => void): number
     out(`${tier}: ${ids(ladder(cat, tier, overrides))}`);
   }
   for (const m of cat.models) {
-    out(`  ${m.id}  tier=${m.tier} status=${m.status}${m.alias ? ` alias=${m.alias}` : ''} strikes=${m.strikes}`);
+    out(`  ${m.id}  tier=${m.tier} status=${m.status}${m.alias ? ` alias=${m.alias}` : ''} strikes=${m.strikes}${priceLabel(m)}`);
   }
   return 0;
 }

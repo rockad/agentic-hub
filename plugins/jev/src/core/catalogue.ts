@@ -40,6 +40,19 @@ export interface ParsedModelId {
   provider?: string;
 }
 
+/**
+ * List price of a model in USD per million tokens, from the public OpenRouter model list. Only a proxy for cost:
+ * on a subscription the real cost is quota weight, so show it as "list price". Optional: files written before
+ * prices existed have none, and a harness whose ids OpenRouter does not list never gets one.
+ */
+export interface ModelPrice {
+  inputPerM: number;
+  outputPerM: number;
+  source: 'openrouter';
+  /** ISO time of the refresh that read this price. */
+  at: string;
+}
+
 export interface CatalogueModel {
   id: string;
   family: string;
@@ -55,6 +68,8 @@ export interface CatalogueModel {
   /** Consecutive failed probes. */
   strikes: number;
   last_ok?: string;
+  /** List price, when a refresh found one. Carried over by {@link buildCatalogue} when the id is probed again. */
+  price?: ModelPrice;
 }
 
 export interface Catalogue {
@@ -383,6 +398,8 @@ export function buildCatalogue(
     if (alias) entry.alias = alias;
     if (r.ok) entry.last_ok = nowIso;
     else if (before?.last_ok) entry.last_ok = before.last_ok;
+    // A probe says nothing about price: keep the last one known (the refresh attaches a fresh one afterwards).
+    if (before?.price) entry.price = { ...before.price };
     byId.set(r.id, entry);
   }
 
@@ -511,7 +528,47 @@ function reviveModel(raw: any): CatalogueModel | null {
   };
   if (typeof raw.alias === 'string' && raw.alias) m.alias = raw.alias;
   if (typeof raw.last_ok === 'string') m.last_ok = raw.last_ok;
+  const price = revivePrice(raw.price);
+  if (price) m.price = price;
   return m;
+}
+
+/** A well-formed price, or null: finite non-negative numbers, source `openrouter`, a parseable time. Never throws. */
+function revivePrice(raw: any): ModelPrice | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const { inputPerM, outputPerM, source, at } = raw;
+  const good = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  if (!good(inputPerM) || !good(outputPerM)) return null;
+  if (source !== 'openrouter') return null;
+  if (typeof at !== 'string' || !Number.isFinite(Date.parse(at))) return null;
+  return { inputPerM, outputPerM, source, at };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Prices
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * A comparable cost figure for a model: list input price plus list output price per million tokens. A deliberately
+ * simple proxy (it ignores the real input/output mix, caching and batch discounts, and on a subscription the real
+ * cost is quota weight), good enough to say "this one is cheaper than that one" and to show both prices. Null when
+ * the model has no usable price; 0 is a real price (a free model), not "unknown".
+ */
+export function priceOf(model: Pick<CatalogueModel, 'price'> | null | undefined): number | null {
+  const p = model?.price;
+  if (!p || typeof p !== 'object') return null;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  return ok(p.inputPerM) && ok(p.outputPerM) ? p.inputPerM + p.outputPerM : null;
+}
+
+/** True only when both models have a price and `a` is strictly cheaper than `b` by {@link priceOf}. Equal is not cheaper. */
+export function cheaperThan(
+  a: Pick<CatalogueModel, 'price'> | null | undefined,
+  b: Pick<CatalogueModel, 'price'> | null | undefined
+): boolean {
+  const pa = priceOf(a);
+  const pb = priceOf(b);
+  return pa !== null && pb !== null && pa < pb;
 }
 
 /**

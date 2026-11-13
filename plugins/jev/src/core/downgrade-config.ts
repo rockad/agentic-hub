@@ -16,12 +16,31 @@ export function parseDowngradeMode(value: unknown): DowngradeMode | null {
   return v === 'ask' || v === 'auto' || v === 'off' ? v : null;
 }
 
+function configPath(configFile?: string): string {
+  return configFile ?? process.env.JEV_CONFIG_FILE ?? path.join(os.homedir(), '.config', 'jev', 'config.json');
+}
+
 /** `models.downgrade.mode` from the config file; undefined when the file, the key or the value is missing or invalid. */
 export function loadDowngradeMode(configFile?: string): DowngradeMode | undefined {
-  const file = configFile ?? process.env.JEV_CONFIG_FILE ?? path.join(os.homedir(), '.config', 'jev', 'config.json');
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(configPath(configFile), 'utf8'));
     return parseDowngradeMode(parsed?.models?.downgrade?.mode) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A finite number from a number or a numeric string; null for anything else (a boolean, NaN, an empty string). */
+export function parseMinProbability(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value.trim()) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** `models.downgrade.minProbability` as written in the config file (not clamped); undefined when missing or not a number. */
+export function loadDowngradeMinProbability(configFile?: string): number | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath(configFile), 'utf8'));
+    return parseMinProbability(parsed?.models?.downgrade?.minProbability) ?? undefined;
   } catch {
     return undefined;
   }

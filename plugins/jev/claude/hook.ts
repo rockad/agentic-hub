@@ -14,9 +14,11 @@
  *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
  *                                      the third attempt of one delegation in a prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
  *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
- *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): a model above Jev's recommendation for
- *                                      the prompt is denied once with the prescribed [jev-downgrade:<alias>] question (ask) or
- *                                      run on the recommended alias (auto); the catalogue ranks the models when there is one;
+ *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): every delegation is rated on its own
+ *                                      (its description and the start of its prompt go to the router, a tier probability per
+ *                                      tier); when a cheaper catalogue step is enough and strictly cheaper by list price the call
+ *                                      is denied once with the prescribed [jev-downgrade:<alias>] question (ask) or run on the
+ *                                      cheapest such alias (auto); fails open on any router problem;
  *                                      opt-in JEV_ELEVATION=clamp runs the first one
  *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
  *                                      log the call next to the last recommendation, and remind once before staged
@@ -92,30 +94,38 @@ import {
   type Approval,
   type ApprovalState,
   type Dispatch,
-  compareFamilyFirst,
-  modelAlias,
   type RankContext,
-  type TurnState
+  type TurnState,
+  type UserIntent
 } from './logic.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
-  DOWNGRADE_TTL_MS,
   answerDowngrade,
+  anyCheaperStep,
   applyDowngrade,
+  autoOption,
   claimDowngrade,
-  downgradeDirective,
+  delegationRequest,
   downgradeMode,
+  evaluatePlan,
   downgradeReason,
+  instructedModel,
+  neededTier,
   normalizeDowngradeState,
   ELEVATION_DECLINED,
   parseDowngradeAnswer,
-  planDowngrade,
+  parseTierRating,
+  peekDowngrade,
   readEffort,
+  rememberRating,
+  resolveMinProbability,
   type DowngradeClaim,
-  type DowngradeState
+  type DowngradeState,
+  type TierRating
 } from './downgrade.js';
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
-import { loadDowngradeMode } from '../src/core/downgrade-config.js';
+import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
+import { taskFingerprint } from '../src/core/telemetry.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
@@ -123,6 +133,10 @@ const DECISIONS_LOG = path.join(JEV_DIR, 'claude_decisions.jsonl');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Well inside Claude Code's 30 s UserPromptSubmit budget; a slow Jev must not stall the prompt. */
 const JEV_HOOK_TIMEOUT_MS = 1500;
+/** The per-delegation tier rating at PreToolUse: well inside the hook's 5 s budget (about 250 ms is typical); a slow router means no question. */
+export const DOWNGRADE_RATING_TIMEOUT_MS = 1500;
+/** How much of a delegation's prompt goes to the router with its description. */
+export const DOWNGRADE_TASK_PROMPT_CHARS = 1000;
 
 export type HookInput = {
   session_id?: string;
@@ -147,9 +161,13 @@ export type HookInput = {
  * downgrade evaluation" for that call.
  */
 export type DowngradeStore = {
-  /** What to do with a call of this signature and recommendation; with `record` the question is written down atomically (one parallel caller is first). */
+  /** What is on record for this call before it is rated: the session-off switch, an answer, a question asked, a rating kept for ten minutes. Writes nothing. */
+  peek: (sessionId: string, signature: string, nowMs: number) => { off: boolean; answered: boolean; asked: boolean; rating: TierRating | null };
+  /** Keep the delegation's rating for ten minutes, so a retry does not call the router again. */
+  remember: (sessionId: string, signature: string, rating: TierRating, nowMs: number) => void;
+  /** What to do with a call of this signature and needed alias; with `record` the question is written down atomically (one parallel caller is first). */
   claim: (sessionId: string, signature: string, from: string, nowMs: number, opts: { record: boolean }) => DowngradeClaim;
-  /** Record the user's answer to the question about recommendation `from`. */
+  /** Record the user's answer to the question about needed alias `from` (`*`: every delegation); the session-off answer also sets the session's off entry. */
   answer: (sessionId: string, from: string, chosen: string, nowMs: number) => void;
 };
 
@@ -207,6 +225,13 @@ export type HookDeps = {
   downgrades?: DowngradeStore;
   /** The configured `models.downgrade.mode` (the environment's JEV_DOWNGRADE wins); absent means the default, `ask`. */
   downgradeConfig?: () => string | undefined;
+  /** The configured `models.downgrade.minProbability` (JEV_DOWNGRADE_MIN_PROBABILITY wins); absent means 0.6. */
+  downgradeMinProbability?: () => number | undefined;
+  /**
+   * Rate one delegation: the tier question for `task` (the delegation's description and the start of its prompt), with a
+   * probability per tier. Null on any failure. Absent: no per-delegation rating, so no downgrade evaluation.
+   */
+  rateTask?: (task: string, signal?: AbortSignal) => Promise<TierRating | null>;
   /** The model catalogue for ranking, read from its cache file (cheap, never the network); absent or null means the family regex only. */
   rankContext?: () => RankContext | null;
   /** Names of the subagents discovered for the session, for the ladder definitions (`jev-ladder-<id>`); absent means alias-level steps only. */
@@ -306,23 +331,6 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   });
 
   let additionalContext = buildDirective(rec, sessionModel, quotaStrategy, intent, elevationMode(deps.env ?? process.env));
-  // A recommendation cheaper than the session model: the assistant may offer it through the prescribed question
-  // before delegating (mode `ask` only; the user's own instruction needs no offer, and neither does a free-tier or direct task).
-  safely(() => {
-    if (!deps.downgrades || downgradeMode(deps.env ?? {}, deps.downgradeConfig?.()) !== 'ask') return;
-    const sessionAlias = modelAlias(sessionModel);
-    if (!sessionModel || !sessionAlias || advised.by || advised.subagent === 'self' || advised.tier === 'openrouter_free') return;
-    if (modelAlias(advised.model) === sessionAlias) return;
-    if ((compareFamilyFirst(advised.model, sessionModel, deps.rankContext?.() ?? null) ?? 0) >= 0) return;
-    additionalContext +=
-      ' ' +
-      downgradeDirective({
-        recAlias: advised.model,
-        sessionModel,
-        sessionAlias,
-        effort: { suggested: advised.effort, session: readEffort(input.effort) }
-      });
-  });
   // A directive that prescribes the choice question counts as a denial for that model (the assistant asks before its first call).
   if (sessionId) {
     for (const m of additionalContext.matchAll(/\[jev-elevate:(sonnet|opus|haiku|fable)\]/g)) {
@@ -441,66 +449,31 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     }
   }
 
-  // Downgrade evaluation: an Agent call whose model is above the one Jev recommended for the user's prompt (by the
-  // catalogue, else the family rank), with no instruction naming it and no earlier answer for this delegation, is
-  // denied once with the prescribed question (mode `ask`) or run on the recommended alias (mode `auto`). It never
-  // runs on a call the elevation guard already decided (instructed, approved, denied, asked or clamped), and every
-  // missing piece (no store, no recommendation, no catalogue match, a failing store) leaves the call as it was.
+  // Downgrade evaluation: every Agent delegation (a model of its own, or the session's) is rated on its own text and
+  // offered a cheaper catalogue step when one is enough and strictly cheaper (see `planDowngrade`). It runs only when no
+  // instruction names the model, the elevation guard did not decide the call, nothing is on record for this delegation
+  // and the session did not switch it off; the router rating fails open (any error, timeout or missing key: no question).
   const effortSuggested = state?.recEffort ?? null;
   const effortSession = readEffort(input.effort);
   const downgradeModeNow = downgradeMode(deps.env ?? {}, safely(() => deps.downgradeConfig?.()));
-  let downgradeState: 'asked' | 'answered' | 'applied' | 'skipped' | null = null;
-  let downgradeSkip: string | null = null;
-  let downgradeFrom: string | null = null;
-  let downgradeTo: string | null = null;
-  let downgradeOut: ReturnType<typeof applyDowngrade> | null = null;
-  const downgrades = deps.downgrades;
-  if (tool !== 'Workflow' && elevationState === null && downgradeModeNow !== 'off' && downgrades && state?.rec) {
-    let plan = safely(() => planDowngrade({ call, rec: state.rec, intent, ctx: rankCtx }));
-    if (plan && plan.hiddenVia.length > 0 && deps.discoverAgents) {
-      // A version step inside an alias is offered only when its `jev-ladder-<id>` definition is among the session's subagents.
-      try {
-        const names = await withTimeout(deps.discoverAgents(input.cwd), 500);
-        if (names && names.length > 0) plan = safely(() => planDowngrade({ call, rec: state.rec, intent, ctx: rankCtx, defs: names })) ?? plan;
-      } catch {
-        // discovery is best-effort: alias-level steps only
-      }
-    }
-    if (plan) {
-      const p = plan;
-      downgradeFrom = p.requested;
-      downgradeTo = p.recAlias;
-      if (!sessionId) {
-        downgradeState = 'skipped';
-        downgradeSkip = 'no-session';
-      } else if (downgradeModeNow === 'auto' && aliasRemapped(p.recAlias, deps.env)) {
-        // The alias the downgrade would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the model Jev rated.
-        downgradeState = 'skipped';
-        downgradeSkip = 'alias-remapped';
-      } else {
-        const result = safely(() =>
-          downgrades.claim(sessionId, callSignature(call as Record<string, unknown>), p.recAlias, (deps.now ?? Date.now)(), {
-            record: downgradeModeNow === 'ask'
-          })
-        );
-        if (result === undefined) {
-          downgradeState = 'skipped';
-          downgradeSkip = 'store-error';
-        } else if (result === 'answered') {
-          downgradeState = 'answered';
-        } else if (result === 'asked') {
-          // Asked at most once per delegation in the window: the retry passes even if the assistant skipped the question.
-          downgradeState = 'skipped';
-          downgradeSkip = 'already-asked';
-        } else if (downgradeModeNow === 'ask') {
-          verdict = { decision: 'deny', reason: downgradeReason(p, call.subagent_type, { suggested: effortSuggested, session: effortSession }) };
-          downgradeState = 'asked';
-        } else {
-          downgradeOut = applyDowngrade(call as Record<string, unknown>, p);
-          downgradeState = 'applied';
-        }
-      }
-    }
+  let downgradeOut: ReturnType<typeof applyDowngrade> = null;
+  let downgradeLog: Record<string, unknown> = {};
+  if (tool !== 'Workflow' && elevationState === null && downgradeModeNow !== 'off' && deps.downgrades) {
+    const evaluated = await evaluateDowngrade({
+      input,
+      call,
+      sessionId,
+      sessionModel,
+      intent,
+      rankCtx,
+      deps,
+      downgrades: deps.downgrades,
+      mode: downgradeModeNow,
+      effort: { suggested: effortSuggested, session: effortSession }
+    });
+    downgradeLog = evaluated.log;
+    downgradeOut = evaluated.out;
+    if (evaluated.verdict) verdict = evaluated.verdict;
   }
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
@@ -541,9 +514,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
-    ...(downgradeState ? { downgrade: downgradeState } : {}),
-    ...(downgradeSkip ? { downgrade_skip: downgradeSkip } : {}),
-    ...(downgradeFrom && downgradeTo ? { downgrade_from: downgradeFrom, downgrade_to: downgradeTo } : {}),
+    ...downgradeLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
     ...(effortSession ? { effort_session: effortSession } : {}),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
@@ -571,6 +542,134 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   };
 }
 
+/** The text a delegation is rated on: its description and the first 1000 characters of its prompt. Empty when it has neither. */
+export function delegationTask(call: AgentCall): string {
+  const part = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  return [part(call.description, 300), part(call.prompt, DOWNGRADE_TASK_PROMPT_CHARS)].filter(Boolean).join('\n\n');
+}
+
+type DowngradeEvaluation = { verdict: AgentDecision; out: ReturnType<typeof applyDowngrade>; log: Record<string, unknown> };
+
+/**
+ * The per-delegation downgrade evaluation of PreToolUse. Never throws and never blocks on a failure: every missing piece
+ * (no store, no router, a slow or failing rating, no catalogue match, no cheaper option) leaves the call as it was.
+ * The log it returns holds the needed tier, the probability and the task's length and hash, never the task text.
+ */
+async function evaluateDowngrade(a: {
+  input: HookInput;
+  call: AgentCall & Record<string, unknown>;
+  sessionId: string | null;
+  sessionModel: string | null;
+  intent: UserIntent;
+  rankCtx: RankContext | null;
+  deps: HookDeps;
+  downgrades: DowngradeStore;
+  mode: 'ask' | 'auto';
+  effort: { suggested: string | null; session: string | null };
+}): Promise<DowngradeEvaluation> {
+  const { input, call, sessionId, sessionModel, intent, rankCtx, deps, downgrades, mode } = a;
+  const log: Record<string, unknown> = {};
+  const done = (verdict: AgentDecision = null, out: ReturnType<typeof applyDowngrade> = null): DowngradeEvaluation => ({ verdict, out, log });
+  const skip = (reason: string): DowngradeEvaluation => {
+    log.downgrade = 'skipped';
+    log.downgrade_skip = reason;
+    return done();
+  };
+  try {
+    const request = delegationRequest(call, sessionModel, rankCtx);
+    if (!request || instructedModel(intent, request.model, rankCtx)) return done();
+    if (!sessionId) return skip('no-session');
+    const nowMs = (deps.now ?? Date.now)();
+    const signature = callSignature(call as Record<string, unknown>);
+    const peek = safely(() => downgrades.peek(sessionId, signature, nowMs));
+    if (!peek) return skip('store-error');
+    if (peek.off) return skip('session-off');
+    if (peek.answered) {
+      log.downgrade = 'answered';
+      return done();
+    }
+    if (peek.asked) return skip('already-asked');
+
+    const task = delegationTask(call);
+    let rating = peek.rating;
+    if (rating) {
+      log.downgrade_rating = 'cached';
+    } else {
+      if (!deps.rateTask) return done();
+      if (!task) return skip('no-task');
+      // Nothing cheaper could be offered for any rating (a call already on the cheapest model): the router is not asked.
+      if (!anyCheaperStep(call, sessionModel, intent, rankCtx)) return skip('none-cheaper');
+      if (deps.egressAllowed && !deps.egressAllowed(input.cwd)) return skip('egress');
+      const started = performance.now();
+      try {
+        rating = await withTimeout((signal) => deps.rateTask!(task, signal), DOWNGRADE_RATING_TIMEOUT_MS);
+      } catch {
+        rating = null;
+      }
+      log.downgrade_rating_ms = Math.round(performance.now() - started);
+      if (!rating) return skip('no-rating');
+      const fresh = rating;
+      safely(() => downgrades.remember(sessionId, signature, fresh, nowMs));
+    }
+    // The task itself never reaches a log: its length and a short hash only.
+    if (task) Object.assign(log, taskFingerprint(task));
+
+    const minProbability = resolveMinProbability(deps.env, safely(() => deps.downgradeMinProbability?.()));
+    const needed = neededTier(rating, minProbability);
+    log.downgrade_needed = needed.tier;
+    log.downgrade_probability = Math.round(needed.cumulative * 100) / 100;
+    log.downgrade_rated = rating.choice;
+    const planArgs = { call, sessionModel, rating, minProbability, intent, ctx: rankCtx };
+    const first = safely(() => evaluatePlan(planArgs)) ?? { plan: null, hiddenVia: [] as string[] };
+    let plan = first.plan;
+    let hiddenVia = first.hiddenVia;
+    if (first.hiddenVia.length > 0 && deps.discoverAgents) {
+      // A version step inside an alias is offered only when its `jev-ladder-<id>` definition is among the session's subagents.
+      try {
+        const names = await withTimeout(deps.discoverAgents(input.cwd), 500);
+        const again = names && names.length > 0 ? safely(() => evaluatePlan({ ...planArgs, defs: names })) : undefined;
+        if (again && (again.plan || !plan)) {
+          plan = again.plan;
+          hiddenVia = again.hiddenVia;
+        }
+      } catch {
+        // discovery is best-effort: alias-level steps only
+      }
+    }
+    if (hiddenVia.length > 0) log.downgrade_hidden = hiddenVia.slice(0, 3);
+    if (!plan) return skip('none-cheaper');
+    const p = plan;
+    log.downgrade_from = p.requested;
+    log.downgrade_to = p.yes[0].model ?? p.neededAlias;
+
+    const auto = mode === 'auto' ? autoOption(p) : null;
+    if (mode === 'auto') {
+      if (!auto) return skip('no-alias-option');
+      log.downgrade_to = auto.model;
+      // The alias the downgrade would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the model Jev rated.
+      if (aliasRemapped(auto.model, deps.env)) return skip('alias-remapped');
+    }
+    const result = safely(() => downgrades.claim(sessionId, signature, p.neededAlias, nowMs, { record: mode === 'ask' }));
+    if (result === undefined) return skip('store-error');
+    if (result === 'answered') {
+      log.downgrade = 'answered';
+      return done();
+    }
+    // Asked at most once per delegation in the window: the retry passes even if the assistant skipped the question.
+    if (result === 'asked') return skip('already-asked');
+    if (mode === 'ask') {
+      log.downgrade = 'asked';
+      return done({ decision: 'deny', reason: downgradeReason(p, call.subagent_type, a.effort) });
+    }
+    const out = applyDowngrade(call as Record<string, unknown>, p);
+    if (!out) return skip('no-alias-option');
+    log.downgrade = 'applied';
+    return done(null, out);
+  } catch {
+    return skip('error');
+  }
+}
+
 /**
  * PostToolUse on AskUserQuestion: record the user's real answer to the elevation choice question as an approval.
  * Reads only the harness's `tool_response.answers`, never the assistant's `tool_input` or text. Ignores any
@@ -578,7 +677,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
  * question is accepted), a "No", malformed input, and an answer for a model Jev did not prescribe the question
  * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
  */
-export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now' | 'readTurn'>): void {
+export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now'>): void {
   const sessionId = safeSessionId(input?.session_id);
   if (!sessionId) return;
   const nowMs = (deps.now ?? Date.now)();
@@ -592,12 +691,10 @@ export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals'
   }
   // A No to the elevation question ("proceed on the session model") is the user's final word on this delegation's model:
   // the relaunch on the session model must not be asked again about a cheaper one (two questions in a row). It is recorded
-  // as an answered downgrade question for the turn's recommendation, for the same window; it grants nothing.
+  // as an answered downgrade question for every delegation (`*`: the answer carries no call signature), for the same window;
+  // it grants nothing.
   try {
-    if (deps.downgrades && parseElevationDecline(input)) {
-      const rec = deps.readTurn?.(sessionId)?.rec;
-      if (rec?.model) deps.downgrades.answer(sessionId, rec.model, ELEVATION_DECLINED, nowMs);
-    }
+    if (deps.downgrades && parseElevationDecline(input)) deps.downgrades.answer(sessionId, '*', ELEVATION_DECLINED, nowMs);
   } catch {
     // best-effort: without the record the relaunch is asked about the cheaper model once
   }
@@ -826,6 +923,10 @@ function writeDowngradeState(sessionId: string, state: DowngradeState): void {
 
 /** The downgrade choice store: `<session_id>.downgrade.json` under its own lock, apart from the elevation approvals. */
 const downgradeStore: DowngradeStore = {
+  peek: (sessionId, signature, nowMs) =>
+    withApprovalsLock(sessionId, () => peekDowngrade(readDowngradeState(sessionId), signature, nowMs), 'downgrade'),
+  remember: (sessionId, signature, rating, nowMs) =>
+    withApprovalsLock(sessionId, () => writeDowngradeState(sessionId, rememberRating(readDowngradeState(sessionId), signature, rating, nowMs)), 'downgrade'),
   claim: (sessionId, signature, from, nowMs, opts) =>
     withApprovalsLock(
       sessionId,
@@ -895,6 +996,16 @@ async function liveDispatch(task: string, quotaStrategy: string, criteria?: Reco
       JEV_HOOK_TIMEOUT_MS
     );
     return data ? parseDispatch(data, task, quotaStrategy, criteria) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The per-delegation tier rating: the tier question alone, for the delegation's own text; null on any failure (the caller times it out). */
+async function liveRateTask(task: string, signal?: AbortSignal): Promise<TierRating | null> {
+  try {
+    const data = await callJev(`Task: ${task}`, { recommendedTier: dispatchQuestions().recommendedTier }, signal);
+    return parseTierRating(data);
   } catch {
     return null;
   }
@@ -1022,6 +1133,8 @@ const liveDeps: HookDeps = {
   approvals: approvalStore,
   downgrades: downgradeStore,
   downgradeConfig: loadDowngradeMode,
+  downgradeMinProbability: loadDowngradeMinProbability,
+  rateTask: liveRateTask,
   rankContext: liveRankContext,
   discoverAgents: liveDiscoverAgents,
   recentDispatch,

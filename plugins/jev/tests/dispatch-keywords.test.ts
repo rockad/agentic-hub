@@ -102,7 +102,8 @@ describe('harness-aware dispatch text', () => {
 
     expect(out).toEqual({
       executionTool: 'Agent',
-      executionGuidance: 'Delegate via Agent(subagent_type: "code-engineer", model: "sonnet").'
+      executionGuidance:
+        'Delegate via Agent(subagent_type: "code-engineer", model: "sonnet") or, inside a Workflow, agent({ agentType: "code-engineer", model: "sonnet" }).'
     });
   });
 
@@ -168,7 +169,9 @@ describe('jev_batch_dispatch under a harness', () => {
   it('returns Agent(...) guidance and no ceiling clamp under claude-code', () => {
     const plan = runBatch('claude-code', [{ id: 'a', task: 'Implement the code engineer update to the parser' }], ['code-engineer']);
 
-    expect(plan.tasks[0].executionGuidance).toBe('Delegate via Agent(subagent_type: "code-engineer", model: "sonnet").');
+    expect(plan.tasks[0].executionGuidance).toBe(
+      'Delegate via Agent(subagent_type: "code-engineer", model: "sonnet") or, inside a Workflow, agent({ agentType: "code-engineer", model: "sonnet" }).'
+    );
   });
 
   it('never gives the read-only Plan persona an editing task under claude-code', () => {

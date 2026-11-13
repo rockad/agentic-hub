@@ -105,6 +105,7 @@ The following rules apply when `mode == "on"` (Aggressive System 1). They are en
 
 ### 1b. Post-Approval Execution Transition Gate (`jev_batch_dispatch`)
 - Upon plan approval or completion of `/grill-me` (`clarify`), the main orchestrator MUST immediately call `jev_batch_dispatch` and `manage_subagents(Action: "list")` to decompose and delegate independent workstreams in parallel rather than editing multiple files sequentially in the main context.
+- On Claude Code, give each task in `jev_batch_dispatch` an optional `kind` (`mechanical` gives haiku, `settled-edit` gives sonnet, `judgement` gives opus) and `needsEdit: true` when the stream edits files. `needsEdit` keeps `Plan`, `Explore` and the free tier (`jev_execute_free` returns text and cannot edit files) off that stage; without it the task wording decides, and `needsEdit: false` overrides the wording. Without `kind` the router picks the tier under the same rubric. Follow each task's `executionGuidance` (`Agent(subagent_type, model)`, or `agent({ agentType, model })` inside a Workflow); a `judgement` stage on a session below opus is asked about by the Jev guard before it runs. Other harnesses ignore both fields.
 - `PreToolUse` (`jev-pre-tool.sh`) checks `jev_telemetry.jsonl` and blocks consecutive direct edits (`>=2` files) in the session window if no recent `jev_dispatch`, `jev_batch_dispatch`, or subagent delegation occurred.
 
 ### 2. Free-Tier Offloading (`jev_execute_free`)

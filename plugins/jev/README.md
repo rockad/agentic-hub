@@ -529,17 +529,23 @@ the hook needs it on every call.
    field). That file is authoritative: the transcript is never consulted for a session that has one.
 2. Fallback: a session that never reached those events (plugins reloaded mid-session with `/reload-plugins`, a
    resumed session, a headless `claude -p` run) has no such file. On `PreToolUse` and `UserPromptSubmit` the hook then reads the
-   tail of the session transcript named by `transcript_path` on its stdin (at most the last 256 KB, never the
-   whole file), takes the `message.model` of the last assistant line that is a Claude model id Jev can rank
-   (`<synthetic>` and other providers' ids are skipped), and stores it in the same file with
-   `source: "transcript"`, `updated_at` and `checked_at`. Later hooks and processes read that file and do not read
-   the transcript again.
-3. A transcript-learned model can go stale (a model switch while no hook ran), so it is re-checked against the
-   transcript at most once every 60 seconds and updated when the last assistant model differs. A `SessionStart`
-   or `PostModelSwitch` event overwrites it and makes it authoritative again.
+   end of the session transcript named by `transcript_path` on its stdin, never the whole file: the last
+   256 KB first, and if that holds no usable assistant line (a pasted image or a large `tool_result` is common),
+   the 256 KB before it, and so on up to a cap of 2 MB in all. It takes the `message.model` of the last assistant line that is a
+   Claude model id Jev can rank (`<synthetic>` and other providers' ids are skipped), and stores it in the same file with
+   `source: "transcript"`, `updated_at`, `checked_at` and the transcript's `size` and `mtime_ms`. A single line
+   longer than 256 KB is never parsed, so an assistant line that large counts as no line.
+3. A transcript-learned model can go stale (a model switch while no hook ran), so each later call makes one `stat` of the
+   transcript and reads it again only when its size or mtime differs from the stored values; the stored model is
+   updated when the last assistant model differs. An unchanged transcript is not read again. Only when the
+   transcript cannot be stat-ed does the older rule apply: re-check at most once every 60 seconds. A `SessionStart`
+   or `PostModelSwitch` event overwrites it and makes it authoritative again, and the learner puts such a record back
+   if it lands while the learner is writing.
 
-The transcript path is read only when it ends in `.jsonl` and its real path is under `~/.claude/projects` (a
-hostile `transcript_path` cannot make the hook read another file; symlinks are resolved first). A missing,
+The transcript path is read only when it is a regular file that ends in `.jsonl` and whose real path is under
+`~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
+transcript is never opened; symlinks are resolved first). The session id must be `[A-Za-z0-9_-]+` to name a file in
+`claude-sessions/`, otherwise nothing is stored. A missing,
 empty, corrupt or oversized-line transcript, or any read or write failure, means no session model, exactly as before.
 No transcript content is stored or logged: only the model id. The decision log entries of `PreToolUse` and
 `UserPromptSubmit` carry `session_model_source` (`"stored"`, `"transcript"`, or `null` when there is none).
@@ -864,11 +870,13 @@ the rewritten `model`.
   - A session whose `SessionStart` / `PostModelSwitch` never ran (plugins reloaded mid-session, a resumed or
     headless session) had no stored session model, so the elevation guard and the downgrade evaluation skipped
     every call: a model-less Agent call for "run date" in a Sonnet session passed with no question. The hook now
-    learns the model from the tail of the transcript (`transcript_path`, last 256 KB, last assistant
-    `message.model` that ranks as a Claude model) when no stored model exists, and persists it with
-    `source: "transcript"`.
-  - A transcript-learned model is re-checked at most every 60 seconds; a `SessionStart` / `PostModelSwitch`
-    record stays authoritative. Only a `.jsonl` under `~/.claude/projects` is read.
+    learns the model from the end of the transcript (`transcript_path`, scanned back in 256 KB chunks up to 2 MB,
+    last assistant `message.model` that ranks as a Claude model) when no stored model exists, and persists it with
+    `source: "transcript"`, `size` and `mtime_ms`.
+  - A transcript-learned model is re-read when the transcript's size or mtime changed (one `stat` per call; the
+    60 second timer is only the fallback when the stat fails); a `SessionStart` / `PostModelSwitch` record stays
+    authoritative, and is restored if it lands during the write. Only a regular `.jsonl` file under
+    `~/.claude/projects` is read (a FIFO is never opened), and the session id must be `[A-Za-z0-9_-]+`.
   - `PreToolUse` and `UserPromptSubmit` log entries gain `session_model_source` (`stored` | `transcript`). No
     transcript content is logged.
   - New module `claude/session-model.ts`; `HookDeps.learnSessionModel` is the injection point.

@@ -9,12 +9,14 @@ import * as path from 'node:path';
 import { onPreToolUse, onUserPromptSubmit, type HookDeps, type HookInput } from '../claude/hook.ts';
 import {
   TRANSCRIPT_RECHECK_MS,
+  TRANSCRIPT_SCAN_CAP_BYTES,
   TRANSCRIPT_TAIL_BYTES,
   createSessionModelLearner,
   isTranscriptPath,
   modelFromTranscript,
   readSessionRecord,
-  readTranscriptTail,
+  readTranscriptChunk,
+  sessionFile,
   writeSessionRecord,
   type TailReader
 } from '../claude/session-model.ts';
@@ -85,26 +87,93 @@ describe('modelFromTranscript', () => {
     expect(modelFromTranscript(undefined as unknown as string, { home })).toBeNull();
   });
 
-  it('reads only the tail of a 2 MB file: a line far from the end is ignored', () => {
+  it('scans back at most 2 MB, in 256 KB chunks: a line beyond the cap is ignored', () => {
     const filler = user('x'.repeat(1000));
     const lines = [assistant('claude-opus-5-5'), ...Array.from({ length: 2200 }, () => filler)];
     const f = transcript(lines);
     expect(fs.statSync(f).size).toBeGreaterThan(2 * 1024 * 1024);
-    // the only assistant line is about 2 MB from the end, outside the 256 KB tail
+    // the only assistant line is about 2.2 MB from the end, beyond the 2 MB cap
     expect(modelFromTranscript(f, { home })).toBeNull();
-    // and the injected reader is asked for exactly the tail size, nothing more
-    const asked: number[] = [];
-    modelFromTranscript(f, { home, readTail: (file, bytes) => (asked.push(bytes), readTranscriptTail(file, bytes)) });
-    expect(asked).toEqual([TRANSCRIPT_TAIL_BYTES]);
+    // the injected reader is asked for 256 KB chunks, each one further back, and stops at the cap
+    const asked: [number, number][] = [];
+    modelFromTranscript(f, { home, readTail: (file, bytes, skip) => (asked.push([bytes, skip]), readTranscriptChunk(file, bytes, skip)) });
     expect(TRANSCRIPT_TAIL_BYTES).toBe(256 * 1024);
+    expect(TRANSCRIPT_SCAN_CAP_BYTES).toBe(2 * 1024 * 1024);
+    expect(asked.length).toBe(8);
+    expect(asked.every(([bytes]) => bytes === TRANSCRIPT_TAIL_BYTES)).toBe(true);
+    expect(asked.map(([, skip]) => skip)).toEqual(Array.from({ length: 8 }, (_, i) => i * TRANSCRIPT_TAIL_BYTES));
   });
 
-  it('the default reader returns at most the tail, starting on a line boundary', () => {
-    const f = transcript([user('a'.repeat(400_000)), assistant('claude-haiku-5-5')]);
-    const text = readTranscriptTail(f, TRANSCRIPT_TAIL_BYTES)!;
-    expect(text.length).toBeLessThanOrEqual(TRANSCRIPT_TAIL_BYTES);
-    expect(text.startsWith('{"type":"assistant"')).toBe(true);
+  it('stops after the first chunk when the file is shorter than one chunk', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    const asked: number[] = [];
+    expect(modelFromTranscript(f, { home, readTail: (file, bytes, skip) => (asked.push(skip), readTranscriptChunk(file, bytes, skip)) })).toBe('claude-sonnet-5-5');
+    expect(asked).toEqual([0]);
+  });
+
+  it('finds an assistant line behind a user line bigger than the first 256 KB (a pasted image, a large tool_result)', () => {
+    const f = transcript([user(), assistant('claude-haiku-5-5'), user('a'.repeat(280 * 1024))]);
+    expect(fs.statSync(f).size).toBeGreaterThan(TRANSCRIPT_TAIL_BYTES);
     expect(modelFromTranscript(f, { home })).toBe('claude-haiku-5-5');
+  });
+
+  it('finds an assistant line that straddles a chunk boundary', () => {
+    const asst = assistant('claude-opus-5-5');
+    // a last line sized so that the 256 KB boundary, measured from the end, falls in the middle of the assistant line
+    const lastLen = TRANSCRIPT_TAIL_BYTES - Math.floor(Buffer.byteLength(asst) / 2);
+    const last = user('f'.repeat(lastLen - 1 - Buffer.byteLength(user(''))));
+    const first = user('p'.repeat(1000));
+    const f = transcript([first, asst, last]);
+    const size = fs.statSync(f).size;
+    const asstStart = Buffer.byteLength(first + '\n');
+    expect(asstStart).toBeLessThan(size - TRANSCRIPT_TAIL_BYTES);
+    expect(asstStart + Buffer.byteLength(asst)).toBeGreaterThan(size - TRANSCRIPT_TAIL_BYTES);
+    expect(modelFromTranscript(f, { home })).toBe('claude-opus-5-5');
+  });
+
+  it('is null beyond the 2 MB cap even with an assistant line behind a big user line', () => {
+    const f = transcript([assistant('claude-opus-5-5'), user('a'.repeat(2 * 1024 * 1024 + 4096))]);
+    expect(modelFromTranscript(f, { home })).toBeNull();
+  });
+
+  it('is null for an assistant line larger than 256 KB (documented: a line over one chunk is never parsed)', () => {
+    const big = assistant('claude-opus-5-5', { padding: 'x'.repeat(300 * 1024) });
+    expect(Buffer.byteLength(big)).toBeGreaterThan(TRANSCRIPT_TAIL_BYTES);
+    expect(modelFromTranscript(transcript([big]), { home })).toBeNull();
+    // an older, normal assistant line before it is still found
+    expect(modelFromTranscript(transcript([assistant('claude-haiku-5-5'), big], 'two.jsonl'), { home })).toBe('claude-haiku-5-5');
+  });
+
+  it('the default reader returns one chunk of at most the requested size, counted back from the end', () => {
+    const f = transcript([user('a'.repeat(400_000)), assistant('claude-haiku-5-5')]);
+    const last = readTranscriptChunk(f, TRANSCRIPT_TAIL_BYTES, 0) as Buffer;
+    expect(last.length).toBe(TRANSCRIPT_TAIL_BYTES);
+    expect(last.toString('utf8').endsWith('}\n')).toBe(true);
+    const beyond = readTranscriptChunk(f, TRANSCRIPT_TAIL_BYTES, fs.statSync(f).size) as Buffer;
+    expect(beyond.length).toBe(0);
+    expect(modelFromTranscript(f, { home })).toBe('claude-haiku-5-5');
+  });
+
+  const haveMkfifo = Bun.which('mkfifo') !== null;
+  it.skipIf(!haveMkfifo)('does not block on a FIFO named like a transcript (it is checked before it is opened)', () => {
+    const fifo = path.join(projectDir, 'pipe.jsonl');
+    Bun.spawnSync(['mkfifo', fifo]);
+    expect(fs.statSync(fifo).isFIFO()).toBe(true);
+    const probe = path.join(home, 'fifo-probe.ts');
+    const mod = path.join(import.meta.dir, '..', 'claude', 'session-model.ts');
+    fs.writeFileSync(
+      probe,
+      `import { modelFromTranscript, readTranscriptChunk, createSessionModelLearner } from ${JSON.stringify(mod)};
+const [fifo, home, dir] = process.argv.slice(2);
+const learned = createSessionModelLearner({ dir, home })('s1', fifo);
+console.log(JSON.stringify([readTranscriptChunk(fifo, 1024, 0), modelFromTranscript(fifo, { home }), learned]));`
+    );
+    const started = Date.now();
+    const r = Bun.spawnSync([process.execPath, probe, fifo, home, sessions], { timeout: 8000 });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString().trim()).toBe('[null,null,null]');
+    expect(Date.now() - started).toBeLessThan(6000);
+    expect(fs.existsSync(path.join(sessions, 's1.json'))).toBe(false);
   });
 
   describe('path safety', () => {
@@ -143,15 +212,16 @@ describe('modelFromTranscript', () => {
   });
 });
 
-describe('the learner (stored record, 60 second re-check)', () => {
-  function learner(extra: { reads?: string[]; clock?: { t: number } } = {}) {
+describe('the learner (stored record, re-read when the transcript changed)', () => {
+  function learner(extra: { reads?: string[]; clock?: { t: number }; beforeWrite?: () => void } = {}) {
     const clock = extra.clock ?? { t: T0 };
     const reads = extra.reads ?? [];
     const l = createSessionModelLearner({
       dir: sessions,
       home,
       now: () => clock.t,
-      readTail: (file, bytes) => (reads.push(file), readTranscriptTail(file, bytes))
+      beforeWrite: extra.beforeWrite,
+      readTail: (file, bytes, skip) => (reads.push(file), readTranscriptChunk(file, bytes, skip))
     });
     return { l, clock, reads };
   }
@@ -169,47 +239,137 @@ describe('the learner (stored record, 60 second re-check)', () => {
     expect(fs.readdirSync(sessions).filter((n) => n.endsWith('.tmp'))).toEqual([]);
   });
 
-  it('does not read the transcript again within 60 seconds', () => {
+  it('stores the transcript size and mtime_ms in the record', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    learner().l('s1', f);
+    const st = fs.statSync(f);
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ size: st.size, mtime_ms: st.mtimeMs });
+  });
+
+  it('does not read an unchanged transcript again, however much time passes', () => {
     const f = transcript([assistant('claude-sonnet-5-5')]);
     const { l, clock, reads } = learner();
     l('s1', f);
     clock.t += TRANSCRIPT_RECHECK_MS - 1;
-
+    expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    clock.t += 100 * TRANSCRIPT_RECHECK_MS;
     expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
     expect(reads.length).toBe(1);
   });
 
-  it('after 60 seconds re-checks, and updates the file when the last assistant model differs', () => {
-    const f = transcript([assistant('claude-opus-5-5')]);
+  it('a model switch is seen on the next call, without waiting 60 seconds, and updates the file', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
     const { l, clock, reads } = learner();
-    l('s1', f);
-    fs.appendFileSync(f, assistant('claude-sonnet-5-5') + '\n');
-    clock.t += TRANSCRIPT_RECHECK_MS;
-
     expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    fs.appendFileSync(f, assistant('claude-opus-5-5') + '\n');
+    clock.t += 1000;
+
+    expect(l('s1', f)).toEqual({ model: 'claude-opus-5-5', source: 'transcript' });
     expect(reads.length).toBe(2);
-    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-sonnet-5-5', source: 'transcript', updated_at: new Date(clock.t).toISOString(), checked_at: new Date(clock.t).toISOString() });
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-opus-5-5', source: 'transcript', updated_at: new Date(clock.t).toISOString(), checked_at: new Date(clock.t).toISOString() });
+    // and the new size is stored, so the next call does not read again
+    l('s1', f);
+    expect(reads.length).toBe(2);
   });
 
-  it('a re-check that agrees keeps updated_at and moves checked_at', () => {
+  it('a change that keeps the size but moves the mtime is re-read too', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    const { l, reads } = learner();
+    l('s1', f);
+    const later = new Date(fs.statSync(f).mtimeMs + 5000);
+    fs.utimesSync(f, later, later);
+    l('s1', f);
+    expect(reads.length).toBe(2);
+  });
+
+  it('a re-read that agrees keeps updated_at and moves checked_at', () => {
     const f = transcript([assistant('claude-opus-5-5')]);
     const { l, clock } = learner();
     l('s1', f);
+    fs.appendFileSync(f, user() + '\n');
     clock.t += 2 * TRANSCRIPT_RECHECK_MS;
     l('s1', f);
-    expect(readSessionRecord(sessions, 's1')).toMatchObject({ updated_at: new Date(T0).toISOString(), checked_at: new Date(clock.t).toISOString() });
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString(), checked_at: new Date(clock.t).toISOString() });
   });
 
-  it('a re-check that finds nothing keeps the stored model (and does not re-read every call)', () => {
+  it('a re-read that finds nothing keeps the stored model (and does not re-read every call)', () => {
     const f = transcript([assistant('claude-opus-5-5')]);
-    const { l, clock, reads } = learner();
+    const { l, reads } = learner();
     l('s1', f);
     fs.writeFileSync(f, 'garbage\n');
-    clock.t += TRANSCRIPT_RECHECK_MS;
 
     expect(l('s1', f)).toEqual({ model: 'claude-opus-5-5', source: 'transcript' });
     expect(l('s1', f)).toEqual({ model: 'claude-opus-5-5', source: 'transcript' });
     expect(reads.length).toBe(2);
+  });
+
+  it('a record without size and mtime (an older one) is re-read once', () => {
+    const f = transcript([assistant('claude-opus-5-5')]);
+    writeSessionRecord(sessions, 's1', { model: 'claude-sonnet-5-5', source: 'transcript', updated_at: new Date(T0).toISOString(), checked_at: new Date(T0).toISOString() });
+    const { l, reads } = learner();
+    expect(l('s1', f)).toEqual({ model: 'claude-opus-5-5', source: 'transcript' });
+    l('s1', f);
+    expect(reads.length).toBe(1);
+  });
+
+  it('when the transcript cannot be stat-ed, the 60 second timer is the fallback', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    const { l, clock, reads } = learner();
+    l('s1', f);
+    fs.rmSync(f);
+    clock.t += TRANSCRIPT_RECHECK_MS - 1;
+    expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    expect(reads.length).toBe(1);
+    clock.t += 1;
+    // the timer is up: it re-checks (the file is gone, so it finds nothing) and keeps the stored model
+    expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-sonnet-5-5', checked_at: new Date(clock.t).toISOString() });
+  });
+
+  it('an authoritative record written by SessionStart while the transcript was being read is restored, not clobbered', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    const { l } = learner({
+      // the race: SessionStart lands after the learner's last check and before its rename
+      beforeWrite: () => writeSessionRecord(sessions, 's1', { model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString() })
+    });
+
+    expect(l('s1', f)).toBeNull();
+
+    const rec = readSessionRecord(sessions, 's1')!;
+    expect(rec).toMatchObject({ model: 'claude-opus-5-5' });
+    expect(rec.source).toBeUndefined();
+    expect(fs.readdirSync(sessions).filter((n) => n !== 's1.json')).toEqual([]);
+  });
+
+  it('a transcript-learned record from another process in that window is simply replaced', () => {
+    const f = transcript([assistant('claude-sonnet-5-5')]);
+    const { l } = learner({
+      beforeWrite: () => writeSessionRecord(sessions, 's1', { model: 'claude-haiku-5-5', source: 'transcript', updated_at: new Date(T0).toISOString() })
+    });
+    expect(l('s1', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    expect(fs.readdirSync(sessions)).toEqual(['s1.json']);
+  });
+
+  describe('session id as a file name', () => {
+    it('sessionFile accepts what the hook accepts and rejects the rest', () => {
+      expect(sessionFile(sessions, 'abc-DEF_09')).toBe(path.join(sessions, 'abc-DEF_09.json'));
+      for (const bad of ['../../evil', '..', 'a/b', 'a.b', 'a b', '', 'a\0b']) expect(() => sessionFile(sessions, bad)).toThrow();
+    });
+
+    it('an id with .. writes nothing outside the directory, persists nothing and still returns the learned model', () => {
+      const f = transcript([assistant('claude-sonnet-5-5')]);
+      const { l } = learner();
+
+      expect(l('../../evil', f)).toEqual({ model: 'claude-sonnet-5-5', source: 'transcript' });
+
+      expect(fs.existsSync(path.join(home, '.config', 'evil.json'))).toBe(false);
+      expect(fs.existsSync(path.join(home, 'evil.json'))).toBe(false);
+      expect(fs.existsSync(sessions) ? fs.readdirSync(sessions) : []).toEqual([]);
+      expect(fs.readdirSync(home, { recursive: true }).filter((n) => String(n).includes('evil'))).toEqual([]);
+      expect(readSessionRecord(sessions, '../../evil')).toBeNull();
+      expect(() => writeSessionRecord(sessions, '../../evil', { model: 'claude-sonnet-5-5' })).toThrow();
+    });
   });
 
   it('a SessionStart / PostModelSwitch record (no source) is authoritative: the transcript is never read', () => {
@@ -255,7 +415,7 @@ describe('through the hook (no session file, a transcript whose last assistant m
       dir: sessions,
       home,
       now: () => clock.t,
-      readTail: (file, bytes) => (reads.push(file), readTranscriptTail(file, bytes))
+      readTail: (file, bytes, skip) => (reads.push(file), readTranscriptChunk(file, bytes, skip))
     });
     const d: HookDeps = {
       readMode: async () => 'on',
@@ -337,13 +497,12 @@ describe('through the hook (no session file, a transcript whose last assistant m
     expect(logs.map((l) => l.session_model_source)).toEqual(['transcript', 'transcript']);
   });
 
-  it('a transcript that disagrees after 60 seconds updates the stored model', async () => {
+  it('a transcript that disagrees on the next call updates the stored model, with no 60 second wait', async () => {
     const f = transcript([assistant('claude-sonnet-5-5')]);
-    const { d, clock, logs } = setup();
+    const { d, logs } = setup();
     await onPreToolUse(agent({ description: 'a', prompt: 'b', model: 'opus' }, { transcript_path: f }), d);
     // the user switched to opus while no hook ran
     fs.appendFileSync(f, assistant('claude-opus-5-5') + '\n');
-    clock.t += TRANSCRIPT_RECHECK_MS;
 
     await onPreToolUse(agent({ description: 'a', prompt: 'b', model: 'opus' }, { transcript_path: f }), d);
 

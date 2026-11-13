@@ -1,6 +1,6 @@
 {
   "name": "jev",
-  "version": "2.3.7",
+  "version": "2.3.8",
   "description": "TypeSafe Jev System 1 coprocessor, OpenRouter Decisions API gateway, and free-tier execution",
   "type": "module",
   "main": "src/index.ts",

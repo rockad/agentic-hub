@@ -16,8 +16,10 @@ import {
 } from '../src/shared.js';
 import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 
-export type JevTier = 'openrouter_free' | 'flash_lite' | 'flash' | 'pro';
-export type ClaudeModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
+import { STAGE_RUBRIC_TEXT, TIER_CRITERIA, type ClaudeModelAlias, type JevTier } from '../src/stage-rubric.js';
+
+export type { ClaudeModelAlias, JevTier };
+export { STAGE_RUBRIC_TEXT, TIER_CRITERIA };
 
 /** Claude Code's built-in subagents (plus `self` for doing the work directly). */
 export const CLAUDE_SUBAGENT_CRITERIA: Readonly<Record<string, string>> = {
@@ -59,13 +61,6 @@ export async function resolveClaudeSubagentCriteria(workspaceDir?: string): Prom
   criteria.self = CLAUDE_SUBAGENT_CRITERIA.self;
   return criteria;
 }
-
-export const TIER_CRITERIA: Readonly<Record<JevTier, string>> = {
-  openrouter_free: 'Lightweight summaries, drafts, syntax transforms, formatting, boilerplate ($0 cost)',
-  flash_lite: 'Trivial triage, quick lookups, file moves, formatting',
-  flash: 'Standard agentic steps, routine edits, content synthesis, local commands',
-  pro: 'Deep reasoning, architecture, complex multi-file refactors, high-stakes writing'
-};
 
 /** Jev tiers mapped onto Claude model aliases accepted by the Agent tool's `model` field. */
 export const TIER_TO_CLAUDE: Readonly<Record<JevTier, ClaudeModelAlias>> = {
@@ -563,6 +558,19 @@ export function buildDirective(
   quotaStrategy: string,
   intent?: UserIntent | null,
   elevation: ElevationMode = 'choice'
+): string {
+  const body = directiveBody(rec, sessionModel, quotaStrategy, intent);
+  // The stage rubric helps on a turn that delegates paid work and is noise on the rest (5.3).
+  const advised = applyUserIntent(rec, intent);
+  const delegates = advised.subagent !== 'self' && advised.tier !== 'openrouter_free' && advised.by !== 'instruction-model';
+  return delegates ? `${body} ${STAGE_RUBRIC_TEXT}` : body;
+}
+
+function directiveBody(
+  rec: Dispatch,
+  sessionModel: string | null,
+  quotaStrategy: string,
+  intent?: UserIntent | null
 ): string {
   const advised = applyUserIntent(rec, intent);
   // Where a delegation above the session model needs the user's say, the choice flow prescribes the question
@@ -1137,21 +1145,24 @@ export const AGENT_WINDOW_MS = 10 * 60 * 1000;
 /** Agent calls already made in the window before a further one counts as part of a staged plan (the third call). */
 export const STAGED_AGENT_CALLS = 2;
 
-/** The stage rubric, as the user's standing rule words it: the cheapest model that fits the stage. */
-export const STAGE_RUBRIC_TEXT =
-  'Stage rubric, cheapest model that fits: mechanical edit or checklist update -> haiku; ' +
-  'spec or plan edit with a settled decision -> sonnet; ' +
-  'judgement whose error is expensive (a reversal not yet decided, adversarial verification, synthesis across disagreeing sources) -> opus.';
+/**
+ * The reminder added to the turn context when the prompt names a workflow or workstreams. The router sees
+ * one prompt and returns one tuple; a plan with several streams needs one tier per stream, which
+ * `jev_batch_dispatch` returns from the caller's own classification (`kind`, `needsEdit`) and the stage rubric.
+ */
+export const STAGE_PLAN_REMINDER =
+  'This looks like staged work. Before launching it, call jev_batch_dispatch with one task per stream ' +
+  '(kind: mechanical | settled-edit | judgement; needsEdit: true when the stream edits files) and follow its tiers per stream, ' +
+  'not the single recommendation above.';
 
 /**
  * The reminder added to a staged delegation when mode is on and no dispatch call preceded it. It names
- * the tool and the rubric and never blocks. It does not describe `kind` or `needsEdit` on the stages:
- * jev_batch_dispatch does not take them in this release.
+ * the tool, the `kind` and `needsEdit` fields of the stages, and the rubric, and never blocks.
  */
 export function preflightReminder(toolName: string): string {
   return (
     `[JEV] ${toolName} is about to delegate, and no jev_dispatch or jev_batch_dispatch call from Claude Code shows in the last 30 minutes. ` +
-    `For staged work, call jev_batch_dispatch with one task per stream first and follow its tiers. ${STAGE_RUBRIC_TEXT} ` +
+    `For staged work, call jev_batch_dispatch with one task per stream first (kind: mechanical | settled-edit | judgement; needsEdit: true when the stream edits files) and follow its tiers. ${STAGE_RUBRIC_TEXT} ` +
     "The session model stays the ceiling, and a model you named is used within one tier step of Jev's recommendation. This is a reminder, not a block."
   );
 }

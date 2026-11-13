@@ -182,8 +182,7 @@ describe('stage plan reminder (5.4)', () => {
       saveTurn: turn.saveTurn
     });
 
-  // 2.3.5: the stage-plan reminder in the directive describes `kind` and `needsEdit`, which jev_batch_dispatch takes only from 2.3.5 (5.4)
-  it.skip('adds the batch-dispatch reminder when the prompt names a workflow or workstreams', async () => {
+  it('adds the batch-dispatch reminder when the prompt names a workflow or workstreams', async () => {
     const turn = memoryTurnStore();
 
     const out = await onUserPromptSubmit(input('go ahead with the workstreams in a workflow'), stagedDeps(turn));

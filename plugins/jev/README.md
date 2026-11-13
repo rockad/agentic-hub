@@ -670,6 +670,20 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.7: model catalogue and refresh** (see "Model catalogue (core)" and "Model catalogue refresh" above):
+  - New per-harness catalogue of concrete model ids with a capability tier (`free`, `cheap`, `standard`, `deep`) and
+    a version, in `~/.config/jev/models/<harness>.json` (`0600`, written atomically). Ids that stop being listed are
+    marked suspect and dropped only after three refreshes in a row miss them. Overrides and a lock are included.
+  - A `SessionStart` hook starts a detached background refresh when the catalogue is missing or older than
+    `models.refresh.maxAgeDays` (default 7). It probes the Claude Code aliases with a capped `claude` run in a stable
+    working directory and a minimal environment, and lists OpenRouter models. At most 25 probe calls per refresh, a
+    6 hour back-off between attempts (`models.refresh.minRetryHours`), a lock with a heartbeat, a process-group kill
+    on timeout. A round where no probe gives a clear answer leaves the catalogue untouched.
+  - New `jev-models` CLI (`refresh`, `status`, `list`) and `/jev-refresh` skill. Off with `JEV_MODEL_REFRESH=off` or
+    `models.refresh.enabled: false`.
+  - Nothing reads the catalogue yet: the hooks rank models as before. A later release uses it for the downgrade
+    choice and ranking.
+  - Not verified here: a refresh on an account that serves `fable`, and the Antigravity discoverer (needs a live run).
 - **2.3.6: elevation choice** (see "Elevation choice (default)" above):
   - New default `JEV_ELEVATION=choice`: an `Agent` call above the session model with no instruction naming it and
     no valid approval is denied (the turn goes on) with a reason that prescribes one `AskUserQuestion` whose text

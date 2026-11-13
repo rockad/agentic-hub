@@ -214,3 +214,52 @@ describe('background catalogue refresh from the SessionStart hook', () => {
     });
   });
 });
+
+describe('session model learned from the transcript (no SessionStart ran)', () => {
+  const assistant = (model: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', model, content: [{ type: 'text', text: 'hi' }] } });
+  const agentCall = (transcript_path: string) => ({
+    session_id: 's-tr',
+    prompt_id: 'p1',
+    tool_name: 'Agent',
+    tool_input: { description: 'Review the parser', prompt: 'Review it.', model: 'opus' },
+    transcript_path
+  });
+  const transcriptAt = (lines: string[]): string => {
+    const dir = path.join(home, '.claude', 'projects', 'x');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'y.jsonl');
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    return file;
+  };
+
+  it('an elevating call in a sonnet transcript is denied, and the session file is written owner-only with source transcript', () => {
+    const proc = run('pre-tool-use', agentCall(transcriptAt([assistant('claude-sonnet-5-5')])));
+
+    expect(proc.exitCode).toBe(0);
+    const out = JSON.parse(proc.stdout.toString());
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    const file = path.join(jevDir(), 'claude-sessions', 's-tr.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ model: 'claude-sonnet-5-5', source: 'transcript' });
+    expect(mode(file)).toBe(0o600);
+    const log = fs.readFileSync(path.join(jevDir(), 'claude_decisions.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(log[0]).toMatchObject({ sessionModel: 'claude-sonnet-5-5', session_model_source: 'transcript', elevation: 'denied' });
+  });
+
+  it('a transcript outside ~/.claude/projects is not read: no guard, no file', () => {
+    const outside = path.join(home, 'outside.jsonl');
+    fs.writeFileSync(outside, assistant('claude-sonnet-5-5') + '\n');
+    const proc = run('pre-tool-use', agentCall(outside));
+
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).not.toContain('jev-elevate');
+    expect(fs.existsSync(path.join(jevDir(), 'claude-sessions', 's-tr.json'))).toBe(false);
+  });
+
+  it('a corrupt transcript fails open', () => {
+    const proc = run('pre-tool-use', agentCall(transcriptAt(['{"type":"assistant"', 'garbage'])));
+
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).not.toContain('jev-elevate');
+  });
+});

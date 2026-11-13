@@ -442,10 +442,10 @@ describe('4. everything else is untouched', () => {
     expect(o).toBeNull();
   });
 
-  it('a Workflow call is never gated', async () => {
+  it('a Workflow call is not an Agent call: its script is analysed by the Workflow guard (workflow-hook.test.ts), and one that inherits passes', async () => {
     const { d } = setup();
 
-    const o = await onPreToolUse(call({ model: 'opus' }, { tool_name: 'Workflow' }), d);
+    const o = await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), d);
 
     expect(o).toBeNull();
   });

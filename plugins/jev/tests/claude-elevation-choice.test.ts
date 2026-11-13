@@ -168,7 +168,7 @@ describe('PreToolUse in choice mode: deny', () => {
   });
 
   it('a Workflow and an unknown session model are untouched', async () => {
-    expect(await onPreToolUse(call({ model: 'opus' }, { tool_name: 'Workflow' }), setup().d)).toBeNull();
+    expect(await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), setup().d)).toBeNull();
     expect(await onPreToolUse(call(), setup({ readSessionModel: () => null }).d)).toBeNull();
   });
 
@@ -442,12 +442,14 @@ describe('the turn directive prescribes the same question', () => {
 });
 
 describe('the hook registration', () => {
-  it('hooks.json runs the recorder on PostToolUse for AskUserQuestion', () => {
+  it('hooks.json runs the recorder on PostToolUse for AskUserQuestion (and the Workflow drift recorder for Workflow)', () => {
     const hooks = JSON.parse(fs.readFileSync(path.join(import.meta.dir, '..', 'claude', 'hooks.json'), 'utf8')).hooks;
 
-    expect(hooks.PostToolUse).toHaveLength(1);
+    expect(hooks.PostToolUse).toHaveLength(2);
     expect(hooks.PostToolUse[0].matcher).toBe('AskUserQuestion');
     expect(hooks.PostToolUse[0].hooks[0].command).toContain('hook.ts" post-tool-use');
+    expect(hooks.PostToolUse[1].matcher).toBe('Workflow');
+    expect(hooks.PostToolUse[1].hooks[0].command).toBe(hooks.PostToolUse[0].hooks[0].command);
   });
 });
 

@@ -368,7 +368,7 @@ describe('recommended versus used logging (5.7)', () => {
 describe('pre-flight reminder at PreToolUse (5.10)', () => {
   const agentCall = { session_id: 's1', tool_name: 'Agent', tool_input: { model: 'sonnet', prompt: 'Wrap the findings' } };
   // 2.3.3: a reminder is for staged work: a Workflow, the third Agent call in the window, or a turn that named a workflow.
-  const workflowCall = { session_id: 's1', tool_name: 'Workflow', tool_input: {} };
+  const workflowCall = { session_id: 's1', tool_name: 'Workflow', tool_input: { script: "await agent('p')" } };
 
   it('reminds a Workflow when no dispatch call was logged recently', async () => {
     const d = deps({ recentDispatch: () => false });

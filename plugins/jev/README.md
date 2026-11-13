@@ -374,13 +374,14 @@ bun scripts/jev-models.ts list    [--harness ...] [--json]
 **Config keys** (all optional, under `models.refresh` in `~/.config/jev/config.json`; read by a tolerant reader, the config schema is unchanged):
 
 ```json
-{ "models": { "refresh": { "enabled": true, "maxAgeDays": 7, "maxCalls": 20, "minRetryHours": 6, "candidates": ["claude-sonnet-5-1"] } } }
+{ "models": { "refresh": { "enabled": true, "maxAgeDays": 7, "maxCalls": 20, "minRetryHours": 6, "useApiKey": false, "candidates": ["claude-sonnet-5-1"] } } }
 ```
 
 - `enabled`: `false` turns the background refresh off (default on). The command and `/jev-refresh` still work.
 - `maxAgeDays`: age after which the background refresh runs again (default 7).
 - `maxCalls`: probe cap per refresh (default 20); `--max-calls` overrides it.
 - `minRetryHours`: minimum hours between two background refresh attempts, whatever their result (default 6).
+- `useApiKey`: probes use your subscription login and never see `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (an exported key would make every `claude -p` probe bill the API account, and the catalogue would describe that account); set it to `true` only for an API-key-only setup, and `jev-models status` points to it when the probes get no answer without a key (default `false`, boolean only).
 - `candidates`: extra model ids to probe; ids with characters outside `A-Z a-z 0-9 . _ : / ~ -`, or longer than 100, are ignored.
 
 **Background refresh.** At a Claude Code `SessionStart`, the hook starts a refresh in a detached process (`bun scripts/jev-models.ts refresh --harness claude-code --quiet`, stdio ignored) and returns at once. It starts only when all of these hold:

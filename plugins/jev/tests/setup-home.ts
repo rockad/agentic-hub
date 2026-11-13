@@ -49,6 +49,12 @@ for (const name of Object.keys(process.env)) {
   }
 }
 
+// No test may start a real catalogue refresh: the SessionStart hook launches a detached refresh when the catalogue is
+// missing, and that refresh runs paid `claude -p` probes. Set after the scrub above, so every process a test spawns
+// inherits it. The one test that exercises the real trigger deletes it from its own env and points JEV_REFRESH_SCRIPT
+// at a stub (tests/claude-hook-process.test.ts).
+process.env.JEV_MODEL_REFRESH = 'off';
+
 // bun test does not emit process 'exit' or 'beforeExit' (checked on 1.4.3); a preload afterAll runs once, after the last file.
 // A home created by `bun run test` belongs to that script, which removes it.
 afterAll(() => {

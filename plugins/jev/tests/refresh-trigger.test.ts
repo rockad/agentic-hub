@@ -9,7 +9,7 @@ import { tryLock } from '../src/core/lock.js';
 
 const NOW = new Date('2026-11-13T10:00:00.000Z');
 const daysAgo = (d: number): Date => new Date(NOW.getTime() - d * 86_400_000);
-const CFG: RefreshConfig = { enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, candidates: [] };
+const CFG: RefreshConfig = { enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, useApiKey: false, candidates: [] };
 
 let dir = '';
 let script = '';

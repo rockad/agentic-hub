@@ -11,6 +11,7 @@ import {
   neighbourIds,
   parseProbeOutput,
   probeArgs,
+  probeEnv,
   PROBE_SYSTEM_PROMPT,
   probeModel,
   reconcileAliases
@@ -266,8 +267,8 @@ describe('probeModel', () => {
       TMPDIR: '/tmp',
       SHELL: '/bin/sh',
       XDG_CONFIG_HOME: '/home/x/.config',
-      ANTHROPIC_API_KEY: 'k',
       ANTHROPIC_BASE_URL: 'https://example.invalid',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-id',
       CLAUDE_CODE_OAUTH_TOKEN: 't',
       CLAUDE_CONFIG_DIR: '/home/x/.claude-alt',
       HTTPS_PROXY: 'p',
@@ -284,8 +285,8 @@ describe('probeModel', () => {
     await probeModel('haiku', { spawn: async (_c, _a, o) => ((env = o.env), done(fixture('success-sonnet-5-5.json'))), cwd: stableCwd, env: source });
     expect(Object.keys(env!).sort()).toEqual(
       [
-        'ANTHROPIC_API_KEY',
         'ANTHROPIC_BASE_URL',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL',
         'CLAUDE_CODE_DISABLE_AUTO_MEMORY',
         'CLAUDE_CODE_OAUTH_TOKEN',
         'CLAUDE_CONFIG_DIR',
@@ -304,7 +305,38 @@ describe('probeModel', () => {
         'XDG_CONFIG_HOME'
       ]
     );
-    expect(env!.ANTHROPIC_API_KEY).toBe('k');
+    expect(env!.ANTHROPIC_BASE_URL).toBe('https://example.invalid');
+  });
+
+  it('leaves ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN out by default: an exported key would bill every probe to the API account', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 'a', CLAUDE_CODE_OAUTH_TOKEN: 't', ANTHROPIC_DEFAULT_OPUS_MODEL: 'x' };
+    const env = probeEnv(base);
+    expect('ANTHROPIC_API_KEY' in env).toBe(false);
+    expect('ANTHROPIC_AUTH_TOKEN' in env).toBe(false);
+    // the subscription login and the non-credential variables stay
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('t');
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('x');
+    expect(probeEnv(base, { useApiKey: false }).ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('passes ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN through only with the opt-in', () => {
+    const base: NodeJS.ProcessEnv = { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 'a', OPENROUTER_API_KEY: 'no' };
+    const env = probeEnv(base, { useApiKey: true });
+    expect(env.ANTHROPIC_API_KEY).toBe('k');
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('a');
+    expect(env.OPENROUTER_API_KEY).toBeUndefined();
+  });
+
+  it('probeModel hands the spawner an environment without the key unless useApiKey is set', async () => {
+    const seen: NodeJS.ProcessEnv[] = [];
+    const spawn: Spawner = async (_c, _a, o) => (seen.push(o.env!), done(fixture('success-sonnet-5-5.json')));
+    const source: NodeJS.ProcessEnv = { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 'a' };
+    await probeModel('haiku', { spawn, cwd: stableCwd, env: source });
+    await probeModel('haiku', { spawn, cwd: stableCwd, env: source, useApiKey: true });
+    expect(seen[0].ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seen[0].ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(seen[1].ANTHROPIC_API_KEY).toBe('k');
+    expect(seen[1].ANTHROPIC_AUTH_TOKEN).toBe('a');
   });
 
   it('reports a spawner that throws as inconclusive and still removes its temp directory', async () => {

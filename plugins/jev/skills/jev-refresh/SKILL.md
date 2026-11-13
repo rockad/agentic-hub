@@ -18,6 +18,7 @@ For Claude Code the refresh makes real, paid calls: one tiny prompt (`claude -p 
 
 - Default cap: 20 calls (`models.refresh.maxCalls` in `~/.config/jev/config.json`, or `--max-calls N`, at most 25).
 - The four aliases (`haiku`, `sonnet`, `opus`, `fable`) are probed first; each one also verifies the concrete id it resolves to. The rest of the candidates follow in order and anything past the cap is skipped and listed.
+- Probes use the subscription login and never receive `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`; for an API-key-only setup the user can set `models.refresh.useApiKey` to `true` in `~/.config/jev/config.json`.
 - Expect a few tens of cents for a full run, more for the larger models. Say so before running when the user has not asked for it by name.
 
 OpenCode (the public OpenRouter model list) and Antigravity (the configured tier map) refresh for free.

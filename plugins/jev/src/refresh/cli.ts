@@ -25,7 +25,7 @@ import {
 } from '../core/catalogue.js';
 import { getHarnessModels } from '../core/config.js';
 import { heartbeat, tryLock, unlock } from '../core/lock.js';
-import { ABSOLUTE_MAX_CALLS, loadRefreshConfig, refreshLockPath, writeAttempt } from './config.js';
+import { ABSOLUTE_MAX_CALLS, loadRefreshConfig, readAttempt, refreshLockPath, writeAttempt } from './config.js';
 import { discoverClaudeCode, reconcileAliases } from './claude-code.js';
 import { applyPrices, discoverOpenRouter, fetchOpenRouterPrices } from './openrouter.js';
 import { applyTierMap, discoverStatic } from './static.js';
@@ -154,6 +154,13 @@ export function summarise(before: Catalogue | null, after: Catalogue): RefreshSu
   };
 }
 
+/**
+ * Said when a Claude Code refresh got no usable answer and no API key was passed: the probes use the subscription
+ * login only, so an API-key-only setup (no `claude` login) needs the opt-in.
+ */
+export const SUBSCRIPTION_ONLY_HINT =
+  'note: probes use the subscription login only, not ANTHROPIC_API_KEY; for an API-key-only setup set models.refresh.useApiKey to true in the config';
+
 async function discover(
   harness: RefreshHarness,
   previous: Catalogue | null,
@@ -174,6 +181,7 @@ async function discover(
       // tests give a temp root: keep the probe directory under it as well, never in the real home
       cwd: deps.probeCwd ?? (deps.tmpRoot ? path.join(deps.tmpRoot, 'probe-cwd') : undefined),
       env: deps.env,
+      useApiKey: cfg.useApiKey,
       onProbe,
       log
     });
@@ -222,6 +230,7 @@ async function runRefresh(args: CliArgs, deps: CliDeps, out: (l: string) => void
         `jev-models: no probe succeeded${outcome.aborted ? ` (${outcome.aborted})` : ''}; catalogue unchanged` +
           (outcome.calls ? `; ${outcome.calls} calls made` : '')
       );
+      if (harness === 'claude-code' && !cfg.useApiKey) err(`jev-models: ${SUBSCRIPTION_ONLY_HINT}`);
       return 1;
     }
 
@@ -276,6 +285,11 @@ function runStatus(args: CliArgs, deps: CliDeps, out: (l: string) => void): numb
   out(`harness: ${args.harness}`);
   out(`file: ${file}`);
   out(`background refresh: ${cfg.enabled ? 'enabled' : 'disabled'} (max age ${cfg.maxAgeDays} days, max ${cfg.maxCalls} calls)`);
+  const last = readAttempt(args.harness, deps.dir);
+  if (args.harness === 'claude-code' && !cfg.useApiKey && last && (last.result === 'inconclusive' || last.result === 'error')) {
+    out(`last refresh: ${last.result} at ${last.ts}`);
+    out(SUBSCRIPTION_ONLY_HINT);
+  }
   const cat = loadCatalogue(args.harness, deps.dir);
   if (!cat) {
     out('catalogue: none (run /jev-refresh or: bun scripts/jev-models.ts refresh)');

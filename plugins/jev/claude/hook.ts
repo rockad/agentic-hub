@@ -10,7 +10,7 @@
  *   pre-tool-use (matcher "Agent|Task|Workflow")
  *                                      Agent delegation above the ceiling. Default (JEV_ELEVATION=choice): denied with a
  *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
- *                                      the third attempt in one prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
+ *                                      the third attempt of one delegation in a prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
  *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
  *                                      opt-in JEV_ELEVATION=clamp runs the first one
  *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
@@ -35,6 +35,7 @@ import {
   checkEgress,
   egressContextDirs,
   TELEMETRY_FILE,
+  PRIVATE_DIR_MODE,
   PRIVATE_FILE_MODE,
   privateDir,
   privateFile,
@@ -43,6 +44,7 @@ import {
 } from '../src/shared.js';
 import {
   AGENT_WINDOW_MS,
+  ATTEMPT_FALLBACK_WINDOW_MS,
   NO_INTENT,
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
@@ -114,8 +116,12 @@ export type ApprovalStore = {
   record: (sessionId: string, approval: Approval) => void;
   /** Find the approval covering `requested` and, for a `once`, consume it atomically (one parallel caller wins). */
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
-  /** Count one denied elevating attempt for this prompt; returns the count (a new prompt starts again at 1). */
-  attempt: (sessionId: string, promptKey: string) => number;
+  /**
+   * Count one denied elevating attempt of the delegation `signature` in this prompt; returns that delegation's count (a
+   * new prompt, or a new delegation, starts again at 1). `windowMs` is set when `promptKey` is not the host's prompt
+   * id: a counter quiet for longer than that starts again.
+   */
+  attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
 };
 
 export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
@@ -294,17 +300,24 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let approvalScope: string | null = null;
   let attemptCount: number | null = null;
   const elevMode = elevationMode(deps.env ?? process.env);
-  const promptKeyOf = (): string => (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || 'none';
+  // The attempt counter's key: the host's prompt id; without one, the stored turn (a hash of the prompt text, so two
+  // prompts with the same text share it) plus the time that turn was stored, and without a turn the literal 'none'.
+  // Only those two fallbacks (`windowMs` set) also expire after a quiet window.
+  const hostPromptId = typeof input.prompt_id === 'string' ? safeSessionId(input.prompt_id) : null;
+  const promptKeyOf = (): string => hostPromptId || (state?.turn ? `${state.turn}@${state.at ?? ''}` : 'none');
+  const attemptWindowMs = hostPromptId ? undefined : ATTEMPT_FALLBACK_WINDOW_MS;
   if (elevation?.kind === 'elevating' && elevMode === 'choice') {
     // Choice flow (default): a covering approval lets the call through; otherwise the call is denied with the
-    // prescribed question (a deny does not stop the turn), and the third attempt in one prompt opens the dialog.
+    // prescribed question (a deny does not stop the turn), and the third attempt of one delegation in a prompt opens the dialog.
     const nowMs = (deps.now ?? Date.now)();
     const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, elevation.requested, nowMs)) ?? null) : null;
     if (hit) {
       elevationState = 'approved';
       approvalScope = hit.scope;
     } else {
-      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf())) : undefined;
+      // Counted per delegation: several different workstreams, each answered, are not repeated attempts of one call.
+      const signature = callSignature(call as Record<string, unknown>);
+      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
       attemptCount = typeof count === 'number' ? count : null;
       // Without a working counter the deny could repeat for ever: fall back to the dialog.
       if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
@@ -564,9 +577,9 @@ const approvalStore: ApprovalStore = {
       if (approval?.scope === 'once' || state.approvals.length !== readApprovalState(sessionId).approvals.length) writeApprovalState(sessionId, state);
       return approval;
     }),
-  attempt: (sessionId, promptKey) =>
+  attempt: (sessionId, promptKey, signature, nowMs, windowMs) =>
     withApprovalsLock(sessionId, () => {
-      const { state, count } = bumpAttempts(readApprovalState(sessionId), promptKey);
+      const { state, count } = bumpAttempts(readApprovalState(sessionId), promptKey, signature, nowMs, windowMs);
       writeApprovalState(sessionId, state);
       return count;
     })

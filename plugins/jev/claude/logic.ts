@@ -698,8 +698,15 @@ export type ApprovalScope = 'once' | '5min' | 'session';
 /** What the user approved: a model, for one launch, five minutes or the session. `expires_at` is epoch ms; a session approval has none. */
 export type Approval = { model: ClaudeModelAlias; scope: ApprovalScope; created_at: number; expires_at?: number };
 
-/** The per-session approvals file: the approvals, and the denied-attempt counter of one prompt. */
-export type ApprovalState = { approvals: Approval[]; attempts?: { prompt: string; count: number } };
+/**
+ * The per-session approvals file: the approvals, and the denied-attempt counter of one prompt. `count` is every
+ * denied attempt of the prompt, `counts` the same per delegation signature (`callSignature`), `at` the epoch ms of
+ * the last one. A file written before `counts` and `at` existed has neither.
+ */
+export type ApprovalState = {
+  approvals: Approval[];
+  attempts?: { prompt: string; count: number; counts?: Record<string, number>; at?: number };
+};
 
 export const ONCE_TTL_MS = 10 * 60 * 1000;
 export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
@@ -754,8 +761,20 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
         );
       })
     : [];
-  const at = (r as { attempts?: { prompt?: unknown; count?: unknown } } | null)?.attempts;
-  const attempts = at && typeof at.prompt === 'string' && typeof at.count === 'number' ? { prompt: at.prompt, count: at.count } : undefined;
+  const at = (r as { attempts?: { prompt?: unknown; count?: unknown; counts?: unknown; at?: unknown } } | null)?.attempts;
+  const perSignature =
+    at?.counts && typeof at.counts === 'object' && !Array.isArray(at.counts)
+      ? Object.fromEntries(Object.entries(at.counts).filter(([, n]) => typeof n === 'number' && Number.isFinite(n)))
+      : undefined;
+  const attempts =
+    at && typeof at.prompt === 'string' && typeof at.count === 'number'
+      ? {
+          prompt: at.prompt,
+          count: at.count,
+          ...(perSignature ? { counts: perSignature as Record<string, number> } : {}),
+          ...(typeof at.at === 'number' ? { at: at.at } : {})
+        }
+      : undefined;
   return { approvals, ...(attempts ? { attempts } : {}) };
 }
 
@@ -786,10 +805,40 @@ export function claimApproval(
   return { state: { ...state, approvals }, approval: hit };
 }
 
-/** Pure: count one denied elevating attempt for `prompt`; a different prompt starts again at one. */
-export function bumpAttempts(state: ApprovalState, prompt: string): { state: ApprovalState; count: number } {
-  const count = state.attempts?.prompt === prompt ? state.attempts.count + 1 : 1;
-  return { state: { ...state, attempts: { prompt, count } }, count };
+/** All denied attempts of one prompt, over every delegation, after which the dialog opens whatever the signatures say. */
+export const ATTEMPT_TOTAL_CAP = 20;
+
+/**
+ * A prompt key that is not the host's prompt id (a stored turn without a timestamp, or none at all) cannot tell two
+ * prompts apart, so its counter also expires after this long without an attempt.
+ */
+export const ATTEMPT_FALLBACK_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Pure: count one denied elevating attempt of delegation `signature` in `prompt`, and return the count of that
+ * delegation (a different prompt starts again at one). Counting per delegation means three different workstreams
+ * that are each denied, answered and retried are three first attempts, not a third attempt; only the same
+ * delegation ignored again and again (or `ATTEMPT_TOTAL_CAP` denials of the prompt) reaches the dialog.
+ *
+ * With `windowMs` (the key is a fallback, not the host's prompt id) a counter whose last attempt is older than the
+ * window starts again, so two prompts with the same text do not share one.
+ */
+export function bumpAttempts(
+  state: ApprovalState,
+  prompt: string,
+  signature = '',
+  nowMs?: number,
+  windowMs?: number
+): { state: ApprovalState; count: number } {
+  const prev = state.attempts;
+  const stale = windowMs !== undefined && nowMs !== undefined && prev?.at !== undefined && nowMs - prev.at > windowMs;
+  const same = !!prev && prev.prompt === prompt && !stale;
+  const total = same ? prev.count + 1 : 1;
+  const counts = same ? { ...(prev.counts ?? {}) } : {};
+  const mine = (counts[signature] ?? 0) + 1;
+  if (signature in counts || Object.keys(counts).length < ATTEMPT_TOTAL_CAP) counts[signature] = mine;
+  const count = total > ATTEMPT_TOTAL_CAP ? Math.max(mine, CHOICE_DENIALS_BEFORE_ASK + 1) : mine;
+  return { state: { ...state, attempts: { prompt, count: total, counts, ...(nowMs !== undefined ? { at: nowMs } : {}) } }, count };
 }
 
 /** The note the assistant gets with a clamped call: what Jev did, and what to do next (report, ask in chat, no re-call). */

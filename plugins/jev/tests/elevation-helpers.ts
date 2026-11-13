@@ -16,8 +16,8 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       states.set(s, state);
       return approval;
     },
-    attempt: (s, promptKey) => {
-      const { state, count } = bumpAttempts(get(s), promptKey);
+    attempt: (s, promptKey, signature, nowMs, windowMs) => {
+      const { state, count } = bumpAttempts(get(s), promptKey, signature, nowMs, windowMs);
       states.set(s, state);
       return count;
     }

@@ -409,7 +409,7 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third elevating attempt in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval. Prints nothing. |
 
 What the hooks do **not** do:
@@ -479,12 +479,15 @@ approvals cover a call, a standing one (session, then 5 minutes) is used before 
 Approvals of one session never apply to another.
 
 **Third-attempt backstop.** If the assistant does not ask the prescribed question, the hook counts denied
-elevating attempts per session and `prompt_id`. The first two are denied; the **third elevating attempt without an
-approval in the same prompt opens the permission dialog** (the 2.3.4 reason: Yes runs it on the stronger model; No
+elevating attempts per session, `prompt_id` and delegation (subagent type and description). The first two attempts
+of one delegation are denied; the **third attempt of the same delegation without an approval in the same prompt opens
+the permission dialog** (the 2.3.4 reason: Yes runs it on the stronger model; No
 cancels the call and stops the turn; a comment typed with No lets the assistant continue), logged
-`elevation: "asked"`. **A new `prompt_id` resets the count**, and background agent completions start new prompts,
-so the count restarts after each of those. If the counter cannot be written, the call asks instead of being
-denied again.
+`elevation: "asked"`. Different delegations count separately, so several workstreams that are each denied, answered and
+retried never reach it; twenty denials in one prompt open it whatever they were. **A new `prompt_id` resets the count**,
+and background agent completions start new prompts, so the count restarts after each of those. A host that sends no
+`prompt_id` is keyed on the stored turn and the time it was stored, and that counter also restarts after five quiet
+minutes. If the counter cannot be written, the call asks instead of being denied again.
 
 **`JEV_ELEVATION`** (environment only, read by the hook; there is no config key):
 
@@ -594,7 +597,7 @@ the rewritten `model`.
     user's real answer as an approval: `once` (10 minutes to use it, consumed atomically), `5min`, `session`. An
     approval covers its model and anything below it above the session model. State is
     `<session_id>.approvals.json` (0600 in a 0700 directory), written atomically under a lock.
-  - The third elevating attempt without an approval in one prompt opens the 2.3.4 permission dialog; a new
+  - The third attempt of the same delegation without an approval in one prompt opens the 2.3.4 permission dialog; a new
     `prompt_id` resets the count (background agent completions start new prompts).
   - The turn directive prescribes the same question and options for a rating above the session model.
   - `JEV_ELEVATION=dialog` is the 2.3.4 behaviour (the old default); `clamp` is unchanged. Any other value means

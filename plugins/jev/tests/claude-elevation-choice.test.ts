@@ -10,6 +10,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { onPostToolUse, onPreToolUse, onUserPromptSubmit, type HookDeps, type HookInput } from '../claude/hook.ts';
 import {
+  ATTEMPT_FALLBACK_WINDOW_MS,
+  bumpAttempts,
+  normalizeApprovalState,
+  type ApprovalState,
   buildDirective,
   classifyElevation,
   elevationChoiceReason,
@@ -552,5 +556,123 @@ describe('the live hook process', () => {
     });
 
     expect(JSON.parse(p.stdout.toString()).hookSpecificOutput.permissionDecision).toBe('ask');
+  });
+});
+
+describe('the attempt counter is per delegation, and its fallback key is safe', () => {
+  const callOf = (n: number, extra: Partial<HookInput> = {}) => call({ ...INPUT, description: `WS${n}: refactor module ${n}` }, extra);
+  const decision = async (d: HookDeps, input: HookInput) => out(await onPreToolUse(input, d)).permissionDecision;
+
+  it('three distinct delegations in one prompt, each denied then approved once, never reach the dialog', async () => {
+    const { d } = setup();
+
+    for (const n of [1, 2, 3]) {
+      expect(await decision(d, callOf(n))).toBe('deny');
+      await answer(d, 'Yes, once');
+      expect(await onPreToolUse(callOf(n), d)).toBeNull();
+    }
+  });
+
+  it('three distinct delegations denied in parallel are all denied, not asked', async () => {
+    const { d, logs } = setup();
+
+    const decisions = [await decision(d, callOf(1)), await decision(d, callOf(2)), await decision(d, callOf(3))];
+
+    expect(decisions).toEqual(['deny', 'deny', 'deny']);
+    expect(logs.map((l) => l.elevation_attempt)).toEqual([1, 1, 1]);
+  });
+
+  it('a repeated identical call ignored twice still reaches the dialog, interleaved with others', async () => {
+    const { d } = setup();
+
+    const decisions = [];
+    for (const n of [1, 2, 1, 2, 1, 2]) decisions.push(await decision(d, callOf(n)));
+
+    expect(decisions).toEqual(['deny', 'deny', 'deny', 'deny', 'ask', 'ask']);
+  });
+
+  it('a run of ever-different delegations in one prompt still ends at the dialog', async () => {
+    const { d } = setup();
+
+    let last = '';
+    for (let n = 1; n <= 40; n++) last = await decision(d, callOf(n));
+
+    expect(last).toBe('ask');
+    expect(await decision(d, callOf(1))).toBe('ask');
+  });
+
+  it('bumpAttempts counts per signature and a new prompt starts again', () => {
+    let state: ApprovalState = { approvals: [] };
+    const bump = (prompt: string, sig: string) => {
+      const r = bumpAttempts(state, prompt, sig);
+      state = r.state;
+      return r.count;
+    };
+
+    expect([bump('p', 'a'), bump('p', 'b'), bump('p', 'a'), bump('p', 'a'), bump('p', 'b')]).toEqual([1, 1, 2, 3, 2]);
+    expect(bump('q', 'a')).toBe(1);
+  });
+
+  it('a state file written before this change (no per-signature counts) is still read', () => {
+    const old = normalizeApprovalState({ approvals: [], attempts: { prompt: 'p', count: 2 } });
+
+    expect(old.attempts).toMatchObject({ prompt: 'p', count: 2 });
+    expect(bumpAttempts(old, 'p', 'a').count).toBe(1);
+  });
+
+  describe('with no prompt_id', () => {
+    const noId = (n = 1): HookInput => {
+      const { prompt_id: _drop, ...rest } = callOf(n);
+      return rest as HookInput;
+    };
+    const turn = (d: HookDeps, at?: string) => d.saveTurn!('s1', { turn: 'same-hash', mode: 'on', intent: { models: [], cost: false } as any, ...(at ? { at } : {}) });
+
+    it('two prompts with identical text do not share a counter: the turn timestamp tells them apart', async () => {
+      const { d } = setup();
+      turn(d, '2026-11-13T10:00:00.000Z');
+      expect(await decision(d, noId())).toBe('deny');
+      expect(await decision(d, noId())).toBe('deny');
+
+      turn(d, '2026-11-13T10:00:05.000Z');
+
+      expect(await decision(d, noId())).toBe('deny');
+    });
+
+    it('the same prompt still reaches the dialog on its third attempt', async () => {
+      const { d } = setup();
+      turn(d, '2026-11-13T10:00:00.000Z');
+
+      expect([await decision(d, noId()), await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny', 'ask']);
+    });
+
+    it('with no turn timestamp the counter expires after a quiet window, and counts inside it', async () => {
+      const { d, advance } = setup();
+      turn(d);
+      expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny']);
+
+      advance(ATTEMPT_FALLBACK_WINDOW_MS + 1);
+      expect(await decision(d, noId())).toBe('deny');
+      advance(1000);
+      expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'ask']);
+    });
+
+    it('with no state at all (the literal none key) it expires the same way', async () => {
+      const { d, advance } = setup();
+      expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny']);
+
+      advance(ATTEMPT_FALLBACK_WINDOW_MS + 1);
+      expect(await decision(d, noId())).toBe('deny');
+      expect(await decision(d, noId())).toBe('deny');
+      expect(await decision(d, noId())).toBe('ask');
+    });
+
+    it('a prompt_id key never expires on time alone', async () => {
+      const { d, advance } = setup();
+      await onPreToolUse(call(), d);
+      await onPreToolUse(call(), d);
+      advance(ATTEMPT_FALLBACK_WINDOW_MS * 10);
+
+      expect(await decision(d, call())).toBe('ask');
+    });
   });
 });

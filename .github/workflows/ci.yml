@@ -26,7 +26,7 @@ jobs:
         run: |
           cd plugins/jev
           bun install --frozen-lockfile || bun install
-          bun test
+          bun run test
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5

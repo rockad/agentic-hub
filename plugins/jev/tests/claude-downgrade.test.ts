@@ -141,7 +141,7 @@ describe('a delegation is rated on its own text and asked about', () => {
     expect(r).toContain('STARTS with the marker [jev-downgrade:haiku]');
     expect(r).toContain('code-engineer');
     expect(r).toContain('(opus)');
-    expect(r).toContain('Jev rates this flash_lite, 86%');
+    expect(r).toContain('Jev rates this flash_lite or cheaper, 86%');
     expect(r).toContain('haiku $0.1/$0.5 vs opus $4/$20 per 1M, list price');
     expect(r).toContain('Jev suggests low effort; session effort is high');
     expect(r.indexOf("'Yes, haiku'")).toBeGreaterThan(0);

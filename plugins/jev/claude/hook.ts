@@ -1002,7 +1002,7 @@ async function liveDispatch(task: string, quotaStrategy: string, criteria?: Reco
 }
 
 /** The per-delegation tier rating: the tier question alone, for the delegation's own text; null on any failure (the caller times it out). */
-async function liveRateTask(task: string, signal?: AbortSignal): Promise<TierRating | null> {
+export async function liveRateTask(task: string, signal?: AbortSignal): Promise<TierRating | null> {
   try {
     const data = await callJev(`Task: ${task}`, { recommendedTier: dispatchQuestions().recommendedTier }, signal);
     return parseTierRating(data);

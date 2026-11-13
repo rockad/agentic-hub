@@ -367,7 +367,7 @@ describe('the question', () => {
     expect(r.length).toBeLessThan(900);
     expect(r).toContain('AskUserQuestion');
     expect(r).toContain('STARTS with the marker [jev-downgrade:haiku]');
-    expect(r).toContain('Jev rates this flash_lite, 86%');
+    expect(r).toContain('Jev rates this flash_lite or cheaper, 86%');
     expect(r).toContain('haiku $0.1/$0.5 vs sonnet $2/$10 per 1M, list price');
     expect(r).toContain('Jev suggests low effort; session effort is high');
     expect(r).toContain('general-purpose');
@@ -378,7 +378,7 @@ describe('the question', () => {
 
   it('without probabilities it says no percentage, without prices no price line, without effort no effort', () => {
     const r = downgradeReason(plan({ model: 'opus', ctx: unpriced, rating: rating([0, 1, 0, 0], false) })!, 'general-purpose');
-    expect(r).toContain('Jev rates this flash_lite');
+    expect(r).toContain('Jev rates this flash_lite or cheaper');
     expect(r).not.toContain('%');
     expect(r).not.toContain('$');
     expect(r).not.toContain('effort');

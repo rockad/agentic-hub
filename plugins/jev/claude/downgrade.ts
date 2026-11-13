@@ -382,7 +382,8 @@ export function downgradeReason(
   const type = safeText(subagentType) || 'general-purpose';
   const req = safeText(plan.keep) || 'the requested model';
   const say = effortSentence(effort.suggested, effort.session);
-  const evidence = `Jev rates this ${plan.neededTier}${plan.real ? `, ${Math.round(plan.cumulative * 100)}%` : ''}`;
+  // The percentage is cumulative (the needed tier and every cheaper one), so the tier reads "or cheaper".
+  const evidence = `Jev rates this ${plan.neededTier}${plan.neededTier === 'openrouter_free' ? '' : ' or cheaper'}${plan.real ? `, ${Math.round(plan.cumulative * 100)}%` : ''}`;
   const build = (yes: DowngradeOption[], withHint: boolean, withPrice: boolean): string => {
     const cands = yes.map((o) => o.label.replace(/^Yes, /, '')).join(', ');
     const options = [...yes, ...plan.options.slice(plan.yes.length)].map((o) => `'${o.label}'`).join(', ');

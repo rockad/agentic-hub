@@ -559,7 +559,7 @@ export function buildDirective(
   intent?: UserIntent | null,
   elevation: ElevationMode = 'choice'
 ): string {
-  const body = directiveBody(rec, sessionModel, quotaStrategy, intent);
+  const body = directiveBody(rec, sessionModel, quotaStrategy, intent, elevation);
   // The stage rubric helps on a turn that delegates paid work and is noise on the rest (5.3).
   const advised = applyUserIntent(rec, intent);
   const delegates = advised.subagent !== 'self' && advised.tier !== 'openrouter_free' && advised.by !== 'instruction-model';
@@ -570,7 +570,8 @@ function directiveBody(
   rec: Dispatch,
   sessionModel: string | null,
   quotaStrategy: string,
-  intent?: UserIntent | null
+  intent?: UserIntent | null,
+  elevation: ElevationMode = 'choice'
 ): string {
   const advised = applyUserIntent(rec, intent);
   // Where a delegation above the session model needs the user's say, the choice flow prescribes the question

@@ -463,3 +463,20 @@ Findings fixed from it (PRs #45 and #46): the refresh probe cost about $0.015 to
 - Downgrade, live: not exercised, because Jev rated the task `flash` (sonnet), the same as the session model. Needs a session above the recommendation (for example an opus session and a trivial task).
 
 Still unverified: the live downgrade question, a refresh on an account that serves `fable`, the Antigravity discoverer and `define_subagent` model bypass (section 12). Open design point: an Agent call with no `model` is never evaluated for downgrade.
+
+## 26. Downgrade design (decided with the user via /clarify, 2026-11-13) and status
+
+Why it was reworked: in the interactive test of section 25 the downgrade question never appeared. The first implementation rated the user's prompt once per turn as a single winning tier and asked only when an explicit Agent alias was above it; the router returns per-tier probabilities that it did not use, and calls with no model, `self` ratings and same-alias version steps were never evaluated.
+
+| # | Decision |
+| --- | --- |
+| 1 | Rate each delegation: `PreToolUse` on `Agent` sends the call's own description and the first 1000 characters of its prompt to the router (about 280 ms, fail-open, cached per call signature for 10 minutes; only length and hash logged) |
+| 2 | Needed tier: the cheapest tier whose cumulative probability reaches 0.6 (config `models.downgrade.minProbability`, env `JEV_DOWNGRADE_MIN_PROBABILITY`, clamped 0.5 to 0.95). Calibrated on 12 delegations with the real router: no hard task was offered haiku at any threshold from 0.5 to 0.9 |
+| 3 | Version steps: offered only when strictly cheaper by list price. Facts behind it: in this lineup older versions are never cheaper (haiku 5.5 $0.10/$0.50 vs 4.5 $1/$5; sonnet 5.5 and 5 both $2/$10, 4.5 $3/$15; opus 5.5 $4/$20 vs 5 and 4.5 $5/$25; fable 5.2 $8/$40 vs 5 $10/$50). Prices are recorded in the catalogue from the OpenRouter list; list price is a proxy because the user's cost is subscription quota |
+| 4 | Coverage: every delegation, including calls with no model (judged against the session model), `self` ratings and restricted subagent types (alias level only) |
+| 5 | Ask at the call only (the turn directive no longer offers downgrades); answer remembered per call signature for 10 minutes |
+| 6 | Default mode `ask`, with a "No, and don't ask again this session" answer that writes a session-scoped off |
+
+Verified: the real hook process denies a trivial delegation with the question in a seeded sonnet session; interactive session `jevt-test-4` (verified from the Jev state file, decisions log and transcripts): the question with evidence, both list prices and the advisory effort appeared, "Yes, haiku" ran the subagent on `claude-haiku-5-5` and the relaunch passed with no second question, "don't ask again" skipped the next delegation, a hard task got no downgrade question. A model-less delegation was not produced by the assistant live (covered by unit and end-to-end tests and a direct hook run).
+
+Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `main` is 2.3.8. Doc-Cr round 2 on #45 and #46 (probe env without `ANTHROPIC_API_KEY` unless `models.refresh.useApiKey`, tests never start refreshes, ask mode skips a remapped alias) is applied. #48 is the 2.3.9 batch schema. Open: whether the batch schema gets its own highest-tier review; the two skipped persona parity cases; the Antigravity `define_subagent` bypass and `fable` refresh remain unverified.

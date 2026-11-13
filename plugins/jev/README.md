@@ -228,6 +228,9 @@ plugins/jev
 │   ├── shared.ts            # Shared types and helpers across harnesses
 │   └── tracing.ts           # OpenTelemetry and span logging
 ├── claude/                  # Claude Code hook adapter (hook.ts entry, logic.ts decisions)
+│   ├── workflow-guard.ts    # Static Workflow script analysis (acorn, fail-closed)
+│   ├── workflow-pin.ts      # Workflow drift recorder (script hashes keyed by tool_use_id)
+│   ├── agent-definitions.ts # `.claude/agents/*.md` model/effort reader for the Workflow guard
 │   └── hooks.json           # Claude Code hook registration
 ├── scripts/
 │   ├── commit.ts            # Semantic commit generation pipeline
@@ -500,7 +503,7 @@ Install from this repository's Claude Code marketplace (`.claude-plugin/marketpl
 Put the key where the hooks and the MCP server both find it: `~/.config/jev/env` with
 `JEV_OPENROUTER_API_KEY=...`. `bun` must be on `PATH`.
 
-The plugin brings the `jev_*` MCP tools and four hooks (`claude/hooks.json` → `claude/hook.ts`).
+The plugin brings the `jev_*` MCP tools and its hooks (`claude/hooks.json` → `claude/hook.ts`).
 The hooks act only in mode `on`. In `on-demand` and `off` they stay silent, and the MCP tools
 remain callable on request.
 
@@ -511,6 +514,8 @@ remain callable on request.
 | `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
 | `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session). Prints nothing. |
+| `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, the third attempt opens the dialog); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
+| `PostToolUse` on `Workflow` | Drift recorder: re-hashes the script files the guard analysed and logs `workflow_changed` when one differs; prints a message while Jev is on. No prompt. |
 
 What the hooks do **not** do:
 
@@ -623,8 +628,8 @@ minutes. If the counter cannot be written, the call asks instead of being denied
 | `dialog` | The 2.3.4 behaviour: the permission dialog on every elevating call (see "Elevation (2.3.4)" below). |
 | `clamp` | The 2.3.4 opt-in clamp (see "Opt-in clamp" below). |
 
-Unchanged: a call at or below the session model, with no model, a `Workflow`, an unknown or missing session
-model; a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
+Unchanged: a call at or below the session model, with no model, an unknown or missing session
+model (a `Workflow` is read by the Workflow guard, see "Workflow guard" below); a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
 apostrophe and stale-intent fixes.
 
 **State.** `<session_id>.approvals.json` in `~/.config/jev/claude-sessions/` (directory 0700, file 0600), written
@@ -647,8 +652,8 @@ always exits 0, prints nothing, and ignores any question without the marker and 
   dialog backstop. Use `JEV_ELEVATION=dialog` or `clamp` there, or name the model in the prompt.
 - Not verified here: the whole flow end to end in a real interactive session (the pieces were verified
   separately: the deny keeps the turn going, and the answer reaches the `PostToolUse` hook), whether the assistant
-  follows the prescription reliably, how a hook `ask` dialog behaves in `auto` permission mode, and whether Claude
-  Code fires `PreToolUse` for the agents a `Workflow` launches.
+  follows the prescription reliably, and how a hook `ask` dialog behaves in `auto` permission mode. (Claude Code does not fire
+  `PreToolUse` for the agents a `Workflow` launches, verified on 2.1.323: see "Workflow guard".)
 
 ### Downgrade choice
 
@@ -707,7 +712,7 @@ than a hint: it never blocks a call for good.
   `subagent_type` is a ladder definition (`jev-ladder-<id>`, it already pins a model by name);
 - nothing cheaper could be offered for any rating (a call already on the cheapest model);
 - the elevation guard already decided the call (denied, asked, approved, instructed or clamped): one question at a time;
-- the call is a `Workflow` (and the agents it launches, unverified), the session has no id, or the session switched
+- the call is a `Workflow` (never rated; its agents never reach the hook, see "Workflow guard"), the session has no id, or the session switched
   the question off;
 - any piece fails (no store, a failing lock, a corrupt state file): the call goes ahead exactly as it would without Jev.
 
@@ -806,6 +811,68 @@ assistant to ask the user to run `bun scripts/jev-models.ts ladder-agents --dir 
   prescription reliably, and the exact shape of the `effort` hook field in every Claude Code version (a string and an
   object with `level` are read; anything else is ignored).
 
+### Workflow guard
+
+The agents a `Workflow` script launches never pass through `PreToolUse` (verified live on Claude Code 2.1.323: no
+`PreToolUse` event fires for `agent(...)` inside a workflow), so `agent(..., {model: 'opus'})` in a script would
+bypass the elevation guard. The hook does see the `Workflow` tool call itself, so it reads the script instead. The
+design and the static analysis are cognitive-engine's (`packages/jev/src/workflow-guard.ts`, same owner), ported
+with agentic-hub's own ranking, choice flow and state; every case of its six test files that applies is kept.
+
+**What is read.** `tool_input.script` (inline), `scriptPath` (a file), a saved workflow `name` (`.claude/workflows/<name>.js|.mjs`
+in the project, then the user config dir) and `workflow('name')` / `workflow({scriptPath})` references inside them,
+one level deep. The script is parsed with `acorn` (pinned `8.19.0`) and every reference to the identifiers `agent`
+and `workflow` is visited. Comments and strings that mention a model are never read as code.
+
+**What is decided.**
+
+| Script | Result |
+| :--- | :--- |
+| `agent(p)` with no model, `model: 'inherit'`, a literal at or below the session model | Passes. |
+| A literal `model` above the session model (family-first order, the same as the `Agent` guard), no instruction naming it | The `Agent` choice flow, for the strongest model named: a covering approval passes; otherwise the call is **denied with the prescribed `[jev-elevate:<model>]` question** (the reason names the workflow by its script hash); the third denied attempt of the same script (a signature of the script hashes) in one prompt opens the permission dialog. `JEV_ELEVATION=dialog` and `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp. |
+| The prompt names that model or a stronger one | Passes (`workflow_guard: "passed-instructed"`). |
+| An `agentType` | Its definition's `model` and `effort` are read from `.claude/agents/*.md` (project up to the git root or `CLAUDE_PROJECT_DIR`, then the user config dir, then installed plugins); a built-in type runs on the session model; an explicit `model` on the call wins over the definition. |
+| `effort` | A literal `xhigh` or `max` asks (an interim threshold with no spec behind it, cognitive-engine RFC 007); `low`, `medium`, `high` pass; any other value asks. |
+| The environment | `CLAUDE_CODE_SUBAGENT_MODEL` (when the call and its definition set none), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` and `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (replacing them) are read from the hook's environment and the resulting model is ranked like a written one. |
+| `meta.phases[].model` | Ranked too, although in Claude Code it is only a progress hint: a false positive, never a miss. |
+
+**Fail closed (the permission dialog, never a deny loop).** Everything the analysis does not understand asks, with
+a reason that names `file:line:col`:
+
+- aliasing `agent` or `workflow`, passing them as values, member or computed access to them, `.call` and tagged templates;
+- spread arguments or options, computed keys, a `model` from a variable (`let`, a parameter, `args.model`), a template with `${}`, concatenation;
+- a `const` with one binding initialised by a string literal (or a flat object of literals that is only read) **is** followed: `const M = 'opus'` then `model: M` is understood and ranked;
+- the escape set (`this` outside a class body, `arguments`, `globalThis`, `global`, `window`, `self`, `Function`, `eval`, `Reflect`, `Proxy`, `process`, `require`, `Bun`, `Deno`, `module`, `exports`, `import.meta`) and the member names that reach the Function constructor or a prototype;
+- dynamic `import()`, `import` declarations, `export ... from`;
+- a parse error, an unreadable file, a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
+
+When a script has both an elevation and a fail-closed site, one permission dialog lists all of them.
+
+**Drift recorder.** `PreToolUse` pins the sha256 of every script file it read under the call's `tool_use_id`
+(`~/.config/jev/workflow-pins/`, directory 0700, file 0600, pruned after 14 days). `PostToolUse` on `Workflow`
+re-hashes those files after the run and, when one differs, logs a `workflow_changed` event and (while Jev is on)
+prints a message. There is deliberately no prompt on a hash difference: the run already happened. A denied call is
+not pinned.
+
+**Logging.** The `agent_call` decision-log entry of a Workflow carries `workflow_guard` (`allow`, `denied`, `asked`,
+`passed-instructed`, `error`), `workflow_models` (the literal models that were ranked, in script order),
+`workflow_scripts` (label, sha256 and byte length of every analysed text) and, on an elevation,
+`workflow_highest`. The script text is never logged, and a script-supplied literal in a reason is clipped to 48
+characters. An internal error fails open (the call passes, `workflow_guard: "error"`); an unparseable script is not
+an internal error: it asks.
+
+**Limits, said plainly.**
+
+- Static analysis cannot be sound. This is a fail-closed filter, not a sandbox; the reference's `STILL_SLIPS` table of idioms known to pass is kept in `tests/workflow-guard-hardening.test.ts`.
+- A model computed at run time (a variable, `args`, a call) asks; it is not ranked.
+- `acorn` is loaded when the first Workflow is analysed, not when the hook starts: an install without it makes a Workflow ask (the script cannot be read) and does not disturb the other hooks.
+- The model a workflow agent actually ran on is **not logged**: no hook sees it, and `SubagentStart` carries no model.
+- No downgrade rating for a Workflow, and no clamp.
+- Two versions inside one family (`claude-opus-4-8` against `claude-opus-5-5`) are not an elevation, as for the `Agent` tool.
+- The script is checked as written. A file changing between the check and Claude Code's own read, or a saved workflow that Claude Code resolves differently, is not seen; the drift recorder reports it after the run.
+- The subagent environment variables are read from the hook's own environment, assumed to match Claude Code's; the FORCE and workflow details were read from the 2.1.321 binary by cognitive-engine and are version-bound.
+- Not verified here: a real interactive Workflow run through the deny, the question and the retry (the pieces are tested; the hook process was run with the captured payload, see the release note).
+
 ### Elevation (2.3.4)
 
 This section describes the 2.3.4 behaviour, which is now `JEV_ELEVATION=dialog`; the default is the choice flow
@@ -814,7 +881,7 @@ happens depends on what the user said in the current prompt, and on one opt-in s
 
 | Situation | What happens |
 | :--- | :--- |
-| Model at or below the session model, no model, `inherit`, a `Workflow`, unknown session model | Untouched. |
+| Model at or below the session model, no model, `inherit`, unknown session model | Untouched. (A `Workflow` is read by the Workflow guard.) |
 | The prompt names that model or a stronger one (`use opus`, `run an opus subagent`) | Passes unchanged, no dialog (the instruction is the approval). Logged as `elevation: "instructed"`. |
 | **`JEV_ELEVATION=dialog`:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
 | The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in both modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. |
@@ -860,6 +927,26 @@ the rewritten `model`.
 
 ### Release notes
 
+- **next: workflow guard** (additive; no version bump; Jev mode `on` only):
+  - The agents a `Workflow` script launches never pass through `PreToolUse` (verified on Claude Code 2.1.323), so
+    `agent(..., {model: 'opus'})` in a script bypassed the elevation guard. `PreToolUse` on `Workflow` now reads the
+    script (inline, `scriptPath`, a saved `name`, nested `workflow()` one level) with `acorn` and ranks every literal
+    model against the session model. An elevation takes the `Agent` choice flow (deny with the prescribed
+    `[jev-elevate:<model>]` question, approvals, a per-script attempt counter, the dialog on the third attempt); an
+    instruction naming the model passes; everything the analysis cannot prove opens the permission dialog.
+    See "Workflow guard".
+  - Ported from cognitive-engine's `workflow-guard.ts` / `workflow-pin.ts` (same owner, same design, same fail-closed
+    list). Adapted: ranking through `classifyElevation` (family-first), the choice flow and approvals, the decisions
+    log, `claude/agent-definitions.ts` (a strict front matter reader, since agentic-hub had none), no project ceiling.
+  - New `PostToolUse` matcher `Workflow` (`claude/hooks.json`): the drift recorder logs `workflow_changed` when a
+    script file differs from the one analysed. New dependency: `acorn` 8.19.0.
+  - New decisions-log fields on a Workflow call: `workflow_guard`, `workflow_models`, `workflow_scripts` (hashes and
+    lengths, never script text), `workflow_highest`.
+  - Behaviour change: a `Workflow` whose `tool_input` has none of `script`, `scriptPath` or `name` now asks (it was
+    never inspected before), when Jev is on and the session model is known.
+  - Real hook process, temp HOME, mode `on`, session model `claude-sonnet-5-5`, cognitive-engine's captured
+    `PreToolUse.workflow-script.json` with `model: 'opus'`: stdout is a `deny` whose reason starts the prescribed
+    `[jev-elevate:opus]` question; the same script with no model prints nothing and logs `workflow_guard: "allow"`.
 - **2.3.10: session-model fallback** (found by live verification of 2.3.8; additive, fail-open):
   - A session whose `SessionStart` / `PostModelSwitch` never ran (plugins reloaded mid-session, a resumed or
     headless session) had no stored session model, so the elevation guard and the downgrade evaluation skipped

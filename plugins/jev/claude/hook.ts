@@ -6,12 +6,17 @@
  *   user-prompt-submit                 advise subagent / model / effort via additionalContext
  *   post-tool-use (matcher "AskUserQuestion")
  *                                      elevation choice recorder: the user's real answer to a question that starts with
- *                                      [jev-elevate:<model>] becomes an approval (once, 5 minutes, session); no output
+ *                                      [jev-elevate:<model>] becomes an approval (once, 5 minutes, session); a question that
+ *                                      starts with [jev-downgrade:<alias>] records that the delegation was answered (any
+ *                                      answer; never an approval); no output
  *   pre-tool-use (matcher "Agent|Task|Workflow")
  *                                      Agent delegation above the ceiling. Default (JEV_ELEVATION=choice): denied with a
  *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
  *                                      the third attempt in one prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
  *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
+ *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): a model above Jev's recommendation for
+ *                                      the prompt is denied once with the prescribed [jev-downgrade:<alias>] question (ask) or
+ *                                      run on the recommended alias (auto); the catalogue ranks the models when there is one;
  *                                      opt-in JEV_ELEVATION=clamp runs the first one
  *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
  *                                      log the call next to the last recommendation, and remind once before staged

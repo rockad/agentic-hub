@@ -413,6 +413,69 @@ describe('auto mode', () => {
   });
 });
 
+describe('ask mode skips an option whose alias is remapped', () => {
+  const remap = (...aliases: string[]) => Object.fromEntries(aliases.map((a) => [`ANTHROPIC_DEFAULT_${a.toUpperCase()}_MODEL`, 'some-other-id']));
+
+  it('with no remap the question is unchanged: both Yes options, then the two No answers', async () => {
+    const { d, logs } = setup({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'x' } });
+    const o = out(await onPreToolUse(call(), d));
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain("'Yes, haiku', 'Yes, sonnet', 'No, keep opus', 'No, and don't ask again this session'");
+    expect(logs[0]).toMatchObject({ downgrade: 'asked', downgrade_to: 'haiku' });
+  });
+
+  it('a remapped recommended alias with no other Yes option: no question, logged alias-remapped, the call goes ahead', async () => {
+    // a model-less call on a sonnet session: haiku is the only Yes option
+    const { d, logs, downgrades } = setup({ readSessionModel: () => 'claude-sonnet-5-5', env: remap('haiku') });
+    const bare = { description: 'WS2: list the files', prompt: 'Run ls and summarise.', subagent_type: 'general-purpose' };
+    expect(await onPreToolUse(call(bare), d)).toBeNull();
+    expect(logs[0]).toMatchObject({ downgrade: 'skipped', downgrade_skip: 'alias-remapped' });
+    // nothing was recorded as asked: the question was never prescribed
+    expect(downgrades.states.get('s1')?.entries.some((e) => e.asked_at !== undefined)).toBeFalsy();
+  });
+
+  it('every Yes alias remapped (recommended and alternative): no question, logged alias-remapped', async () => {
+    const { d, logs } = setup({ env: remap('haiku', 'sonnet') });
+    expect(await onPreToolUse(call(), d)).toBeNull();
+    expect(logs[0]).toMatchObject({ downgrade: 'skipped', downgrade_skip: 'alias-remapped' });
+  });
+
+  it('a remapped recommended alias is dropped and the alternative is still offered, with no price line for the dropped one', async () => {
+    const { d, logs } = setup({ env: remap('haiku') });
+    const o = out(await onPreToolUse(call(), d));
+    expect(o.permissionDecision).toBe('deny');
+    const r: string = o.permissionDecisionReason;
+    expect(r).toContain("'Yes, sonnet', 'No, keep opus', 'No, and don't ask again this session'");
+    expect(r).not.toContain("'Yes, haiku'");
+    expect(r).not.toContain('haiku $0.1');
+    expect(logs[0]).toMatchObject({ downgrade: 'asked', downgrade_to: 'sonnet' });
+  });
+
+  it('a remapped alternative is dropped and the recommended option is kept', async () => {
+    const { d, logs } = setup({ env: remap('sonnet') });
+    const o = out(await onPreToolUse(call(), d));
+    expect(o.permissionDecision).toBe('deny');
+    const r: string = o.permissionDecisionReason;
+    expect(r).toContain("'Yes, haiku', 'No, keep opus', 'No, and don't ask again this session'");
+    expect(r).not.toContain("'Yes, sonnet'");
+    expect(r).toContain('haiku $0.1/$0.5 vs opus $4/$20 per 1M, list price');
+    expect(logs[0]).toMatchObject({ downgrade: 'asked', downgrade_to: 'haiku' });
+  });
+
+  it('an empty remap value counts as not remapped, like the clamp', async () => {
+    const { d } = setup({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: '' } });
+    expect(out(await onPreToolUse(call(), d)).permissionDecisionReason).toContain("'Yes, haiku', 'Yes, sonnet'");
+  });
+
+  it('auto is unchanged: a remapped cheapest alias skips with alias-remapped, an unremapped one applies', async () => {
+    const remapped = setup({ env: { JEV_DOWNGRADE: 'auto', ...remap('haiku') } });
+    expect(await onPreToolUse(call(), remapped.d)).toBeNull();
+    expect(remapped.logs[0]).toMatchObject({ downgrade: 'skipped', downgrade_skip: 'alias-remapped' });
+    const plain = setup({ env: { JEV_DOWNGRADE: 'auto', ...remap('sonnet') } });
+    expect(out(await onPreToolUse(call(), plain.d)).updatedInput.model).toBe('haiku');
+  });
+});
+
 describe('the router fails open', () => {
   it('a null rating, a throwing router and a router that never answers all let the call go ahead, logged', async () => {
     for (const rateTask of [async () => null, async () => Promise.reject(new Error('no key')), () => new Promise<TierRating | null>(() => {})]) {

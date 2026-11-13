@@ -107,6 +107,7 @@ import {
   claimDowngrade,
   delegationRequest,
   downgradeMode,
+  dropRemappedOptions,
   evaluatePlan,
   downgradeReason,
   instructedModel,
@@ -638,9 +639,17 @@ async function evaluateDowngrade(a: {
     }
     if (hiddenVia.length > 0) log.downgrade_hidden = hiddenVia.slice(0, 3);
     if (!plan) return skip('none-cheaper');
-    const p = plan;
+    let p = plan;
     log.downgrade_from = p.requested;
     log.downgrade_to = p.yes[0].model ?? p.neededAlias;
+    if (mode === 'ask') {
+      // An option whose alias is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL) would run on a model Jev did not rate: drop it,
+      // and with no Yes option left do not ask at all (as `auto` does below).
+      const kept = dropRemappedOptions(p, (alias) => aliasRemapped(alias, deps.env));
+      if (!kept) return skip('alias-remapped');
+      p = kept;
+      log.downgrade_to = p.yes[0].model ?? p.neededAlias;
+    }
 
     const auto = mode === 'auto' ? autoOption(p) : null;
     if (mode === 'auto') {

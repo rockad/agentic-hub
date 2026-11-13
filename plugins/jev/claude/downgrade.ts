@@ -413,6 +413,19 @@ export function downgradeReason(
   return build(plan.yes.slice(0, 1), false, false).slice(0, 897) + '...';
 }
 
+/**
+ * Pure: the plan without the Yes options that would run on a remapped alias (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL` makes
+ * `model: "haiku"` land on a model Jev did not rate). Only an option that names an alias is checked; a ladder step
+ * through a `jev-ladder-<id>` definition sets no alias. Null when no Yes option remains. The price line described the
+ * first Yes option, so it goes when that one is dropped.
+ */
+export function dropRemappedOptions(plan: DowngradePlan, remapped: (alias: string) => boolean): DowngradePlan | null {
+  const yes = plan.yes.filter((o) => !(typeof o.model === 'string' && remapped(o.model)));
+  if (yes.length === plan.yes.length) return plan;
+  if (yes.length === 0) return null;
+  return { ...plan, yes, options: [...yes, ...plan.options.slice(plan.yes.length)], priceNote: yes[0] === plan.yes[0] ? plan.priceNote : null };
+}
+
 /** The option `auto` applies: the cheapest Yes that sets a model alias (a version through a definition cannot be applied by rewriting `model`). */
 export function autoOption(plan: DowngradePlan): (DowngradeOption & { model: string }) | null {
   const o = plan.yes.find((y) => typeof y.model === 'string');

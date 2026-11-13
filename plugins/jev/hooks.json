@@ -1,0 +1,29 @@
+{
+  "jev-subagent-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "invoke_subagent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run ./antigravity/hook.ts pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run ./antigravity/hook.ts post-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,5 +1,8 @@
 import type { CatalogueSource, ProbeResult } from '../core/catalogue.js';
 
+/** List prices (USD per million tokens) by id; see `parseOpenRouterPrices` for the keys. */
+export type OpenRouterPrices = Map<string, { inputPerM: number; outputPerM: number }>;
+
 /** What a discoverer hands to `buildCatalogue`, plus the bookkeeping the command prints. */
 export interface DiscoveryOutcome {
   source: CatalogueSource;
@@ -15,6 +18,8 @@ export interface DiscoveryOutcome {
   /** Ids that were probed but gave no usable answer (timeout, spawn failure, rate limit): left as they were. */
   inconclusive: string[];
   notes: string[];
+  /** List prices read in the same request (OpenRouter discoverer only). */
+  prices?: OpenRouterPrices;
 }
 
 export type LogFn = (line: string) => void;

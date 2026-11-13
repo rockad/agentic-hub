@@ -46,6 +46,10 @@ OpenCode (the public OpenRouter model list) and Antigravity (the configured tier
 
 4. To look without refreshing, run `bun "${CLAUDE_PLUGIN_ROOT}/scripts/jev-models.ts" status` (age, source, counts) or `list` (the ladder per tier).
 
+## List prices
+
+Each refresh also reads the public OpenRouter model list (free, no key, one request, 10 s timeout) and stores a **list price** per model (`$2/$10 per 1M`, input/output USD per million tokens) beside the models it verified; `list` shows it. It is a proxy for cost, not the real cost: on a subscription the cost is quota weight. If OpenRouter is unreachable the refresh still succeeds and the previous prices are kept (the output says "previous prices kept"). Prices are only fetched by the refresh, never at hook time. When summarising, mention the price line only if it reports a problem.
+
 ## Background refresh
 
 When Jev mode is `on`, a Claude Code session start refreshes the catalogue by itself in a detached process, at most once per `models.refresh.maxAgeDays` (default 7), and not again within `models.refresh.minRetryHours` (default 6) of any attempt, successful or not. To stop that, set `models.refresh.enabled` to `false` in `~/.config/jev/config.json`. `/jev-refresh` still works when it is disabled.

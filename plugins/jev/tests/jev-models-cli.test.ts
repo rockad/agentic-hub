@@ -50,10 +50,15 @@ function fakeClaude(account: readonly string[]) {
   return { spawn, calls };
 }
 
+/** Default for every test: OpenRouter is unreachable, so no test ever touches the network. */
+const offlineFetch = (async () => {
+  throw new Error('offline');
+}) as unknown as typeof fetch;
+
 function harness(extra: Partial<CliDeps> = {}) {
   const out: string[] = [];
   const err: string[] = [];
-  const deps: CliDeps = { dir, configFile, now: () => NOW, out: (l) => out.push(l), err: (l) => err.push(l), tmpRoot: root, ...extra };
+  const deps: CliDeps = { dir, configFile, now: () => NOW, out: (l) => out.push(l), err: (l) => err.push(l), tmpRoot: root, fetch: offlineFetch, ...extra };
   return { deps, out, err, text: () => out.join('\n') };
 }
 
@@ -335,6 +340,105 @@ describe('refresh command (Claude Code)', () => {
     release();
     await first;
     expect(calls.length).toBe(4);
+  });
+});
+
+describe('list prices in refresh and list', () => {
+  const LIST_WITH_PRICES = {
+    data: [
+      { id: 'anthropic/claude-haiku-5.5', pricing: { prompt: '0.0000001', completion: '0.0000005' } },
+      { id: 'anthropic/claude-sonnet-5.5', pricing: { prompt: '0.000002', completion: '0.00001' } },
+      { id: 'anthropic/claude-sonnet-5.5:batch', pricing: { prompt: '0.000001', completion: '0.000005' } },
+      { id: 'anthropic/claude-opus-5', pricing: { prompt: '0.000005', completion: '0.000025' } },
+      // priced on OpenRouter but not on this account: must not appear in the catalogue
+      { id: 'anthropic/claude-sonnet-9', pricing: { prompt: '0.000001', completion: '0.000001' } }
+    ]
+  };
+  const pricedFetch = (async () => ({ ok: true, json: async () => LIST_WITH_PRICES }) as unknown as Response) as unknown as typeof fetch;
+
+  it('Claude Code: attaches the OpenRouter list price to probed models, stamped with the refresh time', async () => {
+    const h = harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn, fetch: pricedFetch });
+    expect(await runCli(['refresh', '--max-calls', '25'], h.deps)).toBe(0);
+    const cat = loadCatalogue('claude-code', dir)!;
+    const by = (id: string) => cat.models.find((m) => m.id === id)!;
+    expect(by('claude-sonnet-5-5').price).toEqual({ inputPerM: 2, outputPerM: 10, source: 'openrouter', at: NOW.toISOString() });
+    expect(by('claude-haiku-5-5').price).toMatchObject({ inputPerM: 0.1, outputPerM: 0.5 });
+    expect(by('claude-opus-5').price).toMatchObject({ inputPerM: 5, outputPerM: 25 });
+    // listed by OpenRouter with no price row for it: no price
+    expect(by('claude-fable-5-2').price).toBeUndefined();
+    // a price for a model the account does not have never creates an entry
+    expect(cat.models.some((m) => m.id.includes('sonnet-9'))).toBe(false);
+    expect(h.text()).toContain('list prices: 3 of');
+  });
+
+  it('Claude Code: an unreachable OpenRouter keeps the previous prices and does not fail the refresh', async () => {
+    const first = harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn, fetch: pricedFetch });
+    await runCli(['refresh', '--max-calls', '25'], first.deps);
+    const before = loadCatalogue('claude-code', dir)!;
+    expect(before.models.find((m) => m.id === 'claude-sonnet-5-5')!.price).toBeDefined();
+
+    const later = new Date('2026-11-14T10:00:00.000Z');
+    const second = harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn, fetch: offlineFetch, now: () => later });
+    expect(await runCli(['refresh', '--max-calls', '25'], second.deps)).toBe(0);
+    const after = loadCatalogue('claude-code', dir)!;
+    expect(after.updated_at).toBe(later.toISOString());
+    for (const id of ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5']) {
+      expect(after.models.find((m) => m.id === id)!.price).toEqual(before.models.find((m) => m.id === id)!.price);
+    }
+    expect(second.text()).toContain('previous prices kept');
+    expect(second.err.join('\n')).not.toContain('could not');
+  });
+
+  it('Claude Code: a model that fails its probe gets no new price, and keeps its old one', async () => {
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn, fetch: pricedFetch }).deps);
+    const without = KNOWN_CLAUDE_IDS.filter((i) => i !== 'claude-opus-5');
+    const later = new Date('2026-11-14T10:00:00.000Z');
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn: fakeClaude(without).spawn, fetch: pricedFetch, now: () => later }).deps);
+    const opus = loadCatalogue('claude-code', dir)!.models.find((m) => m.id === 'claude-opus-5')!;
+    expect(opus.status).toBe('missing');
+    expect(opus.price!.at).toBe(NOW.toISOString());
+  });
+
+  it('OpenCode: takes the prices from the same single list fetch, under the OpenRouter id', async () => {
+    let fetches = 0;
+    const counting = (async () => {
+      fetches++;
+      return { ok: true, json: async () => LIST_WITH_PRICES } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const h = harness({ fetch: counting });
+    expect(await runCli(['refresh', '--harness', 'opencode'], h.deps)).toBe(0);
+    expect(fetches).toBe(1);
+    const cat = loadCatalogue('opencode', dir)!;
+    expect(cat.models.find((m) => m.id === 'anthropic/claude-sonnet-5.5')!.price).toMatchObject({ inputPerM: 2, outputPerM: 10, at: NOW.toISOString() });
+  });
+
+  it('Antigravity: makes no OpenRouter request and stores no price', async () => {
+    let fetches = 0;
+    const counting = (async () => {
+      fetches++;
+      return { ok: true, json: async () => LIST_WITH_PRICES } as unknown as Response;
+    }) as unknown as typeof fetch;
+    expect(await runCli(['refresh', '--harness', 'antigravity', '--quiet'], harness({ fetch: counting }).deps)).toBe(0);
+    expect(fetches).toBe(0);
+    expect(loadCatalogue('antigravity', dir)!.models.some((m) => m.price)).toBe(false);
+  });
+
+  it('list prints the price next to each model that has one, and --json carries the field', async () => {
+    const cat = buildCatalogue('claude-code', [{ id: 'claude-haiku-5-5', ok: true }, { id: 'claude-sonnet-5-5', ok: true }, { id: 'claude-opus-5', ok: true }], 'probe', null, NOW);
+    cat.models.find((m) => m.id === 'claude-sonnet-5-5')!.price = { inputPerM: 2, outputPerM: 10, source: 'openrouter', at: NOW.toISOString() };
+    cat.models.find((m) => m.id === 'claude-haiku-5-5')!.price = { inputPerM: 0.1, outputPerM: 0.5, source: 'openrouter', at: NOW.toISOString() };
+    saveCatalogue(cat, dir);
+    const h = harness();
+    await runCli(['list'], h.deps);
+    const line = (id: string) => h.out.find((l) => l.startsWith(`  ${id} `))!;
+    expect(line('claude-sonnet-5-5')).toContain('$2/$10 per 1M');
+    expect(line('claude-haiku-5-5')).toContain('$0.1/$0.5 per 1M');
+    expect(line('claude-opus-5')).not.toContain('per 1M');
+
+    const j = harness();
+    await runCli(['list', '--json'], j.deps);
+    const parsed = JSON.parse(j.text());
+    expect(parsed.catalogue.models.find((m: any) => m.id === 'claude-sonnet-5-5').price).toEqual({ inputPerM: 2, outputPerM: 10, source: 'openrouter', at: NOW.toISOString() });
   });
 });
 

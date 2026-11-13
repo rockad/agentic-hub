@@ -559,3 +559,17 @@ Acceptance: every step behaves as listed with the logged and transcript evidence
 | 6 `scriptPath` | Claude Code itself refused `/tmp/wf-drift.js` (`scriptPath must be a script path this tool returned, or a file you can already read`), the assistant copied it into the session scratchpad; both calls were analysed (`allow`) and the edited file produced a new hash (`5ac7f6b2...`, 271 bytes, then `1e87b5b2...`, 274 bytes): re-analysis on every call works | Pass (see step 7 note) |
 
 All eight workflow agents ran on the model the log says (four opus, four sonnet). No deviation found. Still not covered: the model a workflow agent uses when the script leaves it empty and an environment variable overrides it (unit-tested only).
+
+## 30. Environment model overrides in Workflows: live test (2026-11-13, Claude Code 2.1.323)
+
+Question: when a Workflow script leaves an agent's model empty and an environment variable sets the model, does Claude Code apply it, and does the Workflow guard (#51) see it? Method: headless `claude -p --model sonnet` (sonnet session, session file seeded with `claude-sonnet-5-5`), `--plugin-dir` on the #52 tree, installed plugins disabled, temp `HOME` with `JEV_CONFIG_FILE` `{"defaults":{"mode":"on"}}`, a workflow of one agent that runs `date`; the model each workflow agent ran on read from its transcript (`message.model`) and `modelUsage`. Spend about $1.3, all on sonnet except the opus agents.
+
+| Environment | Script | Approval | Guard (decisions log) | Model the workflow agent ran on |
+| --- | --- | --- | --- | --- |
+| `CLAUDE_CODE_SUBAGENT_MODEL=opus` | no model | none | `denied`, models `[opus]`, elevation denied; no agent ran | none (blocked) |
+| `CLAUDE_CODE_SUBAGENT_MODEL=opus` | no model | opus (session) | `allow`, models `[opus]`, elevation approved | `claude-opus-5-5` |
+| `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=opus` | no model | opus (session) | `allow`, models `[opus]`, elevation approved | `claude-opus-5-5` |
+| `CLAUDE_CODE_SUBAGENT_MODEL=opus` plus `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` | explicit `model: 'haiku'` | none | `denied`, models `[opus]` (the forced model, not the written haiku); no agent ran | none (blocked) |
+| same | explicit `model: 'haiku'` | opus (session) | `allow`, models `[opus]` | `claude-opus-5-5` (the written haiku was replaced) |
+
+Result: Claude Code applies all three variables to workflow agents, and the guard ranks the resulting model, not the written one, so none of them is a bypass. One correction to a first attempt: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is a flag (`1`, `true`, `yes`, `on`), not a model id; with `FORCE=opus` Claude Code ignored it and the agent ran on its written haiku, which the guard also logged as haiku. The hook sees the environment of the Claude Code process; an environment set only by a later process would not be seen. Approvals in the tests were seeded in the session's approvals file (the headless runs cannot answer a question).

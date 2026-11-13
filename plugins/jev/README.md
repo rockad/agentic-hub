@@ -506,8 +506,8 @@ remain callable on request.
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
 | `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
-| `PreToolUse` on `Agent` (downgrade) | When the model is **above** the one Jev recommended for the prompt (and no instruction names it): denies once with a reason that prescribes a question offering the cheaper model, or, with `JEV_DOWNGRADE=auto`, runs the call on the recommended alias. See "Downgrade choice" below. |
-| `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered". Prints nothing. |
+| `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
+| `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session). Prints nothing. |
 
 What the hooks do **not** do:
 
@@ -628,28 +628,48 @@ always exits 0, prints nothing, and ignores any question without the marker and 
 
 ### Downgrade choice
 
-The elevation guard only looks upward. The downgrade choice looks the other way: Jev already rates every prompt
-(tier, model, effort) at `UserPromptSubmit` and stores it for the turn. When an `Agent` call asks for a model
-**above** the model Jev recommended, the user gets the choice of the cheaper model instead of paying for the
-dearer one by default. It uses the same two verified facts as the elevation choice (a `PreToolUse` `deny` keeps
-the turn going; a `PostToolUse` hook on `AskUserQuestion` sees the user's real answer).
+The elevation guard only looks upward. The downgrade choice looks the other way: **every** `Agent` delegation is
+rated on its own text, and when a cheaper model is enough and strictly cheaper by list price, the user gets the
+choice instead of paying for the dearer one by default. It uses the same two verified facts as the elevation choice
+(a `PreToolUse` `deny` keeps the turn going; a `PostToolUse` hook on `AskUserQuestion` sees the user's real answer).
+The question is asked **at the call only**: the turn directive says nothing about it.
+
+**The rating.** At `PreToolUse` the hook sends the call's `description` plus the first 1000 characters of its `prompt`
+to the router (the tier question only, 1.5 s timeout, about 250 ms in practice). The answer carries a probability per
+tier. The **needed tier** is the cheapest tier (`openrouter_free` < `flash_lite` < `flash` < `pro`) whose cumulative
+probability of "it or a cheaper one" reaches the threshold (default `0.6`; ties go to the cheaper tier); without
+probabilities the chosen tier counts as certain. `openrouter_free` and `flash_lite` need `haiku`, `flash` needs
+`sonnet`, `pro` needs `opus`. The verdict is cached per call signature (subagent type plus description, hashed) for
+10 minutes, so a retry does not call the router again. Any error, timeout, missing key, blocked egress or empty text
+means no question: the call goes ahead.
+
+**The candidates.** Catalogue steps (the ladder, "Model catalogue (core)" above) that are **sufficient** (their tier
+is at or above the needed one), **strictly below** the requested model (family first) and **strictly cheaper** by
+list price (`cheaperThan`, "List prices" above). A step or requested model with no price is not offered, with one
+exception: the alias of the needed tier is offered by family rank alone, so the feature still works with no prices
+or no catalogue. A step that an older version of the same family would only duplicate (newer or equal, and not
+dearer) is dropped, and same-family older versions appear only when strictly cheaper. A call with **no `model`**
+(or `inherit`) is judged against the **session model**; "No, keep" relaunches it with that model set explicitly.
 
 **The flow (mode `ask`, the default).**
 
-1. The assistant calls `Agent` with a model above the recommended one: for example `opus` when Jev rated the task
-   `flash` (`sonnet`). Nothing in the prompt named that model, no elevation decision applies to the call, and
-   this delegation (subagent type plus description, hashed) has not been asked about in the last 10 minutes. The
-   hook **denies** the call. The reason (under 900 characters) tells the assistant to ask with `AskUserQuestion`:
-   one question whose text starts with the marker `[jev-downgrade:<recommended alias>]` followed by a short
-   question naming the `subagent_type`, the requested model and the cheaper candidates, **and stating Jev's
-   advisory effort** ("Jev suggests low effort; session effort is high") when known; at most four options, in this
-   order:
-   - `Yes, <recommended model>` (the cheapest sufficient model, the alias Jev rated)
-   - up to two alternatives from the ladder between the recommended and the requested model, cheapest first
+1. The assistant calls `Agent` and a cheaper model is enough. Nothing in the prompt named the requested model, no
+   elevation decision applies to the call, the session did not switch the question off, and this delegation has not
+   been asked about in the last 10 minutes. The hook **denies** the call. The reason (under 900 characters) tells the
+   assistant to ask with `AskUserQuestion`: one question whose text starts with the marker
+   `[jev-downgrade:<needed alias>]` followed by a short question naming the `subagent_type`, the requested model and
+   the candidates, **and stating the evidence** ("Jev rates this flash_lite or cheaper, 86%"), both list prices when
+   known ("haiku $0.1/$0.5 vs sonnet $2/$10 per 1M, list price") and Jev's advisory effort ("Jev suggests low
+   effort; session effort is high"); at most four options, in this order:
+   - `Yes, <cheapest sufficient model>`
+   - at most one more `Yes, <model>` alternative (cheapest first; alternatives are dropped first when four would be exceeded)
    - `No, keep <requested model>`
+   - `No, and don't ask again this session`
 2. The user picks. The recorder (`hook.ts post-tool-use`) reads the question and the answer from the harness's
    `tool_response.answers` and records that this delegation was answered. **Any** answer counts, Yes variants and
-   No alike; none of them grants an elevation, and the downgrade record is a separate file from the approvals.
+   No alike; none of them grants an elevation, and the downgrade record is a separate file from the approvals. The
+   fourth answer also writes a **session-scoped off entry** in that file (never `config.json`): for the rest of the
+   session the hook evaluates nothing and makes no router call (`downgrade_skip: "session-off"`).
 3. The assistant launches the delegation again with the chosen model; the retried call is allowed without being
    denied again (logged `downgrade: "answered"`). The answer holds for 10 minutes.
 
@@ -657,34 +677,35 @@ The question is asked **at most once per call signature per 10 minutes**: if the
 retries, the retry passes (`downgrade: "skipped"`, `downgrade_skip: "already-asked"`). A downgrade is never stronger
 than a hint: it never blocks a call for good.
 
-**Not a downgrade.** The hook does not evaluate (and the call is left as it was) when:
-- there is no recommendation for the turn, or it is not one of `haiku`, `sonnet`, `opus`, `fable`;
-- the call names no model, `inherit`, or a model Jev cannot rank (unknown ids are ignored here; the elevation guard
-  asks about them when a catalogue is in use);
-- the requested model is at or below the recommended one, or is a version step inside the same alias;
-- the prompt named the requested model or a stronger one (`use opus`): that instruction is the answer;
+**Not evaluated** (the call is left as it was, and the router is not called) when:
+- the user's prompt named the requested model or a stronger one (`use opus`): that instruction is the answer;
+- the requested model, or the session model for a call with no model, cannot be ranked, or the call's
+  `subagent_type` is a ladder definition (`jev-ladder-<id>`, it already pins a model by name);
+- nothing cheaper could be offered for any rating (a call already on the cheapest model);
 - the elevation guard already decided the call (denied, asked, approved, instructed or clamped): one question at a time;
-- the call is a `Workflow`; the session has no id; or any piece fails (no store, a failing lock, a corrupt state
-  file): the call goes ahead exactly as it would without Jev.
+- the call is a `Workflow` (and the agents it launches, unverified), the session has no id, or the session switched
+  the question off;
+- any piece fails (no store, a failing lock, a corrupt state file): the call goes ahead exactly as it would without Jev.
 
-**The turn directive.** When Jev's recommendation is a cheaper tier than the session model (and the user did not
-name a model or ask for the cheapest, and the task is not free-tier or direct), the `UserPromptSubmit` context says the
-assistant may offer the cheaper model through the same question before it delegates (marker, `Yes, <model>` and
-`No, keep <session model>`, and the effort sentence). It keeps the existing rule label
-(`rule: per standing rule` and so on). The answer is recorded with no signature and covers that recommendation for 10
-minutes, so the later `Agent` call passes without being denied.
+A call whose turn rating said `self` is still evaluated: the delegation is what costs. A restricted subagent type
+(`Explore`, `Plan`, `code-engineer`...) is evaluated at alias level only (see "Version limits").
 
-**Modes.** `models.downgrade.mode` in `~/.config/jev/config.json` (read by a tolerant reader; the config types are
-unchanged), overridden by the environment variable `JEV_DOWNGRADE`:
+**Modes and settings.** `models.downgrade.mode` in `~/.config/jev/config.json` (read by a tolerant reader; the config
+types are unchanged), overridden by the environment variable `JEV_DOWNGRADE`:
 
 | Value | Behaviour |
 | :--- | :--- |
 | `ask` (default; also an unset or invalid value) | The choice flow described above. |
-| `auto` | No question: the call is allowed with `updatedInput` (the **full** original tool input with `model` set to the recommended **alias**) and `additionalContext` that says what Jev did; logged `downgrade: "applied"` with `downgrade_from` and `downgrade_to`. An earlier answer for the delegation is respected (a user who kept `opus` is not overridden); a remapped alias (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`) skips it. |
-| `off` | The hook never evaluates downgrades. |
+| `auto` | No question: the call is allowed with `updatedInput` (the **full** original tool input with `model` set to the cheapest sufficient **alias**) and `additionalContext` that says what Jev did; logged `downgrade: "applied"` with `downgrade_from` and `downgrade_to`. An earlier answer for the delegation is respected (a user who kept `opus` is not overridden); a remapped alias (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`) skips it; a cheapest option that needs a ladder definition is not applied. |
+| `off` | The hook never evaluates downgrades and never calls the router. |
+
+| Setting | Env | Default | Meaning |
+| :--- | :--- | :--- | :--- |
+| `models.downgrade.mode` | `JEV_DOWNGRADE` | `ask` | `ask`, `auto` or `off` (the environment wins). |
+| `models.downgrade.minProbability` | `JEV_DOWNGRADE_MIN_PROBABILITY` | `0.6` | Cumulative probability the needed tier must reach. Clamped to `0.5`..`0.95`; a value that is not a number is ignored. A higher value asks less often and leaves hard-to-call tasks on the dearer model. |
 
 **Effort is advisory.** A hook cannot set effort: the suggested effort (`recEffort` in the turn state, from the
-recommendation) appears in the question text and the directive, and the log records `effort_suggested` next to
+prompt's recommendation) appears in the question text, and the log records `effort_suggested` next to
 `effort_session` (the `effort` field of the hook input, a string or an object holding one). Neither is enforced.
 
 **Ranking.** The comparison uses the model catalogue (`~/.config/jev/models/claude-code.json`, "Model catalogue
@@ -732,16 +753,27 @@ directory Claude Code loads agents from (`~/.claude/agents` or a project's `.cla
 beside it.
 
 **State and logs.** `<session_id>.downgrade.json` in `~/.config/jev/claude-sessions/` (0700 directory, 0600 file),
-written atomically under its own per-session lock; it holds the question's signature hash, the recommendation, the
-which prescribed label was chosen (a free-text "Other" answer is stored as `other`, never its text) and expiry, never
-task text. A No to the elevation question (`No, proceed on <session model>`) also marks the turn's downgrade
-recommendation answered for the same window, so the relaunch on the session model is not asked about again. The `agent_call` record gains `downgrade` (`asked`, `answered`, `applied`,
-`skipped`), `downgrade_skip`, `downgrade_from`, `downgrade_to`, `effort_suggested` and `effort_session`; every
-existing field stays. In telemetry the `modelUsed` of an applied downgrade is the model it ran on.
+written atomically under its own per-session lock; it holds the question's signature hash, the needed alias, which
+prescribed label was chosen (a free-text "Other" answer is stored as `other`, never its text), expiry, each cached
+rating (a signature hash and four probabilities) and the session-off entry, never task text. An older file with
+entries only reads as before. A No to the elevation question (`No, proceed on <session model>`) also marks every
+delegation answered for the same window, so the relaunch on the session model is not asked about again. The
+`agent_call` record gains `downgrade` (`asked`, `answered`, `applied`, `skipped`), `downgrade_skip` (`already-asked`,
+`session-off`, `no-rating`, `none-cheaper`, `no-task`, `egress`, `no-session`, `store-error`, `alias-remapped`,
+`no-alias-option`), `downgrade_from`, `downgrade_to`, `downgrade_needed`, `downgrade_probability`, `downgrade_rated`,
+`downgrade_rating` (`cached`), `downgrade_rating_ms`, `downgrade_hidden` (ladder ids that wait for a definition),
+`taskLen` and `taskHash` (the delegation text's length and a short hash, as in the dispatch telemetry; **never the
+text**), `effort_suggested` and `effort_session`; every existing field stays. In telemetry the `modelUsed` of an
+applied downgrade is the model it ran on. When a hidden version step could be offered, the question tells the
+assistant to ask the user to run `bun scripts/jev-models.ts ladder-agents --dir ~/.claude/agents`.
 
 **Limits, said plainly.**
 
 - The flow needs the assistant to ask the prescribed question; if it does not, the retry passes after the first deny.
+- Each evaluated delegation sends its description and the first 1000 characters of its prompt to the router (egress
+  policy and `ZDR` settings apply as for the turn rating); a delegation text is rated once per 10 minutes. The
+  router's probabilities are a judgement of the text, not a measurement.
+- Two parallel delegations that need the same alias share the marker, so one answer marks both answered.
 - The recorder trusts the answer the harness reports for a question that starts with the marker, and does not check
   the wording or the options. A multi-select or free-text "Other" answer marks the question answered if the harness reports it as a string; the text is not stored.
 - Interactive only: a headless run has nobody to answer, so the one deny is followed by the passing retry; use
@@ -805,24 +837,30 @@ the rewritten `model`.
 ### Release notes
 
 - **2.3.8: downgrade choice** (see "Downgrade choice" above; also needs the elevation choice and catalogue core below):
-  - New `PreToolUse` evaluation on `Agent`: a model above Jev's recommendation for the prompt, with no instruction
-    naming it, no elevation decision and no answer for this delegation in 10 minutes, is denied once with a reason
-    that prescribes one `AskUserQuestion` (marker `[jev-downgrade:<alias>]`, at most four options: `Yes, <recommended>`,
-    up to two ladder alternatives, `No, keep <requested>`; the question states the advisory effort). The retried
-    call passes. Modes `ask` (default), `auto` (allow with `updatedInput` on the recommended alias) and `off`, from
+  - New `PreToolUse` evaluation on `Agent`: **every delegation is rated on its own text** (description plus the first
+    1000 characters of its prompt; one router call, 1.5 s, fail-open; the verdict is cached for 10 minutes). The needed
+    tier is the cheapest one whose cumulative probability reaches `models.downgrade.minProbability` (default `0.6`,
+    `JEV_DOWNGRADE_MIN_PROBABILITY`, clamped to `0.5`..`0.95`). The catalogue steps that are sufficient, strictly
+    below the requested model and strictly cheaper by list price are offered; with no usable price the alias of the
+    needed tier is offered by family rank. With no instruction naming the model, no elevation decision and no answer
+    for this delegation in 10 minutes, the call is denied once with a reason that prescribes one `AskUserQuestion`
+    (marker `[jev-downgrade:<needed alias>]`, at most four options: `Yes, <cheapest sufficient>`, at most one more
+    `Yes`, `No, keep <requested>`, `No, and don't ask again this session`; the question states the evidence, both
+    list prices and the advisory effort). The retried call passes. A call with no `model` is judged against the session
+    model. The fourth answer switches the question off for the session (session state only, never the config).
+    Modes `ask` (default), `auto` (allow with `updatedInput` on the cheapest sufficient alias) and `off`, from
     `models.downgrade.mode` or `JEV_DOWNGRADE`.
   - The `PostToolUse` recorder on `AskUserQuestion` also records the downgrade answer (any label) in its own
     per-session file; it never grants an elevation and never touches the approvals.
   - Catalogue-backed ranking in the Claude hooks: models are compared by the catalogue (tier, version, overrides)
     when a usable one is cached, by the family regex otherwise; an unknown id is unranked (the elevation guard asks,
     the downgrade logic ignores it). Reads are one small file read per hook run and never throw.
-  - The turn directive may offer the cheaper model through the same question when the recommendation is below the
-    session model (the rule label is unchanged).
   - New `bun scripts/jev-models.ts ladder-agents --dir <directory>`: writes `jev-ladder-<id>.md`
     general-purpose clones pinned to a full model id, for version steps inside an alias. Nothing is installed
     automatically.
-  - The decisions log gains `downgrade`, `downgrade_skip`, `downgrade_from`, `downgrade_to`, `effort_suggested`
-    and `effort_session`; the turn state gains `recEffort`.
+  - The decisions log gains `downgrade`, `downgrade_skip`, `downgrade_from`, `downgrade_to`, `downgrade_needed`,
+    `downgrade_probability`, `taskLen` and `taskHash` (never the delegation text), `effort_suggested` and
+    `effort_session`; the turn state gains `recEffort`.
   - Not verified end to end: the real flow needs an interactive session.
 
 - **2.3.7: model catalogue and refresh** (see "Model catalogue (core)" and "Model catalogue refresh" above):

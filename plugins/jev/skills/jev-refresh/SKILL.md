@@ -16,7 +16,7 @@ Use this skill to rebuild the per-harness model catalogue in `~/.config/jev/mode
 
 For Claude Code the refresh makes real, paid calls: one tiny prompt (`claude -p "Reply OK"`) per candidate id, run one after another with hooks disabled and Jev switched off so a probe never triggers Jev itself. The run is capped:
 
-- Default cap: 20 calls (`models.refresh.maxCalls` in `~/.config/jev/config.json`, or `--max-calls N`, at most 100).
+- Default cap: 20 calls (`models.refresh.maxCalls` in `~/.config/jev/config.json`, or `--max-calls N`, at most 25).
 - The four aliases (`haiku`, `sonnet`, `opus`, `fable`) are probed first; each one also verifies the concrete id it resolves to. The rest of the candidates follow in order and anything past the cap is skipped and listed.
 - Expect a few tens of cents for a full run, more for the larger models. Say so before running when the user has not asked for it by name.
 
@@ -32,12 +32,12 @@ OpenCode (the public OpenRouter model list) and Antigravity (the configured tier
 
    If `CLAUDE_PLUGIN_ROOT` is not set, use the path of this plugin's `scripts/jev-models.ts`. If `bun` is missing, say so and stop; do not substitute another runtime.
 
-2. If the output says another refresh is running, report that and stop: a background refresh already holds the lock and nothing was probed.
+2. If the output says another refresh is running, report that and stop: a background refresh already holds the lock and nothing was probed. If it says "no probe succeeded" (exit 1), report that the round was inconclusive and the catalogue was left unchanged; suggest checking that `claude` runs and is logged in.
 
 3. Summarise the output for the user in a short vertical list:
 
    - **new**: ids added to the catalogue
-   - **missing**: ids that failed a probe (skipped at once, deleted after three failed probes in a row)
+   - **missing**: ids that failed a probe (skipped at once, deleted after three refreshes in a row; a strike is counted once per successful refresh round)
    - **recovered**: ids that were missing and work again
    - **removed**: ids deleted from the catalogue
    - **needs review**: ids from a family Jev does not know; they are not used until the user assigns a tier under `models.overrides` in `~/.config/jev/config.json`
@@ -48,4 +48,4 @@ OpenCode (the public OpenRouter model list) and Antigravity (the configured tier
 
 ## Background refresh
 
-When Jev mode is `on`, a Claude Code session start refreshes the catalogue by itself in a detached process, at most once per `models.refresh.maxAgeDays` (default 7). To stop that, set `models.refresh.enabled` to `false` in `~/.config/jev/config.json`. `/jev-refresh` still works when it is disabled.
+When Jev mode is `on`, a Claude Code session start refreshes the catalogue by itself in a detached process, at most once per `models.refresh.maxAgeDays` (default 7), and not again within `models.refresh.minRetryHours` (default 6) of any attempt, successful or not. To stop that, set `models.refresh.enabled` to `false` in `~/.config/jev/config.json`. `/jev-refresh` still works when it is disabled.

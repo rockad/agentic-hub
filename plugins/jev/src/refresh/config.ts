@@ -41,6 +41,9 @@ export function refreshLockPath(harness: string, dir?: string): string {
   return path.join(catalogueDir(dir), `${harness}.lock`);
 }
 
+/** An id may reach a command line or a catalogue file: plain model-id characters only, at most 100 long. */
+export const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,99}$/;
+
 export interface AttemptStamp {
   /** ISO time of the attempt. */
   ts: string;
@@ -123,8 +126,7 @@ export function loadRefreshConfig(configFile?: string): RefreshConfig {
     for (const c of raw.candidates) {
       if (typeof c !== 'string') continue;
       const id = c.trim();
-      // an id goes to a command line: plain model-id characters only
-      if (!/^[A-Za-z0-9][A-Za-z0-9._:/~-]{0,99}$/.test(id) || seen.has(id)) continue;
+      if (!MODEL_ID_PATTERN.test(id) || seen.has(id)) continue;
       seen.add(id);
       out.candidates.push(id);
     }

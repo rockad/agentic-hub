@@ -11,11 +11,14 @@
  */
 import { getHarnessModels, type HarnessModelMap, type JevHarness } from '../core/config.js';
 import type { Catalogue, ProbeResult } from '../core/catalogue.js';
+import { MODEL_ID_PATTERN } from './config.js';
 import { tierMapEntries } from './static.js';
 import type { DiscoveryOutcome } from './types.js';
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 export const OPENROUTER_TIMEOUT_MS = 10_000;
+/** The most `anthropic/*` ids taken from one list (the real list has a few dozen). */
+export const MAX_ANTHROPIC_IDS = 200;
 
 export interface OpenRouterDiscoverOptions {
   previous: Catalogue | null;
@@ -42,8 +45,18 @@ export async function discoverOpenRouter(opts: OpenRouterDiscoverOptions): Promi
     const data = Array.isArray(body?.data) ? body.data : null;
     if (!data) return null;
     const listed = new Set<string>();
-    for (const m of data) if (m && typeof m.id === 'string' && m.id.trim()) listed.add(m.id.trim());
+    for (const m of data) {
+      if (!m || typeof m.id !== 'string') continue;
+      const id = m.id.trim();
+      // the same rule as config candidates: plain model-id characters, bounded length
+      if (MODEL_ID_PATTERN.test(id)) listed.add(id);
+    }
     if (listed.size === 0) return null;
+    const listedAnthropic = [...listed].filter(isAnthropic);
+    // A list with no anthropic id at all, when the last catalogue had some, is a bad fetch (a changed or partial
+    // response), not news that every model is gone.
+    const hadAnthropic = (opts.previous?.models ?? []).some((m) => isAnthropic(m.id) && !isVirtual(m.id));
+    if (listedAnthropic.length === 0 && hadAnthropic) return null;
 
     const map = opts.map ?? getHarnessModels((opts.harness ?? 'opencode') as JevHarness);
     const results: ProbeResult[] = [];
@@ -53,11 +66,12 @@ export async function discoverOpenRouter(opts: OpenRouterDiscoverOptions): Promi
       seen.add(id);
       results.push({ id, ok });
     };
-    for (const id of listed) if (isAnthropic(id)) add(id, true);
+    for (const id of listedAnthropic.slice(0, MAX_ANTHROPIC_IDS)) add(id, true);
     for (const { id } of tierMapEntries(map)) {
       if (listed.has(id) || isVirtual(id)) add(id, true);
     }
     const notes: string[] = [`${listed.size} models listed, ${results.length} taken`];
+    if (listedAnthropic.length > MAX_ANTHROPIC_IDS) notes.push(`anthropic ids capped at ${MAX_ANTHROPIC_IDS} of ${listedAnthropic.length}`);
     for (const m of opts.previous?.models ?? []) {
       if (seen.has(m.id) || isVirtual(m.id)) continue;
       if (!listed.has(m.id)) add(m.id, false);

@@ -4,12 +4,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { catalogueNotice, maybeStartCatalogueRefresh, findBun, type TriggerDeps } from '../claude/refresh-trigger.js';
 import { buildCatalogue, saveCatalogue, loadCatalogue, type Catalogue } from '../src/core/catalogue.js';
-import { refreshLockPath, type RefreshConfig } from '../src/refresh/config.js';
+import { attemptPath, readAttempt, refreshLockPath, writeAttempt, type RefreshConfig } from '../src/refresh/config.js';
 import { tryLock } from '../src/core/lock.js';
 
 const NOW = new Date('2026-11-13T10:00:00.000Z');
 const daysAgo = (d: number): Date => new Date(NOW.getTime() - d * 86_400_000);
-const CFG: RefreshConfig = { enabled: true, maxAgeDays: 7, maxCalls: 20, candidates: [] };
+const CFG: RefreshConfig = { enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, candidates: [] };
 
 let dir = '';
 let script = '';
@@ -112,6 +112,9 @@ describe('background refresh trigger', () => {
     const { deps, spawned } = setup({ spawnDetached: () => ({ pid: process.ppid, unref() {} }) });
     expect(maybeStartCatalogueRefresh(deps)).toBe('started');
     expect(JSON.parse(fs.readFileSync(lockFile(), 'utf8')).pid).toBe(process.ppid);
+    // the attempt stamp makes the second session back off first; without it the live lock owner stops it
+    expect(maybeStartCatalogueRefresh(deps)).toBe('backoff');
+    fs.rmSync(attemptPath('claude-code', path.join(dir, 'models')));
     expect(maybeStartCatalogueRefresh(deps)).toBe('locked');
     expect(spawned).toEqual([]);
   });
@@ -161,6 +164,85 @@ describe('background refresh trigger', () => {
     const start = performance.now();
     maybeStartCatalogueRefresh(deps);
     expect(performance.now() - start).toBeLessThan(250);
+  });
+
+  it('writes the attempt stamp when it starts a refresh', () => {
+    const { deps } = setup();
+    expect(maybeStartCatalogueRefresh(deps)).toBe('started');
+    expect(readAttempt('claude-code', path.join(dir, 'models'))).toEqual({ ts: NOW.toISOString(), result: 'started' });
+  });
+
+  it('backs off while the last attempt is under minRetryHours old, whatever its result', () => {
+    for (const result of ['started', 'inconclusive', 'error', 'ok']) {
+      writeAttempt('claude-code', result, new Date(NOW.getTime() - 5 * 3_600_000), path.join(dir, 'models'));
+      const { deps, spawned } = setup();
+      expect(maybeStartCatalogueRefresh(deps)).toBe('backoff');
+      expect(spawned).toEqual([]);
+      expect(fs.existsSync(lockFile())).toBe(false);
+    }
+  });
+
+  it('starts again once the back-off has expired (injected clock)', () => {
+    writeAttempt('claude-code', 'inconclusive', new Date(NOW.getTime() - 5 * 3_600_000), path.join(dir, 'models'));
+    const early = setup({ now: new Date(NOW.getTime() - 1000) });
+    expect(maybeStartCatalogueRefresh(early.deps)).toBe('backoff');
+    const late = setup({ now: new Date(NOW.getTime() + 2 * 3_600_000) });
+    expect(maybeStartCatalogueRefresh(late.deps)).toBe('started');
+    expect(late.spawned.length).toBe(1);
+  });
+
+  it('honours models.refresh.minRetryHours', () => {
+    writeAttempt('claude-code', 'error', new Date(NOW.getTime() - 2 * 3_600_000), path.join(dir, 'models'));
+    const short = setup({ loadConfig: () => ({ ...CFG, minRetryHours: 1 }) });
+    expect(maybeStartCatalogueRefresh(short.deps)).toBe('started');
+    writeAttempt('claude-code', 'error', new Date(NOW.getTime() - 2 * 3_600_000), path.join(dir, 'models'));
+    const long = setup({ loadConfig: () => ({ ...CFG, minRetryHours: 24 }) });
+    expect(maybeStartCatalogueRefresh(long.deps)).toBe('backoff');
+  });
+
+  it('treats an unreadable attempt stamp as no attempt', () => {
+    fs.mkdirSync(path.join(dir, 'models'), { recursive: true });
+    fs.writeFileSync(attemptPath('claude-code', path.join(dir, 'models')), 'not json');
+    const { deps } = setup();
+    expect(maybeStartCatalogueRefresh(deps)).toBe('started');
+  });
+
+  it('a fresh catalogue still wins over the back-off check (no stamp needed)', () => {
+    seed(daysAgo(1));
+    const { deps } = setup();
+    expect(maybeStartCatalogueRefresh(deps)).toBe('fresh');
+    expect(readAttempt('claude-code', path.join(dir, 'models'))).toBeNull();
+  });
+
+  it('hands the lock over with an atomic rewrite: no temp file is left and the lock is owner-only', () => {
+    const { deps } = setup({ spawnDetached: () => ({ pid: process.ppid, unref() {} }) });
+    expect(maybeStartCatalogueRefresh(deps)).toBe('started');
+    expect(fs.readdirSync(path.dirname(lockFile())).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    expect(fs.statSync(lockFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('starts the refresh detached, with ignored stdio and no console window (asserted on the spawn options)', () => {
+    const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = [];
+    let unref = 0;
+    const { deps } = setup({
+      spawnDetached: undefined,
+      spawnFn: (cmd, args, opts) => {
+        calls.push({ cmd, args, opts });
+        return { pid: process.pid, unref: () => void unref++, on: () => undefined };
+      }
+    });
+    expect(maybeStartCatalogueRefresh(deps)).toBe('started');
+    expect(calls.length).toBe(1);
+    expect(calls[0].cmd).toBe('/usr/bin/bun');
+    expect(calls[0].args).toEqual([script, 'refresh', '--harness', 'claude-code', '--quiet']);
+    expect(calls[0].opts).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true });
+    expect(unref).toBe(1);
+  });
+
+  it('takes the script path from JEV_REFRESH_SCRIPT when no scriptPath is injected', () => {
+    const { deps, spawned } = setup({ scriptPath: undefined, env: { JEV_REFRESH_SCRIPT: script } });
+    expect(maybeStartCatalogueRefresh(deps)).toBe('started');
+    expect(spawned[0].args[0]).toBe(script);
   });
 
   it('the default spawn really is detached with ignored stdio (checked on a harmless command)', async () => {

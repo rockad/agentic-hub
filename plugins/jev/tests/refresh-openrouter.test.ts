@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { OPENROUTER_MODELS_URL, OPENROUTER_TIMEOUT_MS, discoverOpenRouter } from '../src/refresh/openrouter.js';
+import { MAX_ANTHROPIC_IDS, OPENROUTER_MODELS_URL, OPENROUTER_TIMEOUT_MS, discoverOpenRouter } from '../src/refresh/openrouter.js';
 import { applyTierMap, discoverStatic, tierMapEntries } from '../src/refresh/static.js';
 import { buildCatalogue, ladder } from '../src/core/catalogue.js';
 import { DEFAULT_JEV_CONFIG, type HarnessModelMap } from '../src/core/config.js';
@@ -78,6 +78,40 @@ describe('OpenRouter discoverer', () => {
     expect(await discoverOpenRouter({ previous: null, fetch: badJson, map: OPENCODE_MAP })).toBeNull();
     expect(await discoverOpenRouter({ previous: null, fetch: jsonFetch({ error: 'x' }), map: OPENCODE_MAP })).toBeNull();
     expect(await discoverOpenRouter({ previous: null, fetch: jsonFetch({ data: [] }), map: OPENCODE_MAP })).toBeNull();
+  });
+
+  it('drops ids that are not plain model-id characters or are too long (the same rule as config candidates)', async () => {
+    const body = {
+      data: [
+        { id: 'anthropic/claude-sonnet-4.5' },
+        { id: 'anthropic/claude-bad; rm -rf' },
+        { id: 'anthropic/claude with space' },
+        { id: '--anthropic/claude-flag' },
+        { id: `anthropic/${'x'.repeat(100)}` },
+        { id: 'anthropic/claude-new\nline' }
+      ]
+    };
+    const out = await discoverOpenRouter({ previous: null, fetch: jsonFetch(body), map: OPENCODE_MAP });
+    const anthropic = out!.results.map((r) => r.id).filter((id) => id.startsWith('anthropic/'));
+    expect(anthropic).toEqual(['anthropic/claude-sonnet-4.5']);
+  });
+
+  it('caps the number of ids it takes from the list', async () => {
+    const data = Array.from({ length: MAX_ANTHROPIC_IDS + 50 }, (_, i) => ({ id: `anthropic/claude-m${i}` }));
+    const out = await discoverOpenRouter({ previous: null, fetch: jsonFetch({ data }), map: OPENCODE_MAP });
+    const anthropic = out!.results.filter((r) => r.id.startsWith('anthropic/'));
+    expect(anthropic.length).toBe(MAX_ANTHROPIC_IDS);
+    expect(out!.notes.join(' ')).toContain('capped');
+  });
+
+  it('treats a list with no anthropic ids as a failed fetch when the previous catalogue had some', async () => {
+    const previous = buildCatalogue('opencode', [{ id: 'anthropic/claude-sonnet-4.5', ok: true }, { id: 'anthropic/claude-opus-4.1', ok: true }], 'openrouter');
+    const noAnthropic = { data: [{ id: 'google/gemini-2.5-pro' }, { id: 'openai/gpt-5' }] };
+    expect(await discoverOpenRouter({ previous, fetch: jsonFetch(noAnthropic), map: OPENCODE_MAP })).toBeNull();
+    // with no previous anthropic ids the same list is accepted
+    expect(await discoverOpenRouter({ previous: null, fetch: jsonFetch(noAnthropic), map: OPENCODE_MAP })).not.toBeNull();
+    const virtualOnly = buildCatalogue('opencode', [{ id: '~anthropic/claude-sonnet-latest', ok: true }, { id: 'openrouter/free', ok: true }], 'openrouter');
+    expect(await discoverOpenRouter({ previous: virtualOnly, fetch: jsonFetch(noAnthropic), map: OPENCODE_MAP })).not.toBeNull();
   });
 
   it('returns null when the request times out', async () => {

@@ -33,7 +33,7 @@ function setup(overrides: Partial<HookDeps> = {}, mode: 'clamp' | 'default' = 'c
     readTurn: (s) => turns.get(s ?? '') ?? null,
     saveTurn: (s, st) => void turns.set(s ?? '', st),
     ...overrides,
-    env: { ...(mode === 'clamp' ? { JEV_ELEVATION: 'clamp' } : {}), ...(overrides.env ?? {}) }
+    env: { ...(mode === 'clamp' ? { JEV_ELEVATION: 'clamp' } : { JEV_ELEVATION: 'dialog' }), ...(overrides.env ?? {}) }
   };
   return { d, logs };
 }

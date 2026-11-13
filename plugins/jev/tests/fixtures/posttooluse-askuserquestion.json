@@ -1,0 +1,40 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "AskUserQuestion",
+  "session_id": "sess-recorded-sample",
+  "prompt_id": "prompt-recorded-sample",
+  "transcript_path": "/home/user/.claude/projects/sample/sess-recorded-sample.jsonl",
+  "permission_mode": "auto",
+  "tool_use_id": "toolu_recorded_sample",
+  "duration_ms": 1,
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Run the delegation on opus?",
+        "header": "Delegation",
+        "options": [
+          { "label": "Yes, proceed on opus", "description": "Run it on opus." },
+          { "label": "No, proceed on sonnet", "description": "Run it on sonnet." }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "answers": { "Run the delegation on opus?": "No, proceed on sonnet" },
+    "annotations": {}
+  },
+  "tool_response": {
+    "questions": [
+      {
+        "question": "Run the delegation on opus?",
+        "header": "Delegation",
+        "options": [
+          { "label": "Yes, proceed on opus", "description": "Run it on opus." },
+          { "label": "No, proceed on sonnet", "description": "Run it on sonnet." }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "answers": { "Run the delegation on opus?": "No, proceed on sonnet" },
+    "annotations": {}
+  }
+}

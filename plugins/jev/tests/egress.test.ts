@@ -357,6 +357,7 @@ describe('egress policy: Claude Code hook', () => {
       return rec;
     },
     log: () => {},
+    env: { JEV_ELEVATION: 'dialog' },
     egressAllowed: () => allowed
   });
 

@@ -702,9 +702,12 @@ export type Approval = { model: ClaudeModelAlias; scope: ApprovalScope; created_
  * The per-session approvals file: the approvals, and the denied-attempt counter of one prompt. `count` is every
  * denied attempt of the prompt, `counts` the same per delegation signature (`callSignature`), `at` the epoch ms of
  * the last one. A file written before `counts` and `at` existed has neither.
+ * `denied` maps a model alias to the epoch ms Jev last prescribed the choice question for it (a deny, or the turn
+ * directive); a file written before it existed has none, so no answer records an approval until the next denial.
  */
 export type ApprovalState = {
   approvals: Approval[];
+  denied?: Record<string, number>;
   attempts?: { prompt: string; count: number; counts?: Record<string, number>; at?: number };
 };
 
@@ -713,7 +716,8 @@ export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Pure: the approval a PostToolUse payload for AskUserQuestion carries, or null. Only a question that starts with
- * the marker counts; the answer is `tool_response.answers[question]`, falling back to `tool_input.answers[question]`.
+ * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and
+ * nothing else: `tool_input` is what the assistant sent, so it never records an approval.
  * A "No", another label, a missing answer and malformed input give null.
  */
 export function parseElevationAnswer(input: unknown, nowMs: number): Approval | null {
@@ -725,7 +729,7 @@ export function parseElevationAnswer(input: unknown, nowMs: number): Approval | 
     if (typeof question !== 'string') return null;
     const m = ELEVATE_MARKER_RE.exec(question);
     if (!m) return null;
-    const answer = i.tool_response?.answers?.[question] ?? i.tool_input?.answers?.[question];
+    const answer = i.tool_response?.answers?.[question];
     if (typeof answer !== 'string') return null;
     const model = m[1] as ClaudeModelAlias;
     const label = answer.trim();
@@ -747,7 +751,7 @@ export function approvalValid(a: Approval, nowMs: number): boolean {
 
 /** Pure: read a state object of unknown shape into a clean one (a corrupt file gives an empty state). */
 export function normalizeApprovalState(raw: unknown): ApprovalState {
-  const r = raw as { approvals?: unknown; attempts?: unknown } | null;
+  const r = raw as { approvals?: unknown; attempts?: unknown; denied?: unknown } | null;
   const approvals = Array.isArray(r?.approvals)
     ? (r!.approvals as unknown[]).filter((a): a is Approval => {
         const x = a as Partial<Approval> | null;
@@ -775,12 +779,37 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
           ...(typeof at.at === 'number' ? { at: at.at } : {})
         }
       : undefined;
-  return { approvals, ...(attempts ? { attempts } : {}) };
+  const denied =
+    r?.denied && typeof r.denied === 'object' && !Array.isArray(r.denied)
+      ? Object.fromEntries(Object.entries(r.denied).filter(([m, t]) => modelRank(m) !== null && typeof t === 'number' && Number.isFinite(t)))
+      : undefined;
+  return { approvals, ...(attempts ? { attempts } : {}), ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {}) };
 }
 
 /** Pure: add an approval and drop the expired ones. */
 export function addApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState {
   return { ...state, approvals: [...state.approvals.filter((a) => approvalValid(a, nowMs)), approval] };
+}
+
+/** How long after Jev prescribed the choice question for a model an answer to it can still record an approval. */
+export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
+
+/** Pure: note that the choice question was prescribed for `model` now, and drop the notes older than the window. */
+export function noteDenied(state: ApprovalState, model: string, nowMs: number): ApprovalState {
+  const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
+  return { ...state, denied: { ...Object.fromEntries(kept), [modelAlias(model) ?? model]: nowMs } };
+}
+
+/** Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? */
+export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+  const want = modelRank(model);
+  if (want === null) return false;
+  return Object.entries(state.denied ?? {}).some(([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS);
+}
+
+/** Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). */
+export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
+  return wasDeniedRecently(state, approval.model, nowMs) ? addApproval(state, approval, nowMs) : null;
 }
 
 /**

@@ -22,6 +22,7 @@
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
  * carries on as if Jev were not installed.
  */
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -49,7 +50,6 @@ import {
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
   buildDirective,
-  addApproval,
   aliasRemapped,
   bumpAttempts,
   callSignature,
@@ -60,8 +60,10 @@ import {
   elevationAskReason,
   elevationChoiceReason,
   elevationMode,
+  noteDenied,
   normalizeApprovalState,
   parseElevationAnswer,
+  recordApproval,
   CHOICE_DENIALS_BEFORE_ASK,
   envNotice,
   hasRecentDispatch,
@@ -114,7 +116,10 @@ export type HookInput = {
  * hook: a failing store means "no approval" (the call is denied, then asks on the third attempt).
  */
 export type ApprovalStore = {
+  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. Throws when the store fails: nothing is recorded then. */
   record: (sessionId: string, approval: Approval) => void;
+  /** Note that Jev prescribed the choice question for `model` (a deny, or the turn directive): the only thing that lets an answer record an approval. */
+  deny: (sessionId: string, model: string, nowMs: number) => void;
   /** Find the approval covering `requested` and, for a `once`, consume it atomically (one parallel caller wins). */
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
   /**
@@ -151,7 +156,7 @@ export type HookDeps = {
    * (the 2.3.3 behaviour) instead of clamping.
    */
   claimClamp?: (sessionId: string, promptKey: string, signature: string) => { first: boolean; signature?: string };
-  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent: every elevating call is denied, never asked. */
+  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call opens the permission dialog. */
   approvals?: ApprovalStore;
   now?: () => number;
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
@@ -247,6 +252,12 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   });
 
   let additionalContext = buildDirective(rec, sessionModel, quotaStrategy, intent, elevationMode(deps.env ?? process.env));
+  // A directive that prescribes the choice question counts as a denial for that model (the assistant asks before its first call).
+  if (sessionId) {
+    for (const m of additionalContext.matchAll(/\[jev-elevate:(sonnet|opus|haiku|fable)\]/g)) {
+      safely(() => deps.approvals?.deny(sessionId, m[1], (deps.now ?? Date.now)()));
+    }
+  }
   try {
     const memory = await withTimeout(fetchRecallMemory(), 600);
     if (memory && memory.activeGoal) {
@@ -327,6 +338,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       } else {
         verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type) };
         elevationState = 'denied';
+        // The question is now prescribed for this model: only an answer after this can record an approval.
+        if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
       }
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
@@ -411,9 +424,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
 
 /**
  * PostToolUse on AskUserQuestion: record the user's real answer to the elevation choice question as an approval.
- * Reads the harness's `tool_response.answers` (falling back to `tool_input.answers`), never the assistant's text.
- * Ignores any question without the `[jev-elevate:<model>]` marker, a "No", and malformed input. Never throws and
- * prints nothing.
+ * Reads only the harness's `tool_response.answers`, never the assistant's `tool_input` or text. Ignores any
+ * question that does not start with the `[jev-elevate:<model>]` marker (the marker is not a secret: any such
+ * question is accepted), a "No", malformed input, and an answer for a model Jev did not prescribe the question
+ * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
  */
 export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'now'>): void {
   try {
@@ -521,23 +535,37 @@ function approvalsFile(sessionId: string): string {
 }
 
 /**
- * Run `fn` while holding the session's approvals lock (an exclusive `mkdir`, atomic across processes). A lock
- * older than LOCK_STALE_MS belongs to a dead process and is broken. Throws when the lock cannot be had in time.
+ * Run `fn` while holding the lock directory `lock` (an exclusive `mkdir`, atomic across processes). The holder
+ * writes a unique token file inside it. A lock older than `staleMs` belongs to a dead (or very slow) process and
+ * is broken by renaming it away, so a holder that outlives the limit cannot delete the next holder's lock: on
+ * release the directory is removed only while its token is still this holder's. Throws when the lock cannot be
+ * had in time.
  */
-function withApprovalsLock<T>(sessionId: string, fn: () => T): T {
-  privateDir(SESSIONS_DIR);
-  const lock = path.join(SESSIONS_DIR, `${sessionId}.approvals.lock`);
-  const deadline = Date.now() + LOCK_WAIT_MS;
+export function withLockDir<T>(lock: string, fn: () => T, opts: { waitMs?: number; staleMs?: number } = {}): T {
+  const { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = opts;
+  const token = `${process.pid}-${randomUUID()}`;
+  const tokenFile = path.join(lock, 'owner');
+  const deadline = Date.now() + waitMs;
   for (;;) {
     try {
       fs.mkdirSync(lock, { mode: PRIVATE_DIR_MODE });
+      try {
+        fs.writeFileSync(tokenFile, token, { mode: PRIVATE_FILE_MODE });
+      } catch (err) {
+        fs.rmSync(lock, { recursive: true, force: true });
+        throw err;
+      }
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
       try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) fs.rmSync(lock, { recursive: true, force: true });
+        if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) {
+          const broken = `${lock}.stale-${token}`;
+          fs.renameSync(lock, broken);
+          fs.rmSync(broken, { recursive: true, force: true });
+        }
       } catch {
-        // the holder just released it
+        // the holder just released it, or another waiter broke it first
       }
       if (Date.now() > deadline) throw new Error('approvals lock timeout');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
@@ -546,8 +574,17 @@ function withApprovalsLock<T>(sessionId: string, fn: () => T): T {
   try {
     return fn();
   } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
+    try {
+      if (fs.readFileSync(tokenFile, 'utf8') === token) fs.rmSync(lock, { recursive: true, force: true });
+    } catch {
+      // the lock was broken and taken over: it is not ours to remove
+    }
   }
+}
+
+function withApprovalsLock<T>(sessionId: string, fn: () => T): T {
+  privateDir(SESSIONS_DIR);
+  return withLockDir(path.join(SESSIONS_DIR, `${sessionId}.approvals.lock`), fn);
 }
 
 function readApprovalState(sessionId: string): ApprovalState {
@@ -570,7 +607,13 @@ function writeApprovalState(sessionId: string, state: ApprovalState): void {
 
 const approvalStore: ApprovalStore = {
   record: (sessionId, approval) =>
-    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, addApproval(readApprovalState(sessionId), approval, Date.now()))),
+    withApprovalsLock(sessionId, () => {
+      // An unreadable state file reads as empty, which has no denial: nothing is recorded then.
+      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at);
+      if (next) writeApprovalState(sessionId, next);
+    }),
+  deny: (sessionId, model, nowMs) =>
+    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteDenied(readApprovalState(sessionId), model, nowMs))),
   claim: (sessionId, requested, nowMs) =>
     withApprovalsLock(sessionId, () => {
       const { state, approval } = claimApproval(readApprovalState(sessionId), requested, nowMs);
@@ -749,7 +792,8 @@ async function main(event: string | undefined): Promise<void> {
   loadEnvFile(path.resolve(import.meta.dir, '..', '.env'));
   const input = JSON.parse((await Bun.stdin.text()) || '{}') as HookInput;
   if (event === 'post-tool-use') {
-    // The elevation recorder: no output, no mode check (a marker only exists when Jev prescribed the question).
+    // The elevation recorder: no output, no mode check. It accepts any question that starts with the marker, but
+    // records an approval only for a model Jev prescribed the question for in the last 15 minutes.
     onPostToolUse(input, liveDeps);
     return;
   }

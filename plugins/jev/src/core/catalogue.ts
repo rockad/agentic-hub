@@ -1,7 +1,8 @@
 /**
  * Model catalogue (core): a per-harness list of concrete model ids with a capability tier and a version,
  * cached in `~/.config/jev/models/<harness>.json`. Pure functions plus atomic file IO; no network, no process
- * spawning. Not yet wired into the hooks.
+ * spawning. The Claude Code hooks read it (never the network) to rank models for the elevation guard and the downgrade
+ * choice; the refresh (`src/refresh`) writes it.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';

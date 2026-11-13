@@ -95,7 +95,8 @@ describe('the deny reason', () => {
     expect(r).toContain("exactly four options in this order and with these labels: 'Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, proceed on sonnet'");
     expect(r).toContain('If the user picks a Yes, launch the delegation again with the same model');
     expect(r).toContain('if No, launch it on sonnet (or do the work directly)');
-    expect(r).toContain('do not stop and do not ask in any other form');
+    expect(r).toContain('If AskUserQuestion is not available, launch the delegation on sonnet now and do not stop');
+    expect(r).toContain('do not ask in any other form');
   });
 
   it('keeps model-supplied subagent_type text safe and bounded', () => {

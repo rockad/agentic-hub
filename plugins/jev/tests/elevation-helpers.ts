@@ -15,8 +15,8 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       if (next) states.set(s, next);
     },
     deny: (s, model, nowMs) => void states.set(s, noteDenied(get(s), model, nowMs)),
-    claim: (s, requested, nowMs) => {
-      const { state, approval } = claimApproval(get(s), requested, nowMs);
+    claim: (s, requested, nowMs, ctx) => {
+      const { state, approval } = claimApproval(get(s), requested, nowMs, ctx);
       states.set(s, state);
       return approval;
     },

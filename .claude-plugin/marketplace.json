@@ -10,7 +10,7 @@
       "name": "jev",
       "source": "./plugins/jev",
       "description": "System 1 pre-flight routing, free-tier offloading, model ceiling guard and quality gates via TypeSafe Jev",
-      "version": "2.3.7"
+      "version": "2.3.8"
     },
     {
       "name": "local-transcribe",

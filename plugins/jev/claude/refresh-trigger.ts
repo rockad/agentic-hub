@@ -191,7 +191,8 @@ function findEntry(cat: Catalogue, id: string): Catalogue['models'][number] | un
  * - the id is marked missing
  * - the id is in the catalogue but unranked (needs review)
  * - the catalogue is stale
- * Every message ends with the hint to run /jev-refresh. Never throws; not yet wired into the hooks.
+ * Every message ends with the hint to run /jev-refresh. Never throws. Nothing calls it yet: the hooks read the
+ * catalogue to rank models (`claude/hook.ts`), but none shows this notice.
  */
 export function catalogueNotice(harness: string, modelId: string, opts: NoticeOptions = {}): string | null {
   try {

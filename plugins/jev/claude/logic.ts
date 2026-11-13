@@ -14,6 +14,7 @@ import {
   editCapableSubagent,
   type ThinkingEffort
 } from '../src/shared.js';
+import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 
 export type JevTier = 'openrouter_free' | 'flash_lite' | 'flash' | 'pro';
 export type ClaudeModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
@@ -86,6 +87,83 @@ export function modelRank(model: string | undefined | null): number | null {
   if (!model) return null;
   const hit = MODEL_RANK.find(([pattern]) => pattern.test(model));
   return hit ? hit[1] : null;
+}
+
+/**
+ * What the hook reads from the model catalogue to compare models: the catalogue itself (read from its cache
+ * file, never the network) and the user's overrides. Absent or null everywhere means "family regex only".
+ */
+export type RankContext = { cat: Catalogue; overrides?: ModelOverrides };
+
+/**
+ * Whether the catalogue knows `id`: a bare alias it can resolve to a usable id, or an id it lists (not
+ * `needs-review`, unless an override gives it a tier). A catalogue that does not know an id says nothing about it.
+ */
+export function catalogueKnows(ctx: RankContext | null | undefined, id: string | undefined | null): boolean {
+  if (!ctx || !id) return false;
+  const parsed = parseModelId(id);
+  if (!parsed) return false;
+  if (parsed.alias) return resolveAlias(ctx.cat, parsed.family, ctx.overrides) !== null;
+  const entry = ctx.cat.models.find((m) => m.id === id);
+  return !!entry && (entry.status !== 'needs-review' || !!ctx.overrides?.[entry.id]?.tier);
+}
+
+/**
+ * Pure: order two Claude models. Negative when `a` is weaker than `b`, positive when stronger, 0 when equal.
+ * With a usable catalogue that knows both ids the comparison is the catalogue's (tier, then version, then overrides;
+ * an alias is the newest id of its family). Otherwise it falls back to the family-only regex rank. Null when either
+ * id has no rank at all (unknown or "inherit"): the caller treats it as unranked. Never throws.
+ */
+export function compareClaudeModels(
+  a: string | undefined | null,
+  b: string | undefined | null,
+  ctx?: RankContext | null
+): number | null {
+  try {
+    if (!a || !b) return null;
+    if (catalogueKnows(ctx, a) && catalogueKnows(ctx, b)) {
+      const r = compareModels(a, b, ctx!.cat, ctx!.overrides);
+      if (r !== null) return Math.sign(r);
+    }
+    const ra = modelRank(a);
+    const rb = modelRank(b);
+    return ra === null || rb === null ? null : Math.sign(ra - rb);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the user's overrides give `id` (or the id an alias resolves to) a tier of its own, which can move it across families. */
+function hasTierOverride(ctx: RankContext | null | undefined, id: string): boolean {
+  try {
+    const overrides = ctx?.overrides;
+    if (!overrides) return false;
+    const parsed = parseModelId(id);
+    const concrete = parsed?.alias && ctx ? (resolveAlias(ctx.cat, parsed.family, overrides) ?? id) : id;
+    return overrides[concrete]?.tier !== undefined || overrides[id]?.tier !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure: the order used to decide whether one model is stronger than another for a permission (an elevation, an
+ * approval). The family ladder (haiku < sonnet < opus < fable) decides across families, whatever the catalogue says:
+ * the catalogue files opus and fable in one tier and orders them by version, which would put opus 5.5 above fable
+ * 5.2. The catalogue only refines what the family rank cannot see: versions inside one family, and an id the user's
+ * overrides moved to another tier. Same contract as `compareClaudeModels` (null when either id is unranked).
+ */
+export function compareFamilyFirst(
+  a: string | undefined | null,
+  b: string | undefined | null,
+  ctx?: RankContext | null
+): number | null {
+  const ra = modelRank(a);
+  const rb = modelRank(b);
+  if (ra !== null && rb !== null && ra !== rb && !hasTierOverride(ctx, a as string) && !hasTierOverride(ctx, b as string)) {
+    return Math.sign(ra - rb);
+  }
+  return compareClaudeModels(a, b, ctx);
 }
 
 export type Dispatch = {
@@ -462,6 +540,8 @@ export type TurnState = {
   intent: UserIntent;
   /** What was advised for this turn, after the user's instruction was applied. */
   rec?: { subagent: string; tier: JevTier; model: ClaudeModelAlias; by?: Dispatch['by'] };
+  /** The effort Jev suggested for this turn (advisory; the downgrade question and the log name it). Kept beside `rec`, not in it. */
+  recEffort?: ThinkingEffort;
   /** The Jev mode the turn started in: a state stored under another mode is stale (a mode flip mid-turn). */
   mode?: string;
   /** ISO time the marker was written. */
@@ -578,24 +658,79 @@ export type Elevation = {
   sessionModel: string;
   /** The alias the call is clamped to: the session model's own. */
   sessionAlias: ClaudeModelAlias;
+  /**
+   * Set only when a model catalogue is in use and neither it nor the family table knows the requested id: Jev
+   * cannot rank it, so the guard asks (the permission dialog, never the choice flow) instead of letting it pass.
+   */
+  unranked?: true;
 };
+
+/** A ladder definition name (`jev-ladder-<id>`, also as `<plugin>:jev-ladder-<id>`); see `ladderDefName` in the ladder-agents command. */
+const LADDER_DEF_NAME = /(?:^|:)jev-ladder-([a-z0-9][a-z0-9-]*)$/i;
+
+const defNameOf = (id: string): string => id.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+
+/**
+ * Pure: the model id a ladder definition pins, read from its `subagent_type`; null for any other type. The id is the
+ * catalogue's own when one of its ids makes that definition name, else the name's suffix when it ranks as a Claude
+ * model; a suffix that is no model (`jev-ladder-notes`) is not a ladder definition.
+ */
+export function pinnedLadderModel(subagentType: unknown, ctx?: RankContext | null): string | null {
+  if (typeof subagentType !== 'string') return null;
+  const suffix = LADDER_DEF_NAME.exec(subagentType.trim())?.[1]?.toLowerCase();
+  if (!suffix) return null;
+  try {
+    const hit = ctx?.cat.models.find((m) => defNameOf(m.id) === suffix);
+    if (hit) return hit.id;
+  } catch {
+    // a broken catalogue reads as none
+  }
+  return modelRank(suffix) !== null ? suffix : null;
+}
 
 /**
  * Pure: is this Agent call asking for a model stronger than the session's? Null for a call with no
  * model or "inherit" (it runs on the session model), a model at or below the session model, and an
  * unknown or missing session model. A model the user named in the current prompt, or a stronger one, is
  * their explicit request: `instructed`, never `elevating`.
+ *
+ * A call with no `model` whose `subagent_type` is a ladder definition (`jev-ladder-<id>`, optionally plugin-qualified)
+ * runs the model that definition pins, so that id is the requested model (`pinnedLadderModel`).
+ *
+ * The family ladder (haiku < sonnet < opus < fable) decides across families (`compareFamilyFirst`); with a usable
+ * catalogue (`ctx`) its tier, version and overrides refine same-family steps and overridden ids, falling back to
+ * the family regex for an id the catalogue does not know. A requested id that nothing knows is unranked: with a
+ * catalogue the call is `elevating` with `unranked` set (the guard asks); without one it passes, as before.
+ * Two models of one family (a version step inside one alias) are not an elevation: the Agent tool cannot name a
+ * version, so there is nothing a clamp or an answer could change per call.
  */
-export function classifyElevation(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): Elevation | null {
-  const requested = modelRank(call.model);
-  const ceiling = modelRank(sessionModel);
-  if (requested === null || ceiling === null || requested <= ceiling || !call.model || !sessionModel) return null;
-  // The instruction check is `>=`: a named model covers a weaker request too ("use opus" covers a sonnet call).
-  const instructed = !!intent && intent.models.some((m) => (modelRank(m) ?? 0) >= requested);
+export function classifyElevation(
+  call: AgentCall,
+  sessionModel: string | null,
+  intent?: UserIntent | null,
+  ctx?: RankContext | null
+): Elevation | null {
+  // A call with no model of its own may still run a model: a ladder definition pins one in its name.
+  const model = call.model || pinnedLadderModel(call.subagent_type, ctx);
+  if (!model || !sessionModel) return null;
   // A model with a rank always has an alias (the two tables match), so there is always something to clamp to.
   const sessionAlias = modelAlias(sessionModel);
   if (!sessionAlias) return null;
-  return { kind: instructed ? 'instructed' : 'elevating', requested: call.model, sessionModel, sessionAlias };
+  const sessionKnown = modelRank(sessionModel) !== null || catalogueKnows(ctx, sessionModel);
+  if (!sessionKnown) return null;
+  const requestedAlias = modelAlias(model);
+  const requestedKnown = requestedAlias !== null || catalogueKnows(ctx, model);
+  if (!requestedKnown) {
+    // Nothing ranks it. "inherit" runs on the session model and passes; anything else is a model Jev cannot judge.
+    if (!ctx || model.trim().toLowerCase() === 'inherit') return null;
+    return { kind: 'elevating', requested: model, sessionModel, sessionAlias, unranked: true };
+  }
+  if (requestedAlias === sessionAlias) return null;
+  const cmp = compareFamilyFirst(model, sessionModel, ctx);
+  if (cmp === null || cmp <= 0) return null;
+  // The instruction check is `>=`: a named model covers a weaker request too ("use opus" covers a sonnet call).
+  const instructed = !!intent && intent.models.some((m) => (compareFamilyFirst(m, model, ctx) ?? -1) >= 0);
+  return { kind: instructed ? 'instructed' : 'elevating', requested: model, sessionModel, sessionAlias };
 }
 
 /**
@@ -623,6 +758,12 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
  * same delegation in this prompt; only then does the reason say that a run on the session model happened.
  */
 export function elevationAskReason(e: Elevation, clamped = false): string {
+  if (e.unranked) {
+    return (
+      `[jev] This delegation asks for model "${e.requested}", which Jev's model catalogue does not know, so Jev cannot tell whether it is stronger than the session model "${e.sessionModel}". ` +
+      `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").`
+    );
+  }
   return (
     `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
     `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
@@ -673,7 +814,8 @@ export function elevationChoiceReason(e: Elevation, subagentType?: unknown): str
     `naming the subagent_type (${safeTypeName(subagentType)}), the requested model, the session model and a 10-word task summary; ` +
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
     `If the user picks a Yes, launch the delegation again with the same model; if No, launch it on ${e.sessionAlias} (or do the work directly); ` +
-    `do not stop and do not ask in any other form.`
+    `If AskUserQuestion is not available, launch the delegation on ${e.sessionAlias} now and do not stop; ` +
+    `do not ask in any other form.`
   );
 }
 
@@ -714,13 +856,8 @@ export type ApprovalState = {
 export const ONCE_TTL_MS = 10 * 60 * 1000;
 export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
 
-/**
- * Pure: the approval a PostToolUse payload for AskUserQuestion carries, or null. Only a question that starts with
- * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and
- * nothing else: `tool_input` is what the assistant sent, so it never records an approval.
- * A "No", another label, a missing answer and malformed input give null.
- */
-export function parseElevationAnswer(input: unknown, nowMs: number): Approval | null {
+/** The marker question of a PostToolUse payload for AskUserQuestion and its answer: `tool_response.answers[question]` and nothing else (`tool_input` is what the assistant sent, so it never counts). */
+function readElevationAnswer(input: unknown): { model: ClaudeModelAlias; label: string } | null {
   try {
     const i = input as { tool_name?: unknown; tool_input?: any; tool_response?: any } | null;
     if (!i || typeof i !== 'object') return null;
@@ -731,8 +868,32 @@ export function parseElevationAnswer(input: unknown, nowMs: number): Approval | 
     if (!m) return null;
     const answer = i.tool_response?.answers?.[question];
     if (typeof answer !== 'string') return null;
-    const model = m[1] as ClaudeModelAlias;
-    const label = answer.trim();
+    return { model: m[1] as ClaudeModelAlias, label: answer.trim() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure: true when a PostToolUse payload for AskUserQuestion is the elevation question (the marker) answered with its
+ * No option (`No, proceed on <alias>`). Only that label: another label, a missing answer and malformed input give false.
+ * It lets the hook treat the user's decision to stay on the session model as final for the downgrade question too.
+ */
+export function parseElevationDecline(input: unknown): boolean {
+  const answer = readElevationAnswer(input);
+  return !!answer && answer.label.startsWith(CHOICE_LABELS.no(''));
+}
+
+/**
+ * Pure: the approval a PostToolUse payload for AskUserQuestion carries, or null. Only a question that starts with
+ * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and nothing else.
+ * A "No", another label, a missing answer and malformed input give null.
+ */
+export function parseElevationAnswer(input: unknown, nowMs: number): Approval | null {
+  try {
+    const read = readElevationAnswer(input);
+    if (!read) return null;
+    const { model, label } = read;
     if (label.startsWith(CHOICE_LABELS.once)) return { model, scope: 'once', created_at: nowMs, expires_at: nowMs + ONCE_TTL_MS };
     if (label.startsWith(CHOICE_LABELS.fiveMin)) return { model, scope: '5min', created_at: nowMs, expires_at: nowMs + FIVE_MIN_TTL_MS };
     if (label.startsWith(CHOICE_LABELS.session)) return { model, scope: 'session', created_at: nowMs };
@@ -820,7 +981,8 @@ export function recordApproval(state: ApprovalState, approval: Approval, nowMs: 
 export function claimApproval(
   state: ApprovalState,
   requested: string,
-  nowMs: number
+  nowMs: number,
+  ctx?: RankContext | null
 ): { state: ApprovalState; approval: Approval | null } {
   const want = modelRank(requested);
   const live = state.approvals.filter((a) => approvalValid(a, nowMs));
@@ -828,7 +990,7 @@ export function claimApproval(
     want === null
       ? null
       : live
-          .filter((a) => (modelRank(a.model) ?? 0) >= want)
+          .filter((a) => (compareFamilyFirst(a.model, requested, ctx) ?? -1) >= 0)
           .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
   const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
   return { state: { ...state, approvals }, approval: hit };

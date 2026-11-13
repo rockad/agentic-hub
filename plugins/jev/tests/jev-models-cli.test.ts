@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseArgs, runCli, summarise, type CliDeps } from '../src/refresh/cli.js';
-import { loadRefreshConfig, DEFAULT_MAX_CALLS } from '../src/refresh/config.js';
+import { parseArgs, runCli, summarise, REFRESH_LOCK_STALE_MS, type CliDeps } from '../src/refresh/cli.js';
+import { loadRefreshConfig, readAttempt, ABSOLUTE_MAX_CALLS, DEFAULT_MAX_CALLS } from '../src/refresh/config.js';
 import { KNOWN_CLAUDE_IDS } from '../src/refresh/claude-code.js';
 import { buildCatalogue, cataloguePath, loadCatalogue, saveCatalogue, type Catalogue } from '../src/core/catalogue.js';
 import { clearConfigCacheForTesting } from '../src/core/config.js';
@@ -88,24 +88,34 @@ describe('argument parsing', () => {
 
 describe('refresh config reader', () => {
   it('defaults: enabled, 7 days, 20 calls, no extra candidates', () => {
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: DEFAULT_MAX_CALLS, candidates: [] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: DEFAULT_MAX_CALLS, minRetryHours: 6, candidates: [] });
     expect(DEFAULT_MAX_CALLS).toBe(20);
+  });
+
+  it('reads minRetryHours and drops an invalid one', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { minRetryHours: 2.5 } } }));
+    expect(loadRefreshConfig(configFile).minRetryHours).toBe(2.5);
+    fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { minRetryHours: 0 } } }));
+    expect(loadRefreshConfig(configFile).minRetryHours).toBe(6);
+    fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { minRetryHours: 'soon' } } }));
+    expect(loadRefreshConfig(configFile).minRetryHours).toBe(6);
   });
 
   it('reads the four keys and drops invalid values', () => {
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { enabled: false, maxAgeDays: 3, maxCalls: 8, candidates: ['claude-sonnet-6', 'claude-sonnet-6', 7, '', 'bad id; rm', '--model'] } } }));
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: false, maxAgeDays: 3, maxCalls: 8, candidates: ['claude-sonnet-6'] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: false, maxAgeDays: 3, maxCalls: 8, minRetryHours: 6, candidates: ['claude-sonnet-6'] });
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { enabled: 'no', maxAgeDays: -2, maxCalls: 'many', candidates: 'x' } } }));
-    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: 20, candidates: [] });
+    expect(loadRefreshConfig(configFile)).toEqual({ enabled: true, maxAgeDays: 7, maxCalls: 20, minRetryHours: 6, candidates: [] });
     fs.writeFileSync(configFile, '{ not json');
     expect(loadRefreshConfig(configFile).enabled).toBe(true);
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: [] } }));
     expect(loadRefreshConfig(configFile).maxCalls).toBe(20);
   });
 
-  it('caps maxCalls at 100', () => {
+  it('caps maxCalls at 25 (25 probes at the 60 s timeout stay under the 30 minute lock stale time)', () => {
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { maxCalls: 5000 } } }));
-    expect(loadRefreshConfig(configFile).maxCalls).toBe(100);
+    expect(loadRefreshConfig(configFile).maxCalls).toBe(25);
+    expect(ABSOLUTE_MAX_CALLS * 60_000).toBeLessThan(REFRESH_LOCK_STALE_MS);
   });
 });
 
@@ -113,17 +123,17 @@ describe('refresh command (Claude Code)', () => {
   it('probes, writes the catalogue, and summarises new ids and the cost', async () => {
     const { spawn, calls } = fakeClaude([...KNOWN_CLAUDE_IDS]);
     const h = harness({ spawn });
-    expect(await runCli(['refresh', '--max-calls', '30'], h.deps)).toBe(0);
+    expect(await runCli(['refresh', '--max-calls', '25'], h.deps)).toBe(0);
 
     const cat = loadCatalogue('claude-code', dir)!;
     expect(cat.source).toBe('probe');
     expect(cat.updated_at).toBe(NOW.toISOString());
     expect(cat.models.map((m) => m.id).sort()).toEqual([...KNOWN_CLAUDE_IDS].sort());
     expect(cat.models.find((m) => m.id === 'claude-sonnet-5-5')).toMatchObject({ alias: 'sonnet', tier: 'standard', status: 'ok' });
-    expect(calls.length).toBeLessThanOrEqual(30);
+    expect(calls.length).toBeLessThanOrEqual(25);
     expect(h.text()).toContain('new: ');
     expect(h.text()).toContain('claude-fable-5-2');
-    expect(h.text()).toMatch(/probe calls: \d+ of at most 30, cost \$0\.\d+/);
+    expect(h.text()).toMatch(/probe calls: \d+ of at most 25, cost \$0\.\d+/);
     expect(fs.existsSync(refreshLockPath('claude-code', dir))).toBe(false);
     expect(fs.statSync(cataloguePath('claude-code', dir)!).mode & 0o777).toBe(0o600);
   });
@@ -150,7 +160,7 @@ describe('refresh command (Claude Code)', () => {
   it('adds user candidates from the config', async () => {
     fs.writeFileSync(configFile, JSON.stringify({ models: { refresh: { candidates: ['claude-sonnet-5-1'] } } }));
     const { spawn, calls } = fakeClaude([...KNOWN_CLAUDE_IDS, 'claude-sonnet-5-1']);
-    await runCli(['refresh', '--max-calls', '40'], harness({ spawn }).deps);
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn }).deps);
     expect(calls).toContain('claude-sonnet-5-1');
     expect(loadCatalogue('claude-code', dir)!.models.map((m) => m.id)).toContain('claude-sonnet-5-1');
   });
@@ -166,40 +176,40 @@ describe('refresh command (Claude Code)', () => {
 
   it('applies the strikes rule across refresh cycles: missing at once, deleted at the third failed probe', async () => {
     const all = [...KNOWN_CLAUDE_IDS];
-    await runCli(['refresh', '--max-calls', '40'], harness({ spawn: fakeClaude(all).spawn }).deps);
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn: fakeClaude(all).spawn }).deps);
     expect(loadCatalogue('claude-code', dir)!.models.find((m) => m.id === 'claude-opus-4-5')?.status).toBe('ok');
 
     const without = all.filter((id) => id !== 'claude-opus-4-5');
     const entry = () => loadCatalogue('claude-code', dir)!.models.find((m) => m.id === 'claude-opus-4-5');
 
     const first = harness({ spawn: fakeClaude(without).spawn });
-    await runCli(['refresh', '--max-calls', '40'], first.deps);
+    await runCli(['refresh', '--max-calls', '25'], first.deps);
     expect(entry()).toMatchObject({ status: 'missing', strikes: 1 });
     expect(first.text()).toContain('missing: claude-opus-4-5');
 
-    await runCli(['refresh', '--max-calls', '40'], harness({ spawn: fakeClaude(without).spawn }).deps);
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn: fakeClaude(without).spawn }).deps);
     expect(entry()).toMatchObject({ status: 'missing', strikes: 2 });
 
     const third = harness({ spawn: fakeClaude(without).spawn });
-    await runCli(['refresh', '--max-calls', '40'], third.deps);
+    await runCli(['refresh', '--max-calls', '25'], third.deps);
     expect(entry()).toBeUndefined();
     expect(third.text()).toContain('removed: claude-opus-4-5');
 
     // the id comes back: a new entry, strikes 0
     const back = harness({ spawn: fakeClaude(all).spawn });
-    await runCli(['refresh', '--max-calls', '40'], back.deps);
+    await runCli(['refresh', '--max-calls', '25'], back.deps);
     expect(entry()).toMatchObject({ status: 'ok', strikes: 0 });
   });
 
   it('a speculative neighbour that does not exist never enters the catalogue', async () => {
-    await runCli(['refresh', '--max-calls', '40'], harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn }).deps);
+    await runCli(['refresh', '--max-calls', '25'], harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn }).deps);
     const ids = loadCatalogue('claude-code', dir)!.models.map((m) => m.id);
     expect(ids).not.toContain('claude-sonnet-6');
   });
 
   it('picks up a new model that appears as a neighbour', async () => {
     const h = harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS, 'claude-sonnet-5-6']).spawn });
-    await runCli(['refresh', '--max-calls', '40'], h.deps);
+    await runCli(['refresh', '--max-calls', '25'], h.deps);
     expect(loadCatalogue('claude-code', dir)!.models.map((m) => m.id)).toContain('claude-sonnet-5-6');
     expect(h.text()).toContain('claude-sonnet-5-6');
   });
@@ -226,6 +236,61 @@ describe('refresh command (Claude Code)', () => {
     expect(loadCatalogue('claude-code', dir)).toEqual(before);
     expect(h.err.join('\n')).toContain('catalogue unchanged');
     expect(fs.existsSync(refreshLockPath('claude-code', dir))).toBe(false);
+  });
+
+  it('a round where every probe says "command not found" leaves a good catalogue and its age alone, and exits 1', async () => {
+    const before = buildCatalogue(
+      'claude-code',
+      [
+        { id: 'claude-sonnet-5-5', ok: true, alias: 'sonnet' },
+        { id: 'claude-opus-5-5', ok: true, alias: 'opus' },
+        { id: 'claude-haiku-5-5', ok: true, alias: 'haiku' }
+      ],
+      'probe',
+      null,
+      new Date('2026-11-01T00:00:00Z')
+    );
+    saveCatalogue(before, dir);
+    const file = cataloguePath('claude-code', dir)!;
+    const bytes = fs.readFileSync(file, 'utf8');
+    // a broken wrapper: exit 127, text on stderr (and the old broad regex would have matched "not found")
+    const spawn: Spawner = async () => ({ code: 127, stdout: 'node: not found', stderr: 'env: node: not found\nclaude: command not found', timedOut: false });
+    const h = harness({ spawn });
+    expect(await runCli(['refresh', '--max-calls', '25'], h.deps)).toBe(1);
+    expect(fs.readFileSync(file, 'utf8')).toBe(bytes);
+    expect(loadCatalogue('claude-code', dir)).toEqual(before);
+    expect(loadCatalogue('claude-code', dir)!.updated_at).toBe('2026-11-01T00:00:00.000Z');
+    expect(h.err.join('\n')).toContain('catalogue unchanged');
+    expect(readAttempt('claude-code', dir)).toMatchObject({ result: 'inconclusive' });
+  });
+
+  it('a round with only failed probes and no ok probe at all is inconclusive, even with clean JSON rejections', async () => {
+    const before = buildCatalogue('claude-code', [{ id: 'claude-sonnet-5-5', ok: true }, { id: 'claude-opus-5-5', ok: true }], 'probe', null, new Date('2026-11-01T00:00:00Z'));
+    saveCatalogue(before, dir);
+    const h = harness({ spawn: async () => done(REJECTED) });
+    expect(await runCli(['refresh', '--max-calls', '25'], h.deps)).toBe(1);
+    expect(loadCatalogue('claude-code', dir)).toEqual(before);
+  });
+
+  it('stamps the attempt at the end of every run: ok, and error when the catalogue could not be read', async () => {
+    expect(await runCli(['refresh', '--quiet', '--max-calls', '4'], harness({ spawn: fakeClaude([...KNOWN_CLAUDE_IDS]).spawn }).deps)).toBe(0);
+    expect(readAttempt('claude-code', dir)).toEqual({ ts: NOW.toISOString(), result: 'ok' });
+    expect(fs.statSync(path.join(dir, 'claude-code.attempt.json')).mode & 0o777).toBe(0o600);
+  });
+
+  it('writes a lock heartbeat after every probe and releases the lock at the end', async () => {
+    const lock = refreshLockPath('claude-code', dir);
+    const beats: Array<number | undefined> = [];
+    const spawn: Spawner = async (_c, args) => {
+      beats.push(JSON.parse(fs.readFileSync(lock, 'utf8')).hb);
+      return done(okJson(ALIASES[args[args.indexOf('--model') + 1]] ?? args[args.indexOf('--model') + 1]));
+    };
+    expect(await runCli(['refresh', '--quiet', '--max-calls', '3'], harness({ spawn }).deps)).toBe(0);
+    // before the first probe there is no heartbeat; before each later probe the previous one has written it
+    expect(beats[0]).toBeUndefined();
+    expect(typeof beats[1]).toBe('number');
+    expect(typeof beats[2]).toBe('number');
+    expect(fs.existsSync(lock)).toBe(false);
   });
 
   it('exits without probing when another refresh holds the lock', async () => {

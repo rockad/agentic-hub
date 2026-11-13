@@ -20,9 +20,8 @@ import {
   resolveAlias,
   type Catalogue
 } from '../src/core/catalogue.js';
-import { tryLock, unlock } from '../src/core/lock.js';
-import { loadRefreshConfig, refreshLockPath, type RefreshConfig } from '../src/refresh/config.js';
-import { PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
+import { handOffLock, tryLock, unlock } from '../src/core/lock.js';
+import { attemptedRecently, loadRefreshConfig, refreshLockPath, writeAttempt, type RefreshConfig } from '../src/refresh/config.js';
 
 export const REFRESH_HARNESS = 'claude-code';
 /** A trigger-held lock older than this is taken over; the refresh itself needs at most about 20 minutes. */
@@ -34,6 +33,7 @@ export type TriggerResult =
   | 'mode-off'
   | 'disabled'
   | 'fresh'
+  | 'backoff'
   | 'locked'
   | 'no-bun'
   | 'no-script'
@@ -57,9 +57,12 @@ export interface TriggerDeps {
   now?: Date;
   /** Path of the bun executable, or null when there is none. */
   findBun?: () => string | null;
+  /** Script to run; default `JEV_REFRESH_SCRIPT` from the environment (tests, development), else `scripts/jev-models.ts`. */
   scriptPath?: string;
   /** Starts the detached refresh. */
   spawnDetached?: (bun: string, args: string[]) => DetachedChild;
+  /** `child_process.spawn` stand-in used by the default starter (tests assert the spawn options through it). */
+  spawnFn?: SpawnFn;
 }
 
 /** The running bun when this process is bun, else a `bun` on PATH; null when neither exists. */
@@ -82,11 +85,18 @@ export function findBun(env: NodeJS.ProcessEnv = process.env): string | null {
   return null;
 }
 
-function defaultSpawnDetached(bun: string, args: string[]): DetachedChild {
-  const child = spawn(bun, args, { detached: true, stdio: 'ignore', cwd: path.dirname(SCRIPT) });
-  child.on('error', () => {});
-  child.unref();
-  return child;
+/** How the refresh process is started: its own process group, no stdio, no console window on Windows. */
+export const DETACHED_SPAWN_OPTIONS = { detached: true, stdio: 'ignore', windowsHide: true } as const;
+
+type SpawnFn = (cmd: string, args: string[], opts: Record<string, unknown>) => DetachedChild;
+
+function makeSpawnDetached(spawnFn: SpawnFn, cwd: string): (bun: string, args: string[]) => DetachedChild {
+  return (bun, args) => {
+    const child = spawnFn(bun, args, { ...DETACHED_SPAWN_OPTIONS, cwd });
+    child.on?.('error', () => {});
+    child.unref();
+    return child;
+  };
 }
 
 /**
@@ -94,39 +104,47 @@ function defaultSpawnDetached(bun: string, args: string[]): DetachedChild {
  * waits for the refresh.
  *
  * Starts when all of these hold: Jev mode is `on` for Claude Code; `models.refresh.enabled` is not `false`; the
- * catalogue is missing or older than `models.refresh.maxAgeDays` (default 7); no other refresh holds the lock;
- * `bun` and the script are found. The lock is taken here and handed to the child by writing the child's pid into
- * it, so a second session starting a moment later sees a live owner and does nothing.
+ * catalogue is missing or older than `models.refresh.maxAgeDays` (default 7); no refresh was attempted in the last
+ * `models.refresh.minRetryHours` (default 6; the attempt stamp is written at spawn time and again when the refresh
+ * ends, whatever the result, so a broken environment is not retried at every session start); no other refresh
+ * holds the lock; `bun` and the script are found. The lock is taken here and handed to the child by writing the
+ * child's pid into it (atomically), so a second session starting a moment later sees a live owner and does nothing.
  */
 export function maybeStartCatalogueRefresh(deps: TriggerDeps = {}): TriggerResult {
   let locked: string | null = null;
   try {
-    if ((deps.env ?? process.env).JEV_MODEL_REFRESH === 'off') return 'disabled';
+    const env = deps.env ?? process.env;
+    if (env.JEV_MODEL_REFRESH === 'off') return 'disabled';
     const mode = (deps.readMode ?? (() => readJevModeSync(REFRESH_HARNESS)))();
     if (mode !== 'on') return 'mode-off';
     const cfg = (deps.loadConfig ?? (() => loadRefreshConfig()))();
     if (!cfg.enabled) return 'disabled';
+    const now = deps.now ?? new Date();
     const cat = loadCatalogue(REFRESH_HARNESS, deps.dir);
-    if (cat && !isStale(cat, deps.now ?? new Date(), cfg.maxAgeDays)) return 'fresh';
+    if (cat && !isStale(cat, now, cfg.maxAgeDays)) return 'fresh';
+    if (attemptedRecently(REFRESH_HARNESS, now, cfg.minRetryHours, deps.dir)) return 'backoff';
 
     const bun = (deps.findBun ?? findBun)();
     if (!bun) return 'no-bun';
-    const script = deps.scriptPath ?? SCRIPT;
+    const script = deps.scriptPath ?? env.JEV_REFRESH_SCRIPT ?? SCRIPT;
     if (!fs.existsSync(script)) return 'no-script';
 
     const lockPath = refreshLockPath(REFRESH_HARNESS, deps.dir);
     if (!tryLock(lockPath, TRIGGER_LOCK_STALE_MS)) return 'locked';
     locked = lockPath;
 
+    // Stamp before the spawn, so the child's own end-of-run stamp is never overwritten by this one.
+    writeAttempt(REFRESH_HARNESS, 'started', now, deps.dir);
     let child: DetachedChild;
     try {
-      child = (deps.spawnDetached ?? defaultSpawnDetached)(bun, [script, 'refresh', '--harness', REFRESH_HARNESS, '--quiet']);
+      const starter = deps.spawnDetached ?? makeSpawnDetached(deps.spawnFn ?? (spawn as unknown as SpawnFn), path.dirname(SCRIPT));
+      child = starter(bun, [script, 'refresh', '--harness', REFRESH_HARNESS, '--quiet']);
     } catch {
       return 'spawn-failed';
     }
     if (typeof child.pid !== 'number') return 'spawn-failed';
     // Hand the lock to the child: it recognises its own pid and carries on; if it dies the lock goes stale.
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: child.pid, ts: Date.now() }), { mode: PRIVATE_FILE_MODE });
+    handOffLock(lockPath, child.pid, Date.now());
     locked = null;
     return 'started';
   } catch {

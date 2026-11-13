@@ -3,13 +3,14 @@
  * account can use, plus which concrete id each native alias (`haiku`, `sonnet`, `opus`, `fable`) resolves to.
  *
  * Every probe is a paid call, so the run is capped (`maxCalls`, hard) and strictly sequential. A probe runs with
- * hooks disabled and the Jev plugin switched off in a throwaway settings file, in a fresh empty working directory,
- * so it can never recurse into Jev's own hooks. The process spawner is injected: tests never run `claude`.
+ * hooks disabled and the Jev plugin switched off in a throwaway settings file, in one stable empty working
+ * directory, so it can never recurse into Jev's own hooks. The process spawner is injected: tests never run `claude`.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { compareVersions, parseModelId, type Catalogue, type ProbeResult } from '../core/catalogue.js';
+import { privateDir } from '../core/private-fs.js';
 import { defaultSpawner, type Spawner } from './spawn.js';
 import type { DiscoveryOutcome, LogFn } from './types.js';
 
@@ -158,7 +159,12 @@ function keyMatchesId(key: string, id: string): boolean {
   return k === want || new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{8}$`).test(k);
 }
 
-const MODEL_REJECTED = /issue with the selected model|may not exist|not found|invalid model|unknown model|does not exist|do not have access|not available/i;
+/**
+ * The wording of a model rejection in a JSON error result. Deliberately narrow: "not found" and "not available"
+ * also appear in a broken wrapper ("node: not found"), a missing feature or a missing resource, none of which say
+ * anything about the model.
+ */
+const MODEL_REJECTED = /issue with the selected model|may not exist or you may not have access|invalid model|unknown model|model [^\n]{0,80}(does not exist|not found)/i;
 
 /**
  * Read the output of one probe. `want` is a concrete id (ok when `modelUsage` has that id) or a native alias
@@ -169,14 +175,14 @@ export function parseProbeOutput(res: { stdout: string; stderr?: string; timedOu
   if (res.error) return { kind: 'error', reason: `could not start: ${res.error}` };
   const result = extractResult(res.stdout);
   if (!result) {
-    const text = `${res.stdout}\n${res.stderr ?? ''}`;
-    if (MODEL_REJECTED.test(text)) return { kind: 'fail', reason: 'model rejected', costUsd: 0 };
+    // Free text on a path with no parsed JSON proves nothing about the model: a wrapper script, a missing runtime
+    // or a login prompt all look like this.
     return { kind: 'error', reason: `no JSON result (exit ${res.code ?? 'none'})` };
   }
   const costUsd = typeof result.total_cost_usd === 'number' && Number.isFinite(result.total_cost_usd) ? result.total_cost_usd : 0;
   if (result.is_error !== false) {
     const msg = typeof result.result === 'string' ? result.result : '';
-    if (MODEL_REJECTED.test(msg)) return { kind: 'fail', reason: msg.slice(0, 160), costUsd };
+    if (result.is_error === true && MODEL_REJECTED.test(msg)) return { kind: 'fail', reason: msg.slice(0, 160), costUsd };
     return { kind: 'error', reason: msg ? msg.slice(0, 160) : 'error result' };
   }
   const usage = result.modelUsage && typeof result.modelUsage === 'object' ? (result.modelUsage as Record<string, any>) : {};
@@ -200,23 +206,62 @@ export interface ProbeOptions {
   spawn: Spawner;
   claudeBin?: string;
   timeoutMs?: number;
+  /** Where the throwaway settings file goes (default: the system temp directory). */
   tmpRoot?: string;
+  /** The probe's working directory (default `~/.config/jev/probe-cwd`): one stable, empty directory, reused. */
+  cwd?: string;
+  /** The environment to filter into the probe's (default `process.env`). */
   env?: NodeJS.ProcessEnv;
 }
 
-/** One probe call in a fresh temp directory (removed afterwards). Never throws. */
+/** The probe's working directory when none is given. */
+export function defaultProbeCwd(): string {
+  // HOME first: a probe run under a temp HOME (tests, containers) must stay inside it
+  return path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.config', 'jev', 'probe-cwd');
+}
+
+/**
+ * Environment names a probe may inherit: what `claude` needs to run and to reach the same account (PATH, HOME,
+ * locale, proxy and certificate settings, the Anthropic and Claude auth variables). Everything else, notably
+ * `JEV_*` and `OPENROUTER_*` keys and unrelated cloud credentials, is left out.
+ */
+const PROBE_ENV_ALLOW = /^(PATH|HOME|USER|LANG|TERM|TMPDIR|SHELL|XDG_.+|ANTHROPIC_.+|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|https_proxy|http_proxy|no_proxy|SSL_CERT_.+|NODE_EXTRA_CA_CERTS)$/;
+
+/**
+ * The probe's environment: the allowlisted part of `base`, with auto-memory off
+ * (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, an environment variable of Claude Code) so a probe never writes a memory entry.
+ */
+export function probeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) {
+    if (v !== undefined && PROBE_ENV_ALLOW.test(k)) out[k] = v;
+  }
+  out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
+  return out;
+}
+
+/** The stable empty probe directory, created owner-only when missing. Claude Code keeps one project entry for it. */
+function ensureProbeCwd(cwd: string): string {
+  privateDir(cwd);
+  return cwd;
+}
+
+/**
+ * One probe call. The working directory is one stable empty directory (`~/.config/jev/probe-cwd`, reused), so
+ * Claude Code records a single project entry instead of one per probe; the throwaway settings file lives in a
+ * temp directory that is removed afterwards. Never throws.
+ */
 export async function probeModel(model: string, opts: ProbeOptions): Promise<ProbeOutcome> {
   let root: string | null = null;
   try {
+    const cwd = ensureProbeCwd(opts.cwd ?? defaultProbeCwd());
     root = fs.mkdtempSync(path.join(opts.tmpRoot ?? os.tmpdir(), 'jev-probe-'));
-    const cwd = path.join(root, 'cwd');
-    fs.mkdirSync(cwd);
     const settings = path.join(root, 'settings.json');
     fs.writeFileSync(settings, probeSettingsJson());
     const res = await opts.spawn(opts.claudeBin ?? 'claude', probeArgs(model, settings), {
       cwd,
       timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
-      env: opts.env
+      env: probeEnv(opts.env ?? process.env)
     });
     return parseProbeOutput(res, model);
   } catch (err: any) {
@@ -243,6 +288,8 @@ export interface ClaudeDiscoverOptions extends ProbeOptions {
   /** User additions from `models.refresh.candidates`. */
   extra?: readonly string[];
   log?: LogFn;
+  /** Called after every probe (the refresh uses it to write the lock heartbeat). */
+  onProbe?: () => void;
 }
 
 export interface ClaudeDiscovery extends DiscoveryOutcome {
@@ -281,6 +328,11 @@ export async function discoverClaudeCode(opts: ClaudeDiscoverOptions): Promise<C
   const call = async (model: string): Promise<ProbeOutcome> => {
     out.calls++;
     const r = await probeModel(model, opts);
+    try {
+      opts.onProbe?.();
+    } catch {
+      // a failed heartbeat must not end the run
+    }
     if ('costUsd' in r) out.costUsd += r.costUsd;
     if (r.kind === 'error') {
       streak++;

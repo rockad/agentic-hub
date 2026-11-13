@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -16,6 +16,25 @@ import {
 } from '../src/refresh/claude-code.js';
 import { buildCatalogue, type Catalogue, type ProbeResult } from '../src/core/catalogue.js';
 import type { SpawnResult, Spawner } from '../src/refresh/spawn.js';
+
+// The probe directory defaults to ~/.config/jev/probe-cwd: point HOME at a temp directory so no test touches the real one.
+let fakeHome = '';
+let stableRoot = '';
+let stableCwd = '';
+let savedHome: string | undefined;
+beforeAll(() => {
+  savedHome = process.env.HOME;
+  fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-probe-home-'));
+  process.env.HOME = fakeHome;
+  stableRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-probe-stable-'));
+  stableCwd = path.join(stableRoot, 'probe-cwd');
+});
+afterAll(() => {
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+  fs.rmSync(fakeHome, { recursive: true, force: true });
+  fs.rmSync(stableRoot, { recursive: true, force: true });
+});
 
 const FIXTURES = path.join(import.meta.dir, 'fixtures', 'claude-probe');
 const fixture = (name: string): string => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -122,9 +141,24 @@ describe('probe result parsing', () => {
     expect(parseProbeOutput(done('Welcome to Claude\n', { code: 1 }), 'claude-sonnet-5-5').kind).toBe('error');
   });
 
-  it('reads a rejected model from plain text output too', () => {
-    const r = parseProbeOutput(done('', { code: 1, stderr: 'There is an issue with the selected model (x). It may not exist.' }), 'x');
-    expect(r.kind).toBe('fail');
+  it('free text without a JSON result is inconclusive, never a failure', () => {
+    const rejectedText = 'There is an issue with the selected model (x). It may not exist or you may not have access to it.';
+    expect(parseProbeOutput(done('', { code: 1, stderr: rejectedText }), 'x').kind).toBe('error');
+    expect(parseProbeOutput(done(rejectedText, { code: 1 }), 'x').kind).toBe('error');
+  });
+
+  it('a broken wrapper ("node: not found", "command not found") is inconclusive', () => {
+    expect(parseProbeOutput(done('', { code: 127, stderr: 'env: node: not found' }), 'sonnet').kind).toBe('error');
+    expect(parseProbeOutput(done('', { code: 127, stderr: 'sh: 1: claude: command not found' }), 'sonnet').kind).toBe('error');
+    expect(parseProbeOutput(done('node: not found', { code: 127 }), 'sonnet').kind).toBe('error');
+  });
+
+  it('a JSON error result counts as a failure only when it carries the narrow model-rejection message', () => {
+    const err = (result: string) => JSON.stringify({ type: 'result', is_error: true, result, total_cost_usd: 0, modelUsage: {} });
+    expect(parseProbeOutput(done(err('node: not found')), 'x').kind).toBe('error');
+    expect(parseProbeOutput(done(err('Request failed: resource not found')), 'x').kind).toBe('error');
+    expect(parseProbeOutput(done(err('Feature not available on your plan')), 'x').kind).toBe('error');
+    expect(parseProbeOutput(done(err("There's an issue with the selected model (x). It may not exist or you may not have access to it.")), 'x').kind).toBe('fail');
   });
 
   it('tolerates a warning line before the JSON and an array of messages', () => {
@@ -168,7 +202,7 @@ describe('probeModel', () => {
       };
       return done(fixture('success-sonnet-5-5.json'));
     };
-    const r = await probeModel('claude-sonnet-5-5', { spawn });
+    const r = await probeModel('claude-sonnet-5-5', { spawn, cwd: stableCwd });
 
     expect(r.kind).toBe('ok');
     expect(seen!.cmd).toBe('claude');
@@ -179,10 +213,89 @@ describe('probeModel', () => {
     expect(seen!.args.slice(-2)).toEqual(['--output-format', 'json']);
     expect(seen!.settings).toEqual({ disableAllHooks: true, enabledPlugins: { 'jev@agentic-hub': false } });
     expect(seen!.cwdEntries).toEqual([]);
-    expect(seen!.cwd.startsWith(os.tmpdir())).toBe(true);
+    expect(seen!.cwd).toBe(stableCwd);
     expect(seen!.timeoutMs).toBe(PROBE_TIMEOUT_MS);
     expect(PROBE_TIMEOUT_MS).toBe(60_000);
     expect(fs.existsSync(root)).toBe(false);
+  });
+
+  it('uses one stable empty probe directory, created owner-only and reused, so there is a single project entry', async () => {
+    const seenCwds: string[] = [];
+    const spawn: Spawner = async (_c, _a, opts) => {
+      seenCwds.push(opts.cwd);
+      return done(fixture('success-sonnet-5-5.json'));
+    };
+    const cwd = path.join(stableRoot, 'nested', 'probe-cwd');
+    await probeModel('claude-sonnet-5-5', { spawn, cwd });
+    await probeModel('claude-sonnet-5-5', { spawn, cwd });
+    await probeModel('claude-sonnet-5-5', { spawn, cwd });
+    expect(seenCwds).toEqual([cwd, cwd, cwd]);
+    expect(fs.statSync(cwd).mode & 0o777).toBe(0o700);
+    expect(fs.readdirSync(cwd)).toEqual([]);
+  });
+
+  it('defaults the probe directory to ~/.config/jev/probe-cwd', async () => {
+    const seenCwds: string[] = [];
+    await probeModel('haiku', { spawn: async (_c, _a, o) => (seenCwds.push(o.cwd), done(fixture('success-sonnet-5-5.json'))) });
+    expect(seenCwds).toEqual([path.join(fakeHome, '.config', 'jev', 'probe-cwd')]);
+  });
+
+  it('turns auto-memory off for the probe', async () => {
+    let env: NodeJS.ProcessEnv | undefined;
+    await probeModel('haiku', { spawn: async (_c, _a, o) => ((env = o.env), done(fixture('success-sonnet-5-5.json'))), cwd: stableCwd });
+    expect(env!.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+  });
+
+  it('passes an allowlisted environment: keeps PATH, HOME and the Claude auth variables, drops JEV_ and OPENROUTER_ keys', async () => {
+    let env: NodeJS.ProcessEnv | undefined;
+    const source: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      HOME: '/home/x',
+      USER: 'x',
+      LANG: 'C',
+      TERM: 'xterm',
+      TMPDIR: '/tmp',
+      SHELL: '/bin/sh',
+      XDG_CONFIG_HOME: '/home/x/.config',
+      ANTHROPIC_API_KEY: 'k',
+      ANTHROPIC_BASE_URL: 'https://example.invalid',
+      CLAUDE_CODE_OAUTH_TOKEN: 't',
+      CLAUDE_CONFIG_DIR: '/home/x/.claude-alt',
+      HTTPS_PROXY: 'p',
+      HTTP_PROXY: 'p',
+      NO_PROXY: 'n',
+      SSL_CERT_FILE: '/c.pem',
+      NODE_EXTRA_CA_CERTS: '/e.pem',
+      JEV_OPENROUTER_API_KEY: 'secret',
+      JEV_MODEL_REFRESH: 'off',
+      OPENROUTER_API_KEY: 'secret',
+      AWS_SECRET_ACCESS_KEY: 'secret',
+      GITHUB_TOKEN: 'secret'
+    };
+    await probeModel('haiku', { spawn: async (_c, _a, o) => ((env = o.env), done(fixture('success-sonnet-5-5.json'))), cwd: stableCwd, env: source });
+    expect(Object.keys(env!).sort()).toEqual(
+      [
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_BASE_URL',
+        'CLAUDE_CODE_DISABLE_AUTO_MEMORY',
+        'CLAUDE_CODE_OAUTH_TOKEN',
+        'CLAUDE_CONFIG_DIR',
+        'HOME',
+        'HTTPS_PROXY',
+        'HTTP_PROXY',
+        'LANG',
+        'NODE_EXTRA_CA_CERTS',
+        'NO_PROXY',
+        'PATH',
+        'SHELL',
+        'SSL_CERT_FILE',
+        'TERM',
+        'TMPDIR',
+        'USER',
+        'XDG_CONFIG_HOME'
+      ]
+    );
+    expect(env!.ANTHROPIC_API_KEY).toBe('k');
   });
 
   it('reports a spawner that throws as inconclusive and still removes its temp directory', async () => {
@@ -318,6 +431,24 @@ describe('discoverClaudeCode', () => {
     expect(out.results.some((r) => r.id === 'claude-sonnet-5-5' && r.ok === false)).toBe(false);
     expect(out.aborted).toBeUndefined();
     expect(n).toBe(5);
+  });
+});
+
+describe('discoverClaudeCode heartbeat hook', () => {
+  it('calls onProbe after every probe, and a throwing callback does not stop the run', async () => {
+    let beats = 0;
+    const { spawn, calls } = fakeClaude([...KNOWN_CLAUDE_IDS]);
+    await discoverClaudeCode({
+      previous: null,
+      spawn,
+      maxCalls: 6,
+      onProbe: () => {
+        beats++;
+        throw new Error('disk full');
+      }
+    });
+    expect(calls.length).toBe(6);
+    expect(beats).toBe(6);
   });
 });
 

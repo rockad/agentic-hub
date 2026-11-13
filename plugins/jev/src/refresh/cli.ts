@@ -9,6 +9,7 @@
  * the real `~/.config/jev`.
  */
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   buildCatalogue,
   cataloguePath,
@@ -23,8 +24,8 @@ import {
   type CatalogueTier
 } from '../core/catalogue.js';
 import { getHarnessModels } from '../core/config.js';
-import { tryLock, unlock } from '../core/lock.js';
-import { ABSOLUTE_MAX_CALLS, loadRefreshConfig, refreshLockPath } from './config.js';
+import { heartbeat, tryLock, unlock } from '../core/lock.js';
+import { ABSOLUTE_MAX_CALLS, loadRefreshConfig, refreshLockPath, writeAttempt } from './config.js';
 import { discoverClaudeCode, reconcileAliases } from './claude-code.js';
 import { discoverOpenRouter } from './openrouter.js';
 import { applyTierMap, discoverStatic } from './static.js';
@@ -104,6 +105,8 @@ export interface CliDeps {
   configFile?: string;
   claudeBin?: string;
   tmpRoot?: string;
+  /** Working directory of the probes (default `~/.config/jev/probe-cwd`). */
+  probeCwd?: string;
   env?: NodeJS.ProcessEnv;
   out?: (line: string) => void;
   err?: (line: string) => void;
@@ -150,7 +153,8 @@ async function discover(
   previous: Catalogue | null,
   maxCalls: number,
   deps: CliDeps,
-  log: (l: string) => void
+  log: (l: string) => void,
+  onProbe?: () => void
 ): Promise<{ outcome: DiscoveryOutcome; aliases?: Record<string, string>; map?: ReturnType<typeof discoverStatic>['map'] } | null> {
   const cfg = loadRefreshConfig(deps.configFile);
   if (harness === 'claude-code') {
@@ -161,7 +165,10 @@ async function discover(
       spawn: deps.spawn ?? defaultSpawner,
       claudeBin: deps.claudeBin,
       tmpRoot: deps.tmpRoot,
+      // tests give a temp root: keep the probe directory under it as well, never in the real home
+      cwd: deps.probeCwd ?? (deps.tmpRoot ? path.join(deps.tmpRoot, 'probe-cwd') : undefined),
       env: deps.env,
+      onProbe,
       log
     });
     return { outcome, aliases: outcome.aliases };
@@ -187,20 +194,26 @@ async function runRefresh(args: CliArgs, deps: CliDeps, out: (l: string) => void
     out(`jev-models: another refresh of ${harness} is running; nothing probed`);
     return 0;
   }
+  // How this run ended, stamped in `<harness>.attempt.json` whatever the outcome: the background trigger backs off
+  // for `models.refresh.minRetryHours` after any attempt, so a broken environment is not retried at every session.
+  let attempt = 'error';
   try {
     const previous = loadCatalogue(harness, deps.dir);
     const log = args.quiet ? () => {} : (l: string) => out(`  ${l}`);
     if (!args.quiet) out(`jev-models: refreshing ${harness}${harness === 'claude-code' ? ` (at most ${maxCalls} probe calls)` : ''}`);
 
-    const found = await discover(harness, previous, maxCalls, deps, log);
+    const found = await discover(harness, previous, maxCalls, deps, log, () => heartbeat(lockPath, Date.now()));
     if (!found) {
       err(`jev-models: could not read the model list for ${harness}; catalogue unchanged`);
       return 1;
     }
     const { outcome } = found;
-    if (outcome.results.length === 0) {
+    // A round with no probe that succeeded (aliases included) proves nothing about the account: a broken wrapper,
+    // a missing login or a network fault would otherwise retire every model and stamp the catalogue fresh.
+    if (!outcome.results.some((r) => r.ok)) {
+      attempt = 'inconclusive';
       err(
-        `jev-models: no usable answer${outcome.aborted ? ` (${outcome.aborted})` : ''}; catalogue unchanged` +
+        `jev-models: no probe succeeded${outcome.aborted ? ` (${outcome.aborted})` : ''}; catalogue unchanged` +
           (outcome.calls ? `; ${outcome.calls} calls made` : '')
       );
       return 1;
@@ -228,8 +241,10 @@ async function runRefresh(args: CliArgs, deps: CliDeps, out: (l: string) => void
       if (outcome.aborted) out(`note: ${outcome.aborted}`);
       for (const n of outcome.notes) out(`note: ${n}`);
     }
+    attempt = 'ok';
     return 0;
   } finally {
+    writeAttempt(harness, attempt, now, deps.dir);
     unlock(lockPath);
   }
 }

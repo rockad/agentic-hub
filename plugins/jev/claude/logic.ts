@@ -14,6 +14,7 @@ import {
   editCapableSubagent,
   type ThinkingEffort
 } from '../src/shared.js';
+import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 
 export type JevTier = 'openrouter_free' | 'flash_lite' | 'flash' | 'pro';
 export type ClaudeModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
@@ -86,6 +87,50 @@ export function modelRank(model: string | undefined | null): number | null {
   if (!model) return null;
   const hit = MODEL_RANK.find(([pattern]) => pattern.test(model));
   return hit ? hit[1] : null;
+}
+
+/**
+ * What the hook reads from the model catalogue to compare models: the catalogue itself (read from its cache
+ * file, never the network) and the user's overrides. Absent or null everywhere means "family regex only".
+ */
+export type RankContext = { cat: Catalogue; overrides?: ModelOverrides };
+
+/**
+ * Whether the catalogue knows `id`: a bare alias it can resolve to a usable id, or an id it lists (not
+ * `needs-review`, unless an override gives it a tier). A catalogue that does not know an id says nothing about it.
+ */
+export function catalogueKnows(ctx: RankContext | null | undefined, id: string | undefined | null): boolean {
+  if (!ctx || !id) return false;
+  const parsed = parseModelId(id);
+  if (!parsed) return false;
+  if (parsed.alias) return resolveAlias(ctx.cat, parsed.family, ctx.overrides) !== null;
+  const entry = ctx.cat.models.find((m) => m.id === id);
+  return !!entry && (entry.status !== 'needs-review' || !!ctx.overrides?.[entry.id]?.tier);
+}
+
+/**
+ * Pure: order two Claude models. Negative when `a` is weaker than `b`, positive when stronger, 0 when equal.
+ * With a usable catalogue that knows both ids the comparison is the catalogue's (tier, then version, then overrides;
+ * an alias is the newest id of its family). Otherwise it falls back to the family-only regex rank. Null when either
+ * id has no rank at all (unknown or "inherit"): the caller treats it as unranked. Never throws.
+ */
+export function compareClaudeModels(
+  a: string | undefined | null,
+  b: string | undefined | null,
+  ctx?: RankContext | null
+): number | null {
+  try {
+    if (!a || !b) return null;
+    if (catalogueKnows(ctx, a) && catalogueKnows(ctx, b)) {
+      const r = compareModels(a, b, ctx!.cat, ctx!.overrides);
+      if (r !== null) return Math.sign(r);
+    }
+    const ra = modelRank(a);
+    const rb = modelRank(b);
+    return ra === null || rb === null ? null : Math.sign(ra - rb);
+  } catch {
+    return null;
+  }
 }
 
 export type Dispatch = {
@@ -462,6 +507,8 @@ export type TurnState = {
   intent: UserIntent;
   /** What was advised for this turn, after the user's instruction was applied. */
   rec?: { subagent: string; tier: JevTier; model: ClaudeModelAlias; by?: Dispatch['by'] };
+  /** The effort Jev suggested for this turn (advisory; the downgrade question and the log name it). Kept beside `rec`, not in it. */
+  recEffort?: ThinkingEffort;
   /** The Jev mode the turn started in: a state stored under another mode is stale (a mode flip mid-turn). */
   mode?: string;
   /** ISO time the marker was written. */
@@ -578,6 +625,11 @@ export type Elevation = {
   sessionModel: string;
   /** The alias the call is clamped to: the session model's own. */
   sessionAlias: ClaudeModelAlias;
+  /**
+   * Set only when a model catalogue is in use and neither it nor the family table knows the requested id: Jev
+   * cannot rank it, so the guard asks (the permission dialog, never the choice flow) instead of letting it pass.
+   */
+  unranked?: true;
 };
 
 /**
@@ -585,16 +637,37 @@ export type Elevation = {
  * model or "inherit" (it runs on the session model), a model at or below the session model, and an
  * unknown or missing session model. A model the user named in the current prompt, or a stronger one, is
  * their explicit request: `instructed`, never `elevating`.
+ *
+ * With a usable catalogue (`ctx`) the comparison is the catalogue's (tier, version, overrides), falling back to
+ * the family regex for an id the catalogue does not know. A requested id that nothing knows is unranked: with a
+ * catalogue the call is `elevating` with `unranked` set (the guard asks); without one it passes, as before.
+ * Two models of one family (a version step inside one alias) are not an elevation: the Agent tool cannot name a
+ * version, so there is nothing a clamp or an answer could change per call.
  */
-export function classifyElevation(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): Elevation | null {
-  const requested = modelRank(call.model);
-  const ceiling = modelRank(sessionModel);
-  if (requested === null || ceiling === null || requested <= ceiling || !call.model || !sessionModel) return null;
-  // The instruction check is `>=`: a named model covers a weaker request too ("use opus" covers a sonnet call).
-  const instructed = !!intent && intent.models.some((m) => (modelRank(m) ?? 0) >= requested);
+export function classifyElevation(
+  call: AgentCall,
+  sessionModel: string | null,
+  intent?: UserIntent | null,
+  ctx?: RankContext | null
+): Elevation | null {
+  if (!call.model || !sessionModel) return null;
   // A model with a rank always has an alias (the two tables match), so there is always something to clamp to.
   const sessionAlias = modelAlias(sessionModel);
   if (!sessionAlias) return null;
+  const sessionKnown = modelRank(sessionModel) !== null || catalogueKnows(ctx, sessionModel);
+  if (!sessionKnown) return null;
+  const requestedAlias = modelAlias(call.model);
+  const requestedKnown = requestedAlias !== null || catalogueKnows(ctx, call.model);
+  if (!requestedKnown) {
+    // Nothing ranks it. "inherit" runs on the session model and passes; anything else is a model Jev cannot judge.
+    if (!ctx || call.model.trim().toLowerCase() === 'inherit') return null;
+    return { kind: 'elevating', requested: call.model, sessionModel, sessionAlias, unranked: true };
+  }
+  if (requestedAlias === sessionAlias) return null;
+  const cmp = compareClaudeModels(call.model, sessionModel, ctx);
+  if (cmp === null || cmp <= 0) return null;
+  // The instruction check is `>=`: a named model covers a weaker request too ("use opus" covers a sonnet call).
+  const instructed = !!intent && intent.models.some((m) => (compareClaudeModels(m, call.model, ctx) ?? -1) >= 0);
   return { kind: instructed ? 'instructed' : 'elevating', requested: call.model, sessionModel, sessionAlias };
 }
 
@@ -623,6 +696,12 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
  * same delegation in this prompt; only then does the reason say that a run on the session model happened.
  */
 export function elevationAskReason(e: Elevation, clamped = false): string {
+  if (e.unranked) {
+    return (
+      `[jev] This delegation asks for model "${e.requested}", which Jev's model catalogue does not know, so Jev cannot tell whether it is stronger than the session model "${e.sessionModel}". ` +
+      `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").`
+    );
+  }
   return (
     `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
     `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
@@ -791,7 +870,8 @@ export function addApproval(state: ApprovalState, approval: Approval, nowMs: num
 export function claimApproval(
   state: ApprovalState,
   requested: string,
-  nowMs: number
+  nowMs: number,
+  ctx?: RankContext | null
 ): { state: ApprovalState; approval: Approval | null } {
   const want = modelRank(requested);
   const live = state.approvals.filter((a) => approvalValid(a, nowMs));
@@ -799,7 +879,7 @@ export function claimApproval(
     want === null
       ? null
       : live
-          .filter((a) => (modelRank(a.model) ?? 0) >= want)
+          .filter((a) => (compareClaudeModels(a.model, requested, ctx) ?? -1) >= 0)
           .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
   const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
   return { state: { ...state, approvals }, approval: hit };

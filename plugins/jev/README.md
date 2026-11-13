@@ -933,7 +933,7 @@ the rewritten `model`.
 
 ### Release notes
 
-- **next: workflow guard** (additive; no version bump; Jev mode `on` only):
+- **2.3.11: workflow guard** (additive; no version bump; Jev mode `on` only):
   - The agents a `Workflow` script launches never pass through `PreToolUse` (verified on Claude Code 2.1.323), so
     `agent(..., {model: 'opus'})` in a script bypassed the elevation guard. `PreToolUse` on `Workflow` now reads the
     script (inline, `scriptPath`, a saved `name`, nested `workflow()` one level) with `acorn` and ranks every literal

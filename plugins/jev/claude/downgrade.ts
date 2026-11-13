@@ -7,7 +7,7 @@
  */
 import { ladder, compareModels, parseModelId, resolveAlias } from '../src/core/catalogue.js';
 import {
-  compareClaudeModels,
+  compareFamilyFirst,
   modelAlias,
   type AgentCall,
   type ClaudeModelAlias,
@@ -102,22 +102,21 @@ export function planDowngrade(args: {
     if (!requested || !recAlias) return null;
     // A version step inside one alias cannot be chosen per call (the Agent tool takes aliases only).
     if (modelAlias(requested) === recAlias) return null;
-    const above = compareClaudeModels(requested, recAlias, ctx);
-    // The catalogue orders by tier and then version, the family rank by family: a step is called cheaper only when both agree
-    // (opus 5.5 is above fable 5.2 by version but fable is the stronger family, so neither is offered as the cheaper of the two).
-    if (above === null || above <= 0 || (compareClaudeModels(requested, recAlias, null) ?? 1) < 0) return null;
+    // The family ladder decides across families and the catalogue only refines versions inside one (compareFamilyFirst):
+    // the catalogue files opus 5.5 above fable 5.2 by version, but fable is the stronger family.
+    const above = compareFamilyFirst(requested, recAlias, ctx);
+    if (above === null || above <= 0) return null;
     // The user's own words outrank the advice: a named model at or above the requested one is an instruction.
-    if (intent?.models.some((m) => (compareClaudeModels(m, requested, ctx) ?? -1) >= 0)) return null;
+    if (intent?.models.some((m) => (compareFamilyFirst(m, requested, ctx) ?? -1) >= 0)) return null;
 
     const generalPurpose = !call.subagent_type || call.subagent_type === 'general-purpose';
     const alternatives: DowngradeOption[] = [];
     const hiddenVia: string[] = [];
     for (const step of ladderSteps(ctx)) {
       const probe = step.alias ?? step.id;
-      const vsRec = compareClaudeModels(probe, recAlias, ctx);
-      const vsReq = compareClaudeModels(probe, requested, ctx);
+      const vsRec = compareFamilyFirst(probe, recAlias, ctx);
+      const vsReq = compareFamilyFirst(probe, requested, ctx);
       if (vsRec === null || vsReq === null || vsRec <= 0 || vsReq >= 0) continue;
-      if ((compareClaudeModels(probe, recAlias, null) ?? -1) < 0 || (compareClaudeModels(probe, requested, null) ?? 1) > 0) continue;
       if (step.alias) {
         alternatives.push({ label: step.alias, model: step.alias });
         continue;
@@ -335,8 +334,8 @@ export function answerDowngrade(state: DowngradeState, from: string, chosen: str
 
 /**
  * Pure: the recommendation and the answer label of a PostToolUse payload for AskUserQuestion whose question starts
- * with `[jev-downgrade:<alias>]`, or null. The answer is `tool_response.answers[question]`, falling back to
- * `tool_input.answers[question]`. Any label counts (Yes or No); a missing answer and malformed input give null.
+ * with `[jev-downgrade:<alias>]`, or null. The answer is `tool_response.answers[question]` only (the user's
+ * answer; `tool_input` is the model's own text and never counts). Any label counts (Yes or No); a missing answer and malformed input give null.
  */
 export function parseDowngradeAnswer(input: unknown): { from: string; label: string } | null {
   try {
@@ -347,7 +346,7 @@ export function parseDowngradeAnswer(input: unknown): { from: string; label: str
     if (typeof question !== 'string') return null;
     const m = DOWNGRADE_MARKER_RE.exec(question);
     if (!m) return null;
-    const answer = i.tool_response?.answers?.[question] ?? i.tool_input?.answers?.[question];
+    const answer = i.tool_response?.answers?.[question];
     if (typeof answer !== 'string' || !answer.trim()) return null;
     return { from: m[1], label: answer.trim() };
   } catch {

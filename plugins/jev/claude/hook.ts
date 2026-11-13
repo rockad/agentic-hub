@@ -23,7 +23,7 @@
  *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
  *                                      for the agents a Workflow launches is UNVERIFIED)
  *
- * Active only in Jev mode "on" (~/.config/jev/mode.json). Every path is
+ * Active only in Jev mode "on" (config.json, or the file JEV_CONFIG_FILE names). Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
  * carries on as if Jev were not installed.
  */

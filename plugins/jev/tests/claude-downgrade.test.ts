@@ -151,6 +151,13 @@ describe('the deny reason', () => {
     expect(wide.options.length).toBeLessThanOrEqual(4);
   });
 
+  it('under a catalogue the family ladder decides across families: fable to opus is a downgrade, opus to fable is not', () => {
+    // by catalogue version opus 5.5 outranks fable 5.2, but fable is the stronger family
+    const down = planDowngrade({ call: { model: 'fable' }, rec: { model: 'opus' }, ctx })!;
+    expect(down.options.map((o) => o.label)).toEqual(['Yes, opus', 'No, keep fable']);
+    expect(planDowngrade({ call: { model: 'opus' }, rec: { model: 'fable' }, ctx })).toBeNull();
+  });
+
   it('with only the recommended model between, it is two options', () => {
     const plan = planDowngrade({ call: { model: 'opus' }, rec: { model: 'sonnet' } })!;
     expect(plan.options.map((o) => o.label)).toEqual(['Yes, sonnet', 'No, keep opus']);
@@ -214,10 +221,11 @@ describe('the marker parser', () => {
     expect(DOWNGRADE_MARKER_RE.exec('[jev-downgrade:sonnet] x')?.[1]).toBe('sonnet');
   });
 
-  it('falls back to tool_input.answers', () => {
+  it('reads only tool_response.answers: an answer in tool_input is not a user answer', () => {
     const s = answered(QUESTION(), 'Yes, sonnet');
+    s.tool_input.answers = { [QUESTION()]: 'Yes, sonnet' };
     delete s.tool_response.answers;
-    expect(parseDowngradeAnswer(s)?.label).toBe('Yes, sonnet');
+    expect(parseDowngradeAnswer(s)).toBeNull();
   });
 
   it('ignores another question, the elevation marker, a missing answer and malformed input', () => {

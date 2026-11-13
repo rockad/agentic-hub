@@ -814,7 +814,8 @@ export function elevationChoiceReason(e: Elevation, subagentType?: unknown): str
     `naming the subagent_type (${safeTypeName(subagentType)}), the requested model, the session model and a 10-word task summary; ` +
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
     `If the user picks a Yes, launch the delegation again with the same model; if No, launch it on ${e.sessionAlias} (or do the work directly); ` +
-    `do not stop and do not ask in any other form.`
+    `If AskUserQuestion is not available, launch the delegation on ${e.sessionAlias} now and do not stop; ` +
+    `do not ask in any other form.`
   );
 }
 

@@ -1,4 +1,4 @@
-import { addApproval, bumpAttempts, claimApproval, type ApprovalState } from '../claude/logic.ts';
+import { bumpAttempts, claimApproval, noteDenied, recordApproval, type ApprovalState } from '../claude/logic.ts';
 import type { ApprovalStore } from '../claude/hook.ts';
 
 /**
@@ -10,7 +10,11 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
   const get = (s: string): ApprovalState => states.get(s) ?? { approvals: [] };
   return {
     states,
-    record: (s, approval) => void states.set(s, addApproval(get(s), approval, approval.created_at)),
+    record: (s, approval) => {
+      const next = recordApproval(get(s), approval, approval.created_at);
+      if (next) states.set(s, next);
+    },
+    deny: (s, model, nowMs) => void states.set(s, noteDenied(get(s), model, nowMs)),
     claim: (s, requested, nowMs) => {
       const { state, approval } = claimApproval(get(s), requested, nowMs);
       states.set(s, state);

@@ -8,9 +8,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { onPostToolUse, onPreToolUse, onUserPromptSubmit, type HookDeps, type HookInput } from '../claude/hook.ts';
+import { onPostToolUse, onPreToolUse, onUserPromptSubmit, withLockDir, type HookDeps, type HookInput } from '../claude/hook.ts';
 import {
   ATTEMPT_FALLBACK_WINDOW_MS,
+  noteDenied,
   bumpAttempts,
   normalizeApprovalState,
   type ApprovalState,
@@ -72,8 +73,11 @@ const call = (tool_input: Record<string, unknown> = INPUT, extra: Partial<HookIn
   ...extra
 });
 const out = (o: Awaited<ReturnType<typeof onPreToolUse>>) => (o?.hookSpecificOutput ?? {}) as Record<string, any>;
-const answer = (d: HookDeps, label: string, model = 'opus', session = 's1') =>
-  onPostToolUse({ ...answered(MARKED(model), label), session_id: session } as HookInput, d);
+/** The user's answer, recorded as the harness reports it; the question was prescribed first (a denial), as it is live. */
+const answer = (d: HookDeps, label: string, model = 'opus', session = 's1') => {
+  d.approvals!.deny(session, model, (d.now ?? Date.now)());
+  return onPostToolUse({ ...answered(MARKED(model), label), session_id: session } as HookInput, d);
+};
 
 describe('the deny reason', () => {
   const e = classifyElevation({ model: 'opus' }, 'claude-sonnet-5')!;
@@ -229,11 +233,20 @@ describe('the PostToolUse parser on the recorded sample', () => {
     expect(parseElevationAnswer(answered(MARKED('opus'), label), T0)).toBeNull();
   });
 
-  it('reads tool_input.answers when tool_response has none', () => {
+  it('tool_input.answers alone records nothing: the assistant controls tool_input', () => {
     const p = answered(MARKED('opus'), 'Yes, once');
     delete p.tool_response.answers;
 
-    expect(parseElevationAnswer(p, T0)?.scope).toBe('once');
+    expect(parseElevationAnswer(p, T0)).toBeNull();
+    delete p.tool_response;
+    expect(parseElevationAnswer(p, T0)).toBeNull();
+  });
+
+  it('an approving label in tool_input does not outvote a No in tool_response', () => {
+    const p = answered(MARKED('opus'), 'No, proceed on sonnet');
+    p.tool_input.answers = { [MARKED('opus')]: 'Yes, for this session' };
+
+    expect(parseElevationAnswer(p, T0)).toBeNull();
   });
 
   it('ignores a question without the marker at the start, with another marker, or for an unknown model', () => {
@@ -480,6 +493,7 @@ describe('the live hook process', () => {
 
   it('writes a session approval with no expiry and a 5 minute approval with one', () => {
     start();
+    run('pre-tool-use', agent()); // a denial prescribes the question; without one the answers record nothing
     run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
     run('post-tool-use', { ...answered(MARKED('sonnet'), 'Yes, for the next 5 minutes'), session_id: 'sx' });
 
@@ -494,6 +508,7 @@ describe('the live hook process', () => {
   it('is isolated between sessions in the real store', () => {
     start('sa');
     start('sb');
+    run('pre-tool-use', agent('sa'));
     run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sa' });
 
     expect(run('pre-tool-use', agent('sa')).stdout.toString()).toBe('');
@@ -512,6 +527,7 @@ describe('the live hook process', () => {
     for (let round = 0; round < 3; round++) {
       const session = `race${round}`;
       start(session);
+      run('pre-tool-use', agent(session, 'seed')); // the denial that prescribes the question, under another prompt id so the racers count from one
       run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, once'), session_id: session });
 
       const procs = [spawn('pre-tool-use', agent(session)), spawn('pre-tool-use', agent(session)), spawn('pre-tool-use', agent(session))];
@@ -674,5 +690,115 @@ describe('the attempt counter is per delegation, and its fallback key is safe', 
 
       expect(await decision(d, call())).toBe('ask');
     });
+  });
+});
+
+describe('an approval needs a recent denial of that model', () => {
+  const rawAnswer = (d: HookDeps, label = 'Yes, for this session', model = 'opus') =>
+    onPostToolUse({ ...answered(MARKED(model), label), session_id: 's1' } as HookInput, d);
+
+  it('an answer with no denial before it records nothing', async () => {
+    const { d } = setup();
+    await rawAnswer(d);
+
+    expect(d.approvals!.states.get('s1')?.approvals ?? []).toEqual([]);
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+  });
+
+  it('the hook denial records it, and the answer after that approves', async () => {
+    const { d } = setup();
+    await onPreToolUse(call(), d);
+    expect(d.approvals!.states.get('s1')!.denied).toEqual({ opus: T0 });
+
+    await rawAnswer(d);
+
+    expect(await onPreToolUse(call(), d)).toBeNull();
+  });
+
+  it('a question prescribed by the turn directive counts as a denial', async () => {
+    const { d } = setup({ dispatch: async () => proRec });
+    await onUserPromptSubmit({ session_id: 's1', prompt: 'Refactor the whole parser and review it', prompt_id: 'p1' } as HookInput, d);
+    await rawAnswer(d);
+
+    expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['opus']);
+  });
+
+  it('a denial older than 15 minutes does not count', async () => {
+    const { d, advance } = setup();
+    await onPreToolUse(call(), d);
+    advance(15 * MIN + 1);
+    await rawAnswer(d);
+
+    expect(d.approvals!.states.get('s1')!.approvals).toEqual([]);
+  });
+
+  it('a denial of a lower model does not cover an approval of a higher one; a higher denial covers a lower one', async () => {
+    const { d } = setup();
+    d.approvals!.deny('s1', 'sonnet', T0);
+    await rawAnswer(d, 'Yes, once', 'opus');
+    expect(d.approvals!.states.get('s1')!.approvals).toEqual([]);
+
+    d.approvals!.deny('s1', 'opus', T0);
+    await rawAnswer(d, 'Yes, once', 'sonnet');
+    expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['sonnet']);
+  });
+
+  it('another session has no denial', async () => {
+    const { d } = setup();
+    d.approvals!.deny('s2', 'opus', T0);
+    await rawAnswer(d);
+
+    expect(d.approvals!.states.get('s1')?.approvals ?? []).toEqual([]);
+  });
+
+  it('a state file from before this change (no denied map) loads, and old entries are pruned', () => {
+    expect(normalizeApprovalState({ approvals: [] }).denied).toBeUndefined();
+    expect(normalizeApprovalState({ approvals: [], denied: { opus: 5, bad: 7, sonnet: 'x' } }).denied).toEqual({ opus: 5 });
+    expect(noteDenied({ approvals: [], denied: { sonnet: T0 - 16 * MIN } }, 'opus', T0).denied).toEqual({ opus: T0 });
+  });
+});
+
+describe('the approvals lock', () => {
+  let dir: string;
+  beforeEach(() => void (dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-lock-'))));
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('is released when the holder finishes', () => {
+    const lock = path.join(dir, 'a.lock');
+
+    expect(withLockDir(lock, () => fs.existsSync(lock))).toBe(true);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it('a holder whose lock was broken as stale does not remove the next holder\'s lock', () => {
+    const lock = path.join(dir, 'a.lock');
+
+    withLockDir(lock, () => {
+      // Another process finds this lock stale, breaks it and takes it.
+      fs.rmSync(lock, { recursive: true, force: true });
+      fs.mkdirSync(lock);
+      fs.writeFileSync(path.join(lock, 'owner'), 'next-holder-token');
+    });
+
+    expect(fs.readFileSync(path.join(lock, 'owner'), 'utf8')).toBe('next-holder-token');
+  });
+
+  it('breaks a lock older than the stale limit and takes it', () => {
+    const lock = path.join(dir, 'a.lock');
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, 'owner'), 'dead-process');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+
+    expect(withLockDir(lock, () => 'got it')).toBe('got it');
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it('times out on a fresh lock held by someone else', () => {
+    const lock = path.join(dir, 'a.lock');
+    fs.mkdirSync(lock);
+
+    expect(() => withLockDir(lock, () => 1, { waitMs: 30 })).toThrow('approvals lock timeout');
+    expect(fs.existsSync(lock)).toBe(true);
   });
 });

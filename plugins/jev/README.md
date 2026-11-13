@@ -455,8 +455,10 @@ to the chosen option label in `tool_response.answers`.
    - `Yes, for this session`
    - `No, proceed on <session model>`
 2. The user picks. The recorder (`hook.ts post-tool-use`, registered in `claude/hooks.json`) reads the question
-   and the answer from the harness's `tool_response.answers` (falling back to `tool_input.answers`) and writes an
-   approval for a Yes. A No records nothing.
+   and the answer from the harness's `tool_response.answers` only (`tool_input` is what the assistant sent, so it
+   never records anything) and writes an approval for a Yes, but only when Jev prescribed the question for that
+   model (or a stronger one) in the last 15 minutes: by a deny, or by the turn directive. Any other answer is
+   ignored. A No records nothing.
 3. On a Yes the assistant launches the delegation again with the same model; the hook finds the approval and lets
    the call through with no dialog (logged `elevation: "approved"` with `approval_scope`). On a No it launches
    on the session model, or does the work directly. The next elevating call asks again.
@@ -504,8 +506,9 @@ apostrophe and stale-intent fixes.
 
 **State.** `<session_id>.approvals.json` in `~/.config/jev/claude-sessions/` (directory 0700, file 0600), written
 atomically (temporary file, then rename) under a per-session lock (an exclusive `mkdir`; a lock older than 3
-seconds is treated as stale). It holds the approvals (model, scope, creation time, expiry) and the denied-attempt
-counter, never task text. Files left behind are pruned after 7 days at `SessionStart`. The recorder never throws,
+seconds is treated as stale; the holder writes a token file in it and removes it only while the token is still its
+own). It holds the approvals (model, scope, creation time, expiry), the models Jev prescribed the question for
+(model to time, kept 15 minutes) and the denied-attempt counter, never task text. Files left behind are pruned after 7 days at `SessionStart`. The recorder never throws,
 always exits 0, prints nothing, and ignores any question without the marker and any malformed input.
 
 **Limits, said plainly.**

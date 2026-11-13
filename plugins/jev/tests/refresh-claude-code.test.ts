@@ -11,6 +11,7 @@ import {
   neighbourIds,
   parseProbeOutput,
   probeArgs,
+  PROBE_SYSTEM_PROMPT,
   probeModel,
   reconcileAliases
 } from '../src/refresh/claude-code.js';
@@ -211,6 +212,14 @@ describe('probeModel', () => {
     expect(seen!.args).toContain('--no-session-persistence');
     expect(seen!.args.slice(seen!.args.indexOf('--setting-sources'), seen!.args.indexOf('--setting-sources') + 2)).toEqual(['--setting-sources', 'project']);
     expect(seen!.args.slice(-2)).toEqual(['--output-format', 'json']);
+    const after = (flag: string): string => seen!.args[seen!.args.indexOf(flag) + 1];
+    // lean probe: no MCP servers, no tools, no slash commands, a one-line system prompt
+    expect(seen!.args).toContain('--strict-mcp-config');
+    expect(JSON.parse(after('--mcp-config'))).toEqual({ mcpServers: {} });
+    expect(seen!.args.indexOf('--tools')).toBeGreaterThan(-1);
+    expect(after('--tools')).toBe('');
+    expect(seen!.args).toContain('--disable-slash-commands');
+    expect(after('--system-prompt')).toBe(PROBE_SYSTEM_PROMPT);
     expect(seen!.settings).toEqual({ disableAllHooks: true, enabledPlugins: { 'jev@agentic-hub': false } });
     expect(seen!.cwdEntries).toEqual([]);
     expect(seen!.cwd).toBe(stableCwd);

@@ -541,7 +541,21 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 4. Yes for 5 minutes: a third workflow on `opus`, answer "Yes, for the next 5 minutes", then a fourth within the window: passes with no question.
 5. Unverifiable: a workflow whose model comes from `args` or a variable. Expected: the permission dialog (a plain Yes/No with the sites listed), not a deny loop.
 6. No model: a workflow with no `model` passes silently and no question appears.
-7. Drift: call a `scriptPath` workflow, edit the file, call again: the log records `workflow_changed`.
+7. Re-analysis: call a `scriptPath` workflow, edit the file, call again: the second call is analysed afresh (new hash in `workflow_scripts`). Note: `workflow_changed` is recorded only when the file changes between the check and Claude Code reading it, which cannot be provoked by hand between two calls; it is covered by tests only.
 8. Downgrade does not apply to workflows (documented: no rating for Workflows).
 
 Acceptance: every step behaves as listed with the logged and transcript evidence; any deviation is a bug to fix before the stack merges.
+
+
+## 29. Interactive Workflow verification result (user, session `jev-test-5`, sonnet session, `--plugin-dir` on the #52 tree; verified from the Jev decisions log, the state files, the session transcript and the eight workflow-agent transcripts)
+
+| Step | Evidence | Result |
+| --- | --- | --- |
+| 1 Deny and ask, Yes once | `workflow_guard: denied` (`elevation_attempt: 1`), the question `[jev-elevate:opus] Allow Workflow run-date (sha256:...)` with the four options, then `allow` with `approval_scope: once`; the workflow agent ran on `claude-opus-5-5` | Pass |
+| 2 No | denied, answered `No, proceed on sonnet`, the assistant changed the script to `sonnet` and called again: `allow`, models `[sonnet]`; agent ran on `claude-sonnet-5-5`; turn continued | Pass |
+| 3 Yes for 5 minutes | denied, approved with `approval_scope: 5min`; a second opus workflow 11 s later passed with no question (`allow`, `5min`); both agents ran on `claude-opus-5-5` | Pass |
+| 4 Unverifiable (model from `args`) | `workflow_guard: asked` (permission dialog, no models resolved); no deny loop; the workflow then ran | Pass |
+| 5 No model | `allow`, models `[]`, no question | Pass |
+| 6 `scriptPath` | Claude Code itself refused `/tmp/wf-drift.js` (`scriptPath must be a script path this tool returned, or a file you can already read`), the assistant copied it into the session scratchpad; both calls were analysed (`allow`) and the edited file produced a new hash (`5ac7f6b2...`, 271 bytes, then `1e87b5b2...`, 274 bytes): re-analysis on every call works | Pass (see step 7 note) |
+
+All eight workflow agents ran on the model the log says (four opus, four sonnet). No deviation found. Still not covered: the model a workflow agent uses when the script leaves it empty and an environment variable overrides it (unit-tested only).

@@ -504,3 +504,44 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 **Control to include in that work (the evaluation by agy).** Before and with the hook, run the four-call control in a fresh temp project with `--sandbox` and the cheapest model, and record the subagent's generation-model enum for each: `plain` with Model omitted, a definition with front matter `model: flash` with Model omitted, `plain` with `Model: flash_lite`, `plain` with `Model: flash`. The comparison settles whether an omitted Model follows the session model or a default, and it maps the `M…` enums to tier names (the subagent conversation DB under `~/.gemini/antigravity-cli/conversations/` records the enum). The evaluation also covers the downgrade question: whether a rated-cheap delegation can be offered `flash_lite` through the same prescribed question (`AskUserQuestion` equivalent is `ask_question` there). Needs the user's approval for the live calls, since the classifier blocks them by default.
 
 **Side note for doppelganger.** The `jev-pre-tool.sh` hook there should be re-checked against a recorded real `invoke_subagent` payload; if it reads `Subagents[]` only, it never fires on agy 1.5.8.
+
+## 28. Status 2026-11-13 (night): stack #48 to #52, Workflow guard, verification plan
+
+**Shipped to `main`:** #43 (2.3.5), #44 (2.3.6), #45 (2.3.7), #46 (2.3.8), #47 (plan). `main` is 2.3.8.
+
+**Open stack (merge commits, in this order; each PR's base is the one before it; Doc-Cr requested on each):**
+
+| PR | Version | Content | Tests |
+| --- | --- | --- | --- |
+| #48 | 2.3.9 | Batch schema (stage rubric, `kind` and `needsEdit`, Claude-aware tool output, `editsFiles` guard) plus the formatting-edit fix from the highest-tier review | 1323 pass |
+| #49 | 2.3.10 | Session model learned from the transcript when SessionStart never ran (found by live verification); highest-tier review fixes: FIFO hang, stale model after a switch, 2 MB chunked scan, SessionStart race, session-id validation | 1367 pass |
+| #51 | 2.3.11 | Workflow guard: static check of `Workflow` scripts against the ceiling (port of cognitive-engine's acorn guard), drift recorder, acorn 8.19.0 | 1900 pass |
+| #52 | 2.3.12 | Edit-capable persona swap on Claude Code only (the user chose to follow the reference) | 1903 pass |
+| #50 | docs | This plan: Antigravity findings (section 27) and this status | docs only |
+
+**Highest-tier review of #48 and #49 (Opus, one gate, the user approved it):** #48 ship, #49 ship after fixes; all findings applied (section list in the PR comments). No hard failure found in hook safety, privacy, input handling or non-Claude output (byte-identical to `main` for Antigravity, OpenCode and CLI).
+
+**Workflow finding (verified live, Claude Code 2.1.323):** agents launched by a `Workflow` never pass through `PreToolUse`; the probe of a one-agent workflow with `model: 'sonnet'` left no decision-log entry. cognitive-engine documented the same gap (case study finding 4.14) and built the static guard that #51 ports. A model computed at run time still cannot be seen (the guard asks), and the model actually used by a workflow agent is not logged because no hook sees it (`SubagentStart` carries no model).
+
+**Verification plan for the stack (what is verified, what remains):**
+
+| Item | State |
+| --- | --- |
+| Elevation choice flow, downgrade question (model given, model-less, session-off), prices in the question | Verified interactively by the user (sessions `jev-test-3`, `jevt-test-4`) and in this session |
+| Session-model fallback (#49) | Real hook process with a real transcript: verified; hand-seeded session record produced the live model-less downgrade question; the unseeded interactive case after merge is the live check to run |
+| Workflow guard (#51) | Real hook process with the captured payload: deny with the marker, silent pass without a model; same from a clean plugin export. **Full interactive Workflow run: planned, see below** |
+| Persona swap (#52) | Unit and parity tests only (non-Claude harnesses) |
+| Antigravity `invoke_subagent` guard | Not built; plan in section 27, with the live control that needs the user's approval |
+
+**Full interactive Workflow verification (to run by the user in a session started with `--plugin-dir` on the #52 tree, installed jev disabled, sonnet session; each step is read from the Jev decisions log, the state files and the workflow and subagent transcripts afterwards):**
+
+1. Deny and ask: a workflow whose one agent asks for `model: 'opus'` (the instruction is quoted so the intent parser does not count it). Expected: `Workflow` denied with a `[jev-elevate:opus]` question naming the workflow hash; four options.
+2. Yes (once): the assistant calls the same workflow again unchanged; it runs; the workflow agent transcript shows `claude-opus-5-5`; log `workflow_guard: allow` (approved).
+3. No: a second workflow with a different description and `opus`; answer "No, proceed on sonnet". Expected: the assistant edits the agents to inherit or `sonnet` and calls again; it passes; the agent ran on `claude-sonnet-5-5`; the turn did not stop.
+4. Yes for 5 minutes: a third workflow on `opus`, answer "Yes, for the next 5 minutes", then a fourth within the window: passes with no question.
+5. Unverifiable: a workflow whose model comes from `args` or a variable. Expected: the permission dialog (a plain Yes/No with the sites listed), not a deny loop.
+6. No model: a workflow with no `model` passes silently and no question appears.
+7. Drift: call a `scriptPath` workflow, edit the file, call again: the log records `workflow_changed`.
+8. Downgrade does not apply to workflows (documented: no rating for Workflows).
+
+Acceptance: every step behaves as listed with the logged and transcript evidence; any deviation is a bug to fix before the stack merges.

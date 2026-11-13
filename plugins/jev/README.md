@@ -506,7 +506,7 @@ remain callable on request.
 
 | Event | What Jev does |
 | :--- | :--- |
-| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
+| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
 | `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
@@ -522,6 +522,27 @@ What the hooks do **not** do:
   line, not to hooks, so the quota strategy is whatever `readQuotaView` reports (usually `unknown`).
 
 Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
+
+**How the session model is learned.** Every guard (elevation, downgrade) compares against the session model, so
+the hook needs it on every call.
+1. `SessionStart` and `PostModelSwitch` store it (`~/.config/jev/claude-sessions/<session_id>.json`, no `source`
+   field). That file is authoritative: the transcript is never consulted for a session that has one.
+2. Fallback: a session that never reached those events (plugins reloaded mid-session with `/reload-plugins`, a
+   resumed session, a headless `claude -p` run) has no such file. On `PreToolUse` and `UserPromptSubmit` the hook then reads the
+   tail of the session transcript named by `transcript_path` on its stdin (at most the last 256 KB, never the
+   whole file), takes the `message.model` of the last assistant line that is a Claude model id Jev can rank
+   (`<synthetic>` and other providers' ids are skipped), and stores it in the same file with
+   `source: "transcript"`, `updated_at` and `checked_at`. Later hooks and processes read that file and do not read
+   the transcript again.
+3. A transcript-learned model can go stale (a model switch while no hook ran), so it is re-checked against the
+   transcript at most once every 60 seconds and updated when the last assistant model differs. A `SessionStart`
+   or `PostModelSwitch` event overwrites it and makes it authoritative again.
+
+The transcript path is read only when it ends in `.jsonl` and its real path is under `~/.claude/projects` (a
+hostile `transcript_path` cannot make the hook read another file; symlinks are resolved first). A missing,
+empty, corrupt or oversized-line transcript, or any read or write failure, means no session model, exactly as before.
+No transcript content is stored or logged: only the model id. The decision log entries of `PreToolUse` and
+`UserPromptSubmit` carry `session_model_source` (`"stored"`, `"transcript"`, or `null` when there is none).
 
 **Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
 prompt, either a model named in an imperative (`use opus`, `run an opus subagent`) or a cost intent (`minimal
@@ -839,6 +860,18 @@ the rewritten `model`.
 
 ### Release notes
 
+- **next: session-model fallback** (found by live verification of 2.3.8; additive, fail-open):
+  - A session whose `SessionStart` / `PostModelSwitch` never ran (plugins reloaded mid-session, a resumed or
+    headless session) had no stored session model, so the elevation guard and the downgrade evaluation skipped
+    every call: a model-less Agent call for "run date" in a Sonnet session passed with no question. The hook now
+    learns the model from the tail of the transcript (`transcript_path`, last 256 KB, last assistant
+    `message.model` that ranks as a Claude model) when no stored model exists, and persists it with
+    `source: "transcript"`.
+  - A transcript-learned model is re-checked at most every 60 seconds; a `SessionStart` / `PostModelSwitch`
+    record stays authoritative. Only a `.jsonl` under `~/.claude/projects` is read.
+  - `PreToolUse` and `UserPromptSubmit` log entries gain `session_model_source` (`stored` | `transcript`). No
+    transcript content is logged.
+  - New module `claude/session-model.ts`; `HookDeps.learnSessionModel` is the injection point.
 - **2.3.9: batch schema** (case study 5.3, 5.4, 5.11; additive, the new fields are optional):
   - `jev_batch_dispatch` tasks take optional `kind` (`mechanical` | `settled-edit` | `judgement`) and
     `needsEdit` (boolean). On Claude Code `kind` sets the tier by the stage rubric (haiku, sonnet, opus); a

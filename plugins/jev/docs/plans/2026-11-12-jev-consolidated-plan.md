@@ -1,6 +1,6 @@
 # Jev consolidated plan (2026-11-12)
 
-Living plan; the latest status is in sections 18 and 19. Sources:
+Living document; the latest status is in section 24. Sources:
 
 - `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` (case 1, on `main`)
 - `plugins/jev/docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md` (case 2, on PR #33)
@@ -343,3 +343,100 @@ Release order: 2.3.3 (merged) then 2.3.4 clamp then 2.3.5 telemetry privacy then
 - Checked and fine: `telemetryHarness()` (the MCP server processes carry `CLAUDECODE` and `CLAUDE_PROJECT_DIR`), telemetry flush bounded at 1 s, `tailLines` partial-record handling, `concurrencyCap` fallback.
 - Nits: stale `PRIVATE_DIR_MODE` comment (2.3.5 branch); the PR body said status turns get "no Jev call", but `isStatusTurn` runs after `deps.dispatch`, so only host-injected turns and pastes over 20,000 characters skip the call (README wording, 2.3.4 branch item 10); the review request and the merge were 12 minutes apart (process note).
 - Not run by Doc-Cr: a live session with the hook installed; whether `Workflow` fires the matcher.
+
+## 20. Headless check of the 2.3.4 plugin build (2026-11-12, verified from `modelUsage` and the decisions log)
+
+Run as the real plugin via `claude -p --plugin-dir <worktree>/plugins/jev` with the installed `jev@agentic-hub` disabled (`enabledPlugins`), session model sonnet seeded. Clamp: ran on sonnet only, assistant followed the note and did not retry. Repeat in the same prompt: `asked` (denied headless). Prompt "Use opus.": `instructed`, ran on opus. Result posted on PR #41.
+
+Open: the rendered dialog and plain No versus No with a typed comment (needs a person in an interactive session); the session model is `null` in headless runs because `SessionStart` did not store it, so the guard is off whenever the session model is unknown (fail-open, also in 2.3.2 and 2.3.3): follow-up to learn the model from another event; `--plugin-dir` does not override an installed plugin of the same name.
+
+## 21. New requirements from the interactive test (user, 2026-11-12)
+
+- **Interactive finding (verified from the decisions log, user's session `be8a1bda`):** the clamp restarts on every new prompt (a background agent's completion notification starts a new prompt with its own `prompt_id`), so both opus calls in B1 and B2 were clamped and no dialog appeared. The default in PR #41 was changed to "always the dialog", with the clamp opt-in (`JEV_ELEVATION=clamp`).
+- **Requirement 1 (elevation choice):** when an agent or subagent tries to elevate, or Jev suggests elevation (model or effort), the user wants two choices, "Yes, proceed on the elevated model/effort" and "No, proceed without elevation", and never "No, stop the turn". Claude Code's permission dialog cannot do that (a plain No rejects the call and stops the turn).
+- **Verified (headless, throwaway hook, Claude Code 2.1.322):** a `PreToolUse` hook `deny` with a reason does NOT stop the turn: the assistant received the reason, did not launch the agent, and asked the user in chat (3 turns, no opus used). So a deny-then-choose flow is possible; the open part is how the hook learns the user's Yes safely (the assistant's chat question is untrusted; candidate: a `PostToolUse` hook on `AskUserQuestion` writes an approval marker from the user's actual answer; docs check running).
+- **Requirement 2 (downgrade evaluation):** Jev should evaluate whether lower models than the session model would do the work, for example sonnet 5 instead of sonnet 5.5, or haiku. Today the hook only guards upward, `modelRank` ignores versions, and the per-stage rubric (mechanical to haiku, settled edit to sonnet, judgement to opus) is only planned for 2.3.6. Open: whether `Agent` accepts full model ids such as `claude-sonnet-5`, whether a downgrade is applied automatically or offered as a choice, and effort levels (the hook can only gate the model; effort is advisory).
+- Next: a short `/clarify` on these two once the docs result is in; PR #41 stays open (do not merge) until the elevation design is settled.
+
+### 21.1 Docs check and diagnostic result (2026-11-12)
+
+- Docs (reported by a docs-lookup agent): a hook `deny` shows the model the reason (turn continues, inferred from the documented `continueOnBlock` equivalence and confirmed by the headless test above); no documented way for a hook to present its own Yes/No picker; the permission dialog's No stops the turn unless a comment is typed.
+- Diagnostic (verified from the user's interactive session `jev-test-2`, `permission_mode: auto`, log of a throwaway hook): `PostToolUse` fires for `AskUserQuestion` after the user picks; `tool_response.answers` and `tool_input.answers` both map the question text to the chosen option label, e.g. `"Run the delegation on opus?": "Yes, proceed on opus"`; the stdin also carries `session_id`, `prompt_id`, `transcript_path`, `permission_mode`.
+- Consequence: the elevation choice flow is buildable: `PreToolUse` deny with a prescribed question, a `PostToolUse` hook on `AskUserQuestion` records the user's actual answer as an approval marker, the retried call is allowed or not.
+- Not verified: how Claude Code treats a hook `ask` dialog in `auto` mode (the user's default mode); the `PostToolUse` record for a multi-select or "Other" answer.
+
+## 22. Clarified design: elevation choice and downgrade evaluation (user, 2026-11-12)
+
+Verified facts behind it: a hook `deny` keeps the turn going (headless test); `PostToolUse` on `AskUserQuestion` fires with `tool_response.answers` mapping question text to the chosen option label (user's interactive session, section 21.1); the `Agent` tool's `model` parameter accepts only the aliases `sonnet`, `opus`, `haiku`, `fable` (`InputValidationError: Invalid option: expected one of "sonnet"|"opus"|"haiku"|"fable"` for `claude-haiku-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `haiku-5`, headless, Claude Code 2.1.322).
+
+| # | Decision |
+| --- | --- |
+| 1 | PR #41 (2.3.4: intent fixes, clearer dialog, opt-in clamp) is merged after review; the choice flow is 2.3.5; telemetry privacy becomes 2.3.6; batch schema 2.3.7 |
+| 2 | Approval scope: per model, with a choice question of four options: Yes once (one launch, 10 minutes to use it), Yes for the next 5 minutes, Yes for this session, No (this launch runs on the session model, the turn continues, the next elevation asks again). An approval covers the approved model and anything below it |
+| 3 | If the assistant does not ask the prescribed question: deny twice with the question format, then open the permission dialog on the third elevating attempt in the same prompt (backstop; its No stops the turn) |
+| 4 | Downgrade: offered as a choice, evaluating all available lower models with versions: the router picks the cheapest sufficient step from a version-aware ladder, the question lists the recommended model, up to two alternatives and "No, keep the session model"; approval applies to that call; a standing preference (ask, auto, off) lives in config |
+| 5 | Effort: advisory text in the question and the turn directive; logged as `effort_suggested` next to `effort_session`; not enforced (a hook cannot set effort) |
+
+Constraint found after decision 4: because the `Agent` call accepts only aliases, a version step inside one alias (sonnet 5 versus 5.5) cannot be chosen per call. Options to be settled before building the ladder: (a) alias-level ladder only in 2.3.5 (haiku, sonnet, opus, fable), with versions left to session-level settings; (b) route through a subagent definition whose front matter sets a full model id (unverified that front matter accepts one); (c) set per-session remaps via `ANTHROPIC_DEFAULT_*_MODEL` (session-start only, not per call).
+
+Workstreams (Sonnet unless noted, each in its own temporary worktree, after #41 merges): hook flow (deny, question prescription, `PostToolUse` recorder, approval store, backstop dialog); router ladder and evaluation (advice text, log fields); tests and docs; one highest-tier review, then the user's interactive check.
+
+### 22.1 Version routes tested (headless, Claude Code 2.1.322, Jev disabled; verified from `modelUsage`)
+
+| Route | Result |
+| --- | --- |
+| Subagent definition with `model: haiku` (alias) in front matter | ran on `claude-haiku-5-5` |
+| Subagent definition with `model: claude-haiku-5-5` (full id) | ran on `claude-haiku-5-5` |
+| Subagent definition with `model: claude-sonnet-5` (an older sonnet) | ran on `claude-sonnet-5` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5`, `Agent` with `model: sonnet` | ran on `claude-sonnet-5` (the control without the env var ran on `claude-sonnet-5-5`) |
+| `Agent` call with a full id (`model: claude-haiku-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `haiku-5`) | rejected by input validation, only `sonnet`, `opus`, `haiku`, `fable` are accepted |
+
+Consequences: a version-aware ladder is possible through definitions that pin a full model id in front matter (the call selects a definition, not a model), or through a session-level remap (not per call). Proposed: the plugin ships a small set of ladder definitions (general-purpose clones, one per ladder step); the hook can only select one by rewriting `subagent_type`, which replaces the original type's persona, so version-precise downgrades apply to `general-purpose` calls and other types stay at alias level. Not tested: whether a plugin-shipped agent definition accepts a full id the same way, what happens to a definition's tool access when substituted for a built-in type, and the set of model ids available on the user's account (the ladder must come from config, not from a hard-coded list).
+
+### 22.2 The three open points, tested (headless, Claude Code 2.1.322, Jev disabled, 2026-11-12; verified from `modelUsage` and the agents' own reports)
+
+1. **Plugin-shipped definition with a full model id: works.** A throwaway plugin (`--plugin-dir`) with `agents/ladder-sonnet5.md` (`model: claude-sonnet-5`) was launched as `subagent_type ladder-test:ladder-sonnet5`; usage shows `claude-sonnet-5`. The agent is addressed as `<plugin>:<name>`.
+2. **Tool access of a substituted definition.**
+   - A definition with no `tools` field inherits the full tool set (the agent listed Agent, Bash, Edit, Read, Skill, ToolSearch, Write and more; Bash and Write both worked and the file was created).
+   - A definition with `tools: Read` is restricted (Bash unavailable, Read worked).
+   - So a ladder definition without `tools` behaves like `general-purpose`; substituting it for a more restricted built-in type (for example a read-only explorer or planner) would widen that agent's tools. Version-precise downgrades therefore apply to `general-purpose` calls only, or each restricted type gets its own ladder family with a matching `tools` list.
+3. **Which model ids the account can use** (probe: `claude -p --model <id> "Reply OK"`, then the id in `modelUsage`):
+   - Available: `claude-haiku-5-5`, `claude-haiku-4-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-5`, `claude-fable-5-2`. Aliases resolve to `haiku` = `claude-haiku-5-5`, `sonnet` = `claude-sonnet-5-5`, `opus` = `claude-opus-5-5`, `fable` = `claude-fable-5-2`.
+   - Not available: `claude-haiku-5`, `claude-sonnet-4`.
+   - Caveat: the user's standing rule says a `fable` request is silently served by another model on this plan; the probe shows `claude-fable-5-2` in `modelUsage`, which contradicts it. Not investigated further; treat as unverified.
+   - Cost of the probe: about 15 one-word calls, a few tens of cents at most (the larger models cost more because of the cached system prompt, not the answer).
+
+Design consequence: the ladder comes from `~/.config/jev/models.json`, written by an explicit probe command (`jev models probe`) and refreshed on demand; the plugin ships only alias-level defaults and a few `general-purpose` ladder definitions for the ids found by the probe (generated, not hard-coded). Ordering and capability tiers per id stay in config (the router rates a task; the ladder says which step is cheapest and sufficient).
+
+## 23. Clarified design: model catalogue and aliasing (user, 2026-11-12)
+
+Grounding (verified in the code): today a static tier-to-model map per harness (`harnesses.<h>.models`: free, cheap, standard, deep; Claude Code uses the aliases `haiku`, `sonnet`, `opus`, OpenCode uses OpenRouter "latest" names) and a regex rank list in `claude/logic.ts` that knows families but not versions. Nothing updates automatically.
+
+| # | Decision |
+| --- | --- |
+| 1 | Discovery: a discoverer per harness, results in a cached file `~/.config/jev/models/<harness>.json`. Claude Code: an on-demand probe over a candidate list (`claude -p --model <id>` with isolated settings and Jev disabled, so no recursion); OpenCode: the OpenRouter models list; Antigravity: its known config. Hooks read only the cache, never the network. Periodic refresh from a `SessionStart` hook (detached background process, lock file, atomic write, hard cap on probe calls, off when Jev mode is off, opt-out in config), a manual `/jev-refresh` skill, and a warning with a refresh hint when a suggested model is not in the catalogue |
+| 2 | Naming: stable capability tiers (free, cheap, standard, deep) in the router; the catalogue maps each tier, per harness, to an ordered list of concrete ids plus the native alias where one exists; latest is resolved at refresh; pins in config override |
+| 3 | Ordering: tier from the family name (haiku cheap, sonnet standard, opus and fable deep), order inside a tier from the version number; config can pin or override any id; an unknown family goes to a needs-review list and a warning and is not used |
+| 4 | Refresh: time-based (default 7 days, at `SessionStart`) plus failure-triggered (model-not-found or an unknown suggested id marks the id suspect and starts a refresh), manual `/jev-refresh`. A failing id is skipped at once and deleted after three consecutive failed probes |
+| 5 | Hook failure behaviour: missing or corrupt cache uses the shipped alias defaults and says "run /jev-refresh"; a stale cache (older than three times the interval) is used with one warning per session; an unknown id is treated as unranked (the elevation guard asks, the downgrade logic ignores it); never blocks |
+
+Open, to settle during the build: the candidate list for the Claude Code probe (families and versions Jev knows, user additions in config); the probe's cost cap per refresh; how the OpenCode and Antigravity discoverers map their lists to tiers; the interaction with the ladder definitions from section 22.2 (generated from the catalogue for `general-purpose`).
+
+Release: part of 2.3.5 with the choice flow (sections 22 and 22.1), or split as 2.3.5 (choice flow) and 2.3.6 (catalogue), to be decided at the build; telemetry privacy and the batch schema move accordingly.
+
+## 24. Status 2026-11-13: sections 20 to 23 built, in review
+
+Release routes were decided as split releases (the open choice at the end of section 23). Four stacked PRs, merge in this order; each is based on the one before and GitHub retargets to `main` as they merge. Doc-Cr is requested as reviewer on each.
+
+| PR | Version | Content |
+| --- | --- | --- |
+| #43 | 2.3.5 | Telemetry privacy (0600 files, no prompt text) and hermetic tests |
+| #44 | 2.3.6 | Elevation choice flow (section 22): deny with a prescribed question, PostToolUse recorder, per-delegation counter, dialog backstop |
+| #45 | 2.3.7 | Model catalogue and background refresh (section 23): catalogue core, discoverers, `jev-models` CLI, `/jev-refresh`; not read by the hooks yet |
+| #46 | 2.3.8 | Downgrade choice (section 22) and catalogue-backed ranking; `ladder-agents` with `--max-tier` |
+
+Gate: one Opus review of the combined diff (the user's choice in section 22) found 8 issues and no crash, invalid-JSON or endless-deny path. All are fixed: fable ranked below opus under a catalogue (classifyElevation and claimApproval now rank by family first), the generated `jev-ladder-<opus|fable>` agents bypassed the ceiling (a launch with no `model` is now checked against the pinned id), the attempt counter was per prompt instead of per delegation, a No to an elevation was followed by a downgrade question, free text from a downgrade answer was stored, an alias was lost in a probe merge, and two stale comments.
+
+Unverified until an interactive session: that the assistant follows the prescribed questions, the real dialog behaviour on No, the hook's effort field shape, plugin-qualified ladder agent names, a refresh on an account that serves `fable`, and the Antigravity discoverer and `define_subagent` model bypass (section 12).
+
+Next: the batch schema (5.3 rubric, 5.4 kind and `needsEdit`, 5.11 tool output, `editsFiles`) as 2.3.9, after the stack merges.

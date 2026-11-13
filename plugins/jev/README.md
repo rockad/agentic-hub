@@ -859,9 +859,11 @@ the rewritten `model`.
     session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
     says the Jev guard will ask before it runs; the tier is never lowered. `jev_dispatch` also reports
     `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
+  - Edit-capable persona swap now Claude Code only (as in the reference): `resolveEditCapableSubagent` leaves a
+    read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity, OpenCode and the CLI, in single
+    and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code keeps `general-purpose`.
   - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
-    ceiling; `resolveEditCapableSubagent` still swaps to `self` outside Claude Code (an owner decision is
-    open, see the skipped cases in `tests/parity-dispatch-keywords.test.ts`).
+    ceiling.
 
 - **2.3.8: downgrade choice** (see "Downgrade choice" above; also needs the elevation choice and catalogue core below):
   - New `PreToolUse` evaluation on `Agent`: **every delegation is rated on its own text** (description plus the first
@@ -1001,7 +1003,8 @@ the rewritten `model`.
 - **2.3.1** (case-study fixes, see the case study above): whole-word tier keywords in `jev_batch_dispatch`
   ("information", "transformation" and "dump format" no longer count as formatting work); explicit model and
   cost instructions and the precedence order above; one consistent ceiling sentence in the Claude hook;
-  Plan and Explore are never recommended for an editing task, and display-name aliases are dropped from the
+  Plan and Explore are never recommended for an editing task (on Claude Code only since 2.3.9; elsewhere the
+  persona is kept), and display-name aliases are dropped from the
   Claude persona list; `PreToolUse` logs `tier`, `recommended_model`, `requested_model` and a `turn` id shared
   with the prompt record, and the `UserPromptSubmit` telemetry field is now `modelRecommended` (it was
   `modelUsed`); a non-blocking pre-flight reminder on `Agent` calls when no `jev_dispatch` or

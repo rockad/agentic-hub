@@ -194,9 +194,13 @@ export function telemetryHarness(): { harness?: 'claude-code' } {
   return detectActiveHarness() === 'claude-code' ? { harness: 'claude-code' } : {};
 }
 
-/** Read-only personas (Plan, Explore) never own an editing task; Claude Code gets general-purpose. */
+/**
+ * On Claude Code a read-only persona (Plan, Explore) never owns an editing task: it gets general-purpose.
+ * Outside Claude Code (Antigravity, OpenCode, the CLI) the persona stays as the router chose it.
+ */
 export function resolveEditCapableSubagent(harness: JevHarness, subagent: string, taskText: string): string {
-  return editCapableSubagent(subagent, taskText, harness === 'claude-code' ? 'general-purpose' : 'self');
+  if (harness !== 'claude-code') return subagent;
+  return editCapableSubagent(subagent, taskText, 'general-purpose');
 }
 
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

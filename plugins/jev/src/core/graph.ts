@@ -16,6 +16,11 @@ export interface SubTask {
   effort?: string;
   requiresUserApproval: boolean;
   estimatedCostUsd: number;
+  /** Claude Code only, echoed from the caller's input when given (case study 5.4). */
+  kind?: 'mechanical' | 'settled-edit' | 'judgement';
+  needsEdit?: boolean;
+  /** Claude Code only: what set the tier. `kind` is the caller's classification, `router` the Decisions API under the stage rubric, `keyword` the offline whole-word rule. */
+  tierSource?: 'kind' | 'router' | 'keyword';
 }
 
 export interface BatchDispatchPlan {

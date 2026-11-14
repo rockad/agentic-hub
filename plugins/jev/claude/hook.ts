@@ -84,6 +84,7 @@ import {
   parseUserIntent,
   preflightReminder,
   resolveClaudeSubagentCriteria,
+  STAGE_PLAN_REMINDER,
   resolveModel,
   safeSessionId,
   storedIntent,
@@ -338,6 +339,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
       safely(() => deps.approvals?.deny(sessionId, m[1], (deps.now ?? Date.now)()));
     }
   }
+  if (staged) additionalContext += ` ${STAGE_PLAN_REMINDER}`;
   try {
     const memory = await withTimeout(fetchRecallMemory(), 600);
     if (memory && memory.activeGoal) {

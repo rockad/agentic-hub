@@ -50,6 +50,8 @@ Before a task hits the primary model, `jev_dispatch` runs a calibrated inference
 - **Session Model Ceiling Clamping:** Dynamically clamps subagent recommendations $\le$ active session model tier (`Gemini 3.8 Flash`), preventing over-eager `pro` recommendations for routine CLI porting.
 - **Scaffolding Detection:** Automatically detects package/crate creation tasks and flags `scaffoldFirst: true` to trigger Tier 0 `$0.00` mechanical boilerplate generation.
 - **Dynamic Semantic Batch Dispatch (`jev_batch_dispatch`):** Decomposes multi-task roadmaps or phases into parallel and sequential execution waves, enforces dependency order, and applies safety concurrency caps ($\le 10$ simultaneous free workers). Routes tasks dynamically using the OpenRouter Decisions API (`~typesafe/jev-latest`), with automatic fallback to local token and description keyword scoring if offline or timed out. Configurable via `routing.strategy` (`"router"` | `"keyword"`) in `~/.config/jev/config.json`.
+- **Stage schema on Claude Code (`kind`, `needsEdit`):** each `jev_batch_dispatch` task may carry two optional fields. `kind` is `mechanical` (haiku), `settled-edit` (sonnet) or `judgement` (opus), the stage rubric below, and it is used instead of guessing. `needsEdit: true` keeps read-only subagent types (`Plan`, `Explore`) and the free tier (text only, it cannot edit files) off the stage; `needsEdit: false` overrides edit wording in the task text. Without `needsEdit` the wording decides. Without `kind` the router is asked for each stage's tier under the rubric, then whole-word keywords offline; the result says which one set it (`tierSource`: `kind`, `router` or `keyword`). On other harnesses both fields are ignored and the output has no new keys.
+- **Stage rubric:** "mechanical edit or checklist update -> haiku; spec or plan edit with a settled decision -> sonnet; judgement whose error is expensive -> opus". The router sees these lines in its tier criteria, the turn context repeats them on a delegation turn, and a prompt that names a workflow or workstreams gets a reminder to call `jev_batch_dispatch` with one task per stream.
 
 This prevents expensive models from processing routine formatting, simple search requests, or bounded ports.
 
@@ -836,6 +838,31 @@ clamp note, and how an agent definition's own front-matter `model` or `CLAUDE_CO
 the rewritten `model`.
 
 ### Release notes
+
+- **2.3.9: batch schema** (case study 5.3, 5.4, 5.11; additive, the new fields are optional):
+  - `jev_batch_dispatch` tasks take optional `kind` (`mechanical` | `settled-edit` | `judgement`) and
+    `needsEdit` (boolean). On Claude Code `kind` sets the tier by the stage rubric (haiku, sonnet, opus); a
+    stage with no `kind` is asked of the router under the rubric, then whole-word keywords offline. Each task
+    reports `tierSource` and echoes `kind` / `needsEdit` when they were sent. On Antigravity, OpenCode and the
+    CLI the fields are ignored and the output is unchanged, key for key.
+  - Stage rubric (`src/stage-rubric.ts`): the three rubric lines are in the router's tier criteria, the
+    prompt-time directive carries them on a delegation turn (not on `self`, a free-tier task or a model the
+    user named), and a prompt naming a workflow or workstreams gets a reminder to call `jev_batch_dispatch` with
+    one task per stream, naming `kind` and `needsEdit`. The pre-flight reminder names them too.
+  - `editsFiles` guard: the free tier returns text and cannot edit files, so on Claude Code a stage the caller
+    marks `needsEdit: true`, or whose wording says it edits ("Remove the stale files"), goes to `flash_lite`
+    instead of `jev_execute_free`. The same test chooses the persona (no `Plan` or `Explore` for an edit stage).
+    `jev_dispatch` applies the wording half of it. `needsEdit: false` overrides the wording.
+  - Claude Code wording in the tool output: `Delegate via Agent(subagent_type, model)` and, inside a Workflow,
+    `agent({ agentType, model })`; `self` maps to `general-purpose`; the free-tier text says it cannot edit
+    files; the router is told the free tier has no Claude quota. Both tools report `activeSessionModel` from the
+    session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
+    says the Jev guard will ask before it runs (when the session model is unknown the guard fails open, so the
+    note says the guard may not ask instead); the tier is never lowered. `jev_dispatch` also reports
+    `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
+  - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
+    ceiling; `resolveEditCapableSubagent` still swaps to `self` outside Claude Code (an owner decision is
+    open, see the skipped cases in `tests/parity-dispatch-keywords.test.ts`).
 
 - **2.3.8: downgrade choice** (see "Downgrade choice" above; also needs the elevation choice and catalogue core below):
   - New `PreToolUse` evaluation on `Agent`: **every delegation is rated on its own text** (description plus the first

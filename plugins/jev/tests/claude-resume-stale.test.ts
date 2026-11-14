@@ -47,9 +47,58 @@ describe('SessionStart without a model (a resume)', () => {
 
     expect(run('session-start', { session_id: 's1', source: 'resume' }).code).toBe(0);
 
-    expect(fs.existsSync(sessionFile())).toBe(false);
+    // the record is kept, marked stale: it is only the fallback until the transcript yields a model
+    expect(JSON.parse(fs.readFileSync(sessionFile(), 'utf8'))).toMatchObject({ model: 'claude-opus-5-5', stale: true });
     expect(sonnetCall(t)).toBe('deny'); // sonnet is above haiku: an elevation
-    expect(JSON.parse(fs.readFileSync(sessionFile(), 'utf8'))).toMatchObject({ model: 'claude-haiku-5-5', source: 'transcript' });
+    const learned = JSON.parse(fs.readFileSync(sessionFile(), 'utf8'));
+    expect(learned).toMatchObject({ model: 'claude-haiku-5-5', source: 'transcript' });
+    expect(learned.stale).toBeUndefined();
+  });
+
+  it('a model-less resume with a transcript that has no turn yet keeps the guard: the elevation is still denied', () => {
+    run('session-start', { session_id: 's1', model: 'claude-sonnet-5-5' });
+    const opusCall = (transcript_path: string) =>
+      JSON.parse(run('pre-tool-use', { session_id: 's1', prompt_id: 'p1', cwd: proj, transcript_path, tool_name: 'Agent', tool_input: { description: 'd', model: 'opus' } }).stdout || '{}').hookSpecificOutput?.permissionDecision ?? null;
+    const dir = path.join(home, '.claude', 'projects', 'x');
+    fs.mkdirSync(dir, { recursive: true });
+    const empty = path.join(dir, 's1.jsonl');
+    fs.writeFileSync(empty, '');
+    expect(opusCall(empty)).toBe('deny');
+
+    run('session-start', { session_id: 's1', source: 'resume' });
+
+    expect(opusCall(empty)).toBe('deny');
+    expect(JSON.parse(fs.readFileSync(sessionFile(), 'utf8'))).toMatchObject({ model: 'claude-sonnet-5-5', stale: true });
+  });
+
+  it('once the transcript yields a model it wins over the stale record, and the stale mark is gone', () => {
+    run('session-start', { session_id: 's1', model: 'claude-sonnet-5-5' });
+    const dir = path.join(home, '.claude', 'projects', 'x');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 's1.jsonl');
+    fs.writeFileSync(file, '');
+    run('session-start', { session_id: 's1', source: 'resume' });
+    const opusCall = () =>
+      JSON.parse(run('pre-tool-use', { session_id: 's1', prompt_id: 'p1', cwd: proj, transcript_path: file, tool_name: 'Agent', tool_input: { description: 'd', model: 'opus' } }).stdout || '{}').hookSpecificOutput?.permissionDecision ?? null;
+    expect(opusCall()).toBe('deny');
+
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { model: 'claude-opus-5-5' } })}\n`);
+
+    expect(opusCall()).toBeNull(); // the session is on opus now: nothing to elevate
+    const rec = JSON.parse(fs.readFileSync(sessionFile(), 'utf8'));
+    expect(rec).toMatchObject({ model: 'claude-opus-5-5', source: 'transcript' });
+    expect(rec.stale).toBeUndefined();
+  });
+
+  it('a stale record is replaced by a fresh SessionStart that carries a model', () => {
+    run('session-start', { session_id: 's1', model: 'claude-opus-5-5' });
+    run('session-start', { session_id: 's1', source: 'resume' });
+
+    run('session-start', { session_id: 's1', model: 'claude-sonnet-5-5' });
+
+    const rec = JSON.parse(fs.readFileSync(sessionFile(), 'utf8'));
+    expect(rec.model).toBe('claude-sonnet-5-5');
+    expect(rec.stale).toBeUndefined();
   });
 
   it('control: without the resume event the stale opus record would let the sonnet call through', () => {

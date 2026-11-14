@@ -137,7 +137,7 @@ import {
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
-import { createSessionModelLearner, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
+import { createSessionModelLearner, isAuthoritative, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 import { clip } from './agent-definitions.js';
 import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, type WorkflowResolver } from './workflow-guard.js';
 import { pruneWorkflowPins, recordWorkflowPostToolUse, writeWorkflowPin, type PostToolUseResult } from './workflow-pin.js';
@@ -962,13 +962,17 @@ export function onModelKnown(input: HookInput): void {
 
 /**
  * A SessionStart payload that carries no model (a resume names only its `source`): whatever record an earlier run of
- * the session left is stale evidence, so it is deleted and the transcript learner reads the last turn's model instead
- * (a record is otherwise authoritative and the transcript is never consulted). Only the session record goes.
+ * the session left is stale evidence, so it is marked `stale` (written atomically, nothing else changes) and the
+ * transcript learner reads the last turn's model instead whenever the transcript yields one (a record is otherwise
+ * authoritative and the transcript is never consulted). The record is NOT deleted: until the transcript has a turn
+ * the stale model is the fallback, so the elevation guard keeps working across a resume. Only the session record is touched.
  */
 export function onSessionStartWithoutModel(input: HookInput): void {
   const sessionId = safeSessionId(input.session_id);
   if (!sessionId || input.to_model || input.model) return;
-  fs.rmSync(path.join(SESSIONS_DIR, `${sessionId}.json`), { force: true });
+  const rec = readSessionRecord(SESSIONS_DIR, sessionId);
+  if (!rec || !isAuthoritative(rec)) return; // none to mark, or a transcript-learned one the learner already re-checks
+  writeSessionRecord(SESSIONS_DIR, sessionId, { ...rec, stale: true });
 }
 
 function pruneOldSessions(): void {

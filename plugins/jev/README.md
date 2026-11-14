@@ -575,9 +575,12 @@ the hook needs it on every call.
    transcript cannot be stat-ed does the older rule apply: re-check at most once every 60 seconds. A `SessionStart`
    or `PostModelSwitch` event overwrites it and makes it authoritative again, and the learner puts such a record back
    if it lands while the learner is writing.
-4. A `SessionStart` payload that carries no `model` (a resume names only its `source`) deletes the session's record
-   first, so a record an earlier run left can never outrank the transcript: the next call learns the model of the
-   last turn (step 2). A payload that carries a model overwrites the record as before.
+4. A `SessionStart` payload that carries no `model` (a resume names only its `source`) marks the session's record
+   `stale: true` (written atomically, nothing else changes) instead of deleting it. A stale record never outranks the
+   transcript: whenever the transcript yields a model, the next call learns it (step 2) and the record becomes a
+   transcript-learned one. Until it does (a resumed session with no turn yet), the stale model stays the fallback, so
+   the elevation guard keeps working across a resume instead of passing every elevation. A payload that carries a model
+   overwrites the record as before.
 
 The transcript path is read only when it is a regular file that ends in `.jsonl` and whose real path is under
 `~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
@@ -1035,8 +1038,10 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     model before: a top-level flow mapping, a block indented as a whole, a tab-indented `model:` line. A file that
     claims the agent through a flow-mapping, indented or escape-encoded name makes the lookup ambiguous.
     Behaviour change: CR-only line endings and a `---` after leading whitespace are now unreadable (ask).
-  - A `SessionStart` with no `model` (a resume) deletes the stale session record, so the transcript learner reads
-    the last turn's model instead of trusting an older record.
+  - A `SessionStart` with no `model` (a resume) marks the session record `stale` instead of deleting it: the
+    transcript learner reads the last turn's model whenever the transcript has one, and the stale model stays the
+    fallback until then. Deleting it dropped the guard (no session model, every elevation passed) on a resume whose
+    transcript had no turn yet.
 - **2.3.14: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
   - Found live: `jev_batch_dispatch` called with `description` for `task` and `dependsOn` for `dependencies`
     returned a plausible manifest with `task: ""`, `dependencies: []` and one stage. The server never checked

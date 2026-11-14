@@ -314,7 +314,7 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_STATUS_ENABLED` | `0` | enables `POST /status` (build after S1) [D13] |
 | `A2A_ENFORCE_TAILNET_IDENTITY` | `0` at `s1`, `1` at `s2` and `s3` | a `local-harness` API key with a tailnet binding (`tailnet_node` or `tailnet_login`, 1.3) is accepted only from that identity [D17]; at S2 and S3 every harness key carries one, <workstation>'s included [D23]; a non-loopback `local-harness` request without a verifiable identity is refused |
 | `A2A_ADMIN_SOCKET` | `/run/a2a/admin.sock` | in-container Unix socket for `a2a-coord` admin commands (3.7) [D15]; mode 0600, never published, no TCP fallback |
-| `A2A_LOG_LEVEL` | `info` | logs never contain bodies or API keys |
+| `A2A_LOG_LEVEL` | `info` | logs never contain bodies or API keys; one of `debug`, `info`, `warning`, `error`, `critical`, any other value stops the start [design, S1-OBS, 2026-11-14]; audit events and logging detail: [audit-events.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/audit-events.md) |
 
 ### 1.6 Start-up checks [design]
 

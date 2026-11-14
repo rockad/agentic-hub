@@ -21,6 +21,8 @@ from typing import Any
 
 ENVS = ("dev", "live")
 STAGES = ("s1", "s2", "s3")
+#: `A2A_LOG_LEVEL` values (S1-OBS). Lower-case names that both `logging` and uvicorn accept.
+LOG_LEVELS = ("debug", "info", "warning", "error", "critical")
 
 
 class ConfigError(ValueError):
@@ -55,6 +57,14 @@ def _choice(options: tuple[str, ...]) -> Callable[[str, str], str]:
         raise ConfigError(f"{name}: expected one of {', '.join(options)}, got {raw!r}")
 
     return parse
+
+
+def _log_level(name: str, raw: str) -> str:
+    """Case-insensitive, stored lower-case. An unknown level is an error, not a silent `info`."""
+    level = raw.strip().lower()
+    if level in LOG_LEVELS:
+        return level
+    raise ConfigError(f"{name}: expected one of {', '.join(LOG_LEVELS)}, got {raw!r}")
 
 
 @dataclass(frozen=True)
@@ -157,7 +167,7 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
     "status_enabled": ("A2A_STATUS_ENABLED", _flag),
     "enforce_tailnet_identity": ("A2A_ENFORCE_TAILNET_IDENTITY", _flag),
     "admin_socket": ("A2A_ADMIN_SOCKET", _str),
-    "log_level": ("A2A_LOG_LEVEL", _str),
+    "log_level": ("A2A_LOG_LEVEL", _log_level),
 }
 
 #: Every environment variable this module reads, in table order.

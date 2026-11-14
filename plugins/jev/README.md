@@ -972,6 +972,15 @@ tool. The environment resolution is one function (`subagentModelCandidates`) sha
 process's environment is assumed to match Claude Code's; the FORCE details were read from the 2.1.321 binary by
 cognitive-engine and are version-bound.
 
+The definition reader is cross-checked against Claude Code's own front matter pipeline (its block regex,
+`Bun.YAML.parse`, then its quoting fallback; a copy of 2.1.312's, by cognitive-engine): wherever the strict reader and
+that pipeline disagree on `name`, `model` or `effort` (a top-level flow mapping `{name: x, model: opus}`, a block
+indented as a whole, a tab-indented line, a `---` inside a value, CR-only line endings, a number where a string is
+expected, a `---` preceded by whitespace), that field is unreadable and the guard asks, where it used to read "no
+model". Another file that claims the agent through a name only Claude Code can read (a flow mapping, an indented block,
+`name: "\x68elper"`) makes the lookup ambiguous. Both guards use it. Without `Bun.YAML` only the strict reader runs,
+plus a conservative rule for lines the fallback could re-quote.
+
 A definition that decides the model but cannot be read (front matter the strict reader cannot establish, or two files
 claiming the name) opens the permission dialog with the reason, on every such call; it never denies, so it cannot loop.
 The deny and dialog reasons say where the model came from. Under `JEV_ELEVATION=clamp`, a forced model cannot be
@@ -1005,6 +1014,11 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
   - Interim narrow effort rule on the same path: a literal `xhigh` or `max` on the call or on its definition's
     `effort:` asks (dialog only, `effort_ask: true`). `maxEffortLevel: "high"` in the Claude Code settings is the
     non-interim control.
+  - Front matter reader hardening (both guards): the strict reader is cross-checked against Claude Code's own
+    pipeline; a disagreement makes the field unreadable (ask) instead of "no model". Closes three shapes read as no
+    model before: a top-level flow mapping, a block indented as a whole, a tab-indented `model:` line. A file that
+    claims the agent through a flow-mapping, indented or escape-encoded name makes the lookup ambiguous.
+    Behaviour change: CR-only line endings and a `---` after leading whitespace are now unreadable (ask).
 - **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).

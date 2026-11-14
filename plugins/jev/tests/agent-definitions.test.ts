@@ -42,9 +42,9 @@ describe('parseFrontmatter', () => {
     expect(fm('---\nmodel:\n---\n').model).toEqual({ kind: 'none' });
   });
 
-  it('ignores a leading BOM and any line ending', () => {
+  it('ignores a leading BOM and CRLF line endings; CR-only endings are unreadable (Claude Code reads no front matter there)', () => {
     expect(fm('﻿---\r\nmodel: opus\r\n---\r\n').model).toEqual({ kind: 'value', value: 'opus' });
-    expect(fm('---\rmodel: opus\r---\r').model).toEqual({ kind: 'value', value: 'opus' });
+    expect(fm('---\rmodel: opus\r---\r').model.kind).toBe('unreadable');
   });
 
   it('keys and values it cannot establish are unreadable, never none', () => {

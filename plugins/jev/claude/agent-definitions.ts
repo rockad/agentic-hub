@@ -145,12 +145,33 @@ const allUnreadable = (reason: string): Frontmatter => ({
  * that continues on the next lines, a block scalar, flow value, anchor, alias or tag, a duplicate key, a key that
  * only differs by case, a merge key, an unterminated block, a line that is no `key: value` at the top level.
  * Reading any of them as "no model" would let `"model": opus` or a BOM hide an escalation.
+ *
+ * Then every key this reader found readable is checked against Claude Code's own pipeline (see the cross-check
+ * section below): a disagreement makes that field unreadable.
  */
-export function parseFrontmatter(rawText: string): Frontmatter {
+export function parseFrontmatter(rawText: string, yaml: YamlParse | null = bunYaml()): Frontmatter {
+  const strict = strictFrontmatter(rawText);
+  const out: Frontmatter = { ...strict };
+  for (const key of FIELDS) {
+    const f = strict[key];
+    if (f.kind === 'unreadable') continue;
+    const problem = crossCheck(rawText, yaml, key, f.kind === 'value' ? f.value.trim() : '');
+    if (problem !== null) out[key] = { kind: 'unreadable', reason: problem };
+  }
+  return out;
+}
+
+function strictFrontmatter(rawText: string): Frontmatter {
   const none: Frontmatter = { name: { kind: 'none' }, model: { kind: 'none' }, effort: { kind: 'none' } };
   const text = rawText.replace(/^﻿/, '');
   const lines = text.split(/\r\n|\r|\n/);
-  if (lines[0]?.trimEnd() !== '---') return none;
+  if (lines[0]?.trimEnd() !== '---') {
+    // Not a block at the very start. A `---` after blank or indented lines may still be read as one by a parser
+    // that tolerates leading whitespace: do not guess, it is unreadable.
+    const first = lines.findIndex((l) => l.trim() !== '');
+    if (first >= 0 && lines[first].trim() === '---') return allUnreadable('the front matter delimiter is preceded by whitespace');
+    return none;
+  }
   const end = lines.findIndex((l, i) => i > 0 && (l.trimEnd() === '---' || l.trimEnd() === '...'));
   if (end < 0) return allUnreadable('the front matter block is not terminated');
   const out: Frontmatter = { name: { kind: 'none' }, model: { kind: 'none' }, effort: { kind: 'none' } };
@@ -428,8 +449,16 @@ function scanAgentDir(dir: string, agent: string): DirScan {
       else if (byFileName) conflicts.push(`${file} declares the name "${name.value}", so it is not clear which file defines "${agent}"`);
     } else if (name.kind === 'none') {
       if (byFileName) claims.push(claim());
-    } else if (byFileName || text.includes(agent)) {
+    } else if (byFileName) {
       conflicts.push(`${file} has a name that cannot be read (${name.reason})`);
+    } else {
+      // Another file whose name the strict reader cannot establish (a flow mapping, an indented block, an escape such
+      // as "\x68elper"): Claude Code's own reading may still register it as this agent. A second opinion from its
+      // pipeline: it names the agent, it rejects the block, or the text mentions the agent: all conflicts.
+      const cc = readClaudeCodeName(text);
+      if (cc.kind === 'unreadable') conflicts.push(`${file} has a name that cannot be read (${name.reason})`);
+      else if (cc.kind === 'value' && cc.value === agent) conflicts.push(`${file} may declare the name "${agent}" (${name.reason})`);
+      else if (text.includes(agent)) conflicts.push(`${file} has a name that cannot be read (${name.reason}) and mentions "${agent}"`);
     }
   }
   if (conflicts.length > 0) return { kind: 'conflict', reason: conflicts.join('; ') };
@@ -525,4 +554,125 @@ export function resolveAgentModel(
   const [c] = subagentModelCandidates({ call: callModel as string | undefined, definition, ladder }, env);
   const source: AgentModelSource = c.source === 'env-forced' ? 'env-force' : c.source === 'session' || c.source === 'workflow-env' ? 'inherit' : c.source;
   return { model: c.model, source, ...extra };
+}
+
+// ── Claude Code cross-check ────────────────────────────────────────────────────────────────────
+//
+// The strict reader above and Claude Code's own frontmatter pipeline must agree on `name`, `model` and `effort`;
+// where they do not (a top-level flow mapping, a block indented as a whole, a tab-indented line, a `---` inside a
+// value, an escape the strict reader skipped, a number where a string is expected), the field is unreadable and the
+// guard asks, instead of reading "no model" where Claude Code reads `opus`. The pipeline is a copy of Claude Code
+// 2.1.312's, by cognitive-engine: its block regex, `Bun.YAML.parse`, then its quoting fallback when that throws.
+// The plugin's own stricter reader is kept for everything else (no per-key isolation of a bad block).
+
+/** A YAML parser (`Bun.YAML.parse` under bun, where the hooks and the MCP server run). */
+export type YamlParse = (text: string) => unknown;
+
+function bunYaml(): YamlParse | null {
+  const parse = (globalThis as { Bun?: { YAML?: { parse?: unknown } } }).Bun?.YAML?.parse;
+  return typeof parse === 'function' ? (parse as YamlParse) : null;
+}
+
+/** Claude Code's frontmatter block regex (2.1.312). */
+const CC_BLOCK = /^---\s*\n([\s\S]*?)---\s*\n?/;
+/** What Claude Code's fallback quotes: a special character, or ": " inside a plain value. */
+const CC_SPECIAL = /[{}[\]*&#!|>%@`]|: /;
+/** A top-level `key: value` line, as Claude Code's fallback sees it. */
+const CC_PAIR = /^([a-zA-Z_-]+):\s+(\S.*)$/;
+
+/** The text of the frontmatter block as Claude Code finds it, or null when it finds none. */
+function ccBlock(raw: string): string | null {
+  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  const m = text.indexOf('---', 3) < 0 ? null : CC_BLOCK.exec(text);
+  return m ? (m[1] ?? '') : null;
+}
+
+/** Whether any line of `block` is one Claude Code's fallback might re-quote (without a YAML parser: assume it can). */
+function fallbackMightApply(block: string): boolean {
+  return block.split('\n').some((line) => {
+    const m = CC_PAIR.exec(line);
+    if (!m) return false;
+    const w = m[2];
+    if ((w.startsWith('"') && w.endsWith('"')) || (w.startsWith("'") && w.endsWith("'"))) return false;
+    return CC_SPECIAL.test(w);
+  });
+}
+
+/** Claude Code's quoting fallback: quote the value of every top-level `key: value` line that holds a YAML special character. */
+function ccQuoteFallback(block: string, yaml: YamlParse): string {
+  return block
+    .split('\n')
+    .map((line) => {
+      const m = CC_PAIR.exec(line);
+      if (!m) return line;
+      const [, key, w] = m;
+      if ((w.startsWith('"') && w.endsWith('"')) || (w.startsWith("'") && w.endsWith("'"))) return line;
+      if (w.startsWith('[') && w.endsWith(']')) {
+        try {
+          if (Array.isArray(yaml(w))) return line;
+        } catch {
+          // not a sequence: fall through to quoting
+        }
+      }
+      if (CC_SPECIAL.test(w)) return `${key}: "${w.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+      return line;
+    })
+    .join('\n');
+}
+
+/** The frontmatter Claude Code reads for `raw`: its mapping, `{}` when there is none, or null when both parses throw. */
+function ccFrontmatter(raw: string, yaml: YamlParse): Record<string, unknown> | null {
+  const block = ccBlock(raw);
+  if (block === null) return {};
+  let value: unknown;
+  try {
+    value = yaml(block);
+  } catch {
+    try {
+      value = yaml(ccQuoteFallback(block, yaml).replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length)));
+    } catch {
+      return null;
+    }
+  }
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/** The string Claude Code would read for the top-level `key` of `raw`, trimmed ('' for none), or an `unreadable` reason. */
+function ccString(raw: string, yaml: YamlParse, key: (typeof FIELDS)[number]): { ok: true; value: string } | { ok: false; reason: string } {
+  const front = ccFrontmatter(raw, yaml);
+  if (front === null) return { ok: false, reason: "Claude Code's YAML parser rejects this frontmatter, so what it would run is not known" };
+  const v = front[key];
+  if (v === undefined || v === null) return { ok: true, value: '' };
+  if (typeof v !== 'string') return { ok: false, reason: `Claude Code reads "${key}" as ${typeof v === 'object' ? 'a collection' : `the ${typeof v} ${String(v)}`}, not a string` };
+  return { ok: true, value: v.trim() };
+}
+
+/**
+ * Check a strict answer for `key` against Claude Code's pipeline: null when both agree (`mine` is the strict value,
+ * '' for none), else the reason they differ. Without a YAML parser (`yaml` null, not under bun) only a conservative
+ * rule applies: a block with a line the fallback could re-quote is not trusted.
+ */
+function crossCheck(raw: string, yaml: YamlParse | null, key: (typeof FIELDS)[number], mine: string): string | null {
+  if (yaml === null) {
+    const block = ccBlock(raw);
+    return block !== null && fallbackMightApply(block)
+      ? "a line could be re-quoted by Claude Code's fallback frontmatter parser, and no YAML parser is available here to check it"
+      : null;
+  }
+  const cc = ccString(raw, yaml, key);
+  if (!cc.ok) return cc.reason;
+  if (cc.value === mine) return null;
+  return `Jev reads ${key} ${mine === '' ? 'as none' : JSON.stringify(mine)} but Claude Code's parser reads ${cc.value === '' ? 'none' : JSON.stringify(cc.value)}`;
+}
+
+/**
+ * The `name` as Claude Code's pipeline alone reads it (no strict reader, no cross-check): the second opinion for a
+ * file whose strict `name` is unreadable. Unreadable when Claude Code's parser rejects the block, reads a
+ * non-string, or no YAML parser is available.
+ */
+export function readClaudeCodeName(raw: string, yaml: YamlParse | null = bunYaml()): Field {
+  if (yaml === null) return { kind: 'unreadable', reason: 'no YAML parser is available here' };
+  const cc = ccString(raw, yaml, 'name');
+  if (!cc.ok) return { kind: 'unreadable', reason: cc.reason };
+  return cc.value === '' ? { kind: 'none' } : { kind: 'value', value: cc.value };
 }

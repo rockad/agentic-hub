@@ -672,6 +672,11 @@ export type Elevation = {
    * cannot rank it, so the guard asks (the permission dialog, never the choice flow) instead of letting it pass.
    */
   unranked?: true;
+  /**
+   * Where the requested model came from when it is not the call's own `model` (the definition behind the subagent
+   * type, a subagent-model environment variable, a ladder pin): a parenthesised sentence the reasons carry.
+   */
+  sourceNote?: string;
 };
 
 /** A ladder definition name (`jev-ladder-<id>`, also as `<plugin>:jev-ladder-<id>`); see `ladderDefName` in the ladder-agents command. */
@@ -769,12 +774,12 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
 export function elevationAskReason(e: Elevation, clamped = false): string {
   if (e.unranked) {
     return (
-      `[jev] This delegation asks for model "${e.requested}", which Jev's model catalogue does not know, so Jev cannot tell whether it is stronger than the session model "${e.sessionModel}". ` +
+      `[jev] This delegation asks for model "${e.requested}"${e.sourceNote ?? ''}, which Jev's model catalogue does not know, so Jev cannot tell whether it is stronger than the session model "${e.sessionModel}". ` +
       `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").`
     );
   }
   return (
-    `[jev] This delegation asks for model "${e.requested}", stronger than the session model "${e.sessionModel}". ` +
+    `[jev] This delegation asks for model "${e.requested}"${e.sourceNote ?? ''}, stronger than the session model "${e.sessionModel}". ` +
     `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
     (clamped ? ` The same delegation already ran on ${e.sessionAlias} earlier in this prompt.` : '')
   );
@@ -804,7 +809,7 @@ export const CHOICE_LABELS = {
 export const CHOICE_DENIALS_BEFORE_ASK = 2;
 
 /** A subagent type is model-supplied text that reaches the deny reason: keep only safe characters. */
-function safeTypeName(type: unknown): string {
+export function safeTypeName(type: unknown): string {
   const clean = typeof type === 'string' ? type.replace(/[^A-Za-z0-9:_.-]/g, '').slice(0, 60) : '';
   return clean || 'general-purpose';
 }
@@ -818,7 +823,7 @@ export function elevationChoiceReason(e: Elevation, subagentType?: unknown): str
   const alias = modelAlias(e.requested) ?? e.requested;
   const l = CHOICE_LABELS;
   return (
-    `[jev] "${alias}" is stronger than the session model "${e.sessionModel}" and the user has not approved it. ` +
+    `[jev] "${alias}"${e.sourceNote ?? ''} is stronger than the session model "${e.sessionModel}" and the user has not approved it. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}] followed by a short question ` +
     `naming the subagent_type (${safeTypeName(subagentType)}), the requested model, the session model and a 10-word task summary; ` +
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +

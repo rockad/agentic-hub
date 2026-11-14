@@ -236,7 +236,20 @@ describe('Consolidated Master Plan: Phase 3 (File-Backed Decision Cache & Concur
 });
 
 describe('Consolidated Master Plan: Phase 4 (OpenTelemetry Tracing Pipeline)', () => {
+  // The exporter posts spans with fetch. Replace it, so no test here reaches a live collector on this machine.
+  const realFetch = globalThis.fetch;
+  let exported: string[] = [];
+
+  beforeEach(() => {
+    exported = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      exported.push(String(input));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+  });
+
   afterEach(() => {
+    globalThis.fetch = realFetch;
     delete process.env.JEV_OTEL_ENABLED;
     delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     delete process.env.JEV_OTEL_ENDPOINT;
@@ -278,6 +291,8 @@ describe('Consolidated Master Plan: Phase 4 (OpenTelemetry Tracing Pipeline)', (
     span.setAttribute('decision.tokens.total', 165);
     span.setAttribute('decision.verdict', 'recommendedSubagent=code_engineer; recommendedTier=flash');
     span.end();
+
+    expect(exported).toEqual(['http://127.0.0.1:4318/v1/traces']);
   });
 
   it('instruments decision latency, token counts, and verdicts without throwing or blocking', async () => {
@@ -297,6 +312,8 @@ describe('Consolidated Master Plan: Phase 4 (OpenTelemetry Tracing Pipeline)', (
     span.setAttribute('decision.verdict', 'free');
     span.setAttribute('decision.cheapest_sufficient', true);
     span.end();
+
+    expect(exported).toEqual(['http://127.0.0.1:4318/v1/traces']);
   });
 });
 

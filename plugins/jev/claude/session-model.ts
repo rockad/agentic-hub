@@ -164,8 +164,10 @@ export function modelFromTranscript(file: string, opts: { readTail?: TailReader;
 /**
  * The per-session file `<session_id>.json`: the stored model, who wrote it, for a transcript-learned one when it was last
  * checked and the size and mtime of the transcript when it was read (a change in either means the model may have changed).
+ * `stale: true` marks an authoritative record a model-less SessionStart (a resume) could no longer vouch for: it stays as
+ * the fallback model, but the transcript takes priority whenever it yields one (see `isAuthoritative`).
  */
-export type SessionRecord = { model: string; updated_at?: string; source?: string; checked_at?: string; size?: number; mtime_ms?: number };
+export type SessionRecord = { model: string; updated_at?: string; source?: string; checked_at?: string; size?: number; mtime_ms?: number; stale?: true };
 
 /**
  * The path of a session's file. The id is a file name: only what the hook's safeSessionId would keep unchanged
@@ -185,6 +187,9 @@ export function readSessionRecord(dir: string, sessionId: string): SessionRecord
     return null;
   }
 }
+
+/** Whether the transcript must not override this record: written by SessionStart / PostModelSwitch (no `source`) and not marked stale. */
+export const isAuthoritative = (rec: SessionRecord | null): boolean => rec !== null && rec.source !== 'transcript' && rec.stale !== true;
 
 /** Makes each temp file name unique within the process, so two writes in flight never share one. */
 let tmpSeq = 0;
@@ -230,7 +235,7 @@ function writeTranscriptRecord(dir: string, sessionId: string, record: SessionRe
     } catch {
       prior = null;
     }
-    if (prior && prior.source !== 'transcript' && readSessionRecord(dir, sessionId)?.source === 'transcript') {
+    if (prior && isAuthoritative(prior) && readSessionRecord(dir, sessionId)?.source === 'transcript') {
       writeSessionRecord(dir, sessionId, prior);
       return false;
     }
@@ -289,10 +294,10 @@ export function createSessionModelLearner(opts: LearnerOptions): SessionModelLea
       const nowMs = now();
       const nowIso = new Date(nowMs).toISOString();
       const rec = readSessionRecord(opts.dir, sessionId);
-      if (rec && rec.source !== 'transcript') return null;
+      if (rec && isAuthoritative(rec)) return null;
       // Stat before reading: bytes appended during the read make the next call's stat differ, so they are never missed.
       const st = statTranscript(transcriptPath, opts.home);
-      if (rec) {
+      if (rec && !rec.stale) {
         if (st) {
           if (rec.size === st.size && rec.mtime_ms === st.mtime_ms) return { model: rec.model, source: 'transcript' };
         } else {
@@ -301,6 +306,8 @@ export function createSessionModelLearner(opts: LearnerOptions): SessionModelLea
         }
       }
       const model = read(transcriptPath);
+      // A stale record (a model-less resume) is kept as it is until the transcript yields a model: it is only the fallback.
+      if (!model && rec?.stale) return null;
       if (!model && !rec) return null;
       const next: SessionRecord = {
         model: model ?? rec!.model,
@@ -311,7 +318,7 @@ export function createSessionModelLearner(opts: LearnerOptions): SessionModelLea
       };
       // SessionStart or PostModelSwitch may have written an authoritative record while the transcript was read: it wins.
       const current = readSessionRecord(opts.dir, sessionId);
-      if (current && current.source !== 'transcript') return null;
+      if (current && isAuthoritative(current)) return null;
       try {
         // ...and one that lands between that look and the rename is put back by the write itself.
         if (!writeTranscriptRecord(opts.dir, sessionId, next, opts.beforeWrite)) return null;

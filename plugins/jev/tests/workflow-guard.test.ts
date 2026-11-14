@@ -218,7 +218,7 @@ describe('agentType', () => {
     expect(checkScriptText(`await agent('p', {agentType: '../deep'})`, SESSION, r)).toHaveLength(1); // not followed: not found
   });
 
-  it('lets a built-in type through, as the Agent guard does, and ranks a same-named definition file', () => {
+  it('lets a built-in type through when no file claims the name, and ranks a same-named definition file (the Agent guard does the same)', () => {
     const r = fsResolver(path.join(tmp, 'proj'));
     for (const t of ['general-purpose', 'Explore', 'Plan', 'statusline-setup', 'claude-code-guide', 'claude']) {
       expect(BUILTIN_AGENT_TYPES.has(t)).toBe(true);

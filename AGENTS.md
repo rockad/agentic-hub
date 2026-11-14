@@ -51,6 +51,15 @@ agentic-hub/
    - Adhere to the machine-wide tool guidelines: reach for purpose-built tools (`jq`, `yq`, `mdq`, `rg`, `fd`, `sd`) before ad-hoc python glue.
    - Use native edit tools (`replace_file_content` / `Edit`) rather than custom read-replace-write scripts.
 
+## Standalone skills: two install routes
+
+Standalone skills live in `skills/<name>/` and must stay there (do not move or rename them):
+
+- **`npx skills add rockad/agentic-hub --skill <name>`** and the Antigravity root `marketplace.json` (`standalone_skills`) read `skills/<name>/` directly.
+- **Claude Code marketplace** (`/plugin install <name>@agentic-hub`): `.claude-plugin/marketplace.json` has one plugin entry per skill with `"source": "./skills/<name>"`. The skill directory is the plugin root (`SKILL.md` at the root loads as one skill; its frontmatter `name` is required). No files are duplicated.
+- **Adding a skill**: create `skills/<name>/SKILL.md`, then add a matching entry to `.claude-plugin/marketplace.json` (and `standalone_skills` in the root `marketplace.json`). `scripts/check-skills-marketplace.sh` (CI) fails when a `skills/*/SKILL.md` has no Claude marketplace entry.
+- **Validate**: `claude plugin validate .` and `bash scripts/check-skills-marketplace.sh`.
+
 ## `plugins/jev` — Decision Engine & Router
 
 `plugins/jev` provides fast, low-cost System 1 decision-making, task routing, quality gate enforcement, and free-tier coprocessor execution.

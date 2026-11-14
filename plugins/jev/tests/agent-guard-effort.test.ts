@@ -164,3 +164,60 @@ describe('definition effort', () => {
     expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
   });
 });
+
+describe('relative effort values ("lower" | "higher": one step from the agent\'s normal effort)', () => {
+  const withSession = (level: string | null, toolInput: Record<string, unknown>): HookInput => ({ ...call(toolInput), ...(level ? { effort: { level } } : {}) } as HookInput);
+  const def = (effort: string | null) => `---\nname: deep\n${effort === null ? '' : `effort: ${effort}\n`}---\nbody\n`;
+
+  it('"higher" asks when the session effort is high (one step is xhigh), with the interim wording', async () => {
+    setup();
+
+    const o = out(await onPreToolUse(withSession('high', { description: 'd', effort: 'higher' }), r.d));
+
+    expect(o.permissionDecision).toBe('ask');
+    expect(o.permissionDecisionReason).toContain('higher');
+    expect(o.permissionDecisionReason).toContain('xhigh');
+    expect(o.permissionDecisionReason).toContain('interim');
+    expect(r.logs[0]).toMatchObject({ effort_ask: true });
+  });
+
+  it.each(['xhigh', 'max'])('"higher" asks when the session effort is already %s', async (level) => {
+    setup();
+
+    expect(out(await onPreToolUse(withSession(level, { description: 'd', effort: 'higher' }), r.d)).permissionDecision).toBe('ask');
+  });
+
+  it.each(['low', 'medium'])('"higher" passes when the session effort is %s (one step stays below xhigh)', async (level) => {
+    setup();
+
+    expect(await onPreToolUse(withSession(level, { description: 'd', effort: 'higher' }), r.d)).toBeNull();
+  });
+
+  it('"lower" always passes, whatever the session effort', async () => {
+    setup();
+    for (const level of ['low', 'high', 'xhigh', 'max']) expect(await onPreToolUse(withSession(level, { description: 'd', effort: 'lower' }), r.d)).toBeNull();
+  });
+
+  it('with no session effort available, "higher" is not guessed: it passes', async () => {
+    setup();
+
+    expect(await onPreToolUse(withSession(null, { description: 'd', effort: 'higher' }), r.d)).toBeNull();
+    expect(await onPreToolUse(withSession('ludicrous', { description: 'd', effort: 'higher' }), r.d)).toBeNull();
+  });
+
+  it('the base is the definition\'s effort when it sets one: high asks, medium passes, whatever the session says', async () => {
+    setup();
+    writeAgent('deep.md', def('high'));
+    expect(out(await onPreToolUse(withSession('low', { description: 'd', subagent_type: 'deep', effort: 'higher' }), r.d)).permissionDecision).toBe('ask');
+
+    writeAgent('deep.md', def('medium'));
+    expect(await onPreToolUse(withSession('max', { description: 'd', subagent_type: 'deep', effort: 'higher' }), r.d)).toBeNull();
+  });
+
+  it('a definition effort that is not a known level makes the base unknown: not guessed, passes', async () => {
+    setup();
+    writeAgent('deep.md', def('ludicrous'));
+
+    expect(await onPreToolUse(withSession('high', { description: 'd', subagent_type: 'deep', effort: 'higher' }), r.d)).toBeNull();
+  });
+});

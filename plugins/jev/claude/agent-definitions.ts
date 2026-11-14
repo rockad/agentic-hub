@@ -103,6 +103,23 @@ export function agentEffortReason(effort: unknown, what: string): string | null 
   return typeof effort === 'string' && EFFORT_ASK.has(effort) ? effortReason(effort, what) : null;
 }
 
+const EFFORT_LADDER: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * The Agent schema also accepts a relative `effort`: `"lower"` or `"higher"`, one step from the agent's normal effort
+ * (`base`: the definition's `effort:` when it sets one, else the session's). Only `"higher"` can reach the interim
+ * threshold: it asks when one step up from `base` is `xhigh` or `max`. A `base` that is unknown or not a known level
+ * is not guessed (null: no ask); `"lower"` and every other value pass here.
+ */
+export function relativeEffortReason(effort: unknown, base: string | null | undefined, what: string): string | null {
+  if (effort !== 'higher' || typeof base !== 'string') return null;
+  const at = EFFORT_LADDER.indexOf(base);
+  if (at < 0) return null;
+  const next = EFFORT_LADDER[Math.min(at + 1, EFFORT_LADDER.length - 1)];
+  if (!EFFORT_ASK.has(next)) return null;
+  return `${what}: effort "higher" is one step above ${JSON.stringify(base)}, which reaches ${next} and is above the interim effort threshold (xhigh and max ask; low, medium and high pass). The model ceiling does not bound effort, so this needs your approval.`;
+}
+
 // ── Environment overrides of the subagent model ──
 //
 // Claude Code lets the environment set the model of a subagent: `CLAUDE_CODE_SUBAGENT_MODEL` (the default for

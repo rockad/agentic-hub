@@ -1031,9 +1031,17 @@ clamped (the environment overrides the rewritten `model`), so it asks. The decis
 behind its `subagent_type`, opens the permission dialog (`effort_ask: true` in the log), with the Workflow guard's
 wording (`effortReason`). Dialog only: never the model choice flow and never a deny; when the same call also has a
 model verdict, that verdict goes first and the effort dialog follows on the retry. Unrecognised levels, non-string
-values and any comparison with the session's effort are deliberately **not** checked on this path (cognitive-engine
+values and any comparison of a literal level with the session's effort are deliberately **not** checked on this path (cognitive-engine
 RFC 007 says do not build further), and the Workflow guard is unchanged. The model ceiling does not bound effort;
 the non-interim control is `maxEffortLevel: "high"` in the Claude Code settings.
+
+The Agent schema also accepts a relative `effort`, `"lower"` or `"higher"` (one step from the agent's normal effort).
+`"higher"` is evaluated when its base is known: the base is the definition's `effort:` when it sets a recognised one,
+else the session's effort from the hook input's `effort` field. The call asks (dialog, `effort_ask: true`) when one
+step up from that base is `xhigh` or `max`, so `"higher"` on a `high` (or higher) session asks and on `low` or
+`medium` passes. `"lower"` always passes. When the base is not available (the hook input carries no `effort`, or the
+level is not one of low, medium, high, xhigh, max) nothing is guessed and the call passes: relative values are not
+evaluated without a known base.
 
 Not verified here: the permission dialog itself (it is shown by Claude Code), whether the assistant follows the
 clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
@@ -1068,7 +1076,7 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     run, several matches ask), a call with no `subagent_type` is looked up as `general-purpose`, and a plugin
     manifest's `agents` paths are read (the `agents/` directory is skipped when the field is set). Agents defined
     only for a session (`--agents`, SDK `initialize.agents`, managed policy) stay invisible to a hook; a plain
-    not-found still passes. Relative `effort` values are evaluated only against a known base (see the effort note).
+    not-found still passes. A relative `effort: "higher"` asks when one step up from a known base (the definition's, else the session's effort) reaches xhigh; with no known base it is not guessed.
 - **2.3.14: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
   - Found live: `jev_batch_dispatch` called with `description` for `task` and `dependsOn` for `dependencies`
     returned a plausible manifest with `task: ""`, `dependencies: []` and one stage. The server never checked

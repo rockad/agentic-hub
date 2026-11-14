@@ -107,7 +107,7 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
-import { agentEffortReason, resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
+import { agentEffortReason, relativeEffortReason, resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
   answerDowngrade,
@@ -525,7 +525,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // Dialog only, never the choice flow, never a deny; a model verdict above keeps priority (the ask follows on the retry).
   let effortAsk = false;
   if (resolved && !verdict) {
-    const reason = agentEffortReason(call.effort, 'Agent call') ?? agentEffortReason(resolved.definitionEffort, `agent definition "${safeTypeName(call.subagent_type)}"`);
+    const definitionWhat = `agent definition "${safeTypeName(call.subagent_type)}"`;
+    // A relative effort ("higher") is one step from the agent's normal effort: its definition's, else the session's.
+    const relativeBase = resolved.definitionEffort !== undefined ? resolved.definitionEffort : readEffort(input.effort);
+    const reason = agentEffortReason(call.effort, 'Agent call') ?? agentEffortReason(resolved.definitionEffort, definitionWhat) ?? relativeEffortReason(call.effort, relativeBase, 'Agent call');
     if (reason) {
       verdict = { decision: 'ask', reason: `[jev] ${reason} Yes runs it as it is. No cancels the call and stops the turn.` };
       elevationState = 'asked';

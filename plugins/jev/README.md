@@ -537,7 +537,7 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
 | `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session). Prints nothing. |
 | `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, the third attempt opens the dialog); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
@@ -950,15 +950,50 @@ mode never creates a marker and never returns `updatedInput`.
 Fail-open: a hook crash, invalid stdin or a timeout means no output, and the call runs unchanged (on the model it
 asked for).
 
-Not seen by the hook: an `Agent` call with no `model` whose agent definition has `model: opus` in its front matter.
-The hook only sees the tool input, so that call runs on opus with no dialog and no clamp.
+#### The model an `Agent` call will actually run on
+
+The hook does not rank only the `model` written on the call. `claude/agent-definitions.ts` (`resolveAgentModel`)
+works out the model the call will run on, in this order, and that model goes through the same choice flow as an
+explicit one (deny with the prescribed question, approvals, the attempt counter, the dialog backstop):
+
+1. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes`, `on`) with `CLAUDE_CODE_SUBAGENT_MODEL` set: that model
+   replaces the call's and the definition's (`model_source: "env-force"`). Forced with no model variable: the session model.
+2. The call's own `model` (`call`).
+3. The `model:` of the definition behind `subagent_type`, read from the project, user and plugin agent directories
+   as the Workflow guard reads them (`definition`). Claude Code's built-in types (`general-purpose`, `Explore`, `Plan`,
+   `statusline-setup`, `claude-code-guide`, `claude`) are never read from disk. A type with no definition file passes,
+   as before (Claude Code itself reports an unknown agent).
+4. A `jev-ladder-<id>` name pin (`ladder`).
+5. `CLAUDE_CODE_SUBAGENT_MODEL` (`env`).
+6. Otherwise the session model (`inherit`), which passes.
+
+`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` applies to agents inside a Workflow only and is not applied to the `Agent`
+tool. The environment resolution is one function (`subagentModelCandidates`) shared with the Workflow guard. The hook
+process's environment is assumed to match Claude Code's; the FORCE details were read from the 2.1.321 binary by
+cognitive-engine and are version-bound.
+
+A definition that decides the model but cannot be read (front matter the strict reader cannot establish, or two files
+claiming the name) opens the permission dialog with the reason, on every such call; it never denies, so it cannot loop.
+The deny and dialog reasons say where the model came from. Under `JEV_ELEVATION=clamp`, a forced model cannot be
+clamped (the environment overrides the rewritten `model`), so it asks. The decisions log carries `model_source`
+(`call`, `definition`, `env-force`, `ladder`, `env`, `inherit`) and never any definition text.
 
 Not verified here: the permission dialog itself (it is shown by Claude Code), whether the assistant follows the
-clamp note, and how an agent definition's own front-matter `model` or `CLAUDE_CODE_SUBAGENT_MODEL` interacts with
-the rewritten `model`.
+clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 
 ### Release notes
 
+- **next: Agent guard reads definitions and environment** (Claude Code `Agent`/`Task` PreToolUse guard; Jev mode `on` only):
+  - The guard ranked only the `model` written on the call, so an agent definition with `model: opus`,
+    `CLAUDE_CODE_SUBAGENT_MODEL=opus`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` with an explicit haiku on the call all
+    passed with no question. It now resolves the model the call will run on (call, definition, ladder pin, environment,
+    session) and runs it through the unchanged choice flow. See "The model an `Agent` call will actually run on".
+  - The environment resolution is shared with the Workflow guard (`subagentModelCandidates` in
+    `claude/agent-definitions.ts`); `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` stays Workflow-only.
+  - An unreadable or ambiguous definition opens the permission dialog with the reason (never a deny).
+  - Behaviour change: a definition with a model above the session model, or an environment that sets one, now
+    triggers the elevation question where it passed silently before. Built-in types are not read from disk.
+  - New decisions-log field on an `Agent` call: `model_source`. Never any definition text.
 - **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).

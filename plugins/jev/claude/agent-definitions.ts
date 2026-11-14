@@ -56,6 +56,60 @@ export function effortReason(effort: unknown, what: string): string | null {
   return `${what}: effort ${JSON.stringify(clip(effort))} is not a level Jev recognises (low, medium, high, xhigh, max), so it cannot be checked.`;
 }
 
+// ── Environment overrides of the subagent model ──
+//
+// Claude Code lets the environment set the model of a subagent: `CLAUDE_CODE_SUBAGENT_MODEL` (the default for
+// subagents that name no model), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (that model replaces the call's and the
+// definition's) and, for agents spawned inside a Workflow only, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`. The hook
+// process's environment is assumed to match the one Claude Code runs with. The FORCE and workflow details
+// were read from the Claude Code 2.1.321 binary by cognitive-engine: version-bound. One function serves the
+// Workflow guard and the Agent/Task guard, so the two paths cannot disagree.
+
+export type Env = Readonly<Record<string, string | undefined>>;
+export type ModelSource = 'call' | 'definition' | 'ladder' | 'env' | 'env-forced' | 'workflow-env' | 'session';
+export interface ModelCandidate {
+  /** Null: the session model. */
+  model: string | null;
+  source: ModelSource;
+}
+
+const envModel = (v: string | undefined): string | null => {
+  const m = v?.trim() ?? '';
+  return m === '' || m.toLowerCase() === 'inherit' ? null : m;
+};
+
+/** True for the values that mean "run on the session model": absent, empty or `inherit`. */
+export const inheritsSessionModel = (model: string | null | undefined): boolean => model === undefined || model === null || ['', 'inherit'].includes(String(model).trim().toLowerCase());
+
+/** Is `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (1, true, yes, on)? */
+export const subagentModelForced = (env: Env): boolean => ['1', 'true', 'yes', 'on'].includes((env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE ?? '').trim().toLowerCase());
+
+/**
+ * Every model a subagent can run on, given what the call, its definition, a ladder pin and the environment say. One
+ * entry, except when two forced sources disagree about which wins (a workflow model and a forced model both set).
+ * - `workflow` only (an agent() call in a Workflow): `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` replaces the call's and
+ *   the definition's model. The Agent tool never applies it.
+ * - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on: the forced model replaces both, `inherit` on the call included
+ *   (the stricter reading: one spurious ask if the binary is right, a silent escalation if the docs are).
+ * - Otherwise the call's model, else the definition's, else a `jev-ladder-<id>` pin (`ladder`), else
+ *   `CLAUDE_CODE_SUBAGENT_MODEL`, else the session model.
+ */
+export function subagentModelCandidates(input: { call?: string; definition?: string | null; ladder?: string | null }, env: Env, opts: { workflow?: boolean } = {}): ModelCandidate[] {
+  const workflowModel = opts.workflow ? envModel(env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL) : null;
+  const model = envModel(env.CLAUDE_CODE_SUBAGENT_MODEL);
+  const force = subagentModelForced(env);
+  if (workflowModel) {
+    const out: ModelCandidate[] = [{ model: workflowModel, source: 'workflow-env' }];
+    if (force && model && model !== workflowModel) out.push({ model, source: 'env-forced' });
+    return out;
+  }
+  if (force) return model ? [{ model, source: 'env-forced' }] : [{ model: null, source: 'session' }];
+  if (input.call !== undefined && input.call.trim() !== '') return [{ model: input.call, source: 'call' }];
+  if (input.definition !== undefined && input.definition !== null && input.definition.trim() !== '') return [{ model: input.definition, source: 'definition' }];
+  if (input.ladder !== undefined && input.ladder !== null && input.ladder.trim() !== '') return [{ model: input.ladder, source: 'ladder' }];
+  return model ? [{ model, source: 'env' }] : [{ model: null, source: 'session' }];
+}
+
 // ── Front matter ───────────────────────────────────────────────────────────────────────────────
 
 type Field = { kind: 'none' } | { kind: 'value'; value: string } | { kind: 'unreadable'; reason: string };
@@ -410,4 +464,48 @@ export function readAgentDefinition(subagentType: string | undefined, cwd: strin
   if (differing.length === 0) return toDefinition(first);
   const describeOne = (d: Claim) => `${d.file} (${d.model ?? 'no model'}, ${d.effort ?? 'no effort'})`;
   return { found: true, model: null, unreadable: `the project defines "${parsed.agent}" in more than one place with different models or efforts: ${[first, ...differing].map(describeOne).join(' vs ')}` };
+}
+
+// ── The model an Agent/Task call will run on ───────────────────────────────────────────────────
+
+/** Where the model of an Agent/Task call comes from; `inherit` is the session model (nothing stronger can run). */
+export type AgentModelSource = 'call' | 'definition' | 'env-force' | 'ladder' | 'env' | 'inherit';
+
+export interface ResolvedAgentModel {
+  /** The model the call will run on; null when it inherits the session model. */
+  model: string | null;
+  source: AgentModelSource;
+  /** Set when the definition that decides the model could not be established: the guard asks with this text. */
+  unreadable?: string;
+}
+
+/**
+ * The model an Agent/Task call will actually run on: the forced environment model (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
+ * with `CLAUDE_CODE_SUBAGENT_MODEL`) when on; else the call's own model; else the model of the definition behind its
+ * `subagent_type` (read from disk, except for Claude Code's built-in types, which have none); else a `jev-ladder-<id>`
+ * pin (`ladder`, found by the caller); else `CLAUDE_CODE_SUBAGENT_MODEL`; else the session's own. Same environment
+ * resolution as the Workflow guard (`subagentModelCandidates`), minus `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`.
+ * A definition is read only when nothing above it decides; a type with no definition file resolves as if it had none
+ * (Claude Code itself reports an unknown agent). A definition the strict reader cannot establish is `unreadable`.
+ */
+export function resolveAgentModel(
+  call: { model?: unknown; subagent_type?: unknown },
+  cwd: string | undefined,
+  env: Env,
+  ladder: string | null
+): ResolvedAgentModel {
+  const callModel = call.model;
+  const callWritten = typeof callModel === 'string' ? callModel.trim() !== '' : !!callModel;
+  const forced = subagentModelForced(env);
+  let definition: string | null = null;
+  const type = call.subagent_type;
+  if (!forced && !callWritten && typeof type === 'string' && !BUILTIN_AGENT_TYPES.has(type)) {
+    const def = readAgentDefinition(type, cwd);
+    if (def.found && def.unreadable) return { model: null, source: 'definition', unreadable: def.unreadable };
+    if (def.found) definition = def.model;
+  }
+  if (callWritten && typeof callModel !== 'string') return { model: callModel as string, source: 'call' };
+  const [c] = subagentModelCandidates({ call: callModel as string | undefined, definition, ladder }, env);
+  const source: AgentModelSource = c.source === 'env-forced' ? 'env-force' : c.source === 'session' || c.source === 'workflow-env' ? 'inherit' : c.source;
+  return { model: c.model, source };
 }

@@ -94,7 +94,20 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import type * as AcornTypes from 'acorn';
-import { BUILTIN_AGENT_TYPES, clip, describeAgentLookup, effortReason, missingAgentDetail, readAgentDefinition, userClaudeDir, type AgentDefinition } from './agent-definitions.js';
+import {
+  BUILTIN_AGENT_TYPES,
+  clip,
+  describeAgentLookup,
+  effortReason,
+  inheritsSessionModel,
+  missingAgentDetail,
+  readAgentDefinition,
+  subagentModelCandidates,
+  userClaudeDir,
+  type AgentDefinition,
+  type Env,
+  type ModelSource
+} from './agent-definitions.js';
 import {
   CHOICE_LABELS,
   catalogueKnows,
@@ -912,52 +925,7 @@ function parseFindings(script: string): Finding[] {
 
 const PHASE_MODEL_WHAT = 'meta.phases model (in Claude Code this is only a progress-display hint, but it is ranked in case that changes):';
 
-// ── Environment overrides of the subagent model ──
-//
-// Claude Code lets the environment set the model of a subagent: `CLAUDE_CODE_SUBAGENT_MODEL` (the default for
-// subagents that name no model), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (that model replaces the call's and the
-// definition's) and, for agents spawned inside a Workflow, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`. The hook
-// process's environment is assumed to match the one Claude Code runs with. The FORCE and workflow details
-// were read from the Claude Code 2.1.321 binary by cognitive-engine: version-bound.
-
-type Env = Readonly<Record<string, string | undefined>>;
-type ModelSource = 'call' | 'definition' | 'env' | 'env-forced' | 'workflow-env' | 'session';
-interface ModelCandidate {
-  /** Null: the session model. */
-  model: string | null;
-  source: ModelSource;
-}
-
-const envModel = (v: string | undefined): string | null => {
-  const m = v?.trim() ?? '';
-  return m === '' || m.toLowerCase() === 'inherit' ? null : m;
-};
-
-/** True for the values that mean "run on the session model": absent, empty or `inherit`. */
-const inheritsSessionModel = (model: string | null | undefined): boolean => model === undefined || model === null || ['', 'inherit'].includes(String(model).trim().toLowerCase());
-
-/**
- * Every model an agent() call can run on, given what the call, its definition and the environment say. One entry,
- * except when two forced sources disagree about which wins (a workflow model and a forced model both set).
- * - `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` replaces the call's and the definition's model.
- * - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on: the forced model replaces both, `inherit` on the call included
- *   (the stricter reading: one spurious ask if the binary is right, a silent escalation if the docs are).
- * - Otherwise the call's model, else the definition's, else `CLAUDE_CODE_SUBAGENT_MODEL`, else the session model.
- */
-function subagentModelCandidates(input: { call?: string; definition?: string | null }, env: Env): ModelCandidate[] {
-  const workflowModel = envModel(env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL);
-  const model = envModel(env.CLAUDE_CODE_SUBAGENT_MODEL);
-  const force = ['1', 'true', 'yes', 'on'].includes((env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE ?? '').trim().toLowerCase());
-  if (workflowModel) {
-    const out: ModelCandidate[] = [{ model: workflowModel, source: 'workflow-env' }];
-    if (force && model && model !== workflowModel) out.push({ model, source: 'env-forced' });
-    return out;
-  }
-  if (force) return model ? [{ model, source: 'env-forced' }] : [{ model: null, source: 'session' }];
-  if (input.call !== undefined && input.call.trim() !== '') return [{ model: input.call, source: 'call' }];
-  if (input.definition !== undefined && input.definition !== null && input.definition.trim() !== '') return [{ model: input.definition, source: 'definition' }];
-  return model ? [{ model, source: 'env' }] : [{ model: null, source: 'session' }];
-}
+// The subagent-model environment resolution (`subagentModelCandidates`) is shared with the Agent/Task guard and lives in agent-definitions.ts.
 
 function modelSourceNote(source: ModelSource): string {
   switch (source) {
@@ -1034,7 +1002,7 @@ function modelSite(
   what: string,
   g: GuardContext
 ): CallSite | null {
-  for (const c of subagentModelCandidates(requested, g.env ?? process.env)) {
+  for (const c of subagentModelCandidates(requested, g.env ?? process.env, { workflow: true })) {
     if (c.model !== null) g.seen?.models.push(c.model);
     const s = siteOf(file, f, assess(c.model, session, g), what, modelSourceNote(c.source), g.seen);
     if (s) return s;

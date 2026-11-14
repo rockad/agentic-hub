@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
@@ -10,17 +12,16 @@ import {
   logTelemetry
 } from '../core/index.js';
 
+/** The one source of truth for jev_judge's input: the advertised JSON schema and the call-time check both derive from it. */
+export const judgeInputSchema = strictObject({
+  context: z.string().describe('The content or output to evaluate'),
+  condition: z.string().describe('The condition to test (e.g. "Did this task succeed?")')
+});
+
 export const judgeToolDefinition: Tool = {
   name: 'jev_judge',
   description: 'Fast binary condition testing and verification using OpenRouter native Decisions API (question type "noul"). Returns passed: true if noul >= 0.5.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      context: { type: 'string', description: 'The content or output to evaluate' },
-      condition: { type: 'string', description: 'The condition to test (e.g. "Did this task succeed?")' }
-    },
-    required: ['context', 'condition']
-  }
+  inputSchema: inputJsonSchema(judgeInputSchema)
 };
 
 export async function handleJudgeTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

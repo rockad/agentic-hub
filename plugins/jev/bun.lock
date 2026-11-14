@@ -5,7 +5,7 @@
     "": {
       "name": "jev",
       "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.6.1",
+        "@modelcontextprotocol/sdk": "^1.23.0",
         "acorn": "8.19.0",
         "zod": "^3.24.2",
       },

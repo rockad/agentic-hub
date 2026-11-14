@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildExecutionGuidance } from '../src/tools/dispatch.ts';
+import { buildExecutionGuidance, escalationNote } from '../src/tools/dispatch.ts';
 
 const RUNNER = path.join(import.meta.dir, 'fixtures', 'run-dispatch.ts');
 const MARKERS = ['JEV_HARNESS', 'ANTIGRAVITY_CLI', 'GEMINI_CLI', 'CORTEX_SESSION', 'CLAUDE_CODE', 'CLAUDECODE', 'CLAUDE_PROJECT_DIR', 'CLAUDE_CODE_SESSION_ID', 'OPENCODE_SESSION', 'OPENCODE_HOME'];
@@ -252,5 +252,32 @@ describe('jev_dispatch on Claude Code (5.11)', () => {
     expect(res.executionGuidance).toContain('the Jev guard will ask the user once');
     expect(res.activeSessionModel).toBe('claude-sonnet-5-5');
     expect([res.wasClampedByCeiling, res.requiresUserApproval]).toEqual([false, true]);
+  });
+});
+
+describe('escalationNote when the session model is unknown (review fix)', () => {
+  it('says the guard may not ask instead of promising a question', () => {
+    const note = escalationNote('claude-code', true, null);
+    expect(note).toContain('session model is unknown');
+    expect(note).toContain('may not ask');
+    expect(note).not.toContain('will ask the user once');
+  });
+
+  it('treats a model name Jev cannot place as unknown too', () => {
+    const note = escalationNote('claude-code', true, 'some-other-model');
+    expect(note).toContain('may not ask');
+    expect(note).not.toContain('will ask the user once');
+  });
+
+  it('keeps the known-session wording unchanged', () => {
+    expect(escalationNote('claude-code', true, 'claude-sonnet-5-5')).toBe(
+      ' Opus is above the session model (claude-sonnet-5-5): the Jev guard will ask the user once per call before it runs.'
+    );
+  });
+
+  it('stays empty on an opus session, for a non-pro tier and outside Claude Code', () => {
+    expect(escalationNote('claude-code', true, 'claude-opus-4-8')).toBe('');
+    expect(escalationNote('claude-code', false, null)).toBe('');
+    expect(escalationNote('antigravity', true, null)).toBe('');
   });
 });

@@ -58,7 +58,7 @@ Standalone skills live in `skills/<name>/` and must stay there (do not move or r
 - **`npx skills add rockad/agentic-hub --skill <name>`** and the Antigravity root `marketplace.json` (`standalone_skills`) read `skills/<name>/` directly.
 - **Claude Code marketplace** (`/plugin install <name>@agentic-hub`): `.claude-plugin/marketplace.json` has one plugin entry per skill with `"source": "./skills/<name>"`. The skill directory is the plugin root (`SKILL.md` at the root loads as one skill; its frontmatter `name` is required). No files are duplicated.
 - **Adding a skill**: create `skills/<name>/SKILL.md`, then add a matching entry to `.claude-plugin/marketplace.json` (and `standalone_skills` in the root `marketplace.json`). `scripts/check-skills-marketplace.sh` (CI) fails when a `skills/*/SKILL.md` has no Claude marketplace entry.
-- **Validate**: `claude plugin validate .` and `bash scripts/check-skills-marketplace.sh`.
+- **Validate**: `claude plugin validate .` and `bash scripts/check-skills-marketplace.sh`. Validate at the marketplace level only: `claude plugin validate ./skills/<name>` fails with "No manifest found in directory" because a single-skill plugin has no manifest, so a per-skill validate step cannot cover these entries. The marketplace-level validate plus the drift check are what cover them.
 
 ## `plugins/jev` — Decision Engine & Router
 

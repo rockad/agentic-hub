@@ -127,7 +127,7 @@ npx skills add rockad/agentic-hub -l
 npx skills add rockad/agentic-hub --skill md-to-pdf
 ```
 
-Both routes read the same `skills/<name>/` directories, so a skill is installed from one source of truth. `scripts/check-skills-marketplace.sh` (run in CI) fails if a `skills/*/SKILL.md` is missing from `.claude-plugin/marketplace.json`.
+Both routes read the same `skills/<name>/` directories, so a skill is installed from one source of truth. `scripts/check-skills-marketplace.sh` (run in CI) fails if a `skills/*/SKILL.md` is missing from `.claude-plugin/marketplace.json`. Validate with `claude plugin validate .` at the marketplace level; `claude plugin validate ./skills/<name>` fails with "No manifest found in directory" because these single-skill plugins carry no manifest.
 
 ## License
 

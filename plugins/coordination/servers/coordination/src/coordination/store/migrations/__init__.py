@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from coordination.store.migrations import m0001_api_keys_task_index
+from coordination.store.migrations import m0001_api_keys_task_index, m0002_cards_sessions_wakes_audit
 from coordination.store.tables import coord_schema_version
 
 
@@ -48,6 +48,11 @@ class Step:
 
 STEPS: tuple[Step, ...] = (
     Step(m0001_api_keys_task_index.VERSION, m0001_api_keys_task_index.NAME, m0001_api_keys_task_index.upgrade),
+    Step(
+        m0002_cards_sessions_wakes_audit.VERSION,
+        m0002_cards_sessions_wakes_audit.NAME,
+        m0002_cards_sessions_wakes_audit.upgrade,
+    ),
 )
 
 LATEST: int = STEPS[-1].version

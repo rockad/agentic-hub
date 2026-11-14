@@ -243,3 +243,40 @@ def test_engine_survives_a_dead_connection_in_the_pool(pg_server, pg_db):
             return (await conn.execute(sa.text("SELECT 2"))).scalar_one()
 
     assert run(_with_engine(cfg, go)) == 2
+
+
+def test_cards_sessions_wakes_audit_round_trip(config):
+    from coordination.store.tables import audit, cards, sessions, wakes
+
+    now = datetime.now(UTC)
+
+    async def go(engine):
+        await migrations.migrate(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                cards.insert().values(card_id="claude-code@box", harness="claude-code", machine="box", card_json={"name": "x"})
+            )
+            await conn.execute(
+                sessions.insert().values(
+                    handle="claude-code@box/n~3f2a9c1d", card_id="claude-code@box", harness_session_id="sid-1",
+                    registered_at=now, last_seen_at=now,
+                )
+            )
+            w1 = await conn.execute(wakes.insert().values(handle="h", at=now, pending_n=2).returning(wakes.c.wake_id))
+            w2 = await conn.execute(wakes.insert().values(handle="h", at=now, pending_n=1).returning(wakes.c.wake_id))
+            a = await conn.execute(
+                audit.insert().values(at=now, actor="3f9c01ab", event="registration", detail_json={"k": [1]}).returning(audit.c.id)
+            )
+            assert w2.scalar_one() > w1.scalar_one() and a.scalar_one() >= 1
+        async with engine.begin() as conn:
+            with pytest.raises(sa.exc.IntegrityError):  # a session id registers once per card
+                await conn.execute(
+                    sessions.insert().values(
+                        handle="claude-code@box/other~3f2a9c1d", card_id="claude-code@box", harness_session_id="sid-1",
+                        registered_at=now, last_seen_at=now,
+                    )
+                )
+        async with engine.connect() as conn:
+            assert (await conn.execute(sa.select(audit.c.detail_json))).scalar_one() == {"k": [1]}
+
+    run(_with_engine(config, go))

@@ -77,3 +77,54 @@ task_index = sa.Table(
 sa.Index("ix_task_index_to_handle", task_index.c.to_handle)
 sa.Index("ix_task_index_from_principal", task_index.c.from_principal)
 sa.Index("ix_task_index_to_card", task_index.c.to_card)
+
+#: Card registry, loaded from the cards file at start (spec 1.3, `config/cards.yaml`).
+cards = sa.Table(
+    "cards",
+    metadata,
+    sa.Column("card_id", sa.String(80), primary_key=True),
+    sa.Column("harness", sa.String(32), nullable=False),
+    sa.Column("machine", sa.String(32), nullable=False),
+    sa.Column("card_json", sa.JSON, nullable=False),
+)
+
+#: Registered sessions (spec 3.5, 5.1). `handle` is `<card-id>/<name>~<sid8>`; a handle is never
+#: reused for a different `harness_session_id`.
+sessions = sa.Table(
+    "sessions",
+    metadata,
+    sa.Column("handle", sa.String(128), primary_key=True),
+    sa.Column("card_id", sa.String(80), nullable=False),
+    sa.Column("harness_session_id", sa.String(128), nullable=False),
+    sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    sa.UniqueConstraint("card_id", "harness_session_id", name="uq_sessions_card_hsid"),
+)
+
+#: Wake budget and wake confirmation (spec 7.3, 7.5). Carries counts, never task content.
+wakes = sa.Table(
+    "wakes",
+    metadata,
+    sa.Column("wake_id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("handle", sa.String(128), nullable=False),
+    sa.Column("at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("pending_n", sa.Integer, nullable=False),
+    sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+)
+sa.Index("ix_wakes_handle_at", wakes.c.handle, wakes.c.at)
+
+#: Append-only security log (spec 1.3). Never stores message bodies, API keys or key secrets.
+#: Not pruned by retention: it is kept until the user prunes it.
+audit = sa.Table(
+    "audit",
+    metadata,
+    sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    sa.Column("at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("actor", sa.String(255), nullable=False),
+    sa.Column("event", sa.String(64), nullable=False),
+    sa.Column("subject", sa.String(255), nullable=True),
+    sa.Column("detail_json", sa.JSON, nullable=True),
+)
+sa.Index("ix_audit_at", audit.c.at)
+sa.Index("ix_audit_event_at", audit.c.event, audit.c.at)

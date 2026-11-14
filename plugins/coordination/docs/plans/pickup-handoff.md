@@ -3,11 +3,11 @@
 ## Start here (copy this into a new Antigravity or Claude Code session)
 
 ```
-You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation has started: stream S1-SCAF (compose and server scaffold) is delivered and merged (PR #32, commit 11f7e0f, verified 2026-11-11).
+You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation has started: streams S1-SCAF (PR #32, commit 11f7e0f), S1-PG (PR #37, cff63c9) and S1-BKP (PR #42) are delivered and merged (all on main since 2026-11-12). The remaining 16 streams are planned in docs/plans/s1-remaining-plan.md (draft 2026-11-13, waves W3a to W6).
 1. Read plugins/coordination/AGENTS.md, then docs/plans/pickup-handoff.md (this file), then docs/plans/master-tasklist.md section 4.
 2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status. Check every claim in a doc against its evidence file. SP3 and SP4 were run on 2026-11-10 and 2026-11-11 and are recorded, so the S1 entry gate is satisfied (docs/research/spike-results-2026-11-10-sp3-sp4.md). The user approved the S1 kickoff on 2026-11-11 (Y10) and decided the SP3 and SP4 proposals (Y5 to Y9); section 10 holds the table Y1 to Y10 and is final.
 3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session). Stage explicit paths only. Never push main, tag or release without the user's go.
-4. First action: the next stream is S1-PG (Postgres compose service and `a2a-coord db init-dump-role`, per docs/plans/implementation-plan.md). It needs two secret files from the user before it can run: the database password and the dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values. Then take the first item of section 3 "What to do next" that needs no user input. Ask the user before anything marked needs user (agy runs, attended spikes, <storage-host> crontab, hygiene items, and the user-only actions listed in section 10).
+4. First action: the next wave is W3a (stream STORE, with OBS beside it), per docs/plans/s1-remaining-plan.md and docs/plans/implementation-plan.md. Tests use throwaway secrets; running the real stack needs two secret files from the user (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first item of section 3 "What to do next" that needs no user input. Ask the user before anything marked needs user (agy runs, attended spikes, <storage-host> crontab, hygiene items, and the user-only actions listed in section 10).
 5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
 6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
@@ -93,7 +93,7 @@ Before picking up new workstreams, Claude Code should verify the committed state
 - The **`asyncRewake` on `UserPromptSubmit`** test and the **GUI-launched Claude** test (decision 34; both run inside S1 with their own exit tests, Y10; not S1-entry blockers). SP3 and SP4 are done (2026-11-11).
 - **Creating the restic password file and installing the second restic script and its crontab line on `<storage-host>`** (at S2; the installer prints the script and the line; it never edits `<storage-host>`'s crontab and never writes into the knowledge-archive git repo).
 - **The S3 go** (create the Cloudflare Tunnel route to `127.0.0.1:8121`), and the user's own housekeeping: rotate the Obsidian MCP bearer in `~/scratch/a2a-spikes/runlogs/chezmoi-diff.baseline` and delete that file, prune `sp2-agy` and `sp2-agy-a8b` from `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`, remove the `sp1` project entry from `~/.claude.json`.
-- **S1 dev server implementation**: the overall S1 entry gate is satisfied since 2026-11-11 (SP3 passed, SP4 recorded) and the user gave the go on 2026-11-11 (Y10). S1-SCAF is done and merged (PR #32); S1-PG is done and merged (PR #37); S1-BKP is in a PR. Running the real stack needs the user to provide two secret files (database password, `dump_ro` secret; mode 0600, outside the repo); the tests use throwaway ones.
+- **S1 dev server implementation**: the overall S1 entry gate is satisfied since 2026-11-11 (SP3 passed, SP4 recorded) and the user gave the go on 2026-11-11 (Y10). S1-SCAF is done and merged (PR #32); S1-PG is done and merged (PR #37); S1-BKP is done and merged (PR #42, 2026-11-12). Running the real stack needs the user to provide two secret files (database password, `dump_ro` secret; mode 0600, outside the repo); the tests use throwaway ones.
 - **User-only items still open** (an agent must not do these):
   - Create the restic password file `~/.config/a2a-coord/restic-password` (mode 0600) on <storage-host> before S2 (X4).
   - Schedule the agentic-hub history-rewrite window and run the owner force-push (Y4; [`history-rewrite-plan.md`](history-rewrite-plan.md); not scheduled).
@@ -172,3 +172,15 @@ User-only actions (an agent must not do these):
 - Earlier user-only items stay in section 3 (restic password file and crontab at S2, the S3 go, hygiene actions).
 
 Superseded by this round: the former section 10 was a list of proposals from the SP3 and SP4 results; Y5 to Y9 decide them. The SP4 findings (K1 to K6: `Stop` timeout not enforced at 30 s, orphan scripts on Esc, Ctrl-C and `/exit`, a cap of 10 continues, typed input queued) remain the reason Y8 ships no park.
+
+## 11. Decisions of 2026-11-14 (sixth clarify round, Z1 to Z5)
+
+Final, like section 10. Full table and context in [`s1-remaining-plan.md`](s1-remaining-plan.md) section 6.
+
+- Z1: the next wave is W3a, streams STORE and OBS in parallel in two worktrees; TEST-skel in the main tree.
+- Z2: one PR per stream to `main`, merged on the user's word.
+- Z3: build with one `Workflow` script reused per wave (user opted in); Opus only for the SEC review and the single final GATE verification.
+- Z4: the docs PR carrying this handoff and the S1 plan is merged by the user before STORE and OBS start; branch from the merged `main`.
+- Z5: the user runs A8c in agy now, in parallel, signed-out run last. Never drive agy.
+- Open: the agent count for W4b (decide at W4b).
+- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP are merged (PRs #32, #37, #42); no later stream has started; the lost `claude-cp` session left no code beyond these.

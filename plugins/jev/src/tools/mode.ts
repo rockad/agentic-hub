@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import {
@@ -68,29 +70,25 @@ export async function readCurrentMode(): Promise<{ mode: JevMode; updatedAt?: st
   return { mode, raw: cfg };
 }
 
+/** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
+export const setModeInputSchema = strictObject({
+  mode: z
+    .enum(['off', 'on-demand', 'on'])
+    .describe('The operating mode to set: "off" (disabled, 0 overhead), "on-demand" (passive coprocessor), or "on" (aggressive System 1 enforcement)')
+});
+
+export const getModeInputSchema = strictObject({});
+
 export const setModeToolDefinition: Tool = {
   name: 'jev_set_mode',
   description: 'Switch TypeSafe Jev operating mode ("off" | "on-demand" | "on"). Updates ~/.config/jev/config.json directly in-process.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      mode: {
-        type: 'string',
-        enum: ['off', 'on-demand', 'on'],
-        description: 'The operating mode to set: "off" (disabled, 0 overhead), "on-demand" (passive coprocessor), or "on" (aggressive System 1 enforcement)'
-      }
-    },
-    required: ['mode']
-  }
+  inputSchema: inputJsonSchema(setModeInputSchema)
 };
 
 export const getModeToolDefinition: Tool = {
   name: 'jev_get_mode',
   description: 'Inspect current TypeSafe Jev operating mode, configuration state, and operating characteristics.',
-  inputSchema: {
-    type: 'object',
-    properties: {}
-  }
+  inputSchema: inputJsonSchema(getModeInputSchema)
 };
 
 export async function handleSetModeTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

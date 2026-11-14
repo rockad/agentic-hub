@@ -110,8 +110,15 @@ Install plugins directly from the Claude Code marketplace:
 /plugin install jev@agentic-hub
 ```
 
+Every standalone skill under `skills/` is also listed in the Claude Code marketplace as its own single-skill plugin (plugin name = skill name), so it shows up in `/plugin` and installs the same way:
+```bash
+/plugin install handoff@agentic-hub
+/plugin install sync-main@agentic-hub
+```
+The skill is then invoked as `/handoff:handoff` (or the bare `/handoff` when no other command uses that name).
+
 ### OpenCode & Standalone Skills
-Install standalone skills via `npx skills`:
+Install standalone skills via `npx skills` (works for Claude Code, OpenCode and other agents; an alternative to the marketplace route above):
 ```bash
 # List available skills
 npx skills add rockad/agentic-hub -l
@@ -119,6 +126,8 @@ npx skills add rockad/agentic-hub -l
 # Install a specific skill
 npx skills add rockad/agentic-hub --skill md-to-pdf
 ```
+
+Both routes read the same `skills/<name>/` directories, so a skill is installed from one source of truth. `scripts/check-skills-marketplace.sh` (run in CI) fails if a `skills/*/SKILL.md` is missing from `.claude-plugin/marketplace.json`. Validate with `claude plugin validate .` at the marketplace level; `claude plugin validate ./skills/<name>` fails with "No manifest found in directory" because these single-skill plugins carry no manifest.
 
 ## License
 

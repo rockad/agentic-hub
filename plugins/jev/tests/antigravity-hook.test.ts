@@ -209,6 +209,55 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     expect(decision.elevation).toBe('instructed');
   });
 
+  describe('explicit pro override matching', () => {
+    const overrides = (prompt: string, elevationMode?: 'dialog') =>
+      evaluateAntigravitySubagentCall(
+        {
+          conversationId: 'c-ovr',
+          lastUserInput: prompt,
+          modelName: 'gemini-3.8-flash-low',
+          toolCall: { id: 't-ovr', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'x', Model: 'pro' } }
+        },
+        { approvals, sessionModelOverride: 'gemini-3.8-flash-low', elevationMode, now: () => 1000 }
+      );
+
+    for (const prompt of [
+      'Please drop the jargon',
+      'Do not use deep reasoning here',
+      'Argonaut',
+      "Don't use gemini pro for this",
+      'Don’t use Claude Opus for this',
+      'Never use cross-system architecture thinking',
+      'Run it without manual pro approval',
+      'avoid argon'
+    ]) {
+      it(`does not treat "${prompt}" as an explicit override`, () => {
+        const d = overrides(prompt);
+        expect(d.elevation).not.toBe('instructed');
+        // Default (choice) mode denies with the question text; dialog mode asks. Either way the elevation is not waved through.
+        expect(d.decision).toBe('deny');
+        expect(d.elevation).toBe('denied');
+        expect(overrides(prompt, 'dialog').decision).toBe('ask');
+      });
+    }
+
+    for (const prompt of [
+      'use gemini pro',
+      'Use Claude Opus for this',
+      'manual pro approval granted',
+      'use deep reasoning',
+      'use argon for this',
+      'Argon, please.',
+      'Do not rush, use deep reasoning'
+    ]) {
+      it(`still treats "${prompt}" as an explicit override`, () => {
+        const d = overrides(prompt);
+        expect(d.decision).toBe('allow');
+        expect(d.elevation).toBe('instructed');
+      });
+    }
+  });
+
   it('supports backward compatibility with older args.Subagents[] shape', () => {
     const input: AntigravityHookInput = {
       conversationId: 'c1',

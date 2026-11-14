@@ -52,17 +52,21 @@ export const CHOICE_OPTIONS = {
   no: (ceiling: string) => `No, proceed on ${ceiling}`
 };
 
+/** Whole words and whole phrases only: "jargon" and "Argonaut" are not "argon". Matched against lowercase text. */
+const PRO_OVERRIDE_PHRASES =
+  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|argon|claude\s+opus|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
+
+/** "do not use deep reasoning", "without manual pro approval", "avoid argon": the phrase is named to rule it out. Same negators as the Claude path. */
+const PRO_OVERRIDE_NEGATION =
+  /\b(?:don'?t|do\s+not|never|not|no|without|avoid|stop|instead\s+of|rather\s+than)\s+(?:[\w'-]+\s+){0,2}$/i;
+
 export function isExplicitProOverride(promptText?: string): boolean {
-  const text = (promptText || '').toLowerCase();
-  return (
-    text.includes('manual pro approval') ||
-    text.includes('gemini pro') ||
-    text.includes('gemini argon') ||
-    text.includes('argon') ||
-    text.includes('claude opus') ||
-    text.includes('deep reasoning') ||
-    text.includes('cross-system architecture')
-  );
+  // A typographic apostrophe is an apostrophe: "Don’t use gemini pro" is the same negation as "Don't".
+  const text = (promptText || '').replace(/[‘’ʼ]/g, "'").toLowerCase();
+  for (const m of text.matchAll(PRO_OVERRIDE_PHRASES)) {
+    if (!PRO_OVERRIDE_NEGATION.test(text.slice(Math.max(0, m.index! - 30), m.index!))) return true;
+  }
+  return false;
 }
 
 export function extractSubagentModel(args?: Record<string, unknown>): { requestedModel: string | null; isExplicit: boolean } {

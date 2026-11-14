@@ -108,7 +108,7 @@ The hook is **self-locating**: it reads the session's `cwd` from the SessionStar
 The hook ships for Claude Code (`hooks.SessionStart` in `~/.claude/settings.json`). Other harnesses need their own registration of the same script.
 
 If the hook is not installed yet (search for `handoff-drift` in `~/.claude/settings.json`) and the user agrees, install it:
-1. Copy `hooks/handoff-drift.sh` (macOS and Linux, needs `python3`) or `hooks/handoff-drift.ps1` (Windows) to `~/.claude/hooks/`; for `.sh`, `chmod +x`. Detect the user's OS. Do not edit the hook body.
+1. Copy `hooks/handoff-drift.sh` (macOS and Linux, needs `python3`) or `hooks/handoff-drift.ps1` (Windows), found in this skill's own directory next to this `SKILL.md`, to `~/.claude/hooks/`; for `.sh`, `chmod +x`. Detect the user's OS. Do not edit the hook body.
 2. Register it with ONE entry under `hooks.SessionStart` in `~/.claude/settings.json`, APPENDING an element to the array. CRITICAL: do not overwrite existing hooks; other SessionStart hooks may be load-bearing. Prefer a deterministic config-editing tool over a hand merge of the JSON.
 3. If a `handoff-drift` entry already exists, do NOTHING: the hook is global and already covers this project.
 4. Tell the user it only takes effect from the NEXT session (SessionStart is read at start), and that it stays silent when the handoff is fresh OR the project has no HANDOFF.md: silence is normal.
@@ -143,11 +143,13 @@ lines, then wait for me.
 
 ### Files per harness
 
+Paths are relative to this skill's own directory (the directory that holds this `SKILL.md`), not to a repository root. That directory is `skills/handoff/` in the repository, but a plugin-cache install (`~/.claude/plugins/cache/<marketplace>/handoff/<version>/`) or an `npx skills` install (`.claude/skills/handoff/` or `.agents/skills/handoff/`) puts it elsewhere. Resolve them from wherever this `SKILL.md` was loaded from.
+
 | Harness | File | Status |
 | --- | --- | --- |
-| Claude Code | `skills/handoff/switch/claude-code.md` | written |
-| Antigravity | `skills/handoff/switch/antigravity.md` | not written yet: ask the owner; to be written by an agent running in that harness |
-| OpenCode | `skills/handoff/switch/opencode.md` | not written yet: ask the owner; to be written by an agent running in that harness |
+| Claude Code | `switch/claude-code.md` | written |
+| Antigravity | `switch/antigravity.md` | not written yet: ask the owner; to be written by an agent running in that harness |
+| OpenCode | `switch/opencode.md` | not written yet: ask the owner; to be written by an agent running in that harness |
 
 If the file for your harness does not exist, say so and stop at the steps you can do harness-neutrally (1 and 6, and the "Start here" prompt); do not invent commands.
 

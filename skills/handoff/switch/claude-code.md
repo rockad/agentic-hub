@@ -1,6 +1,6 @@
 # handoff switch: Claude Code
 
-How to carry work across a change of Claude login or subscription in Claude Code. Part of `/handoff switch` (see `skills/handoff/SKILL.md` for the harness-neutral skeleton and the "Start here" prompt).
+How to carry work across a change of Claude login or subscription in Claude Code. Part of `/handoff switch` (see `../SKILL.md` for the harness-neutral skeleton and the "Start here" prompt).
 
 Labels: **V** verified (observed on one machine, 2026-11-11 and 2026-11-12), **I** inferred, **U** unverified, **D** documented by the harness.
 

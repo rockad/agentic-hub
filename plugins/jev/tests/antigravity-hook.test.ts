@@ -6,6 +6,7 @@ import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
   extractAskAnswer,
+  MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
   type AntigravityHookInput,
   type AntigravityHookDecision
@@ -593,6 +594,116 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
       const parsed = parseElevationAnswer(extractAskAnswer(input, 0));
       expect(parsed.approved).toBe(true);
       expect(parsed.scope).toBe('once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null for a transcript larger than the cap', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cap-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-cap',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      // When cap is smaller than the file size, returns null:
+      expect(extractAskAnswer(input, 0, 10)).toBeNull();
+      // When cap is larger than the file size, returns the answer:
+      expect(extractAskAnswer(input, 0, 10_000)).toBe('Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null if matching step has wrong type (not GENERIC)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-type-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Step 2 has type PLANNER_RESPONSE instead of GENERIC:
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"PLANNER_RESPONSE","content":"Created At: x\\nCompleted At: y\\nA1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-wrong-type',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null and fails closed on duplicate step index', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-dup-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Two lines share step_index: 2
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n' +
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-dup',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null if step toolCallId does not match input.toolCall.id', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-id-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","toolCallId":"call_other","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mismatch-id',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { id: 'call_expected', name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null for a FIFO without blocking', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-fifo-test-'));
+    try {
+      const fifoPath = path.join(testDir, 'fifo_pipe');
+      const r = Bun.spawnSync(['mkfifo', fifoPath]);
+      if (r.exitCode === 0) {
+        const input: AntigravityHookInput = {
+          conversationId: 'c-fifo',
+          stepIdx: 2,
+          transcriptPath: fifoPath,
+          toolCall: { name: 'ask_question' }
+        };
+        // Should return null immediately without blocking on the open FIFO
+        expect(extractAskAnswer(input, 0)).toBeNull();
+      }
     } finally {
       fs.rmSync(testDir, { recursive: true, force: true });
     }

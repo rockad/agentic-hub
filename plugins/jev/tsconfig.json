@@ -10,5 +10,5 @@
     "types": ["bun", "node"],
     "outDir": "./dist"
   },
-  "include": ["src/**/*", "claude/**/*"]
+  "include": ["src/**/*", "claude/**/*", "antigravity/**/*"]
 }

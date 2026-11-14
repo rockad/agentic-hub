@@ -1,7 +1,7 @@
-# S1 remaining: workstreams, waves and dynamic workflows (draft 2026-11-13)
+# S1 remaining: workstreams, waves and dynamic workflows (drafted 2026-11-13, decisions Z1 to Z5 recorded 2026-11-14)
 
 Source: `plugins/coordination/docs/plans/implementation-plan.md` sections 3.1, 4.2, 5 (origin/main).
-Done: S1-SCAF (PR #32), S1-PG (PR #37), S1-BKP (PR #42). Nothing below starts without the user's word.
+Done: S1-PG (PR #37), S1-BKP (PR #42), S1-SCAF (PR #32). The user decided Z1 to Z5 on 2026-11-14 (section 6). Starting W3a still waits for the user's word to merge the docs PR (Z4); no stream has started.
 
 ## 1. Remaining streams and their dependencies
 
@@ -75,9 +75,14 @@ Size: the session guideline is "under 5 agents" per workflow. One stream is buil
 - Non-root `A2A_UID` other than 0 untested under rootless Docker.
 - Issues #39 (memory@agentic-hub 1.0.1) and #40 (lookup package visibility) are unrelated but open.
 
-## 6. What I need from you
+## 6. Decisions of 2026-11-14 (sixth clarify round, Z1 to Z5)
 
-1. Go for **W3a** (STORE + OBS), or a different first stream.
-2. Confirm per-stream PRs to main, merged by your word, instead of `feat/coordination` topic branches.
-3. Confirm the workflow agent count may exceed 5 for W4b, or I split it into two.
-4. Keep A8c in parallel (your step 1), since it does not block W3a.
+| # | Question | Decision |
+| --- | --- | --- |
+| Z1 | First wave | W3a: STORE and OBS in parallel, two worktrees (`feat/coordination-store`, `feat/coordination-obs`); TEST-skel in the main tree. |
+| Z2 | PR granularity | One PR per stream to `main`, merged on the user's word; the next wave branches from the merged `main`. |
+| Z3 | Execution engine | One `Workflow` script reused per wave (section 3). The user's choice counts as the opt-in for the `Workflow` tool. |
+| Z4 | Plan PR | Open the docs PR with this plan, the ticked tasklist and the handoff; the user merges it before STORE and OBS start. |
+| Z5 | agy side | The user runs A8c now in agy, in parallel with W3a, with the signed-out run last. A helper never drives agy. |
+
+Still open: the agent count for W4b (3 streams, over the session's 5-agent guideline). Decide at W4b: split into two workflows, or the user allows more. Everything else waits on the Z4 merge.

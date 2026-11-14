@@ -172,3 +172,15 @@ User-only actions (an agent must not do these):
 - Earlier user-only items stay in section 3 (restic password file and crontab at S2, the S3 go, hygiene actions).
 
 Superseded by this round: the former section 10 was a list of proposals from the SP3 and SP4 results; Y5 to Y9 decide them. The SP4 findings (K1 to K6: `Stop` timeout not enforced at 30 s, orphan scripts on Esc, Ctrl-C and `/exit`, a cap of 10 continues, typed input queued) remain the reason Y8 ships no park.
+
+## 11. Decisions of 2026-11-14 (sixth clarify round, Z1 to Z5)
+
+Final, like section 10. Full table and context in [`s1-remaining-plan.md`](s1-remaining-plan.md) section 6.
+
+- Z1: the next wave is W3a, streams STORE and OBS in parallel in two worktrees; TEST-skel in the main tree.
+- Z2: one PR per stream to `main`, merged on the user's word.
+- Z3: build with one `Workflow` script reused per wave (user opted in); Opus only for the SEC review and the single final GATE verification.
+- Z4: the docs PR carrying this handoff and the S1 plan is merged by the user before STORE and OBS start; branch from the merged `main`.
+- Z5: the user runs A8c in agy now, in parallel, signed-out run last. Never drive agy.
+- Open: the agent count for W4b (decide at W4b).
+- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP are merged (PRs #32, #37, #42); no later stream has started; the lost `claude-cp` session left no code beyond these.

@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PRIVATE_FILE_MODE, privateDir, privateFile } from '../src/core/private-fs.js';
 import { safeSessionId } from './logic.js';
+import { readRegularFile } from './safe-read.js';
 import { MAX_SCRIPT_BYTES, type ScriptFact } from './workflow-guard.js';
 
 export interface WorkflowPin {
@@ -38,6 +39,8 @@ export interface WorkflowPin {
 }
 
 export const PIN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** A pin file is a few hundred bytes per script; a bigger one is not one of ours. */
+const PIN_MAX_BYTES = 4 * 1024 * 1024;
 
 function pinFile(dir: string, toolUseId: unknown): string | null {
   const id = safeSessionId(toolUseId);
@@ -65,7 +68,9 @@ function readPin(dir: string, toolUseId: unknown): WorkflowPin | null {
   const file = pinFile(dir, toolUseId);
   if (!file) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const read = readRegularFile(file, PIN_MAX_BYTES);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
     return Array.isArray(parsed?.scripts) ? (parsed as WorkflowPin) : null;
   } catch {
     return null;
@@ -100,12 +105,8 @@ export function pruneWorkflowPins(dir: string, now = Date.now(), maxAgeMs = PIN_
 
 /** sha256 of a file's current content, or null when it is gone, unreadable or over the analysis size limit. */
 function currentHash(file: string): string | null {
-  try {
-    if (fs.statSync(file).size > MAX_SCRIPT_BYTES) return null;
-    return crypto.createHash('sha256').update(fs.readFileSync(file, 'utf8')).digest('hex');
-  } catch {
-    return null;
-  }
+  const read = readRegularFile(file, MAX_SCRIPT_BYTES); // a FIFO at the path is unreadable here, never a hang
+  return read.kind === 'ok' ? crypto.createHash('sha256').update(read.text).digest('hex') : null;
 }
 
 export interface PostToolUseResult {

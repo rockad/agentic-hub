@@ -222,9 +222,11 @@ flowchart TD
 plugins/jev
 ├── src/
 │   ├── core/                # Core engines (client, config, cache, discovery, egress, heuristics, graph)
-│   ├── tools/               # MCP tool handlers (dispatch, execute-free, judge, mode, quota, route, score)
+│   ├── tools/               # MCP tool handlers (dispatch, execute-free, judge, mode, quota, route, score),
+│   │                        #   their strict input schemas, and schema.ts / validate.ts (call-time validation)
 │   ├── audit/               # Compliance and drift detection (drift-detector.ts)
-│   ├── index.ts             # Main MCP server entrypoint
+│   ├── server.ts            # createJevServer(): the MCP server, validating every call before its handler
+│   ├── index.ts             # Main MCP server entrypoint (stdio)
 │   ├── shared.ts            # Shared types and helpers across harnesses
 │   └── tracing.ts           # OpenTelemetry and span logging
 ├── claude/                  # Claude Code hook adapter (hook.ts entry, logic.ts decisions)
@@ -959,6 +961,21 @@ the rewritten `model`.
 
 ### Release notes
 
+- **next: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
+  - Found live: `jev_batch_dispatch` called with `description` for `task` and `dependsOn` for `dependencies`
+    returned a plausible manifest with `task: ""`, `dependencies: []` and one stage. The server never checked
+    arguments against the advertised schema, so a missing required field and any unknown key were accepted.
+  - Every tool now declares its input once, as a strict zod schema beside the tool definition
+    (`src/tools/*.ts`). The JSON schema clients see is derived from it with the SDK's own converter
+    (`zod-json-schema-compat`, no new dependency), so the two cannot drift; objects now advertise
+    `additionalProperties: false`. `src/tools/validate.ts` (`validateToolInput`) checks each call before its
+    handler runs. The server moves to `src/server.ts` (`createJevServer`); `src/index.ts` only connects it to stdio.
+  - Behaviour change: a call with a missing required field, an unknown key (at any depth), a wrong type or a bad
+    enum value is now an `isError` result, not a handler run. No field became required and none was removed.
+  - New `jev_batch_dispatch` checks before planning: blank `task` or `id`, duplicate ids, a dependency on the task
+    itself, a dependency on an id no task has, a dependency cycle (as a path). `jev_dispatch` with an empty `task`
+    is now an `isError` result in the same form (wording unchanged). See "Tool input validation".
+  - Tests: `tests/tool-contract.test.ts` drives every tool through the real server over an in-memory transport.
 - **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).
@@ -1194,6 +1211,43 @@ Operating modes and status are managed via the in-chat `/jev` slash command / sk
 | **Slash Command** | `/jev off` | Sets active mode to `OFF` (Zero Overhead / Pass-through). |
 | **MCP Tool** | `jev_get_mode()` | Programmatically queries active mode, resolved harness mode, and configuration. |
 | **MCP Tool** | `jev_set_mode({ mode })` | Programmatically updates mode directly in `~/.config/jev/config.json`. |
+
+### Tool input validation
+
+Every `jev_*` MCP tool validates its arguments before it runs, against a strict schema: all fields are as
+advertised in `tools/list` (which says `additionalProperties: false` at every object level), and nothing else is
+accepted. The schema is defined once per tool (a zod object in `src/tools/*.ts`); the advertised JSON schema is
+derived from it.
+
+A call that does not match returns an MCP tool error (`isError: true`, one text block), never a defaulted result:
+
+```text
+Invalid arguments for tool jev_batch_dispatch: Required at tasks[0].task
+Unrecognized key(s) in object: 'description', 'dependsOn' at tasks[0]
+Unrecognized key 'description' at tasks[0]; did you mean 'task'?
+Unrecognized key 'dependsOn' at tasks[0]; did you mean 'dependencies'?
+```
+
+- One issue per line, with the path (`tasks[0].task`) where there is one. A missing field is `Required`, a wrong
+  type is `Expected string, received number`, a bad enum value lists the allowed values.
+- An unknown key also gets a `did you mean` line when a schema key at that level is within edit distance 2
+  (and not already sent), plus a fixed alias for the two known mistakes: `description` for `task` and `dependsOn` for
+  `dependencies`.
+- Argument-less tools (`jev_get_mode`, `jev_quota`) accept `{}` or no arguments, and reject any key.
+- An unknown tool name is still the `Unknown tool` protocol error.
+
+`jev_batch_dispatch` also checks the batch before planning it:
+
+| Rule | Error line |
+| :--- | :--- |
+| `tasks` is not empty | `jev_batch_dispatch requires a non-empty "tasks" array` |
+| `task` and `id` are not blank (after trim) | `Must be a non-empty string at tasks[1].task` |
+| ids are unique | `Duplicate task id 'a' at tasks[0], tasks[2]` |
+| no task depends on itself | `Task 'a' depends on itself at tasks[0].dependencies[0]` |
+| every dependency names an existing id | `Unknown dependency 'zzz' at tasks[1].dependencies[0]: no task has that id` |
+| no dependency cycle | `Dependency cycle: a -> b -> a` |
+
+`jev_dispatch` with an empty `task` returns `jev_dispatch requires a non-empty "task" string` in the same error form.
 
 ---
 

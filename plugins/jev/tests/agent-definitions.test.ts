@@ -166,3 +166,69 @@ describe('readAgentDefinition', () => {
     expect([...BUILTIN_AGENT_TYPES].sort()).toEqual(['Explore', 'Plan', 'claude', 'claude-code-guide', 'general-purpose', 'statusline-setup']);
   });
 });
+
+describe('plugin manifest `agents` field', () => {
+  const install = (manifest: unknown, manifestAt = path.join('.claude-plugin', 'plugin.json')): string => {
+    const plugin = path.join(tmp, 'plug');
+    if (manifest !== undefined) write(path.join(plugin, manifestAt), typeof manifest === 'string' ? manifest : JSON.stringify(manifest));
+    fs.mkdirSync(plugin, { recursive: true });
+    write(path.join(tmp, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'plug@m': [{ installPath: plugin }] } }));
+    return plugin;
+  };
+
+  it('a string path to one agent file is read, and the auto-loaded agents/ directory is skipped', () => {
+    const plugin = install({ name: 'plug', agents: './custom/special.md' });
+    write(path.join(plugin, 'custom', 'special.md'), '---\nname: special\nmodel: opus\n---\n');
+    write(path.join(plugin, 'agents', 'auto.md'), '---\nname: auto\nmodel: opus\n---\n');
+
+    expect(readAgentDefinition('special', project())).toEqual({ found: true, model: 'opus' });
+    expect(readAgentDefinition('plug:special', project())).toEqual({ found: true, model: 'opus' });
+    expect(readAgentDefinition('auto', project()).found).toBe(false); // not auto-loaded once the field is set
+  });
+
+  it('an array of paths is read, files and directories alike', () => {
+    const plugin = install({ agents: ['./a.md', './more'] });
+    write(path.join(plugin, 'a.md'), '---\nname: first\nmodel: opus\n---\n');
+    write(path.join(plugin, 'more', 'b.md'), '---\nname: second\nmodel: haiku\n---\n');
+
+    expect(readAgentDefinition('first', project()).model).toBe('opus');
+    expect(readAgentDefinition('second', project()).model).toBe('haiku');
+  });
+
+  it('without the field the agents/ directory is read as before; a plugin.json at the plugin root is read too', () => {
+    const plugin = install({ name: 'plug' });
+    write(path.join(plugin, 'agents', 'auto.md'), '---\nname: auto\nmodel: opus\n---\n');
+    expect(readAgentDefinition('auto', project()).model).toBe('opus');
+
+    fs.rmSync(path.join(plugin, '.claude-plugin'), { recursive: true });
+    write(path.join(plugin, 'plugin.json'), JSON.stringify({ agents: './custom.md' }));
+    write(path.join(plugin, 'custom.md'), '---\nname: custom\nmodel: opus\n---\n');
+    expect(readAgentDefinition('custom', project()).model).toBe('opus');
+    expect(readAgentDefinition('auto', project()).found).toBe(false);
+  });
+
+  it('a path outside the plugin (traversal, absolute, a symlink out) is never read', () => {
+    const plugin = install({ agents: ['../outside.md', path.join(tmp, 'abs.md'), './link.md', './linkdir'] });
+    write(path.join(tmp, 'outside.md'), '---\nname: outside\nmodel: opus\n---\n');
+    write(path.join(tmp, 'abs.md'), '---\nname: abs\nmodel: opus\n---\n');
+    write(path.join(tmp, 'elsewhere', 'x.md'), '---\nname: linked\nmodel: opus\n---\n');
+    fs.symlinkSync(path.join(tmp, 'outside.md'), path.join(plugin, 'link.md'));
+    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(plugin, 'linkdir'));
+
+    for (const n of ['outside', 'abs', 'linked']) expect([n, readAgentDefinition(n, project()).found]).toEqual([n, false]);
+  });
+
+  it('a field with no usable path leaves the agents/ directory visible (never less than before)', () => {
+    const plugin = install({ agents: [42, '../x.md', ''] });
+    write(path.join(plugin, 'agents', 'auto.md'), '---\nname: auto\nmodel: opus\n---\n');
+
+    expect(readAgentDefinition('auto', project()).model).toBe('opus');
+  });
+
+  it('a corrupt manifest is the auto-loaded directory, as before', () => {
+    const plugin = install('{ not json');
+    write(path.join(plugin, 'agents', 'auto.md'), '---\nname: auto\nmodel: opus\n---\n');
+
+    expect(readAgentDefinition('auto', project()).model).toBe('opus');
+  });
+});

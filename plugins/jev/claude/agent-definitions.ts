@@ -7,14 +7,19 @@
  *      of the name is read; when they disagree the answer is unreadable (the guard asks);
  *   2. the user config dir's `agents/` (`CLAUDE_CONFIG_DIR` when set and non-empty, replacing `~/.claude`
  *      entirely; a relative value is resolved against the hook cwd);
- *   3. installed plugins' `agents/`, through `<config dir>/plugins/installed_plugins.json` (enabled plugins first
- *      per `enabledPlugins`, then the rest). A namespaced name `plugin:agent` only looks in that plugin.
+ *   3. installed plugins' `agents/` (or, when its manifest sets `agents`, those paths, resolved inside the plugin only),
+ *      through `<config dir>/plugins/installed_plugins.json` (enabled plugins first per `enabledPlugins`, then the rest).
+ *      A namespaced name `plugin:agent` only looks in that plugin.
  *
  * Every `.md` file under a directory is read and matched on its front matter `name:` (or its file name when it
  * has none), as Claude Code registers agents. A conflict (two claimants, a file called `<name>.md` that declares
- * another name, an unreadable block) is `unreadable`, never a guess. The name is restricted to file-name
- * characters (one `:` allowed, the plugin separator), so a path-like name never escapes the directories.
- * This module never decides to allow: a name that resolves to nothing is `found: false`, which the guard asks about.
+ * another name, an unreadable block) is `unreadable`, never a guess. The requested name is only ever compared with
+ * names read from files, never turned into a path, so a path-like name never escapes the directories.
+ *
+ * Name matching follows Claude Code: the exact name first; when no agent has it, a normalised comparison (NFKC, lower
+ * case, no white space, dashes or underscores) and a single match runs. Several normalised matches are `unreadable`.
+ * A name nothing matches, loosely or not, is `found: false`: agents the hook cannot see exist (a `--agents` flag, a
+ * managed policy, a plugin at a custom path), so this module never turns a plain not-found into an ask.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -39,14 +44,32 @@ export interface AgentDefinition {
 export const BUILTIN_AGENT_TYPES: ReadonlySet<string> = new Set(['general-purpose', 'Explore', 'Plan', 'statusline-setup', 'claude-code-guide', 'claude']);
 
 /**
+ * Claude Code's loose agent-name comparison form, used when no agent type matches exactly: NFKC, lower case, white
+ * space, dashes and underscores removed (`Code_Reviewer`, `CODE REVIEWER` and `code-reviewer` are one name). A single
+ * match runs. The guard compares names the same way, so it reads the definition Claude Code would run.
+ */
+export const normaliseAgentName = (s: string): string => s.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]+/gu, '');
+
+/** The built-in types `subagentType` names, exactly or, failing that, loosely (one loose match only; a namespaced `plugin:type` is never a built-in). */
+function builtinFor(subagentType: string): string | null {
+  if (BUILTIN_AGENT_TYPES.has(subagentType)) return subagentType;
+  if (subagentType.includes(':')) return null;
+  const target = normaliseAgentName(subagentType);
+  if (target === '') return null;
+  const matches = [...BUILTIN_AGENT_TYPES].filter((b) => normaliseAgentName(b) === target);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
  * The definition behind a subagent type, for the Agent/Task guard and the Workflow guard alike. A user or project
  * definition named like a built-in type (`Explore`, `general-purpose`, ...) overrides the built-in and keeps its own
  * `model:`, so `looked` (the file lookup, same precedence and same strict reader as for a custom type) is asked
  * first; only when no file claims the name does a built-in type resolve as "built-in, no model, inherits the session
- * model". Any other type with no file stays `found: false`.
+ * model". A built-in spelled loosely (`explore`, `General Purpose`) is the built-in too, as in Claude Code. Any other
+ * type with no file stays `found: false`.
  */
 export function definitionOrBuiltin(subagentType: string, looked: AgentDefinition): AgentDefinition {
-  return !looked.found && BUILTIN_AGENT_TYPES.has(subagentType) ? { found: true, model: null } : looked;
+  return !looked.found && builtinFor(subagentType) !== null ? { found: true, model: null } : looked;
 }
 
 /**
@@ -243,13 +266,27 @@ function strictFrontmatter(rawText: string): Frontmatter {
 // ── Lookup ─────────────────────────────────────────────────────────────────────────────────────
 
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
+const MAX_TYPE_LENGTH = 200;
 
-/** Parse `name` or `plugin:name` into its parts, or null for anything else. */
+/** Parse `name` or `plugin:name` into its parts, or null for anything else. The name is restricted to file-name characters. */
 function parseAgentName(subagentType: unknown): { plugin: string | null; agent: string } | null {
   if (typeof subagentType !== 'string' || subagentType.length === 0) return null;
   const parts = subagentType.split(':');
   if (parts.length > 2 || !parts.every((p) => SEGMENT.test(p))) return null;
   return parts.length === 2 ? { plugin: parts[0], agent: parts[1] } : { plugin: null, agent: parts[0] };
+}
+
+/**
+ * `name` or `plugin:name` as Claude Code matches it: the plugin part is a plain segment, the agent part is any
+ * non-empty text (`CODE REVIEWER`). The agent part is only ever compared with names read from files, never turned
+ * into a path, so it needs no file-name restriction.
+ */
+function parseAgentRef(subagentType: unknown): { plugin: string | null; agent: string } | null {
+  if (typeof subagentType !== 'string' || subagentType.length === 0 || subagentType.length > MAX_TYPE_LENGTH || subagentType.includes('\0')) return null;
+  const parts = subagentType.split(':');
+  if (parts.length > 2) return null;
+  if (parts.length === 2) return SEGMENT.test(parts[0]) && parts[1] !== '' ? { plugin: parts[0], agent: parts[1] } : null;
+  return { plugin: null, agent: parts[0] };
 }
 
 function homeDir(): string {
@@ -325,7 +362,52 @@ function enabledPluginKeys(cwd: string | undefined): Set<string> {
   return new Set([...state].filter(([, on]) => on).map(([key]) => key));
 }
 
-/** `agents/` dirs of installed plugins as `[pluginName, dir]`, enabled first. Ordering only: no plugin is left out. */
+/**
+ * Where an installed plugin's agents live. Claude Code's plugin manifest `agents` field (a path to an agent file or
+ * directory, or an array of them) replaces the auto-loaded `agents/` directory when it is set. The manifest is read
+ * from `.claude-plugin/plugin.json` (else `plugin.json`) with the safe reader; every path is resolved inside the
+ * plugin directory only (an absolute path, a `..` traversal or a symlink that leaves the plugin is dropped). A field
+ * with no usable path leaves the `agents/` directory in place: the hook must never see less than it did.
+ */
+function pluginAgentPaths(installPath: string): string[] {
+  const auto = path.join(installPath, 'agents');
+  let declared: unknown;
+  for (const rel of [path.join('.claude-plugin', 'plugin.json'), 'plugin.json']) {
+    const read = readRegularFile(path.join(installPath, rel), MAX_CONFIG_FILE_BYTES);
+    if (read.kind !== 'ok') continue;
+    try {
+      const doc = JSON.parse(read.text);
+      if (doc && typeof doc === 'object' && !Array.isArray(doc)) {
+        declared = doc.agents;
+        break;
+      }
+    } catch {
+      // not JSON: try the next location
+    }
+  }
+  const entries = typeof declared === 'string' ? [declared] : Array.isArray(declared) ? declared : [];
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(installPath);
+  } catch {
+    return [auto];
+  }
+  const out: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string' || entry.trim() === '' || entry.includes('\0') || path.isAbsolute(entry)) continue;
+    const resolved = path.resolve(installPath, entry);
+    if (!isWithin(installPath, resolved) || resolved === path.resolve(installPath)) continue;
+    try {
+      if (!isWithin(realRoot, fs.realpathSync(resolved))) continue;
+    } catch {
+      continue; // does not exist
+    }
+    if (!out.includes(resolved)) out.push(resolved);
+  }
+  return out.length > 0 ? out : [auto];
+}
+
+/** Agent directories (or manifest-declared agent files) of installed plugins as `[pluginName, path]`, enabled first. Ordering only: no plugin is left out. */
 function pluginAgentDirs(cwd: string | undefined): Array<[string, string]> {
   const found: Array<{ name: string; dir: string; key: string }> = [];
   let doc: any;
@@ -343,24 +425,28 @@ function pluginAgentDirs(cwd: string | undefined): Array<[string, string]> {
     if (!name || !Array.isArray(installs)) continue;
     for (const inst of installs) {
       const p = (inst as any)?.installPath;
-      if (typeof p === 'string' && path.isAbsolute(p)) found.push({ name, dir: path.join(p, 'agents'), key });
+      if (typeof p === 'string' && path.isAbsolute(p)) for (const dir of pluginAgentPaths(p)) found.push({ name, dir, key });
     }
   }
   const enabled = enabledPluginKeys(cwd);
   return [...found.filter((e) => enabled.has(e.key)), ...found.filter((e) => !enabled.has(e.key))].map((e) => [e.name, e.dir]);
 }
 
-/** The directories searched for `subagentType`, nearest first (empty for an invalid name). */
-export function agentLookupDirs(subagentType: unknown, cwd: string | undefined): string[] {
-  const parsed = parseAgentName(subagentType);
-  if (!parsed) return [];
+/** The directories (and manifest-declared agent files) searched for an agent of `plugin` (null: any), nearest first. */
+function lookupPaths(plugin: string | null, cwd: string | undefined): string[] {
   const dirs = new Set<string>();
-  if (!parsed.plugin) {
+  if (!plugin) {
     for (const d of projectAgentDirs(cwd)) dirs.add(d);
     dirs.add(path.join(userClaudeDir(cwd), 'agents'));
   }
-  for (const [plugin, dir] of pluginAgentDirs(cwd)) if (!parsed.plugin || plugin === parsed.plugin) dirs.add(dir);
+  for (const [name, dir] of pluginAgentDirs(cwd)) if (!plugin || name === plugin) dirs.add(dir);
   return [...dirs];
+}
+
+/** The directories searched for `subagentType`, nearest first (empty for an invalid name). */
+export function agentLookupDirs(subagentType: unknown, cwd: string | undefined): string[] {
+  const parsed = parseAgentName(subagentType);
+  return parsed ? lookupPaths(parsed.plugin, cwd) : [];
 }
 
 /** One-line account of where a definition is looked for, for ask reasons. */
@@ -368,7 +454,7 @@ export function describeAgentLookup(cwd: string | undefined): string {
   const project = projectAgentDirs(cwd);
   return (
     `${project.length > 0 ? project.join(', ') : '<cwd>/.claude/agents'} (hook cwd up to the project root), ` +
-    `${path.join(userClaudeDir(cwd), 'agents')}, and the agents/ dir of each plugin in ` +
+    `${path.join(userClaudeDir(cwd), 'agents')}, and the agents/ dir (or the manifest agents paths) of each plugin in ` +
     `${path.join(userClaudeDir(cwd), 'plugins', 'installed_plugins.json')} (enabled plugins first; a "plugin:agent" name only looks in that plugin)`
   );
 }
@@ -382,8 +468,15 @@ const MAX_AGENT_FILES = 2000;
 const MAX_AGENT_DEPTH = 8;
 const MAX_AGENT_FILE_BYTES = 1024 * 1024;
 
-/** Every `.md` file under `root`, subdirectories included, sorted; null when `root` is not a readable directory. */
+/** Every `.md` file under `root`, subdirectories included, sorted (or `root` itself, when it is an `.md` file); null when `root` is neither a readable directory nor such a file. */
 function listMarkdown(root: string): { files: string[]; special: string[]; truncated: boolean } | null {
+  // A manifest-declared agent file (the plugin `agents` field) is a root of one.
+  try {
+    const st = fs.statSync(root);
+    if (!st.isDirectory()) return /\.md$/i.test(root) ? (st.isFile() ? { files: [root], special: [], truncated: false } : { files: [], special: [root], truncated: false }) : null;
+  } catch {
+    return null;
+  }
   const files: string[] = [];
   /** `.md` entries that are not regular files (a FIFO, a socket, a device): never opened. */
   const special: string[] = [];
@@ -504,20 +597,19 @@ const toDefinition = (c: Claim): AgentDefinition => ({
 });
 
 /**
- * The definition of `subagentType`. The FIRST definition found decides, as in Claude Code, with one exception:
- * every project-level definition of the name is read, and when they disagree the answer is unreadable.
+ * The definition of `agent` (an exact name) for `plugin` (null: any source). The FIRST definition found decides, as in
+ * Claude Code, with one exception: every project-level definition of the name is read, and when they disagree the answer
+ * is unreadable.
  */
-export function readAgentDefinition(subagentType: string | undefined, cwd: string | undefined): AgentDefinition {
+function readExactDefinition(plugin: string | null, agent: string, cwd: string | undefined): AgentDefinition {
   const none: AgentDefinition = { found: false, model: null };
-  const parsed = parseAgentName(subagentType);
-  if (!parsed) return none;
   const userDir = path.join(userClaudeDir(cwd), 'agents');
-  const projectSet = new Set(parsed.plugin ? [] : projectAgentDirs(cwd).filter((d) => d !== userDir));
+  const projectSet = new Set(plugin ? [] : projectAgentDirs(cwd).filter((d) => d !== userDir));
   const project: Claim[] = [];
-  for (const dir of agentLookupDirs(subagentType, cwd)) {
+  for (const dir of lookupPaths(plugin, cwd)) {
     const inProject = projectSet.has(dir);
     if (project.length > 0 && !inProject) break; // past the project: the project definition decided
-    const scan = scanAgentDir(dir, parsed.agent);
+    const scan = scanAgentDir(dir, agent);
     if (scan.kind === 'none') continue;
     if (scan.kind === 'conflict') return { found: true, model: null, unreadable: scan.reason };
     if (!inProject) return toDefinition(scan);
@@ -528,7 +620,87 @@ export function readAgentDefinition(subagentType: string | undefined, cwd: strin
   const differing = others.filter((o) => o.unreadable !== null || first.unreadable !== null || modelKey(o.model) !== modelKey(first.model) || modelKey(o.effort) !== modelKey(first.effort));
   if (differing.length === 0) return toDefinition(first);
   const describeOne = (d: Claim) => `${d.file} (${d.model ?? 'no model'}, ${d.effort ?? 'no effort'})`;
-  return { found: true, model: null, unreadable: `the project defines "${parsed.agent}" in more than one place with different models or efforts: ${[first, ...differing].map(describeOne).join(' vs ')}` };
+  return { found: true, model: null, unreadable: `the project defines "${agent}" in more than one place with different models or efforts: ${[first, ...differing].map(describeOne).join(' vs ')}` };
+}
+
+/**
+ * The agent names in ONE agents directory (or manifest file) that match `target` (a normalised name), and the files
+ * that might match but whose name cannot be established (`problems`). Mirrors `scanAgentDir`'s claims, loosely.
+ */
+function collectLooseNames(dir: string, target: string, names: Set<string>, problems: string[]): void {
+  const listing = listMarkdown(dir);
+  if (listing === null) return;
+  const stem = (file: string) => path.basename(file).replace(/\.md$/i, '');
+  if (listing.truncated) problems.push(`${dir} holds more agent files than Jev reads (${MAX_AGENT_FILES}), or nests deeper than ${MAX_AGENT_DEPTH} levels`);
+  for (const file of listing.special) if (normaliseAgentName(stem(file)) === target) problems.push(`${file} is not a regular file and is not read`);
+  for (const file of listing.files) {
+    const byFileName = normaliseAgentName(stem(file)) === target;
+    const read = readRegularFile(file, MAX_AGENT_FILE_BYTES);
+    if (read.kind === 'too-large') {
+      if (byFileName) problems.push(`${file} is over ${MAX_AGENT_FILE_BYTES} bytes and is not read`);
+      continue;
+    }
+    if (read.kind === 'not-regular') {
+      if (byFileName) problems.push(`${file} is not a regular file and is not read`);
+      continue;
+    }
+    if (read.kind !== 'ok') continue;
+    const { name } = parseFrontmatter(read.text);
+    if (name.kind === 'value') {
+      if (normaliseAgentName(name.value) === target) names.add(name.value);
+      else if (byFileName) problems.push(`${file} declares the name ${JSON.stringify(clip(name.value))}, so it is not clear which file defines "${clip(target)}"`);
+    } else if (name.kind === 'none') {
+      if (byFileName) names.add(stem(file));
+    } else if (byFileName) {
+      problems.push(`${file} has a name that cannot be read (${name.reason})`);
+    } else {
+      // A name only Claude Code's own pipeline can read (a flow mapping, an indented block, an escape): its reading decides.
+      const cc = readClaudeCodeName(read.text);
+      if (cc.kind === 'unreadable') problems.push(`${file} has a name that cannot be read (${name.reason})`);
+      else if (cc.kind === 'value' && normaliseAgentName(cc.value) === target) problems.push(`${file} may declare a name that matches (${name.reason})`);
+    }
+  }
+}
+
+/**
+ * The loose match, for a type no agent has exactly. Claude Code then compares normalised names (`normaliseAgentName`)
+ * and a single match runs. Every normalised match across the lookup locations (and the built-in types) is collected by
+ * its exact name; none is `found: false`; several different names are unreadable (the guard asks, as Claude Code would
+ * refuse to guess); exactly one is read exactly, with the usual precedence. A built-in that is the only match is
+ * `found: false` here and resolves in `definitionOrBuiltin`. A plain not-found stays `found: false`: agents the hook
+ * cannot see (a `--agents` flag, a managed policy, a plugin at a custom path) exist, so asking would block them.
+ */
+function readLooseDefinition(plugin: string | null, agent: string, cwd: string | undefined): AgentDefinition {
+  const none: AgentDefinition = { found: false, model: null };
+  // An exact built-in name is the built-in: Claude Code never reaches the loose pass for it.
+  if (!plugin && BUILTIN_AGENT_TYPES.has(agent)) return none;
+  const target = normaliseAgentName(agent);
+  if (target === '') return none;
+  const names = new Set<string>();
+  const problems: string[] = [];
+  for (const dir of lookupPaths(plugin, cwd)) collectLooseNames(dir, target, names, problems);
+  if (problems.length > 0) return { found: true, model: null, unreadable: `${JSON.stringify(clip(agent))} matches agent names loosely and ${problems.join('; ')}` };
+  const builtin = !plugin ? [...BUILTIN_AGENT_TYPES].filter((b) => normaliseAgentName(b) === target) : [];
+  const all = new Set([...names, ...builtin]);
+  if (all.size > 1) {
+    return { found: true, model: null, unreadable: `${JSON.stringify(clip(agent))} matches more than one agent name once normalised (${[...all].map((n) => JSON.stringify(clip(n))).join(', ')}), so which one runs is not clear` };
+  }
+  if (names.size === 0) return none;
+  const [only] = names;
+  const exact = readExactDefinition(plugin, only, cwd);
+  return exact.found ? exact : none;
+}
+
+/**
+ * The definition of `subagentType`, as Claude Code resolves the name: the exact name first (the first definition found
+ * decides; every project-level definition is read and disagreement is unreadable), and, when no agent has that name,
+ * the loose match on normalised names (`readLooseDefinition`).
+ */
+export function readAgentDefinition(subagentType: string | undefined, cwd: string | undefined): AgentDefinition {
+  const parsed = parseAgentRef(subagentType);
+  if (!parsed) return { found: false, model: null };
+  const exact = readExactDefinition(parsed.plugin, parsed.agent, cwd);
+  return exact.found ? exact : readLooseDefinition(parsed.plugin, parsed.agent, cwd);
 }
 
 // ── The model an Agent/Task call will run on ───────────────────────────────────────────────────
@@ -569,7 +741,9 @@ export function resolveAgentModel(
   const forced = subagentModelForced(env);
   let definition: string | null = null;
   let definitionEffort: string | undefined;
-  const type = call.subagent_type;
+  // Claude Code runs a call with no subagent_type as `general-purpose`, so a user or project general-purpose.md applies.
+  const written = call.subagent_type;
+  const type = written === undefined || written === null || (typeof written === 'string' && written.trim() === '') ? 'general-purpose' : written;
   if (typeof type === 'string') {
     // Every type is looked up, built-in names included: a definition file named like a built-in overrides it.
     const def = definitionOrBuiltin(type, readAgentDefinition(type, cwd));

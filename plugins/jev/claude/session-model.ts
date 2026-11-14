@@ -235,7 +235,7 @@ function writeTranscriptRecord(dir: string, sessionId: string, record: SessionRe
     } catch {
       prior = null;
     }
-    if (isAuthoritative(prior) && readSessionRecord(dir, sessionId)?.source === 'transcript') {
+    if (prior && isAuthoritative(prior) && readSessionRecord(dir, sessionId)?.source === 'transcript') {
       writeSessionRecord(dir, sessionId, prior);
       return false;
     }

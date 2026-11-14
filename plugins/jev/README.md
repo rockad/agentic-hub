@@ -991,6 +991,27 @@ tool. The environment resolution is one function (`subagentModelCandidates`) sha
 process's environment is assumed to match Claude Code's; the FORCE details were read from the 2.1.321 binary by
 cognitive-engine and are version-bound.
 
+**How the type is matched.** As in Claude Code: the exact name first; when no agent has it, a normalised comparison
+(`NFKC`, lower case, white space, dashes and underscores removed) and a single match runs. So `Code_Reviewer`,
+`CODE REVIEWER` and `code-reviewer` are one agent, `explore` is `Explore.md` and `General-Purpose` is
+`general-purpose.md`, and the guard reads that file's `model:`. The comparison covers front matter names, file names
+(for a file with no `name:`) and the built-in types. Several different names that normalise alike (two files, or a file
+and a built-in) are ambiguous, and the call opens the permission dialog. An exact built-in name is the built-in, and a
+namespaced `plugin:agent` name only looks in that plugin. A call with no `subagent_type` (or an empty one) is
+`general-purpose`, so a project or user `general-purpose.md` with a `model:` above the session's applies to it. A type
+that no file matches, loosely or not, still passes (see "Sources the hook cannot see").
+
+**Plugin manifests.** An installed plugin's manifest `agents` field (`.claude-plugin/plugin.json`, else `plugin.json`:
+a path to an agent file or directory, or an array of them) is honoured; when it is set, the plugin's `agents/`
+directory is not read, as in Claude Code. Paths resolve inside the plugin directory only: an absolute path, a `..`
+traversal or a symlink that leaves the plugin is dropped, and a field with no usable path leaves `agents/` in place.
+
+**Sources the hook cannot see.** Agents defined only for a session are invisible to a hook: `--agents` on the command
+line, the SDK `initialize.agents`, managed policy agents, and plugins whose agents live at paths the installed-plugin
+registry does not reveal. A type that resolves to such an agent is indistinguishable from a type that does not exist, so
+a plain "not found" passes (it cannot ask: that would block every legitimate call to these agents). A model above the
+session's set in one of those agents is not caught by the Agent guard.
+
 The definition reader is cross-checked against Claude Code's own front matter pipeline (its block regex,
 `Bun.YAML.parse`, then its quoting fallback; a copy of 2.1.312's, by cognitive-engine): wherever the strict reader and
 that pipeline disagree on `name`, `model` or `effort` (a top-level flow mapping `{name: x, model: opus}`, a block
@@ -1042,6 +1063,12 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     transcript learner reads the last turn's model whenever the transcript has one, and the stale model stays the
     fallback until then. Deleting it dropped the guard (no session model, every elevation passed) on a resume whose
     transcript had no turn yet.
+  - Review fixes (same release): the guard now matches the `subagent_type` as Claude Code does (an exact name, else the
+    normalised name: `Code_Reviewer`, `CODE REVIEWER`, `explore`, `General-Purpose` read the file Claude Code would
+    run, several matches ask), a call with no `subagent_type` is looked up as `general-purpose`, and a plugin
+    manifest's `agents` paths are read (the `agents/` directory is skipped when the field is set). Agents defined
+    only for a session (`--agents`, SDK `initialize.agents`, managed policy) stay invisible to a hook; a plain
+    not-found still passes. Relative `effort` values are evaluated only against a known base (see the effort note).
 - **2.3.14: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
   - Found live: `jev_batch_dispatch` called with `description` for `task` and `dependsOn` for `dependencies`
     returned a plausible manifest with `task: ""`, `dependencies: []` and one stage. The server never checked

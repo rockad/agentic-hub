@@ -156,7 +156,11 @@ export function buildExecutionGuidance(
  */
 export function escalationNote(harness: JevHarness, isPro: boolean, sessionModel: string | null): string {
   if (harness !== 'claude-code' || !isPro || !sessionBelowOpus(sessionModel)) return '';
-  return ` Opus is above the session model${sessionModel ? ` (${sessionModel})` : ''}: the Jev guard will ask the user once per call before it runs.`;
+  // An unknown session model fails the guard open (nothing to compare against), so the promise to ask would be untrue.
+  if (claudeModelTier(sessionModel) === null) {
+    return ' Opus may be above the session model, but the session model is unknown, so the Jev guard may not ask the user before it runs.';
+  }
+  return ` Opus is above the session model (${sessionModel}): the Jev guard will ask the user once per call before it runs.`;
 }
 
 /** The router's description of the free tier on Claude Code: no Gemini quota, and text only. */

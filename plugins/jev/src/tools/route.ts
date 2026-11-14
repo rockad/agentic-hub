@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
@@ -9,23 +11,18 @@ import {
   logTelemetry
 } from '../core/index.js';
 
+/** The one source of truth for jev_route's input: the advertised JSON schema and the call-time check both derive from it. */
+export const routeInputSchema = strictObject({
+  context: z.string().describe('The text snippet, note, or prompt to classify'),
+  options: z.array(z.string()).describe('Candidate categories/options to choose from'),
+  criteria: z.record(z.string()).optional().describe('Optional dictionary mapping option keys to descriptive criteria'),
+  instruction: z.string().optional().describe('Optional instruction or question for classification')
+});
+
 export const routeToolDefinition: Tool = {
   name: 'jev_route',
   description: 'Ultra-fast (~800ms) choice selection and classification via OpenRouter native Decisions API (~typesafe/jev-latest). Evaluates candidate options and criteria mapping, returning calibrated probabilities and confidence.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      context: { type: 'string', description: 'The text snippet, note, or prompt to classify' },
-      options: { type: 'array', items: { type: 'string' }, description: 'Candidate categories/options to choose from' },
-      criteria: {
-        type: 'object',
-        additionalProperties: { type: 'string' },
-        description: 'Optional dictionary mapping option keys to descriptive criteria'
-      },
-      instruction: { type: 'string', description: 'Optional instruction or question for classification' }
-    },
-    required: ['context', 'options']
-  }
+  inputSchema: inputJsonSchema(routeInputSchema)
 };
 
 export async function handleRouteTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

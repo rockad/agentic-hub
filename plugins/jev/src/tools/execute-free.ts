@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   assertFreeModel,
   FREE_MODEL,
@@ -8,54 +10,46 @@ import {
   logTelemetry
 } from '../core/index.js';
 
+/** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
+export const agentFreeInputSchema = strictObject({
+  prompt: z.string().describe('The coding task, refactoring request, or prompt for the autonomous agent'),
+  cwd: z.string().optional().describe('Optional working directory for context (defaults to current working directory)'),
+  model: z
+    .string()
+    .optional()
+    .describe('Free model to use (defaults to "openrouter/free" [200k ctx, official router], also supports "google/gemma-4-31b-it:free", "cohere/north-mini-code:free", "nvidia/nemotron-3.5-lightning:free")'),
+  timeoutMs: z.number().optional().describe('Optional execution timeout in milliseconds (defaults to 120000ms)')
+});
+
+export const executeFreeInputSchema = strictObject({
+  prompt: z.string().describe('The prompt or instructions to execute'),
+  systemInstruction: z.string().optional().describe('Optional system instructions'),
+  model: z.string().optional().describe('Optional OpenRouter free model (defaults to openrouter/free)')
+});
+
+export const executeFreeGuardedInputSchema = strictObject({
+  prompt: z.string().describe('The task prompt or content to process'),
+  systemInstruction: z.string().optional().describe('Optional system instructions'),
+  condition: z.string().optional().describe('Optional quality gate evaluation condition (e.g. "Is the output complete, coherent, and non-empty?")'),
+  model: z.string().optional().describe('Optional free model candidate (defaults to openrouter/free)')
+});
+
 export const agentFreeToolDefinition: Tool = {
   name: 'jev_agent_free',
   description: 'Execute autonomous agentic coding, workspace modification, refactoring, and text tasks using free-tier models via OpenRouter Free pool at $0.00 cost (0 Gemini quota).',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: 'The coding task, refactoring request, or prompt for the autonomous agent' },
-      cwd: { type: 'string', description: 'Optional working directory for context (defaults to current working directory)' },
-      model: {
-        type: 'string',
-        description: 'Free model to use (defaults to "openrouter/free" [200k ctx, official router], also supports "google/gemma-4-31b-it:free", "cohere/north-mini-code:free", "nvidia/nemotron-3.5-lightning:free")'
-      },
-      timeoutMs: {
-        type: 'number',
-        description: 'Optional execution timeout in milliseconds (defaults to 120000ms)'
-      }
-    },
-    required: ['prompt']
-  }
+  inputSchema: inputJsonSchema(agentFreeInputSchema)
 };
 
 export const executeFreeToolDefinition: Tool = {
   name: 'jev_execute_free',
   description: 'Execute lightweight generative tasks (summaries, formatting, drafting, boilerplate) using OpenRouter Free Tier (defaults to openrouter/free [200k ctx]) at $0.00 cost, saving Gemini quota.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: 'The prompt or instructions to execute' },
-      systemInstruction: { type: 'string', description: 'Optional system instructions' },
-      model: { type: 'string', description: 'Optional OpenRouter free model (defaults to openrouter/free)' }
-    },
-    required: ['prompt']
-  }
+  inputSchema: inputJsonSchema(executeFreeInputSchema)
 };
 
 export const executeFreeGuardedToolDefinition: Tool = {
   name: 'jev_execute_free_guarded',
   description: 'Execute lightweight or trivial generative tasks (formatting, boilerplate, summaries, single-file edits, markdown transformations) on OpenRouter free-tier models ($0.00 cost) with an automatic jev_judge quality gate evaluation. Automatically escalates to a fallback tier if quality verification fails.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: 'The task prompt or content to process' },
-      systemInstruction: { type: 'string', description: 'Optional system instructions' },
-      condition: { type: 'string', description: 'Optional quality gate evaluation condition (e.g. "Is the output complete, coherent, and non-empty?")' },
-      model: { type: 'string', description: 'Optional free model candidate (defaults to openrouter/free)' }
-    },
-    required: ['prompt']
-  }
+  inputSchema: inputJsonSchema(executeFreeGuardedInputSchema)
 };
 
 export async function handleAgentFreeTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

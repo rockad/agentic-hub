@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   readQuotaView,
   quotaRecommendation,
@@ -8,51 +10,45 @@ import {
   logTelemetry
 } from '../core/index.js';
 
+/** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
+export const quotaInputSchema = strictObject({
+  refresh: z
+    .boolean()
+    .optional()
+    .describe('Reserved: hint that the caller wants a fresh read (the statusline is the only live source; this flag does not force a refresh).')
+});
+
+export const selectModelInputSchema = strictObject({
+  task: z.string().describe('The task, prompt, or sub-goal to size up'),
+  candidates: z
+    .array(
+      strictObject({
+        id: z.string(),
+        tier: z.enum(['free', 'cheap', 'standard', 'expensive']).optional(),
+        providerModel: z.string(),
+        costInPerMTok: z.number(),
+        costOutPerMTok: z.number(),
+        label: z.string().optional()
+      })
+    )
+    .optional()
+    .describe('Optional cost-annotated candidate models. Each: { id, tier, providerModel, costInPerMTok, costOutPerMTok, label? }. Defaults to four abstract tiers if omitted.'),
+  quotaStrategy: z
+    .enum(['normal', 'conserve', 'free_only', 'unknown'])
+    .optional()
+    .describe('Optional quota strategy from jev_quota; biases the ladder toward free when quota is tight.')
+});
+
 export const quotaToolDefinition: Tool = {
   name: 'jev_quota',
   description: 'Report the live Antigravity (Google AI Pro) quota view across all buckets (gemini-5h, gemini-weekly, 3p-5h, 3p-weekly), reset-aware, and return a spending strategy: "normal" | "conserve" | "free_only" | "unknown". Use it to decide whether to keep working on Gemini tiers or offload to openrouter/free. May be stale when Antigravity is closed.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      refresh: {
-        type: 'boolean',
-        description: 'Reserved: hint that the caller wants a fresh read (the statusline is the only live source; this flag does not force a refresh).'
-      }
-    }
-  }
+  inputSchema: inputJsonSchema(quotaInputSchema)
 };
 
 export const selectModelToolDefinition: Tool = {
   name: 'jev_select_model',
   description: 'Cost-tiered model selection. In one ~800ms Jev decision call, returns a ranked set of candidate models (with cost + calibrated probability), the cheapest option that is sufficient for the task, the expensive options, and a recommendation: "cheapest_suitable" (proceed on the cheap option) or "ask_user" (the cheapest sufficient option is expensive — present the options and let the user choose). Cost-first: always prefers cheaper; expensive requires manual approval.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      task: { type: 'string', description: 'The task, prompt, or sub-goal to size up' },
-      candidates: {
-        type: 'array',
-        description: 'Optional cost-annotated candidate models. Each: { id, tier, providerModel, costInPerMTok, costOutPerMTok, label? }. Defaults to four abstract tiers if omitted.',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            tier: { type: 'string', enum: ['free', 'cheap', 'standard', 'expensive'] },
-            providerModel: { type: 'string' },
-            costInPerMTok: { type: 'number' },
-            costOutPerMTok: { type: 'number' },
-            label: { type: 'string' }
-          },
-          required: ['id', 'providerModel', 'costInPerMTok', 'costOutPerMTok']
-        }
-      },
-      quotaStrategy: {
-        type: 'string',
-        enum: ['normal', 'conserve', 'free_only', 'unknown'],
-        description: 'Optional quota strategy from jev_quota; biases the ladder toward free when quota is tight.'
-      }
-    },
-    required: ['task']
-  }
+  inputSchema: inputJsonSchema(selectModelInputSchema)
 };
 
 export async function handleQuotaTool(_args?: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

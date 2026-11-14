@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
@@ -9,22 +11,17 @@ import {
   logTelemetry
 } from '../core/index.js';
 
+/** The one source of truth for jev_score's input: the advertised JSON schema and the call-time check both derive from it. */
+export const scoreInputSchema = strictObject({
+  context: z.string().describe('Content to rate'),
+  rubric: z.string().optional().describe('Rubric or question for rating'),
+  criteria: z.array(z.string()).optional().describe('Optional array of criteria descriptions (defaults to standard 5-point quality scale)')
+});
+
 export const scoreToolDefinition: Tool = {
   name: 'jev_score',
   description: 'Rate relevance, quality, or cognitive complexity on an ordinal scale using OpenRouter native Decisions API (question type "score") with criteria buckets.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      context: { type: 'string', description: 'Content to rate' },
-      rubric: { type: 'string', description: 'Rubric or question for rating' },
-      criteria: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Optional array of criteria descriptions (defaults to standard 5-point quality scale)'
-      }
-    },
-    required: ['context']
-  }
+  inputSchema: inputJsonSchema(scoreInputSchema)
 };
 
 export async function handleScoreTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {

@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
@@ -35,66 +37,126 @@ import {
 import { STAGE_RUBRIC, TIER_CRITERIA, isStageKind } from '../stage-rubric.js';
 import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria } from '../../claude/logic.js';
 
+/** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
+export const dispatchInputSchema = strictObject({
+  task: z.string().describe('The task, prompt, or sub-goal to dispatch'),
+  availableSubagents: z
+    .array(z.string())
+    .optional()
+    .describe('Optional candidate subagents (defaults to dynamically discovered workspace agents)')
+});
+
+export const batchDispatchInputSchema = strictObject({
+  tasks: z
+    .array(
+      strictObject({
+        id: z.string().describe('Unique identifier for the task/phase'),
+        task: z.string().describe('The description of the work'),
+        dependencies: z
+          .array(z.string())
+          .optional()
+          .describe('Optional array of task IDs that must complete before this task can start'),
+        kind: z
+          .enum(['mechanical', 'settled-edit', 'judgement'])
+          .optional()
+          .describe(
+            "Optional, Claude Code only: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives haiku, settled-edit (spec or plan edit with a decision already made) gives sonnet, judgement (an error is expensive) gives opus"
+          ),
+        needsEdit: z
+          .boolean()
+          .optional()
+          .describe(
+            'Optional, Claude Code only: the stage edits files, so read-only subagent types (Plan, Explore) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
+          )
+      })
+    )
+    .describe('Array of task descriptions or phase items to plan and dispatch in parallel'),
+  availableSubagents: z.array(z.string()).optional().describe('Optional list of candidate subagents')
+});
+
 export const dispatchToolDefinition: Tool = {
   name: 'jev_dispatch',
   description: 'Intelligently route a task to the optimal subagent and model tier ("openrouter_free" | "flash_lite" | "flash" | "pro") in a single ~800ms decision call using TypeSafe Jev. "pro" tier models require explicit manual user approval before invocation.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      task: { type: 'string', description: 'The task, prompt, or sub-goal to dispatch' },
-      availableSubagents: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Optional candidate subagents (defaults to dynamically discovered workspace agents)'
-      }
-    },
-    required: ['task']
-  }
+  inputSchema: inputJsonSchema(dispatchInputSchema)
 };
 
 export const batchDispatchToolDefinition: Tool = {
   name: 'jev_batch_dispatch',
   description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags. On Claude Code, classify each task with kind (mechanical, settled-edit, judgement) and needsEdit to get the model per stage (haiku, sonnet, opus), Agent() guidance and no read-only persona or free tier for an edit stage.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      tasks: {
-        type: 'array',
-        description: 'Array of task descriptions or phase items to plan and dispatch in parallel',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Unique identifier for the task/phase' },
-            task: { type: 'string', description: 'The description of the work' },
-            dependencies: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Optional array of task IDs that must complete before this task can start'
-            },
-            kind: {
-              type: 'string',
-              enum: ['mechanical', 'settled-edit', 'judgement'],
-              description:
-                "Optional, Claude Code only: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives haiku, settled-edit (spec or plan edit with a decision already made) gives sonnet, judgement (an error is expensive) gives opus"
-            },
-            needsEdit: {
-              type: 'boolean',
-              description:
-                'Optional, Claude Code only: the stage edits files, so read-only subagent types (Plan, Explore) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
-            }
-          },
-          required: ['id', 'task']
-        }
-      },
-      availableSubagents: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Optional list of candidate subagents'
-      }
-    },
-    required: ['tasks']
-  }
+  inputSchema: inputJsonSchema(batchDispatchInputSchema)
 };
+
+/**
+ * Meaning checks on a jev_dispatch input that already passed the schema (run by validateToolInput).
+ * An empty task keeps its old wording; it is now an isError result like every other invalid argument.
+ */
+export function dispatchInputIssues(input: z.infer<typeof dispatchInputSchema>): string[] {
+  return input.task ? [] : ['jev_dispatch requires a non-empty "task" string'];
+}
+
+/**
+ * Meaning checks on a jev_batch_dispatch input that already passed the schema (run by validateToolInput, before
+ * any planning). The schema cannot say these: it accepts `task: ""`, repeated ids, and dependencies on nothing,
+ * and the planner then silently defaults them. One line per problem, in a fixed order:
+ *   1. an empty `tasks` array (the old error, unchanged);
+ *   2. a blank `task` or `id` (after trim);
+ *   3. duplicate ids, naming where each sits;
+ *   4. a dependency on the task itself, then on an id no task has;
+ *   5. a dependency cycle, as a path (a -> b -> a).
+ */
+export function batchDispatchInputIssues(input: z.infer<typeof batchDispatchInputSchema>): string[] {
+  const { tasks } = input;
+  if (tasks.length === 0) return ['jev_batch_dispatch requires a non-empty "tasks" array'];
+
+  const issues: string[] = [];
+  tasks.forEach((t, i) => {
+    if (t.task.trim() === '') issues.push(`Must be a non-empty string at tasks[${i}].task`);
+    if (t.id.trim() === '') issues.push(`Must be a non-empty string at tasks[${i}].id`);
+  });
+
+  const positions = new Map<string, number[]>();
+  tasks.forEach((t, i) => {
+    if (t.id.trim() === '') return;
+    positions.set(t.id, [...(positions.get(t.id) ?? []), i]);
+  });
+  for (const [id, at] of positions) {
+    if (at.length > 1) issues.push(`Duplicate task id '${id}' at ${at.map((i) => `tasks[${i}]`).join(', ')}`);
+  }
+
+  // The graph the cycle search walks: first-listed task of an id wins its edges, a duplicate adds its own.
+  const edges = new Map<string, string[]>();
+  tasks.forEach((t, i) => {
+    (t.dependencies ?? []).forEach((dep, j) => {
+      const where = `tasks[${i}].dependencies[${j}]`;
+      if (dep === t.id) {
+        issues.push(`Task '${t.id}' depends on itself at ${where}`);
+      } else if (!positions.has(dep)) {
+        issues.push(`Unknown dependency '${dep}' at ${where}: no task has that id`);
+      } else if (positions.has(t.id)) {
+        edges.set(t.id, [...(edges.get(t.id) ?? []), dep]);
+      }
+    });
+  });
+
+  const state = new Map<string, 'open' | 'done'>();
+  const stack: string[] = [];
+  const visit = (id: string): void => {
+    state.set(id, 'open');
+    stack.push(id);
+    for (const dep of edges.get(id) ?? []) {
+      if (state.get(dep) === 'open') {
+        issues.push(`Dependency cycle: ${[...stack.slice(stack.indexOf(dep)), dep].join(' -> ')}`);
+      } else if (!state.has(dep)) {
+        visit(dep);
+      }
+    }
+    stack.pop();
+    state.set(id, 'done');
+  };
+  for (const t of tasks) if (!state.has(t.id)) visit(t.id);
+
+  return issues;
+}
 
 /**
  * Batch tier rule: a keyword rule on whole words (see isFreeTierMechanicalTask).

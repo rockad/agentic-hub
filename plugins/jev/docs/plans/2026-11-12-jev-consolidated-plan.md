@@ -534,7 +534,7 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 | Session-model fallback (#49) | Real hook process with a real transcript: verified; hand-seeded session record produced the live model-less downgrade question; the unseeded interactive case after merge is the live check to run |
 | Workflow guard (#51) | Real hook process with the captured payload: deny with the marker, silent pass without a model; same from a clean plugin export. **Full interactive Workflow run: planned, see below** |
 | Persona swap (#52) | Unit and parity tests only (non-Claude harnesses) |
-| Antigravity `invoke_subagent` guard | Built as #53 (2.3.13); live control done (section 31); the real `ask_question` PostToolUse payload is still to be captured |
+| Antigravity `invoke_subagent` guard | Built as #53 (2.3.13); verified live (section 31): real `ask_question` PostToolUse payload captured (`transcriptPath` at `stepIdx`), pass-through empty stdout, 5-case control + dialog backstop |
 
 **Full interactive Workflow verification (to run by the user in a session started with `--plugin-dir` on the #52 tree, installed jev disabled, sonnet session; each step is read from the Jev decisions log, the state files and the workflow and subagent transcripts afterwards):**
 
@@ -584,7 +584,7 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 | PR | Version | Content | State |
 | --- | --- | --- | --- |
 | #48 to #52 | 2.3.9 to 2.3.12 | See section 28 | Doc-Cr round 2: resolved from the reviewer's side on all five |
-| #53 | 2.3.13 | Antigravity `invoke_subagent` PreToolUse guard (`plugins/jev/antigravity/`, root `hooks.json`, real payload fixture): the Model is read from the flat `args.Model`; omitted and `inherit` follow the session model; above the ceiling is denied with the prescribed Yes/No question; the PostToolUse recorder records an approval from the `content` field only, by exact label | Round 2: recorder fixed (a No never approves); one open finding, see below |
+| #53 | 2.3.13 | Antigravity `invoke_subagent` PreToolUse guard (`plugins/jev/antigravity/`, root `hooks.json`, real payload fixtures): the Model is read from flat `args.Model` and `Subagents[]` prioritized by rank; omitted and `inherit` follow the session model; above the ceiling is denied with the prescribed Yes/No question; the PostToolUse recorder records an approval from `transcriptPath` at `stepIdx`; pass-through exits 0 with empty stdout | Verified live (sections 27 & 31); Round 5 findings A & B resolved, 1980 tests passing |
 | #54 | 2.3.14 | Strict zod validation per tool; `jev_batch_dispatch` semantic checks (blank or duplicate ids, unknown or self dependencies, cycles) with did-you-mean hints for unknown keys | No review yet |
 | #55 | 2.3.15 | Agent/Task guard parity: reads the definition model, `CLAUDE_CODE_SUBAGENT_MODEL` and its `_FORCE` flag, the ladder pin, a narrow interim ask for `xhigh` and `max` effort, a front-matter cross-check | Round 1: one open finding, see below |
 
@@ -592,15 +592,13 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 
 **Open review findings (2026-11-14, round 2 and 3):**
 
-- #53: `isExplicitProOverride` matched the user's prompt by substring, so "jargon", "Argonaut" or a negated "do not use deep reasoning" passed an elevation as instructed. Fix: whole words and phrases, negations skipped, same behaviour as the Claude path.
+- #53 (resolved in `2cb8e5e`): `extractSubagentModel` checks flat and `Subagents[]` entries by highest rank; `isExplicitProOverride` dropped bare `argon`, expanded negation window to the clause level, and enforced model coverage; PreToolUse pass-through exits 0 with empty stdout (verified live: `{}` causes a denial); PostToolUse reads step content from `transcriptPath` at `stepIdx` (verified live: stdin carries `transcriptPath` and `stepIdx`, not `content`).
 - #55: a project or user definition named like a built-in type (`Explore`, `general-purpose`) overrides the built-in and keeps its own `model` (Claude Code docs). The Agent path skipped that lookup, the Workflow guard did not. Fix: look the definition up first for every type name, fall back to "built-in, no model" only when no file claims the name. This also makes the `resolveAgentModel` comment true: built-in types have no model only while no such file exists.
 - The docs confirm that a non-fork Agent call can carry an `effort` parameter, so the interim effort rule has something to read.
 
-**Decisions kept:** the Workflow hook stays fail-open like every other Jev hook (README documents `"onFailure": "block"` on a separate Workflow entry as an opt-in that Jev does not enable). Hook output on pass-through paths in Antigravity is `{}`, because `hooks.md` defines `decision: "allow"` as automatic approval.
+**Decisions kept:** the Workflow hook stays fail-open like every other Jev hook (README documents `"onFailure": "block"` on a separate Workflow entry as an opt-in that Jev does not enable). Hook output on pass-through paths in Antigravity exits 0 with empty stdout (verified live: printing `{}` is treated by Antigravity as a denial). PostToolUse prints `{}` as specified by `hooks.md`.
 
 **Still unverified:**
 
-- The real `ask_question` PostToolUse payload from Antigravity: no recording exists, `hooks.md` documents no result field, so the fixture is synthetic. If the real payload carries no `content`, no approval is ever recorded and the flow falls to the third-attempt dialog. One real capture settles it.
-- How Antigravity treats `{}` versus empty output on PreToolUse.
 - The live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
 - The model a Workflow agent actually ran on is never logged (no hook sees it).

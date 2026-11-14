@@ -19,6 +19,19 @@ S1-STORE owns the `audit` table and the migration. S1-OBS adds no table and no m
 - `store/protocol.py` is outside the S1-OBS file scope, so the protocol is declared in the audit package. **Dependency for S1-STORE:** its store (or an adapter) must provide `append_audit`, writing the columns `at`, `actor`, `event`, `subject`, `detail_json` of spec 1.3. `AuditRow.detail_json()` gives the last one.
 - **Dependency for S1-STATE:** "exactly one audit row per state transition" holds only if the transition and its row commit together. `append_audit` alone does not give that. A transaction-scoped variant is a decision for S1-STORE and S1-STATE [design]; the writer does not need it.
 
+### Acceptance "every state transition has exactly one audit row naming its actor": the split
+
+The plan's S1-OBS acceptance line has two halves. Only the first can be shown in this stream.
+
+| half | what it shows | where it is shown | status |
+| --- | --- | --- | --- |
+| OBS half | `AuditLog.state_transition` makes exactly one append per call, requires and records the actor, refuses unknown states, and lets a failed append reach the caller: no swallow, no buffer, no retry, no stray row | `tests/test_audit.py`: `test_one_state_transition_call_makes_exactly_one_append`, `test_state_transition_names_its_actor_and_is_one_row_each`, `test_failed_transition_append_leaves_no_row_and_is_never_retried_behind_the_caller`, `test_store_failure_propagates` | tested against the in-memory double only |
+| end-to-end half | the transition and its audit row commit in one transaction, against the real state machine and the Postgres test container: a failed audit insert leaves the task state and version unchanged and no row; a normal transition leaves exactly one row naming the actor | not in this stream: it needs S1-STATE and the `audit` table from S1-STORE | **handed over**, unverified; a skipped placeholder test marks it (`test_transition_and_its_audit_row_commit_together_against_postgres`) |
+
+- The end-to-end half is an exit test of S1-STATE and S1-STORE (see the acceptance lists in `implementation-plan.md`). It is a gap in how the acceptance list was assigned, not a defect found in S1-OBS.
+- S1-OBS does not claim the guarantee. What S1-OBS promises is narrower: given a store whose `append_audit` joins the caller's transaction, the writer adds nothing that would break atomicity.
+- Open for S1-STORE and S1-STATE [design]: how `append_audit` joins the transaction (a connection or session argument, a unit-of-work object, or an `AuditLog` bound to the current transaction). S1-OBS does not choose.
+
 ## 3. Event types
 
 Only `handle_probe_limited` and its two fields are fixed by the spec. The other names, the required fields and the subject are [design].
@@ -94,5 +107,6 @@ Spec 3.6. `POST /status` is registered only when `A2A_STATUS_ENABLED=1` (default
 ## 10. Not verified
 
 - The audit writer against a real Postgres `audit` table: the table does not exist yet (S1-STORE). Tested against the in-memory double only.
+- "Transition and audit row commit together" against the real state machine and Postgres (section 2, end-to-end half): not shown here, handed over to S1-STATE and S1-STORE.
 - The `/status` scope check, because S1-AUTH does not exist yet.
 - Behaviour behind the Docker image: the unit tests and one scratch uvicorn run on the workstation were run; the container image was not rebuilt for this stream.

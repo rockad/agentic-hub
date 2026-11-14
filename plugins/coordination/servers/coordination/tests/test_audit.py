@@ -212,6 +212,53 @@ def test_store_failure_propagates(log, store):
         run(log.key_revoked(actor="admin", key_id="k1"))
 
 
+def test_failed_transition_append_leaves_no_row_and_is_never_retried_behind_the_caller(
+    log, store
+):
+    """The OBS half of "transition and audit row commit together" (acceptance 3b).
+
+    The writer must not swallow, buffer or retry a failed append. The error reaches the code that
+    owns the transaction, which can then roll the transition back; and a later successful call
+    writes its own row only, so a failed attempt never turns into a stray or duplicate row.
+    """
+    store.fail_with = RuntimeError("db down")
+    with pytest.raises(RuntimeError):
+        run(log.state_transition(actor="k1", task_id="t1", from_state=None, to_state="TASK_STATE_SUBMITTED"))
+    assert store.rows == []
+
+    store.fail_with = None
+    run(log.state_transition(actor="k1", task_id="t2", from_state=None, to_state="TASK_STATE_SUBMITTED"))
+    assert [r.subject for r in store.rows] == ["t2"]
+
+
+def test_one_state_transition_call_makes_exactly_one_append(log, store):
+    appended = []
+    original = store.append_audit
+
+    async def counting(row):
+        appended.append(row)
+        await original(row)
+
+    store.append_audit = counting
+    run(log.state_transition(actor="k1", task_id="t1", from_state="TASK_STATE_SUBMITTED", to_state="TASK_STATE_WORKING"))
+    assert len(appended) == 1
+    assert len(store.rows) == 1
+
+
+@pytest.mark.skip(
+    reason=(
+        "Acceptance 3b end to end needs S1-STATE (state machine) and S1-STORE (audit table, "
+        "transaction scope); neither exists in this stream. Handed over as an exit test of "
+        "S1-STATE and S1-STORE: see docs/specs/audit-events.md section 2."
+    )
+)
+def test_transition_and_its_audit_row_commit_together_against_postgres():
+    """Placeholder, not a passing test. Intended shape for S1-STATE: against the real state
+    machine and the Postgres test container, force the audit insert to fail mid-transition and
+    assert the task state and version are unchanged and no audit row exists; then run a normal
+    transition and assert exactly one `state_transition` row naming the actor."""
+
+
 # sampled auth failures -------------------------------------------------------------------
 
 

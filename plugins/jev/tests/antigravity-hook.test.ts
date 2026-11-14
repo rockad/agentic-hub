@@ -210,13 +210,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
   });
 
   describe('explicit pro override matching', () => {
-    const overrides = (prompt: string, elevationMode?: 'dialog') =>
+    const overrides = (prompt: string, elevationMode?: 'dialog', requestedModel: string = 'pro') =>
       evaluateAntigravitySubagentCall(
         {
           conversationId: 'c-ovr',
           lastUserInput: prompt,
           modelName: 'gemini-3.8-flash-low',
-          toolCall: { id: 't-ovr', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'x', Model: 'pro' } }
+          toolCall: { id: 't-ovr', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'x', Model: requestedModel } }
         },
         { approvals, sessionModelOverride: 'gemini-3.8-flash-low', elevationMode, now: () => 1000 }
       );
@@ -229,7 +229,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       'Don’t use Claude Opus for this',
       'Never use cross-system architecture thinking',
       'Run it without manual pro approval',
-      'avoid argon'
+      'avoid argon',
+      "I don't want you to use gemini pro here",
+      'Do not, under any circumstances, use gemini pro',
+      'never let a subagent use gemini pro',
+      'hash it with argon',
+      'use argon for this',
+      'Argon, please.'
     ]) {
       it(`does not treat "${prompt}" as an explicit override`, () => {
         const d = overrides(prompt);
@@ -246,8 +252,6 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       'Use Claude Opus for this',
       'manual pro approval granted',
       'use deep reasoning',
-      'use argon for this',
-      'Argon, please.',
       'Do not rush, use deep reasoning'
     ]) {
       it(`still treats "${prompt}" as an explicit override`, () => {
@@ -256,6 +260,127 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
         expect(d.elevation).toBe('instructed');
       });
     }
+
+    it('"use gemini pro" must not approve a Claude Opus request', () => {
+      const d = overrides('use gemini pro', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:claude-opus-5-5]');
+    });
+
+    it('"Use Claude Opus for this" approves a Claude Opus request', () => {
+      const d = overrides('Use Claude Opus for this', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('allow');
+      expect(d.elevation).toBe('instructed');
+    });
+  });
+
+  describe('Finding A: mixed Subagents[] and lowercase model shapes', () => {
+    it('denies mixed Subagents[] with lower-tier first and pro second: {"Subagents":[{"Model":"flash"},{"Model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mixed',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-mix',
+          name: 'invoke_subagent',
+          args: {
+            Subagents: [
+              { Role: 'helper', Model: 'flash' },
+              { Role: 'expert', Model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies Model: "inherit" when Subagents[] contains pro: {"Model":"inherit","Subagents":[{"Model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-inherit-sub',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-inh',
+          name: 'invoke_subagent',
+          args: {
+            Model: 'inherit',
+            Subagents: [
+              { Role: 'expert', Model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies lowercase model key: {"model":"pro"}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-lc-key',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-lc',
+          name: 'invoke_subagent',
+          args: {
+            TypeName: 'expert',
+            Prompt: 'work',
+            model: 'pro'
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies lowercase subagents array and model keys: {"subagents":[{"model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-lc-arr',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-lc-arr',
+          name: 'invoke_subagent',
+          args: {
+            subagents: [
+              { role: 'expert', model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
   });
 
   it('supports backward compatibility with older args.Subagents[] shape', () => {
@@ -434,6 +559,43 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
     expect(
       extractAskAnswer({ toolCall: { name: 'ask_question', args: { questions: [{ question: 'q', options: ['Yes, once'] }] } }, lastUserInput: 'Yes, once' } as AntigravityHookInput)
     ).toBeNull();
+  });
+
+  it('extractAskAnswer reads from transcriptPath at stepIdx when content is omitted (real Antigravity PostToolUse)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-transcript-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"start"}\n' +
+        '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","content":"ask"}\n' +
+        '{"step_index":2,"source":"MODEL","type":"GENERIC","content":"Created At: 2026-11-14T16:37:35+02:00\\nCompleted At: 2026-11-14T16:38:00+02:00\\nA1: (Recommended) Yes, once"}\n'
+      );
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-transcript',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: {
+          name: 'ask_question',
+          args: {
+            questions: [
+              {
+                question: '[jev-elevate:pro] Allow subagent?',
+                options: ['(Recommended) Yes, once', 'No']
+              }
+            ]
+          }
+        }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBe('(Recommended) Yes, once');
+      const parsed = parseElevationAnswer(extractAskAnswer(input, 0));
+      expect(parsed.approved).toBe(true);
+      expect(parsed.scope).toBe('once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps a multi-line free-text answer whole, so it can never equal a label', () => {

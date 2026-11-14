@@ -77,6 +77,14 @@
       "path": "skills/clarify"
     },
     {
+      "id": "cplain",
+      "path": "skills/cplain"
+    },
+    {
+      "id": "celi5",
+      "path": "skills/celi5"
+    },
+    {
       "id": "markdown-convert",
       "path": "skills/markdown-convert"
     },

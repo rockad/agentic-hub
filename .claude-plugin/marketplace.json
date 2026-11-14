@@ -47,6 +47,76 @@
       "source": "./plugins/subagents",
       "description": "Specialized engineering, testing, and operations subagents",
       "version": "1.0.0"
+    },
+    {
+      "name": "clarify",
+      "source": "./skills/clarify",
+      "description": "Walk a non-trivial design through its forks one question at a time, with trade-offs and explicit recommendations. Also /grill-me.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "cplain",
+      "source": "./skills/cplain",
+      "description": "Plain-English variant of clarify: no jargon, intuitive mental models. Use via /cplain.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "celi5",
+      "source": "./skills/celi5",
+      "description": "Explain-like-I'm-five variant of clarify, with everyday analogies. Use via /celi5.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "handoff",
+      "source": "./skills/handoff",
+      "description": "Keep a project's living HANDOFF.md (state, decisions and rejected options, deferred branches, next actions) so a new session can continue without the original conversation. Use via /handoff.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "markdown-convert",
+      "source": "./skills/markdown-convert",
+      "description": "Convert PDFs, Office documents and .eml emails into Markdown sidecar files, with offline OCR fallback for scanned PDFs.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "mcp-toggle",
+      "source": "./skills/mcp-toggle",
+      "description": "Inspect and toggle on-demand MCP server plugins (Chrome DevTools, Google Workspace, Jev) to save context tokens.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "md-to-pdf",
+      "source": "./skills/md-to-pdf",
+      "description": "Convert Markdown documents to professionally styled PDFs using HTML/CSS templates and WeasyPrint.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "rclone-cloud-storage",
+      "source": "./skills/rclone-cloud-storage",
+      "description": "Manage Google Drive, OneDrive and other cloud storage with rclone.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "skills-doctor",
+      "source": "./skills/skills-doctor",
+      "description": "Diagnose and repair npx skills installs across project and global scopes.",
+      "version": "1.0.0",
+      "category": "skills"
+    },
+    {
+      "name": "sync-main",
+      "source": "./skills/sync-main",
+      "description": "Merge the latest main into the current branch, then build, test and lint with failure attribution. Never pushes on its own.",
+      "version": "1.0.0",
+      "category": "skills"
     }
   ]
 }

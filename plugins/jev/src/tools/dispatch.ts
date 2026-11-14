@@ -116,7 +116,9 @@ export function buildExecutionGuidance(
   isFree: boolean,
   subagent: string,
   concreteModel: string,
-  single = false
+  single = false,
+  /** The task edits files. Outside Claude Code a read-only persona is kept for it, so the guidance says so. */
+  editsFile = false
 ): { executionTool: 'jev_execute_free' | 'invoke_subagent' | 'Agent'; executionGuidance: string } {
   if (harness === 'claude-code') {
     if (isFree) {
@@ -146,7 +148,9 @@ export function buildExecutionGuidance(
   }
   return {
     executionTool: 'invoke_subagent',
-    executionGuidance: `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${concreteModel}").`
+    executionGuidance:
+      `Delegate to subagent via invoke_subagent(Role: "${subagent}", Model: "${concreteModel}").` +
+      (editsFile && isReadOnlySubagent(subagent) ? ' This persona is read-only; the edit may need another agent.' : '')
   };
 }
 
@@ -198,9 +202,13 @@ export function telemetryHarness(): { harness?: 'claude-code' } {
   return detectActiveHarness() === 'claude-code' ? { harness: 'claude-code' } : {};
 }
 
-/** Read-only personas (Plan, Explore) never own an editing task; Claude Code gets general-purpose. */
+/**
+ * On Claude Code a read-only persona (Plan, Explore) never owns an editing task: it gets general-purpose.
+ * Outside Claude Code (Antigravity, OpenCode, the CLI) the persona stays as the router chose it.
+ */
 export function resolveEditCapableSubagent(harness: JevHarness, subagent: string, taskText: string): string {
-  return editCapableSubagent(subagent, taskText, harness === 'claude-code' ? 'general-purpose' : 'self');
+  if (harness !== 'claude-code') return subagent;
+  return editCapableSubagent(subagent, taskText, 'general-purpose');
 }
 
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
@@ -352,7 +360,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   const isPro = effectiveTier === 'pro' || cognitiveTier === 'deep';
 
   const isFree = cognitiveTier === 'free' || effectiveTier === 'openrouter_free';
-  const guidance = buildExecutionGuidance(harness, isFree, recommendedSubagent, concreteModel, true);
+  const guidance = buildExecutionGuidance(harness, isFree, recommendedSubagent, concreteModel, true, editsFiles({ task }));
   const executionTool = guidance.executionTool;
   const executionGuidance = isFree ? guidance.executionGuidance : guidance.executionGuidance + escalationNote(harness, isPro, claudeModel);
 
@@ -599,7 +607,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     }
 
     const isTaskFree = tier === 'openrouter_free' || cognitiveTier === 'free';
-    const guidance = buildExecutionGuidance(activeHarness, isTaskFree, subagent, concreteModel);
+    const guidance = buildExecutionGuidance(activeHarness, isTaskFree, subagent, concreteModel, false, editsFiles(item));
     const executionTool = guidance.executionTool;
     const executionGuidance = isTaskFree ? guidance.executionGuidance : guidance.executionGuidance + escalationNote(activeHarness, requiresApproval, claudeModel);
 

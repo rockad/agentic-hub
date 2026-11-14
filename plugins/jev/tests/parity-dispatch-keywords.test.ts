@@ -175,8 +175,7 @@ describe('read-only personas never own an editing task', () => {
     expect(c.editCapableSubagent('code-engineer', 'Edit the plan document', 'general-purpose')).toBe('code-engineer');
   });
 
-  // Needs an owner decision, not a code change: #22 keeps the read-only persona outside Claude Code, the 2.3.1 test 'falls back to self outside Claude Code' (tests/dispatch-keywords.test.ts) pins the swap to self. Both cannot hold; 2.3.1 behaviour is kept.
-  it.skip('resolveEditCapableSubagent swaps on Claude Code only', () => {
+  it('resolveEditCapableSubagent swaps on Claude Code only', () => {
     const out = [resolveEditCapableSubagent('claude-code', 'Explore', 'Rewrite the notes'), resolveEditCapableSubagent('antigravity', 'Explore', 'Rewrite the notes')];
 
     expect(out).toEqual(['general-purpose', 'Explore']);
@@ -212,8 +211,7 @@ describe('read-only personas never own an editing task', () => {
     expect(res.executionGuidance).toContain('Agent(subagent_type: "general-purpose", model: "sonnet")');
   });
 
-  // Same owner decision as above (the 'self' fallback outside Claude Code); the batch schema release leaves non-Claude harnesses as they were.
-  it.skip('single dispatch outside Claude Code is unchanged', () => {
+  it('single dispatch outside Claude Code is unchanged', () => {
     const res = runSingle('antigravity', { task: 'Edit the plan document', availableSubagents: ['Plan'] } as any, { recommendedSubagent: 'Plan', recommendedTier: 'flash' });
 
     expect(res.recommendedSubagent).toBe('Plan');

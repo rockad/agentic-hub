@@ -89,10 +89,16 @@ describe('read-only personas never own an editing task', () => {
     expect(subagent).toBe('Plan');
   });
 
-  it('falls back to self outside Claude Code', () => {
+  it('keeps the read-only persona outside Claude Code', () => {
     const subagent = resolveEditCapableSubagent('antigravity', 'Explore', 'Rewrite the notes');
 
-    expect(subagent).toBe('self');
+    expect(subagent).toBe('Explore');
+  });
+
+  it('swaps to general-purpose on Claude Code', () => {
+    const subagent = resolveEditCapableSubagent('claude-code', 'Explore', 'Rewrite the notes');
+
+    expect(subagent).toBe('general-purpose');
   });
 });
 

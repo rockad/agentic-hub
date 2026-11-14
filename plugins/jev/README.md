@@ -371,7 +371,7 @@ bun scripts/jev-models.ts list    [--harness ...] [--json]
 
 **Claude Code candidates.** Previous catalogue ids, then the built-in known ids (`claude-haiku-5-5`, `claude-haiku-4-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-5`, `claude-fable-5-2`), then `models.refresh.candidates`, then generated neighbours: for each family the next minor and the next major of its newest known version (`claude-sonnet-5-6`, `claude-sonnet-6`). A probe never records a failure for a speculative id the catalogue never had; a failure for an id the catalogue did have counts as a strike (missing at once, deleted after three refreshes in a row; a strike is counted once per successful refresh round, not once per probe). A probe counts as a failure only when it returned a JSON result with `is_error: true` and the narrow model-rejection message ("issue with the selected model ... may not exist or you may not have access"); free text without a parsed JSON result (a wrapper printing `node: not found`, a login prompt) is inconclusive. A probe that gets no answer at all (timeout, offline, rate limit, `claude` not installed) says nothing about the model and leaves it as it was; three such probes in a row stop the run. A round with no successful probe at all (aliases included) is inconclusive as a whole: it exits 1 and leaves the catalogue and its `updated_at` untouched.
 
-**Cost cap.** `--max-calls` (default 20, hard, at most 25, so that the worst case of 25 probes at the 60 s timeout stays under the 30 minute lock stale time) limits the probe calls of one refresh, aliases included. A full default run is about 17 calls; the ids the cap cuts off are logged and listed as `not probed (call cap)` and are carried over unchanged. A real run of the four alias probes cost about $0.19 and took 13 seconds; the larger models cost more because of the cached system prompt, not the answer. A probe is kept lean: `--strict-mcp-config` with an empty `--mcp-config` (no MCP server starts), `--tools ""`, `--disable-slash-commands` and a one-line `--system-prompt`, which cut the request from about 14,000 input tokens to about 600. Measured per call with the installed Claude Code 2.1.323 (cold-cache figures vary with the prompt cache): `sonnet` $0.0149 before, $0.0063 with the MCP, tools and slash-command flags, $0.0024 with the system prompt too; `opus` $0.0299, $0.0131, $0.0048. That is about 84% less per probe, and the probe still reports the concrete model in `modelUsage`. Probes run with `--setting-sources project`, a temporary settings file that sets `disableAllHooks` and disables `jev@agentic-hub`, `--no-session-persistence`, a 60 s timeout that is enforced end to end (the probe runs in its own process group and the whole group is killed), stdin from `/dev/null`, and one stable empty working directory (`~/.config/jev/probe-cwd`, owner-only, reused, so Claude Code keeps a single project entry instead of one per probe), so a probe never triggers Jev's own hooks. The probe gets an allowlisted environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `SHELL`, `XDG_*`, `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, proxy and certificate variables), never `JEV_*` or `OPENROUTER_*` keys, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so it writes no memory.
+**Cost cap.** `--max-calls` (default 20, hard, at most 25, so that the worst case of 25 probes at the 60 s timeout stays under the 30 minute lock stale time) limits the probe calls of one refresh, aliases included. A full default run is about 17 calls; the ids the cap cuts off are logged and listed as `not probed (call cap)` and are carried over unchanged. A real run of the four alias probes cost about $0.19 and took 13 seconds; the larger models cost more because of the cached system prompt, not the answer. A probe is kept lean: `--strict-mcp-config` with an empty `--mcp-config` (no MCP server starts), `--tools ""`, `--disable-slash-commands` and a one-line `--system-prompt`, which cut the request from about 14,000 input tokens to about 600. Measured per call with the installed Claude Code 2.1.323 (cold-cache figures vary with the prompt cache): `sonnet` $0.0149 before, $0.0063 with the MCP, tools and slash-command flags, $0.0024 with the system prompt too; `opus` $0.0299, $0.0131, $0.0048. That is about 84% less per probe, and the probe still reports the concrete model in `modelUsage`. Probes run with `--setting-sources project`, a temporary settings file that sets `disableAllHooks` and disables `jev@agentic-hub`, `--no-session-persistence`, a 60 s timeout that is enforced end to end (the probe runs in its own process group and the whole group is killed), stdin from `/dev/null`, and one stable empty working directory (`~/.config/jev/probe-cwd`, owner-only, reused, so Claude Code keeps a single project entry instead of one per probe), so a probe never triggers Jev's own hooks. The probe gets an allowlisted environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `SHELL`, `XDG_*`, `ANTHROPIC_*` except that `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are excluded unless `models.refresh.useApiKey` is true, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, proxy and certificate variables), never `JEV_*` or `OPENROUTER_*` keys, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so it writes no memory.
 
 **Config keys** (all optional, under `models.refresh` in `~/.config/jev/config.json`; read by a tolerant reader, the config schema is unchanged):
 
@@ -506,7 +506,7 @@ remain callable on request.
 
 | Event | What Jev does |
 | :--- | :--- |
-| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. |
+| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
 | `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
@@ -522,6 +522,33 @@ What the hooks do **not** do:
   line, not to hooks, so the quota strategy is whatever `readQuotaView` reports (usually `unknown`).
 
 Decisions are logged to `~/.config/jev/claude_decisions.jsonl`.
+
+**How the session model is learned.** Every guard (elevation, downgrade) compares against the session model, so
+the hook needs it on every call.
+1. `SessionStart` and `PostModelSwitch` store it (`~/.config/jev/claude-sessions/<session_id>.json`, no `source`
+   field). That file is authoritative: the transcript is never consulted for a session that has one.
+2. Fallback: a session that never reached those events (plugins reloaded mid-session with `/reload-plugins`, a
+   resumed session, a headless `claude -p` run) has no such file. On `PreToolUse` and `UserPromptSubmit` the hook then reads the
+   end of the session transcript named by `transcript_path` on its stdin, never the whole file: the last
+   256 KB first, and if that holds no usable assistant line (a pasted image or a large `tool_result` is common),
+   the 256 KB before it, and so on up to a cap of 2 MB in all. It takes the `message.model` of the last assistant line that is a
+   Claude model id Jev can rank (`<synthetic>` and other providers' ids are skipped), and stores it in the same file with
+   `source: "transcript"`, `updated_at`, `checked_at` and the transcript's `size` and `mtime_ms`. A single line
+   longer than 256 KB is never parsed, so an assistant line that large counts as no line.
+3. A transcript-learned model can go stale (a model switch while no hook ran), so each later call makes one `stat` of the
+   transcript and reads it again only when its size or mtime differs from the stored values; the stored model is
+   updated when the last assistant model differs. An unchanged transcript is not read again. Only when the
+   transcript cannot be stat-ed does the older rule apply: re-check at most once every 60 seconds. A `SessionStart`
+   or `PostModelSwitch` event overwrites it and makes it authoritative again, and the learner puts such a record back
+   if it lands while the learner is writing.
+
+The transcript path is read only when it is a regular file that ends in `.jsonl` and whose real path is under
+`~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
+transcript is never opened; symlinks are resolved first). The session id must be `[A-Za-z0-9_-]+` to name a file in
+`claude-sessions/`, otherwise nothing is stored. A missing,
+empty, corrupt or oversized-line transcript, or any read or write failure, means no session model, exactly as before.
+No transcript content is stored or logged: only the model id. The decision log entries of `PreToolUse` and
+`UserPromptSubmit` carry `session_model_source` (`"stored"`, `"transcript"`, or `null` when there is none).
 
 **Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
 prompt, either a model named in an imperative (`use opus`, `run an opus subagent`) or a cost intent (`minimal
@@ -839,6 +866,20 @@ the rewritten `model`.
 
 ### Release notes
 
+- **2.3.10: session-model fallback** (found by live verification of 2.3.8; additive, fail-open):
+  - A session whose `SessionStart` / `PostModelSwitch` never ran (plugins reloaded mid-session, a resumed or
+    headless session) had no stored session model, so the elevation guard and the downgrade evaluation skipped
+    every call: a model-less Agent call for "run date" in a Sonnet session passed with no question. The hook now
+    learns the model from the end of the transcript (`transcript_path`, scanned back in 256 KB chunks up to 2 MB,
+    last assistant `message.model` that ranks as a Claude model) when no stored model exists, and persists it with
+    `source: "transcript"`, `size` and `mtime_ms`.
+  - A transcript-learned model is re-read when the transcript's size or mtime changed (one `stat` per call; the
+    60 second timer is only the fallback when the stat fails); a `SessionStart` / `PostModelSwitch` record stays
+    authoritative, and is restored if it lands during the write. Only a regular `.jsonl` file under
+    `~/.claude/projects` is read (a FIFO is never opened), and the session id must be `[A-Za-z0-9_-]+`.
+  - `PreToolUse` and `UserPromptSubmit` log entries gain `session_model_source` (`stored` | `transcript`). No
+    transcript content is logged.
+  - New module `claude/session-model.ts`; `HookDeps.learnSessionModel` is the injection point.
 - **2.3.9: batch schema** (case study 5.3, 5.4, 5.11; additive, the new fields are optional):
   - `jev_batch_dispatch` tasks take optional `kind` (`mechanical` | `settled-edit` | `judgement`) and
     `needsEdit` (boolean). On Claude Code `kind` sets the tier by the stage rubric (haiku, sonnet, opus); a

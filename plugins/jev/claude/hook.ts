@@ -128,6 +128,7 @@ import {
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
+import { createSessionModelLearner, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
@@ -147,7 +148,9 @@ export type HookInput = {
   model?: string;
   to_model?: string;
   tool_name?: string;
-  /** The whole Agent input: `updatedInput` replaces it, so a clamp copies every field. */
+  /** Path of the session transcript JSONL (always on the hook's stdin). The session model is learned from its tail when SessionStart never stored one. */
+  transcript_path?: string;
+  /** The whole Agent input:`updatedInput` replaces it, so a clamp copies every field. */
   tool_input?: AgentCall & Record<string, unknown>;
   /** One id per user prompt; the clamp is once per prompt, and the choice flow counts denied attempts per prompt. */
   prompt_id?: string;
@@ -197,6 +200,12 @@ export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
 export type HookDeps = {
   readMode: () => Promise<JevMode>;
   readSessionModel: (sessionId: string | null) => string | null;
+  /**
+   * The fallback for a session SessionStart never reached: learn (and persist, `source: "transcript"`) the model from the
+   * transcript the input names, or re-check one learned that way. Null means nothing to add (a SessionStart record is
+   * authoritative; any failure). Absent: only `readSessionModel` is used, as before.
+   */
+  learnSessionModel?: SessionModelLearner;
   readQuotaStrategy: () => Promise<string>;
   dispatch: (task: string, quotaStrategy: string, criteria?: Record<string, string>) => Promise<Dispatch | null>;
   log: (entry: Record<string, unknown>) => void;
@@ -242,6 +251,20 @@ export type HookDeps = {
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
   env?: Record<string, string | undefined>;
 };
+
+/**
+ * The session model for this call and where it came from: the stored file (SessionStart / PostModelSwitch, or a record the
+ * fallback wrote earlier) or the transcript fallback. Never throws; any failure of the fallback is the stored value, or null.
+ */
+function sessionModelOf(input: HookInput, sessionId: string | null, deps: HookDeps): { model: string | null; source: 'stored' | 'transcript' | null } {
+  const stored = deps.readSessionModel(sessionId);
+  const transcriptPath = input.transcript_path;
+  if (sessionId && deps.learnSessionModel && typeof transcriptPath === 'string' && transcriptPath) {
+    const learned = safely(() => deps.learnSessionModel!(sessionId, transcriptPath));
+    if (learned && learned.model) return { model: learned.model, source: learned.source };
+  }
+  return { model: stored, source: stored ? 'stored' : null };
+}
 
 export function withTimeout<T>(
   pOrFn: Promise<T> | ((signal: AbortSignal) => Promise<T>),
@@ -296,7 +319,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   // A status turn ("A3 completed the run") gets no line. An instruction in the prompt always does. The check
   // needs the recommendation, so a status turn has already sent its trimmed text to Jev by here.
   if (isStatusTurn(rec, task, intent)) return null;
-  const sessionModel = deps.readSessionModel(sessionId);
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
   const { advised, rule } = resolveModel({ intent, rec, sessionModel });
   const staged = isStagedPrompt(task);
   safely(() =>
@@ -329,6 +352,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     user_intent: storedIntent(intent),
     quota: quotaStrategy,
     sessionModel,
+    session_model_source: sessionModelSource,
     ...(deps.env ? { env_notice: envNotice(deps.env) } : {})
   });
 
@@ -364,7 +388,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   if (mode !== 'on') return null;
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
-  const sessionModel = deps.readSessionModel(sessionId);
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
   // A turn stored under another mode is stale: its advice and intent are not this turn's. In the live hook a
   // turn that ran with Jev off is already dropped by forgetTurn, so this check is a second line of defence
   // for a state written under another mode (and for injected stores); a state with no `mode` is accepted.
@@ -513,6 +537,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     recommended_model: recommended?.model ?? null,
     user_intent: state?.intent ?? null,
     sessionModel,
+    session_model_source: sessionModelSource,
     reason:
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
@@ -735,10 +760,7 @@ export function onModelKnown(input: HookInput): void {
   const sessionId = safeSessionId(input.session_id);
   const model = input.to_model || input.model;
   if (!sessionId || !model) return;
-  privateDir(SESSIONS_DIR);
-  const file = path.join(SESSIONS_DIR, `${sessionId}.json`);
-  fs.writeFileSync(file, JSON.stringify({ model, updated_at: new Date().toISOString() }) + '\n', { mode: PRIVATE_FILE_MODE });
-  privateFile(file);
+  writeSessionRecord(SESSIONS_DIR, sessionId, { model, updated_at: new Date().toISOString() });
   pruneOldSessions();
 }
 
@@ -752,13 +774,10 @@ function pruneOldSessions(): void {
 
 function readSessionModel(sessionId: string | null): string | null {
   if (!sessionId) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, `${sessionId}.json`), 'utf8'));
-    return typeof raw.model === 'string' ? raw.model : null;
-  } catch {
-    return null;
-  }
+  return readSessionRecord(SESSIONS_DIR, sessionId)?.model ?? null;
 }
+
+const learnSessionModel = createSessionModelLearner({ dir: SESSIONS_DIR });
 
 function turnFile(sessionId: string): string {
   return path.join(SESSIONS_DIR, `${sessionId}.turn.json`);
@@ -1128,6 +1147,7 @@ function recentAgentCalls(sessionId: string | null): { count: number; reminded: 
 const liveDeps: HookDeps = {
   readMode: () => readJevMode('claude-code'),
   readSessionModel,
+  learnSessionModel,
   readQuotaStrategy: async () => {
     try {
       return (await readQuotaView()).strategy;

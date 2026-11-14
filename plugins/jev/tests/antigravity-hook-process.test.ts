@@ -332,4 +332,39 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     run('post-tool-use', withArgs('c-multi-b', 'A1: whatever\nA2: Yes, once'));
     expect(approvalsOf('c-multi-b')).toMatchObject([{ model: 'pro', scope: 'once' }]);
   });
+
+  it('handles a FIFO as transcriptPath in PostToolUse without hanging, recording nothing', () => {
+    const fifoPath = path.join(home, 'transcript_fifo');
+    const mk = Bun.spawnSync(['mkfifo', fifoPath]);
+    if (mk.exitCode === 0) {
+      expect(pre('c-fifo-proc').decision).toBe('deny');
+      const start = Date.now();
+      const post = run('post-tool-use', answered('c-fifo-proc', undefined, {
+        transcriptPath: fifoPath,
+        stepIdx: 2
+      }));
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(3000);
+      expect(post.exitCode).toBe(0);
+      expect(post.stdout.toString().trim()).toBe('{}');
+      expect(approvalsOf('c-fifo-proc')).toEqual([]);
+    }
+  });
+
+  it('handles a transcript larger than the cap in PostToolUse without recording an approval', () => {
+    const largeFile = path.join(home, 'large_transcript.jsonl');
+    // Write 1.5MB of padding before the target step (exceeds 1MB cap)
+    const padding = '{"step_index":0,"type":"GENERIC","content":"padding"}\n'.repeat(30_000);
+    const line = '{"step_index":1,"type":"GENERIC","content":"A1: Yes, once"}\n';
+    fs.writeFileSync(largeFile, padding + line);
+
+    expect(pre('c-cap-proc').decision).toBe('deny');
+    const post = run('post-tool-use', answered('c-cap-proc', undefined, {
+      transcriptPath: largeFile,
+      stepIdx: 1
+    }));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(approvalsOf('c-cap-proc')).toEqual([]);
+  });
 });

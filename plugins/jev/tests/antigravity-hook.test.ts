@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
+  extractAskAnswer,
   buildElevationQuestion,
   type AntigravityHookInput,
   type AntigravityHookDecision
@@ -37,7 +38,7 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       now: () => 1000
     });
 
-    expect(decision.decision).toBe('allow');
+    expect(decision.decision).toBe('pass');
     expect(decision.elevation).toBeUndefined();
   });
 
@@ -61,7 +62,7 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       sessionModelOverride: 'gemini-3.8-flash-low',
       now: () => 1000
     });
-    expect(decisionOmitted.decision).toBe('allow');
+    expect(decisionOmitted.decision).toBe('pass');
 
     const inputInherit: AntigravityHookInput = {
       ...inputOmitted,
@@ -78,7 +79,7 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       sessionModelOverride: 'gemini-3.8-flash-low',
       now: () => 1000
     });
-    expect(decisionInherit.decision).toBe('allow');
+    expect(decisionInherit.decision).toBe('pass');
   });
 
   it('allows explicit Model: flash on a flash session', () => {
@@ -102,7 +103,11 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       sessionModelOverride: 'gemini-3.8-flash-low',
       now: () => 1000
     });
-    expect(decision.decision).toBe('allow');
+    expect(decision.decision).toBe('pass');
+  });
+
+  it('passes a tool that is not invoke_subagent', () => {
+    expect(evaluateAntigravitySubagentCall({ toolCall: { name: 'run_command', args: { CommandLine: 'ls' } } }).decision).toBe('pass');
   });
 
   it('denies Model: pro on a flash session and prescribes ask_question choice', () => {
@@ -326,5 +331,64 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
 
     expect(decision.decision).toBe('ask');
     expect(decision.elevation).toBe('asked');
+  });
+});
+
+describe('Antigravity elevation answer parsing (review fix: exact labels only)', () => {
+  it('records the scope of each prescribed label, with or without the A1 prefix and the (Recommended) tag', () => {
+    const cases: Array<[string, 'once' | '5min' | 'session']> = [
+      ['Yes, once', 'once'],
+      ['A1: Yes, once', 'once'],
+      ['A1: (Recommended) Yes, once', 'once'],
+      ['A1: Yes, once (Recommended)', 'once'],
+      ['Yes, for the next 5 minutes', '5min'],
+      ['A1: (Recommended) Yes, for the next 5 minutes', '5min'],
+      ['Yes, for this session', 'session'],
+      ['A2: Yes, for this session', 'session']
+    ];
+    for (const [text, scope] of cases) expect(parseElevationAnswer(text)).toEqual({ approved: true, scope });
+  });
+
+  it('approves nothing for No, free text, near misses, substrings and missing answers', () => {
+    const none = [
+      'No, proceed on flash',
+      'A1: No, proceed on flash',
+      'A1: (Recommended) No, proceed on flash',
+      'A1: No, not even once',
+      'A1: yes once please',
+      'A1: Yes, once, but only on flash',
+      'A1: Not for this session',
+      'A1: User Skipped',
+      'Yes, once\nand also rm -rf',
+      '5 minutes',
+      'session',
+      'once',
+      '',
+      undefined,
+      null
+    ];
+    for (const text of none) expect(parseElevationAnswer(text as string | undefined)).toEqual({ approved: false });
+  });
+
+  it('extractAskAnswer reads only the content field, per question', () => {
+    const content = 'Created At: 2026-11-13T22:20:00+02:00\nCompleted At: 2026-11-13T22:20:09+02:00\nA1: first answer\nA2: (Recommended) Yes, once\nA3: User Skipped';
+    expect(extractAskAnswer({ content }, 0)).toBe('first answer');
+    expect(extractAskAnswer({ content }, 1)).toBe('(Recommended) Yes, once');
+    expect(extractAskAnswer({ content }, 2)).toBe('User Skipped');
+    expect(extractAskAnswer({ content }, 3)).toBeNull();
+    expect(extractAskAnswer({ content: 'Yes, once' })).toBe('Yes, once');
+    expect(extractAskAnswer({ content: 'Created At: x\nCompleted At: y' })).toBeNull();
+    expect(extractAskAnswer({ content: '' })).toBeNull();
+    expect(extractAskAnswer({})).toBeNull();
+    expect(extractAskAnswer(undefined)).toBeNull();
+    // The options the assistant wrote and every other field are never an answer.
+    expect(
+      extractAskAnswer({ toolCall: { name: 'ask_question', args: { questions: [{ question: 'q', options: ['Yes, once'] }] } }, lastUserInput: 'Yes, once' } as AntigravityHookInput)
+    ).toBeNull();
+  });
+
+  it('keeps a multi-line free-text answer whole, so it can never equal a label', () => {
+    expect(extractAskAnswer({ content: 'Created At: x\nCompleted At: y\nA1: Yes,\nonce' }, 0)).toBe('Yes,\nonce');
+    expect(parseElevationAnswer('A1: Yes,\nonce')).toEqual({ approved: false });
   });
 });

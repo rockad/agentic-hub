@@ -507,14 +507,14 @@ Guards `invoke_subagent` calls against the session model ceiling (`active_model`
   1. The hook **denies** the call with a reason prescribing `ask_question`:
      - Question text starts with `[jev-elevate:pro]` naming the subagent, requested model, and session ceiling.
      - Four vertical choices: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session ceiling>`.
-  2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock).
+  2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock). The answer is read **only** from the payload's `content` field (the ask_question step text, `A1: <chosen option>`, one `A<n>:` line per question; the marker question's own line is used) and must equal one of the prescribed labels exactly, after the `A1:` prefix and the `(Recommended)` tag are removed: `Yes, once` (scope `once`), `Yes, for the next 5 minutes` (`5min`), `Yes, for this session` (`session`). `No, proceed on <model>`, free text such as "No, not even once", a missing `content` field and anything else record nothing. The rest of the payload is never read as an answer: `toolCall.args` holds the option list the assistant wrote, so reading it would approve from the options alone. An approval is also recorded only after a denial for that model in the last 15 minutes. **Not verified:** whether the real `PostToolUse` payload of `ask_question` carries `content`: `hooks.md` lists only `toolCall`, `stepIdx` and `error`, and no real capture exists yet (the tests use a clearly marked synthetic payload, `tests/fixtures/agy-ask-question-posttooluse.synthetic.json`, built from the real step text recorded in Antigravity transcripts). If the field is absent, nothing is ever recorded and the choice flow ends in the third-attempt permission dialog.
   3. On a Yes answer, the retried `invoke_subagent` finds the approval and is **allowed**. On No, the assistant proceeds on the session model.
   4. **Backstop**: If the assistant retries an unapproved elevation without asking, the 3rd attempt falls back to the harness permission dialog (`ask`).
 - **Prompt Overrides**: If the user prompt explicitly requests pro (e.g. `manual pro approval`, `gemini pro`, `argon`, `deep reasoning`), the call passes directly (`elevation: "instructed"`).
 - **`JEV_ELEVATION` Overrides**:
   - `JEV_ELEVATION=dialog`: Immediately prompts the user via the permission dialog (`ask`).
   - `JEV_ELEVATION=clamp`: Rewrites `Model` to the session ceiling on the first attempt via `overwrite: { Model: "<ceiling>" }` (`elevation: "clamped"`).
-- **Fail-Open & Privacy**: On any unexpected error the hook fails open (`decision: "allow"`). Decisions are logged to `~/.config/jev/antigravity_decisions.jsonl` with prompt byte length and sha256 hash (never raw prompt text).
+- **Fail-Open & Privacy**: On any unexpected error, with Jev mode off, on malformed or empty stdin and for any call that needs no elevation, the hook prints `{}` (no decision), so Antigravity applies its normal permission check. It never prints `"decision": "allow"` for those: Antigravity documents `allow` as "Automatically allow the tool execution", so an explicit allow would approve every `invoke_subagent` call on Jev's say-so. `allow` is printed only where Jev deliberately approves: an approved elevation, an instructed model (`elevation: "instructed"`) and a `clamp` rewrite (`overwrite`). Decisions are logged to `~/.config/jev/antigravity_decisions.jsonl` (`decision: "pass"` for the no-decision case) with the prompt length and the first 12 hex of its sha256, the same fingerprint the telemetry lines use (never raw prompt text). The hook makes no network call, so it loads neither `~/.config/jev/env` nor the plugin `.env`.
 
 ---
 
@@ -976,8 +976,9 @@ the rewritten `model`.
   - User approvals are recorded in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (0600 file mode, atomic write with lock).
   - Explicit `pro` override in user prompt passes (`elevation: "instructed"`).
   - `JEV_ELEVATION=dialog` asks immediately; `JEV_ELEVATION=clamp` rewrites `Model` to session ceiling on 1st attempt via `overwrite: { Model: <ceiling> }`.
-  - Decisions logged to `antigravity_decisions.jsonl` with prompt length and sha256 hash (never raw prompt text).
-  - Fail-open on any error (never aborts an agent session).
+  - Decisions logged to `antigravity_decisions.jsonl` with the prompt length and the 12-hex task fingerprint (never raw prompt text).
+  - Fail-open on any error (never aborts an agent session) by printing `{}`, not `allow`, so the harness's own permission check stays in force; `allow` only where Jev deliberately approves.
+  - The elevation answer is read only from the `content` field and must equal a prescribed label exactly (review fix: substring matching on the whole payload let the option list approve by itself). The hook no longer loads `~/.config/jev/env` or the plugin `.env`.
 - **2.3.12: edit-capable persona swap on Claude Code only** (as in the reference, cognitive-engine #22; decided by the user):
   - `resolveEditCapableSubagent` leaves a read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity,
     OpenCode and the CLI, in single and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code

@@ -231,6 +231,7 @@ plugins/jev
 │   ├── workflow-guard.ts    # Static Workflow script analysis (acorn, fail-closed)
 │   ├── workflow-pin.ts      # Workflow drift recorder (script hashes keyed by tool_use_id)
 │   ├── agent-definitions.ts # `.claude/agents/*.md` model/effort reader for the Workflow guard
+│   ├── safe-read.ts         # Regular-file-only, non-blocking reader (a FIFO path never hangs a hook)
 │   └── hooks.json           # Claude Code hook registration
 ├── scripts/
 │   ├── commit.ts            # Semantic commit generation pipeline
@@ -850,9 +851,16 @@ a reason that names `file:line:col`:
 - a `const` with one binding initialised by a string literal (or a flat object of literals that is only read) **is** followed: `const M = 'opus'` then `model: M` is understood and ranked;
 - the escape set (`this` outside a class body, `arguments`, `globalThis`, `global`, `window`, `self`, `Function`, `eval`, `Reflect`, `Proxy`, `process`, `require`, `Bun`, `Deno`, `module`, `exports`, `import.meta`) and the member names that reach the Function constructor or a prototype;
 - dynamic `import()`, `import` declarations, `export ... from`;
-- a parse error, an unreadable file, a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
+- a parse error, an unreadable file (anything that is not a regular file, such as a FIFO, is unreadable and is never opened with a blocking read: a hook that blocks past its timeout lets the call through), a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
 
 When a script has both an elevation and a fail-closed site, one permission dialog lists all of them.
+
+**When the hook itself fails.** The guard's fail-closed decisions above hold only while the hook finishes inside its
+5 s timeout. A hook that crashes, times out or cannot start (for example, `bun` is missing) lets the `Workflow` call
+through unchecked: `claude/hooks.json` sets no `"onFailure"` on purpose, the same fail-open choice as every other Jev
+hook, because a cost-control plugin must never block a session. People who want the opposite can add a separate
+`PreToolUse` entry for `Workflow` alone, pointing at the same `pre-tool-use` command, with `"onFailure": "block"`;
+a failed hook then blocks the call. Jev does not enable it.
 
 **Drift recorder.** `PreToolUse` pins the sha256 of every script file it read under the call's `tool_use_id`
 (`~/.config/jev/workflow-pins/`, directory 0700, file 0600, pruned after 14 days). `PostToolUse` on `Workflow`

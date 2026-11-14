@@ -898,7 +898,8 @@ the rewritten `model`.
     `agent({ agentType, model })`; `self` maps to `general-purpose`; the free-tier text says it cannot edit
     files; the router is told the free tier has no Claude quota. Both tools report `activeSessionModel` from the
     session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
-    says the Jev guard will ask before it runs; the tier is never lowered. `jev_dispatch` also reports
+    says the Jev guard will ask before it runs (when the session model is unknown the guard fails open, so the
+    note says the guard may not ask instead); the tier is never lowered. `jev_dispatch` also reports
     `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
   - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
     ceiling; `resolveEditCapableSubagent` still swaps to `self` outside Claude Code (an owner decision is

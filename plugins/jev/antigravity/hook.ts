@@ -46,12 +46,19 @@ function appendDecisionLog(entry: Record<string, unknown>): void {
 }
 
 /**
- * Printed on every path where the hook has nothing to decide (mode off, malformed stdin, an error, a call that needs
- * no elevation). Antigravity documents `"decision": "allow"` as "Automatically allow the tool execution", so an
- * explicit allow here would approve the call on Jev's say-so and skip the harness's own permission check. `{}` leaves
- * that check as it was. `allow` is printed only where Jev deliberately approves (see AntigravityHookDecision).
+ * Antigravity PreToolUse pass-through semantics (empirically confirmed via live control):
+ * - Printing `{}` with no `decision` field is treated by Antigravity as a DENIAL (`tool call denied by pre-tool hook:`).
+ * - Exiting 0 with empty stdout is the true pass-through: Antigravity proceeds normally without errors or warnings.
+ * - An explicit `"decision": "allow"` is printed ONLY when Jev deliberately approves (approved elevation, instructed, or clamped rewrite),
+ *   because Antigravity documents `allow` as "Automatically allow the tool execution" (bypassing normal permission checks).
+ * - For PostToolUse, `hooks.md` explicitly specifies `{}` as expected stdout.
  */
-const PASS_THROUGH_OUTPUT = '{}';
+function passThrough(event: string): void {
+  if (event === 'post-tool-use') {
+    console.log('{}');
+  }
+  process.exit(0);
+}
 
 async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
@@ -67,15 +74,13 @@ async function main() {
         input = JSON.parse(rawStdin);
       } catch {
         // malformed stdin
-        console.log(PASS_THROUGH_OUTPUT);
-        process.exit(0);
+        passThrough(event);
       }
     }
 
     const mode: JevMode = await readJevMode('antigravity');
     if (mode !== 'on') {
-      console.log(PASS_THROUGH_OUTPUT);
-      process.exit(0);
+      passThrough(event);
     }
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
@@ -165,8 +170,7 @@ async function main() {
     });
 
     if (decision.decision === 'pass') {
-      console.log(PASS_THROUGH_OUTPUT);
-      process.exit(0);
+      passThrough(event);
     }
 
     const output: Record<string, unknown> = {
@@ -186,8 +190,7 @@ async function main() {
     process.exit(0);
   } catch {
     // Fail-open: never block an Antigravity session on hook failure, and never approve on its behalf either
-    console.log(PASS_THROUGH_OUTPUT);
-    process.exit(0);
+    passThrough(event);
   }
 }
 

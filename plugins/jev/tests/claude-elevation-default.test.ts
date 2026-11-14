@@ -203,7 +203,7 @@ describe('default mode: explicit instruction and untouched calls', () => {
   });
 
   it('a Workflow and an unknown session model are untouched', async () => {
-    const wf = await onPreToolUse(call({ model: 'opus' }, { tool_name: 'Workflow' }), setup().d);
+    const wf = await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), setup().d);
     const unknown = await onPreToolUse(call(), setup({ readSessionModel: () => null }).d);
 
     expect([wf, unknown]).toEqual([null, null]);

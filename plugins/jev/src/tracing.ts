@@ -94,7 +94,7 @@ function emitOtlpSpan(data: {
             {
               scope: {
                 name: 'agentic-hub-jev',
-                version: '2.3.10'
+                version: '2.3.11'
               },
               spans: [
                 {
@@ -310,7 +310,7 @@ export async function initTracing(configOverride?: TracingConfig): Promise<JevTr
   try {
     const otelApi = await import('@opentelemetry/api' as any);
     if (otelApi && otelApi.trace && typeof otelApi.trace.getTracer === 'function') {
-      const tracer = otelApi.trace.getTracer(serviceName, '2.3.10');
+      const tracer = otelApi.trace.getTracer(serviceName, '2.3.11');
       activeTracer = {
         startSpan(name: string, attributes?: Record<string, string | number | boolean>): JevSpan {
           const span = tracer.startSpan(name, { attributes });

@@ -22,8 +22,13 @@
  *                                      opt-in JEV_ELEVATION=clamp runs the first one
  *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
  *                                      log the call next to the last recommendation, and remind once before staged
- *                                      work when no dispatch call preceded it (whether Claude Code fires this hook
- *                                      for the agents a Workflow launches is UNVERIFIED)
+ *                                      work when no dispatch call preceded it.
+ *                                      A Workflow call: the agents a Workflow launches never reach this hook (verified on
+ *                                      Claude Code 2.1.323), so the script is analysed instead (workflow-guard.ts): a
+ *                                      literal model above the session model takes the same choice flow as an Agent call, and
+ *                                      anything the analysis cannot prove opens the permission dialog; no downgrade rating
+ *   post-tool-use (matcher "Workflow") drift recorder: re-hashes the script files the guard analysed and logs
+ *                                      `workflow_changed` when one differs (workflow-pin.ts); no prompt
  *
  * Active only in Jev mode "on" (config.json, or the file JEV_CONFIG_FILE names). Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
@@ -95,6 +100,7 @@ import {
   type Approval,
   type ApprovalState,
   type Dispatch,
+  type ElevationMode,
   type RankContext,
   type TurnState,
   type UserIntent
@@ -129,10 +135,14 @@ import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
 import { createSessionModelLearner, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
+import { clip } from './agent-definitions.js';
+import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, type WorkflowResolver } from './workflow-guard.js';
+import { pruneWorkflowPins, recordWorkflowPostToolUse, writeWorkflowPin, type PostToolUseResult } from './workflow-pin.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
 const SESSIONS_DIR = path.join(JEV_DIR, 'claude-sessions');
 const DECISIONS_LOG = path.join(JEV_DIR, 'claude_decisions.jsonl');
+const WORKFLOW_PINS_DIR = path.join(JEV_DIR, 'workflow-pins');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Well inside Claude Code's 30 s UserPromptSubmit budget; a slow Jev must not stall the prompt. */
 const JEV_HOOK_TIMEOUT_MS = 1500;
@@ -154,6 +164,8 @@ export type HookInput = {
   tool_input?: AgentCall & Record<string, unknown>;
   /** One id per user prompt; the clamp is once per prompt, and the choice flow counts denied attempts per prompt. */
   prompt_id?: string;
+  /** The tool call's id: a Workflow's pin (the hashes of the script files the guard analysed) is keyed by it, and the PostToolUse recorder finds the pin through it. */
+  tool_use_id?: string;
   /** PostToolUse only: what the tool returned. For AskUserQuestion, `answers` maps the question text to the chosen label. */
   tool_response?: unknown;
   /** The session's effort level, as Claude Code reports it (a string or an object holding one); advisory context for the downgrade question. */
@@ -248,6 +260,10 @@ export type HookDeps = {
   /** Names of the subagents discovered for the session, for the ladder definitions (`jev-ladder-<id>`); absent means alias-level steps only. */
   discoverAgents?: (cwd?: string) => Promise<string[]>;
   now?: () => number;
+  /** Where the Workflow guard looks up scripts and agent definitions for a working directory; absent means the filesystem (`fsResolver`). */
+  workflowResolver?: (cwd: string | undefined) => WorkflowResolver;
+  /** The directory of the Workflow pins (script hashes keyed by tool_use_id, for the drift recorder); absent means no pin is written. */
+  workflowPinDir?: string;
   /** The environment to check for remapped model aliases and an effort override; absent skips the notice. */
   env?: Record<string, string | undefined>;
 };
@@ -404,7 +420,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // The one gate is the deterministic ceiling check: a model stronger than the session's. It needs no
   // network and sends no task text anywhere. Jev's tier rating is not a gate (see decideAgentCall): it
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
-  // A Workflow carries no model of its own, so it is never gated.
+  // A Workflow carries no model of its own, so classifyElevation never sees it; the agents a Workflow launches never
+  // pass through this hook, so its script is analysed instead (see the Workflow block below).
   const rankCtx = safely(() => deps.rankContext?.()) ?? null;
   const elevation = tool === 'Workflow' ? null : classifyElevation(call, sessionModel, intent, rankCtx);
   // An elevating call (a model stronger than the session's, no instruction naming it) asks: a permission dialog
@@ -476,6 +493,19 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     }
   }
 
+  // Workflow guard: the agents a Workflow script launches never reach PreToolUse, so the script itself is analysed
+  // (workflow-guard.ts). A model above the session model, with no instruction naming it and no covering approval, goes
+  // through the same choice flow as an Agent call; anything the analysis cannot prove opens the permission dialog.
+  let workflowLog: Record<string, unknown> = {};
+  if (tool === 'Workflow') {
+    const w = evaluateWorkflowCall({ input, call, sessionId, sessionModel, intent, rankCtx, deps, elevMode, promptKeyOf, attemptWindowMs });
+    workflowLog = w.log;
+    if (w.verdict) verdict = w.verdict;
+    if (w.elevationState) elevationState = w.elevationState;
+    approvalScope = w.approvalScope;
+    attemptCount = w.attemptCount;
+  }
+
   // Downgrade evaluation: every Agent delegation (a model of its own, or the session's) is rated on its own text and
   // offered a cheaper catalogue step when one is enough and strictly cheaper (see `planDowngrade`). It runs only when no
   // instruction names the model, the elevation guard did not decide the call, nothing is on record for this delegation
@@ -543,6 +573,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
     ...downgradeLog,
+    ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
     ...(effortSession ? { effort_session: effortSession } : {}),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
@@ -574,6 +605,101 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
 export function delegationTask(call: AgentCall): string {
   const part = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
   return [part(call.description, 300), part(call.prompt, DOWNGRADE_TASK_PROMPT_CHARS)].filter(Boolean).join('\n\n');
+}
+
+type WorkflowEvaluation = {
+  verdict: AgentDecision;
+  elevationState: 'asked' | 'instructed' | 'approved' | 'denied' | null;
+  approvalScope: string | null;
+  attemptCount: number | null;
+  /** `workflow_guard`, `workflow_models` and the script hashes: never the script text. */
+  log: Record<string, unknown>;
+};
+
+/**
+ * The Workflow guard's verdict for one PreToolUse call. Without a session model there is nothing to rank against: the
+ * call passes untouched (as an Agent call does). An internal error fails open (`workflow_guard: "error"`), never a block;
+ * a script the analysis cannot parse or understand is not an internal error: it asks.
+ *
+ * - nothing found: pass (`allow`; `passed-instructed` when a model above the session model passed because the prompt named it);
+ * - anything the analysis could not establish (a fail-closed shape, an unrankable model, an effort above the interim
+ *   threshold, a missing definition, a parse error): the permission dialog (`asked`), listing every site;
+ * - only elevations: with `JEV_ELEVATION=choice` (default) the same flow as an Agent call, for the strongest model
+ *   named: a covering approval passes (`allow`), otherwise a deny that prescribes the `[jev-elevate:<model>]` question
+ *   (`denied`), and the third denied attempt of the same script in a prompt opens the dialog (`asked`). `dialog` and
+ *   `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp.
+ */
+function evaluateWorkflowCall(a: {
+  input: HookInput;
+  call: Record<string, unknown>;
+  sessionId: string | null;
+  sessionModel: string | null;
+  intent: UserIntent;
+  rankCtx: RankContext | null;
+  deps: HookDeps;
+  elevMode: ElevationMode;
+  promptKeyOf: () => string;
+  attemptWindowMs: number | undefined;
+}): WorkflowEvaluation {
+  const none: WorkflowEvaluation = { verdict: null, elevationState: null, approvalScope: null, attemptCount: null, log: {} };
+  if (!a.sessionModel) return none;
+  try {
+    const { deps, sessionId } = a;
+    const resolver = deps.workflowResolver ? deps.workflowResolver(a.input.cwd) : fsResolver(a.input.cwd);
+    const d = evaluateWorkflowInput(a.call, a.input.cwd, a.sessionModel, resolver, { rank: a.rankCtx, intent: a.intent, env: deps.env ?? process.env });
+    const base = {
+      workflow_models: d.models.map((m) => clip(m)),
+      workflow_scripts: d.scripts.map((s) => ({ label: s.label, sha256: s.sha256, bytes: s.bytes }))
+    };
+    const pin = (decision: 'allow' | 'ask'): void => {
+      if (deps.workflowPinDir && a.input.tool_use_id) writeWorkflowPin(deps.workflowPinDir, a.input.tool_use_id, sessionId, decision, d.scripts);
+    };
+    const finish = (guard: string, rest: Partial<WorkflowEvaluation> = {}, extra: Record<string, unknown> = {}): WorkflowEvaluation => ({
+      ...none,
+      ...rest,
+      log: { workflow_guard: guard, ...base, ...extra }
+    });
+    if (d.decision === 'allow') {
+      pin('allow');
+      return d.instructed ? finish('passed-instructed', { elevationState: 'instructed' }) : finish('allow');
+    }
+    const dialog = (): WorkflowEvaluation => {
+      pin('ask');
+      return finish('asked', { verdict: { decision: 'ask', reason: d.message }, elevationState: 'asked' }, { workflow_reasons: d.sites.length });
+    };
+    const top = d.highestElevation;
+    if (d.unverifiable.length > 0 || !top || a.elevMode !== 'choice') return dialog();
+    const nowMs = (deps.now ?? Date.now)();
+    const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, top.requested, nowMs, a.rankCtx)) ?? null) : null;
+    if (hit) {
+      pin('allow');
+      return finish('allow', { elevationState: 'approved', approvalScope: hit.scope }, { workflow_highest: clip(top.requested) });
+    }
+    const signature = workflowSignature(d.scripts);
+    const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), signature, nowMs, a.attemptWindowMs)) : undefined;
+    const attemptCount = typeof count === 'number' ? count : null;
+    if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
+      const asked = dialog();
+      return { ...asked, attemptCount, log: { ...asked.log, workflow_highest: clip(top.requested) } };
+    }
+    if (sessionId) safely(() => deps.approvals?.deny(sessionId, top.requested, nowMs));
+    return finish(
+      'denied',
+      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts) }, elevationState: 'denied', attemptCount },
+      { workflow_highest: clip(top.requested) }
+    );
+  } catch {
+    return { ...none, log: { workflow_guard: 'error' } };
+  }
+}
+
+/**
+ * PostToolUse on Workflow: compare the script files' hashes with the ones the PreToolUse analysis pinned and report any
+ * drift (a `workflow_changed` event in the decisions log, and a message while Jev is on). No prompt, never throws.
+ */
+export async function onWorkflowPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'log' | 'workflowPinDir'>): Promise<PostToolUseResult> {
+  if (!deps.workflowPinDir) return { status: 'no-pin' };
+  return recordWorkflowPostToolUse(input, { dir: deps.workflowPinDir, readMode: () => deps.readMode(), log: deps.log });
 }
 
 type DowngradeEvaluation = { verdict: AgentDecision; out: ReturnType<typeof applyDowngrade>; log: Record<string, unknown> };
@@ -1171,6 +1297,7 @@ const liveDeps: HookDeps = {
   recentDispatch,
   recentAgentCalls,
   env: process.env,
+  workflowPinDir: WORKFLOW_PINS_DIR,
   egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd])).allowed
 };
 
@@ -1179,6 +1306,12 @@ async function main(event: string | undefined): Promise<void> {
   loadEnvFile(path.join(JEV_DIR, 'env'));
   loadEnvFile(path.resolve(import.meta.dir, '..', '.env'));
   const input = JSON.parse((await Bun.stdin.text()) || '{}') as HookInput;
+  if (event === 'post-tool-use' && input.tool_name === 'Workflow') {
+    // The Workflow drift recorder: re-hashes the script files the PreToolUse guard analysed. Prints only on drift while Jev is on.
+    const result = await onWorkflowPostToolUse(input, liveDeps);
+    if (result.output) process.stdout.write(result.output);
+    return;
+  }
   if (event === 'post-tool-use') {
     // The elevation recorder: no output, no mode check. It accepts any question that starts with the marker, but
     // records an approval only for a model Jev prescribed the question for in the last 15 minutes.
@@ -1189,6 +1322,7 @@ async function main(event: string | undefined): Promise<void> {
     event === 'user-prompt-submit' ? await onUserPromptSubmit(input, liveDeps)
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
+  if (event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
   if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
   if (event === 'session-start') maybeStartCatalogueRefresh();
   if (output) process.stdout.write(JSON.stringify(output));

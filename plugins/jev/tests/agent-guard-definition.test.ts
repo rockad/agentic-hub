@@ -92,14 +92,33 @@ describe('the model comes from the definition', () => {
     expect(r.logs[0]).toMatchObject({ model_source: 'definition' });
   });
 
-  it('built-in types are never read from disk', async () => {
+  it('a user or project definition named like a built-in type overrides it and keeps its own model', async () => {
     setup();
-    for (const t of ['Explore', 'Plan', 'general-purpose', 'statusline-setup']) writeAgent(`${t}.md`, def('opus', t));
-
-    for (const t of ['Explore', 'Plan', 'general-purpose', 'statusline-setup']) {
-      expect(await onPreToolUse(call({ ...DELEGATION, subagent_type: t }), r.d)).toBeNull();
+    for (const t of ['Explore', 'Plan', 'general-purpose', 'statusline-setup', 'claude-code-guide', 'claude']) {
+      writeAgent(`${t}.md`, def('opus', t));
+      const o = out(await onPreToolUse(call({ ...DELEGATION, subagent_type: t }), r.d));
+      expect(o.permissionDecision).toBe('deny');
+      expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
     }
-    expect(r.logs.every((l) => l.model_source === 'inherit')).toBe(true);
+    expect(r.logs.every((l) => l.model_source === 'definition')).toBe(true);
+  });
+
+  it('a built-in name with a definition at or below the session model, or with no file at all, passes', async () => {
+    setup();
+    for (const t of ['Explore', 'general-purpose']) {
+      expect(await onPreToolUse(call({ ...DELEGATION, subagent_type: t }), r.d)).toBeNull(); // no file: built-in, inherits
+      for (const m of ['sonnet', 'haiku']) {
+        writeAgent(`${t}.md`, def(m, t));
+        expect(await onPreToolUse(call({ ...DELEGATION, subagent_type: t }), r.d)).toBeNull();
+      }
+    }
+  });
+
+  it('an unreadable definition named like a built-in asks, like any other type', async () => {
+    setup();
+    writeAgent('Explore.md', def('[opus]', 'Explore'));
+
+    expect(out(await onPreToolUse(call({ ...DELEGATION, subagent_type: 'Explore' }), r.d)).permissionDecision).toBe('ask');
   });
 
   it('a definition that cannot be found passes, as before', async () => {

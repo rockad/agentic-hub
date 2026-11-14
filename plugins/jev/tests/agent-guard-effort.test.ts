@@ -116,11 +116,13 @@ describe('definition effort', () => {
     }
   });
 
-  it('a built-in type is never read, so a same-named file cannot ask', async () => {
+  it('a definition named like a built-in type is read like any other, so its effort asks', async () => {
     setup();
     writeAgent('Explore.md', def('max').replace('name: deep', 'name: Explore'));
+    expect(out(await onPreToolUse(call({ description: 'd', subagent_type: 'Explore' }), r.d)).permissionDecision).toBe('ask');
 
-    expect(await onPreToolUse(call({ description: 'd', subagent_type: 'Explore' }), r.d)).toBeNull();
+    fs.rmSync(path.join(r.project, '.claude', 'agents', 'Explore.md'));
+    expect(await onPreToolUse(call({ description: 'd', subagent_type: 'Explore' }), r.d)).toBeNull(); // no file claims the name
   });
 
   it('a definition that cannot be found adds nothing; an unreadable one, with a call model of its own, adds nothing', async () => {

@@ -35,8 +35,19 @@ export interface AgentDefinition {
   unreadable?: string;
 }
 
-/** Claude Code's built-in subagent types: they have no definition file and run on the session model. */
+/** Claude Code's built-in subagent types: with no definition file of the same name they run on the session model. */
 export const BUILTIN_AGENT_TYPES: ReadonlySet<string> = new Set(['general-purpose', 'Explore', 'Plan', 'statusline-setup', 'claude-code-guide', 'claude']);
+
+/**
+ * The definition behind a subagent type, for the Agent/Task guard and the Workflow guard alike. A user or project
+ * definition named like a built-in type (`Explore`, `general-purpose`, ...) overrides the built-in and keeps its own
+ * `model:`, so `looked` (the file lookup, same precedence and same strict reader as for a custom type) is asked
+ * first; only when no file claims the name does a built-in type resolve as "built-in, no model, inherits the session
+ * model". Any other type with no file stays `found: false`.
+ */
+export function definitionOrBuiltin(subagentType: string, looked: AgentDefinition): AgentDefinition {
+  return !looked.found && BUILTIN_AGENT_TYPES.has(subagentType) ? { found: true, model: null } : looked;
+}
 
 /**
  * INTERIM threshold on a subagent's reasoning effort (cognitive-engine docs/rfc/007, no spec behind it):
@@ -538,7 +549,9 @@ export interface ResolvedAgentModel {
 /**
  * The model an Agent/Task call will actually run on: the forced environment model (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
  * with `CLAUDE_CODE_SUBAGENT_MODEL`) when on; else the call's own model; else the model of the definition behind its
- * `subagent_type` (read from disk, except for Claude Code's built-in types, which have none); else a `jev-ladder-<id>`
+ * `subagent_type` (read from disk for every type, built-in names included: a user or project definition named like a
+ * built-in overrides it and keeps its own `model:`; a built-in name that no file claims has none, so "built-in types
+ * have no model" holds only while no such file exists); else a `jev-ladder-<id>`
  * pin (`ladder`, found by the caller); else `CLAUDE_CODE_SUBAGENT_MODEL`; else the session's own. Same environment
  * resolution as the Workflow guard (`subagentModelCandidates`), minus `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`.
  * A type with no definition file resolves as if it had none (Claude Code itself reports an unknown agent). A
@@ -557,8 +570,9 @@ export function resolveAgentModel(
   let definition: string | null = null;
   let definitionEffort: string | undefined;
   const type = call.subagent_type;
-  if (typeof type === 'string' && !BUILTIN_AGENT_TYPES.has(type)) {
-    const def = readAgentDefinition(type, cwd);
+  if (typeof type === 'string') {
+    // Every type is looked up, built-in names included: a definition file named like a built-in overrides it.
+    const def = definitionOrBuiltin(type, readAgentDefinition(type, cwd));
     if (def.found && typeof def.effort === 'string') definitionEffort = def.effort;
     if (def.found && !forced && !callWritten) {
       if (def.unreadable) return { model: null, source: 'definition', unreadable: def.unreadable, ...(definitionEffort !== undefined ? { definitionEffort } : {}) };

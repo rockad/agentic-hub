@@ -973,9 +973,12 @@ explicit one (deny with the prescribed question, approvals, the attempt counter,
    replaces the call's and the definition's (`model_source: "env-force"`). Forced with no model variable: the session model.
 2. The call's own `model` (`call`).
 3. The `model:` of the definition behind `subagent_type`, read from the project, user and plugin agent directories
-   as the Workflow guard reads them (`definition`). Claude Code's built-in types (`general-purpose`, `Explore`, `Plan`,
-   `statusline-setup`, `claude-code-guide`, `claude`) are never read from disk. A type with no definition file passes,
-   as before (Claude Code itself reports an unknown agent).
+   as the Workflow guard reads them (`definition`). The lookup runs for every type, Claude Code's built-in names
+   (`general-purpose`, `Explore`, `Plan`, `statusline-setup`, `claude-code-guide`, `claude`) included, because a user or
+   project definition named like a built-in overrides it and keeps its own `model:`; a built-in name that no file
+   claims is "built-in, no model" and inherits the session model. Both guards share this rule
+   (`definitionOrBuiltin`). A custom type with no definition file passes, as before (Claude Code itself reports an
+   unknown agent).
 4. A `jev-ladder-<id>` name pin (`ladder`).
 5. `CLAUDE_CODE_SUBAGENT_MODEL` (`env`).
 6. Otherwise the session model (`inherit`), which passes.

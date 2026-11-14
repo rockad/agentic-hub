@@ -81,3 +81,52 @@ describe('PreToolUse Agent as a process: the model the call will run on', () => 
     expect(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'deep' })).stdout).toBe('');
   });
 });
+
+describe('PreToolUse Agent as a process: a definition named like a built-in type', () => {
+  const writeNamed = (name: string, model: string | null) => {
+    fs.mkdirSync(path.join(proj, '.claude', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.claude', 'agents', `${name}.md`), `---\nname: ${name}\n${model ? `model: ${model}\n` : ''}---\nPRIVATE-BODY\n`);
+  };
+
+  for (const type of ['Explore', 'general-purpose']) {
+    it(`${type}.md with model: opus denies an Agent call with no model`, () => {
+      writeNamed(type, 'opus');
+
+      const r = run('pre-tool-use', agentCall({ description: 'd', prompt: 'p', subagent_type: type }));
+
+      expect(r.code).toBe(0);
+      const o = hookOut(r);
+      expect(o).toMatchObject({ hookEventName: 'PreToolUse', permissionDecision: 'deny' });
+      expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+      expect(log().at(-1)).toMatchObject({ tool_name: 'Agent', model_source: 'definition', elevation: 'denied' });
+      expect(JSON.stringify(log())).not.toContain('PRIVATE-BODY');
+    });
+
+    it(`${type} with no definition file passes: built-in, inherits the session model`, () => {
+      const r = run('pre-tool-use', agentCall({ description: 'd', prompt: 'p', subagent_type: type }));
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe('');
+      expect(log().at(-1)).toMatchObject({ model_source: 'inherit' });
+    });
+
+    for (const model of ['sonnet', 'haiku']) {
+      it(`${type}.md with model: ${model} passes`, () => {
+        writeNamed(type, model);
+
+        expect(run('pre-tool-use', agentCall({ description: 'd', prompt: 'p', subagent_type: type })).stdout).toBe('');
+      });
+    }
+  }
+
+  it('the Agent and Workflow guards agree on Explore.md with model: opus', () => {
+    writeNamed('Explore', 'opus');
+    fs.writeFileSync(path.join(proj, 'wf.js'), `await agent('p', { agentType: 'Explore' })\n`);
+
+    const agentOut = hookOut(run('pre-tool-use', agentCall({ description: 'd', prompt: 'p', subagent_type: 'Explore' })));
+    const wfOut = hookOut(run('pre-tool-use', { session_id: 'sess-ag', prompt_id: 'p2', cwd: proj, tool_name: 'Workflow', tool_input: { scriptPath: path.join(proj, 'wf.js') } }));
+
+    expect(agentOut.permissionDecision).toBe('deny');
+    expect(wfOut.permissionDecision).toBe('deny');
+  });
+});

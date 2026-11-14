@@ -96,8 +96,8 @@ import { createRequire } from 'node:module';
 import type * as AcornTypes from 'acorn';
 import { readRegularFile } from './safe-read.js';
 import {
-  BUILTIN_AGENT_TYPES,
   clip,
+  definitionOrBuiltin,
   describeAgentLookup,
   effortReason,
   inheritsSessionModel,
@@ -1059,9 +1059,8 @@ export function checkScriptText(
         break;
       }
       case 'agentType': {
-        // A built-in type has no definition file and runs on the session model; a definition file with the same name still wins.
-        const looked = resolver.agentDefinition(f.agentType);
-        const def: AgentDefinition = !looked.found && BUILTIN_AGENT_TYPES.has(f.agentType) ? { found: true, model: null } : looked;
+        // A definition file named like a built-in type wins; a built-in name no file claims runs on the session model (shared with the Agent guard).
+        const def: AgentDefinition = definitionOrBuiltin(f.agentType, resolver.agentDefinition(f.agentType));
         if (!def.found) {
           // Asked whatever model the call names: without a definition its `effort:` cannot be read, and it may
           // come from `--agents <json>`, which Jev cannot see.

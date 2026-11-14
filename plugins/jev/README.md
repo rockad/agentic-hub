@@ -233,6 +233,7 @@ plugins/jev
 │   ├── workflow-guard.ts    # Static Workflow script analysis (acorn, fail-closed)
 │   ├── workflow-pin.ts      # Workflow drift recorder (script hashes keyed by tool_use_id)
 │   ├── agent-definitions.ts # `.claude/agents/*.md` model/effort reader for the Workflow guard
+│   ├── safe-read.ts         # Regular-file-only, non-blocking reader (a FIFO path never hangs a hook)
 │   └── hooks.json           # Claude Code hook registration
 ├── scripts/
 │   ├── commit.ts            # Semantic commit generation pipeline
@@ -376,7 +377,7 @@ bun scripts/jev-models.ts list    [--harness ...] [--json]
 
 **Claude Code candidates.** Previous catalogue ids, then the built-in known ids (`claude-haiku-5-5`, `claude-haiku-4-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-5`, `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-5`, `claude-fable-5-2`), then `models.refresh.candidates`, then generated neighbours: for each family the next minor and the next major of its newest known version (`claude-sonnet-5-6`, `claude-sonnet-6`). A probe never records a failure for a speculative id the catalogue never had; a failure for an id the catalogue did have counts as a strike (missing at once, deleted after three refreshes in a row; a strike is counted once per successful refresh round, not once per probe). A probe counts as a failure only when it returned a JSON result with `is_error: true` and the narrow model-rejection message ("issue with the selected model ... may not exist or you may not have access"); free text without a parsed JSON result (a wrapper printing `node: not found`, a login prompt) is inconclusive. A probe that gets no answer at all (timeout, offline, rate limit, `claude` not installed) says nothing about the model and leaves it as it was; three such probes in a row stop the run. A round with no successful probe at all (aliases included) is inconclusive as a whole: it exits 1 and leaves the catalogue and its `updated_at` untouched.
 
-**Cost cap.** `--max-calls` (default 20, hard, at most 25, so that the worst case of 25 probes at the 60 s timeout stays under the 30 minute lock stale time) limits the probe calls of one refresh, aliases included. A full default run is about 17 calls; the ids the cap cuts off are logged and listed as `not probed (call cap)` and are carried over unchanged. A real run of the four alias probes cost about $0.19 and took 13 seconds; the larger models cost more because of the cached system prompt, not the answer. A probe is kept lean: `--strict-mcp-config` with an empty `--mcp-config` (no MCP server starts), `--tools ""`, `--disable-slash-commands` and a one-line `--system-prompt`, which cut the request from about 14,000 input tokens to about 600. Measured per call with the installed Claude Code 2.1.323 (cold-cache figures vary with the prompt cache): `sonnet` $0.0149 before, $0.0063 with the MCP, tools and slash-command flags, $0.0024 with the system prompt too; `opus` $0.0299, $0.0131, $0.0048. That is about 84% less per probe, and the probe still reports the concrete model in `modelUsage`. Probes run with `--setting-sources project`, a temporary settings file that sets `disableAllHooks` and disables `jev@agentic-hub`, `--no-session-persistence`, a 60 s timeout that is enforced end to end (the probe runs in its own process group and the whole group is killed), stdin from `/dev/null`, and one stable empty working directory (`~/.config/jev/probe-cwd`, owner-only, reused, so Claude Code keeps a single project entry instead of one per probe), so a probe never triggers Jev's own hooks. The probe gets an allowlisted environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `SHELL`, `XDG_*`, `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, proxy and certificate variables), never `JEV_*` or `OPENROUTER_*` keys, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so it writes no memory.
+**Cost cap.** `--max-calls` (default 20, hard, at most 25, so that the worst case of 25 probes at the 60 s timeout stays under the 30 minute lock stale time) limits the probe calls of one refresh, aliases included. A full default run is about 17 calls; the ids the cap cuts off are logged and listed as `not probed (call cap)` and are carried over unchanged. A real run of the four alias probes cost about $0.19 and took 13 seconds; the larger models cost more because of the cached system prompt, not the answer. A probe is kept lean: `--strict-mcp-config` with an empty `--mcp-config` (no MCP server starts), `--tools ""`, `--disable-slash-commands` and a one-line `--system-prompt`, which cut the request from about 14,000 input tokens to about 600. Measured per call with the installed Claude Code 2.1.323 (cold-cache figures vary with the prompt cache): `sonnet` $0.0149 before, $0.0063 with the MCP, tools and slash-command flags, $0.0024 with the system prompt too; `opus` $0.0299, $0.0131, $0.0048. That is about 84% less per probe, and the probe still reports the concrete model in `modelUsage`. Probes run with `--setting-sources project`, a temporary settings file that sets `disableAllHooks` and disables `jev@agentic-hub`, `--no-session-persistence`, a 60 s timeout that is enforced end to end (the probe runs in its own process group and the whole group is killed), stdin from `/dev/null`, and one stable empty working directory (`~/.config/jev/probe-cwd`, owner-only, reused, so Claude Code keeps a single project entry instead of one per probe), so a probe never triggers Jev's own hooks. The probe gets an allowlisted environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `SHELL`, `XDG_*`, `ANTHROPIC_*` except that `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are excluded unless `models.refresh.useApiKey` is true, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, proxy and certificate variables), never `JEV_*` or `OPENROUTER_*` keys, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so it writes no memory.
 
 **Config keys** (all optional, under `models.refresh` in `~/.config/jev/config.json`; read by a tolerant reader, the config schema is unchanged):
 
@@ -508,14 +509,14 @@ Guards `invoke_subagent` calls against the session model ceiling (`active_model`
   1. The hook **denies** the call with a reason prescribing `ask_question`:
      - Question text starts with `[jev-elevate:pro]` naming the subagent, requested model, and session ceiling.
      - Four vertical choices: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session ceiling>`.
-  2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock).
+  2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock). The answer is read **only** from the payload's `content` field (the ask_question step text, `A1: <chosen option>`, one `A<n>:` line per question; the marker question's own line is used) and must equal one of the prescribed labels exactly, after the `A1:` prefix and the `(Recommended)` tag are removed: `Yes, once` (scope `once`), `Yes, for the next 5 minutes` (`5min`), `Yes, for this session` (`session`). `No, proceed on <model>`, free text such as "No, not even once", a missing `content` field and anything else record nothing. The rest of the payload is never read as an answer: `toolCall.args` holds the option list the assistant wrote, so reading it would approve from the options alone. An approval is also recorded only after a denial for that model in the last 15 minutes. **Not verified:** whether the real `PostToolUse` payload of `ask_question` carries `content`: `hooks.md` lists only `toolCall`, `stepIdx` and `error`, and no real capture exists yet (the tests use a clearly marked synthetic payload, `tests/fixtures/agy-ask-question-posttooluse.synthetic.json`, built from the real step text recorded in Antigravity transcripts). If the field is absent, nothing is ever recorded and the choice flow ends in the third-attempt permission dialog.
   3. On a Yes answer, the retried `invoke_subagent` finds the approval and is **allowed**. On No, the assistant proceeds on the session model.
   4. **Backstop**: If the assistant retries an unapproved elevation without asking, the 3rd attempt falls back to the harness permission dialog (`ask`).
 - **Prompt Overrides**: If the user prompt explicitly requests pro (e.g. `manual pro approval`, `gemini pro`, `argon`, `deep reasoning`), the call passes directly (`elevation: "instructed"`).
 - **`JEV_ELEVATION` Overrides**:
   - `JEV_ELEVATION=dialog`: Immediately prompts the user via the permission dialog (`ask`).
   - `JEV_ELEVATION=clamp`: Rewrites `Model` to the session ceiling on the first attempt via `overwrite: { Model: "<ceiling>" }` (`elevation: "clamped"`).
-- **Fail-Open & Privacy**: On any unexpected error the hook fails open (`decision: "allow"`). Decisions are logged to `~/.config/jev/antigravity_decisions.jsonl` with prompt byte length and sha256 hash (never raw prompt text).
+- **Fail-Open & Privacy**: On any unexpected error, with Jev mode off, on malformed or empty stdin and for any call that needs no elevation, the hook prints `{}` (no decision), so Antigravity applies its normal permission check. It never prints `"decision": "allow"` for those: Antigravity documents `allow` as "Automatically allow the tool execution", so an explicit allow would approve every `invoke_subagent` call on Jev's say-so. `allow` is printed only where Jev deliberately approves: an approved elevation, an instructed model (`elevation: "instructed"`) and a `clamp` rewrite (`overwrite`). Decisions are logged to `~/.config/jev/antigravity_decisions.jsonl` (`decision: "pass"` for the no-decision case) with the prompt length and the first 12 hex of its sha256, the same fingerprint the telemetry lines use (never raw prompt text). The hook makes no network call, so it loads neither `~/.config/jev/env` nor the plugin `.env`.
 
 ---
 
@@ -881,9 +882,16 @@ a reason that names `file:line:col`:
 - a `const` with one binding initialised by a string literal (or a flat object of literals that is only read) **is** followed: `const M = 'opus'` then `model: M` is understood and ranked;
 - the escape set (`this` outside a class body, `arguments`, `globalThis`, `global`, `window`, `self`, `Function`, `eval`, `Reflect`, `Proxy`, `process`, `require`, `Bun`, `Deno`, `module`, `exports`, `import.meta`) and the member names that reach the Function constructor or a prototype;
 - dynamic `import()`, `import` declarations, `export ... from`;
-- a parse error, an unreadable file, a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
+- a parse error, an unreadable file (anything that is not a regular file, such as a FIFO, is unreadable and is never opened with a blocking read: a hook that blocks past its timeout lets the call through), a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
 
 When a script has both an elevation and a fail-closed site, one permission dialog lists all of them.
+
+**When the hook itself fails.** The guard's fail-closed decisions above hold only while the hook finishes inside its
+5 s timeout. A hook that crashes, times out or cannot start (for example, `bun` is missing) lets the `Workflow` call
+through unchecked: `claude/hooks.json` sets no `"onFailure"` on purpose, the same fail-open choice as every other Jev
+hook, because a cost-control plugin must never block a session. People who want the opposite can add a separate
+`PreToolUse` entry for `Workflow` alone, pointing at the same `pre-tool-use` command, with `"onFailure": "block"`;
+a failed hook then blocks the call. Jev does not enable it.
 
 **Drift recorder.** `PreToolUse` pins the sha256 of every script file it read under the call's `tool_use_id`
 (`~/.config/jev/workflow-pins/`, directory 0700, file 0600, pruned after 14 days). `PostToolUse` on `Workflow`
@@ -1050,12 +1058,16 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
   - User approvals are recorded in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (0600 file mode, atomic write with lock).
   - Explicit `pro` override in user prompt passes (`elevation: "instructed"`).
   - `JEV_ELEVATION=dialog` asks immediately; `JEV_ELEVATION=clamp` rewrites `Model` to session ceiling on 1st attempt via `overwrite: { Model: <ceiling> }`.
-  - Decisions logged to `antigravity_decisions.jsonl` with prompt length and sha256 hash (never raw prompt text).
-  - Fail-open on any error (never aborts an agent session).
+  - Decisions logged to `antigravity_decisions.jsonl` with the prompt length and the 12-hex task fingerprint (never raw prompt text).
+  - Fail-open on any error (never aborts an agent session) by printing `{}`, not `allow`, so the harness's own permission check stays in force; `allow` only where Jev deliberately approves.
+  - The elevation answer is read only from the `content` field and must equal a prescribed label exactly (review fix: substring matching on the whole payload let the option list approve by itself). The hook no longer loads `~/.config/jev/env` or the plugin `.env`.
 - **2.3.12: edit-capable persona swap on Claude Code only** (as in the reference, cognitive-engine #22; decided by the user):
   - `resolveEditCapableSubagent` leaves a read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity,
     OpenCode and the CLI, in single and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code
     keeps the swap to `general-purpose`. The two parity cases that pinned this are un-skipped.
+  - Because the persona is kept there, the execution guidance of an edit task given to a read-only persona on
+    Antigravity, OpenCode and the CLI (single and batch dispatch) ends with "This persona is read-only; the edit
+    may need another agent." Not added for a task that does not edit, for the free tier, or on Claude Code.
 - **2.3.11: workflow guard** (additive; Jev mode `on` only):
   - The agents a `Workflow` script launches never pass through `PreToolUse` (verified on Claude Code 2.1.323), so
     `agent(..., {model: 'opus'})` in a script bypassed the elevation guard. `PreToolUse` on `Workflow` now reads the
@@ -1108,7 +1120,8 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     `agent({ agentType, model })`; `self` maps to `general-purpose`; the free-tier text says it cannot edit
     files; the router is told the free tier has no Claude quota. Both tools report `activeSessionModel` from the
     session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
-    says the Jev guard will ask before it runs; the tier is never lowered. `jev_dispatch` also reports
+    says the Jev guard will ask before it runs (when the session model is unknown the guard fails open, so the
+    note says the guard may not ask instead); the tier is never lowered. `jev_dispatch` also reports
     `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
   - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
     ceiling.
@@ -1252,7 +1265,7 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
   ("information", "transformation" and "dump format" no longer count as formatting work); explicit model and
   cost instructions and the precedence order above; one consistent ceiling sentence in the Claude hook;
   Plan and Explore are never recommended for an editing task (on Claude Code only since 2.3.9; elsewhere the
-  persona is kept), and display-name aliases are dropped from the
+  persona is kept since 2.3.12, before that it was swapped to `self`), and display-name aliases are dropped from the
   Claude persona list; `PreToolUse` logs `tier`, `recommended_model`, `requested_model` and a `turn` id shared
   with the prompt record, and the `UserPromptSubmit` telemetry field is now `modelRecommended` (it was
   `modelUsed`); a non-blocking pre-flight reminder on `Agent` calls when no `jev_dispatch` or

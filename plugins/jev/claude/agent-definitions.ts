@@ -19,6 +19,10 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { readRegularFile } from './safe-read.js';
+
+/** Settings and plugin registry files are small JSON; anything bigger is not read. */
+const MAX_CONFIG_FILE_BYTES = 4 * 1024 * 1024;
 
 export interface AgentDefinition {
   /** A definition file exists in one of the lookup locations. */
@@ -298,7 +302,9 @@ function enabledPluginKeys(cwd: string | undefined): Set<string> {
   for (const file of files) {
     let enabled: unknown;
     try {
-      enabled = JSON.parse(fs.readFileSync(file, 'utf8'))?.enabledPlugins;
+      const read = readRegularFile(file, MAX_CONFIG_FILE_BYTES);
+      if (read.kind !== 'ok') continue;
+      enabled = JSON.parse(read.text)?.enabledPlugins;
     } catch {
       continue;
     }
@@ -313,7 +319,9 @@ function pluginAgentDirs(cwd: string | undefined): Array<[string, string]> {
   const found: Array<{ name: string; dir: string; key: string }> = [];
   let doc: any;
   try {
-    doc = JSON.parse(fs.readFileSync(path.join(userClaudeDir(cwd), 'plugins', 'installed_plugins.json'), 'utf8'));
+    const read = readRegularFile(path.join(userClaudeDir(cwd), 'plugins', 'installed_plugins.json'), MAX_CONFIG_FILE_BYTES);
+    if (read.kind !== 'ok') return [];
+    doc = JSON.parse(read.text);
   } catch {
     return [];
   }
@@ -364,8 +372,10 @@ const MAX_AGENT_DEPTH = 8;
 const MAX_AGENT_FILE_BYTES = 1024 * 1024;
 
 /** Every `.md` file under `root`, subdirectories included, sorted; null when `root` is not a readable directory. */
-function listMarkdown(root: string): { files: string[]; truncated: boolean } | null {
+function listMarkdown(root: string): { files: string[]; special: string[]; truncated: boolean } | null {
   const files: string[] = [];
+  /** `.md` entries that are not regular files (a FIFO, a socket, a device): never opened. */
+  const special: string[] = [];
   const visited = new Set<string>();
   let truncated = false;
   const walk = (dir: string, depth: number): boolean => {
@@ -395,6 +405,8 @@ function listMarkdown(root: string): { files: string[]; truncated: boolean } | n
       if (isDir) {
         if (depth >= MAX_AGENT_DEPTH) truncated = true;
         else walk(full, depth + 1);
+      } else if (!isFile && /\.md$/i.test(entry.name)) {
+        special.push(full);
       } else if (isFile && /\.md$/i.test(entry.name)) {
         if (files.length >= MAX_AGENT_FILES) {
           truncated = true;
@@ -405,7 +417,7 @@ function listMarkdown(root: string): { files: string[]; truncated: boolean } | n
     }
     return true;
   };
-  return walk(root, 0) ? { files, truncated } : null;
+  return walk(root, 0) ? { files, special, truncated } : null;
 }
 
 type Claim = { file: string; model: string | null; effort: string | null; unreadable: string | null };
@@ -425,18 +437,22 @@ function scanAgentDir(dir: string, agent: string): DirScan {
   const claims: Claim[] = [];
   const conflicts: string[] = [];
   if (listing.truncated) conflicts.push(`${dir} holds more agent files than Jev reads (${MAX_AGENT_FILES}), or nests deeper than ${MAX_AGENT_DEPTH} levels`);
+  for (const file of listing.special) {
+    if (path.basename(file).replace(/\.md$/i, '') === agent) conflicts.push(`${file} is not a regular file and is not read`);
+  }
   for (const file of listing.files) {
     const byFileName = path.basename(file).replace(/\.md$/i, '') === agent;
-    let text: string;
-    try {
-      if (fs.statSync(file).size > MAX_AGENT_FILE_BYTES) {
-        if (byFileName) conflicts.push(`${file} is over ${MAX_AGENT_FILE_BYTES} bytes and is not read`);
-        continue;
-      }
-      text = fs.readFileSync(file, 'utf8');
-    } catch {
-      continue; // not readable: not a definition
+    const read = readRegularFile(file, MAX_AGENT_FILE_BYTES);
+    if (read.kind === 'too-large') {
+      if (byFileName) conflicts.push(`${file} is over ${MAX_AGENT_FILE_BYTES} bytes and is not read`);
+      continue;
     }
+    if (read.kind === 'not-regular') {
+      if (byFileName) conflicts.push(`${file} is not a regular file and is not read`);
+      continue;
+    }
+    if (read.kind !== 'ok') continue; // not readable: not a definition
+    const text = read.text;
     const { name, model, effort } = parseFrontmatter(text);
     const claim = (): Claim => ({
       file,

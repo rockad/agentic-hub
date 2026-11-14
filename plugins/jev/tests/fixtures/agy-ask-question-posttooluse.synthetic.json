@@ -1,0 +1,33 @@
+{
+  "_synthetic": "SYNTHETIC, not a recorded capture. Common fields copied from the real PreToolUse payload in agy-invoke-subagent.json; toolCall.args follows the real ask_question call shape seen in Antigravity transcripts (questions[].question, is_multi_select, options as plain strings); `content` follows the real ask_question step content in those transcripts (Created At / Completed At / A1: <answer>). Whether the real PostToolUse payload carries `content` at all is NOT verified: hooks.md lists only toolCall, stepIdx and error for PostToolUse. Replace with a real capture when one exists.",
+  "artifactDirectoryPath": "/home/rockad/.gemini/antigravity-cli/brain/36a8a0d5-04a2-44d3-82b4-205601b7722d",
+  "conversationId": "36a8a0d5-04a2-44d3-82b4-205601b7722d",
+  "cwd": "/tmp/agy-hook-step1-KNQWwn",
+  "hookEventName": "PostToolUse",
+  "lastUserInput": "Call the invoke_subagent tool now with TypeName 'self', Role 'worker', Prompt 'say hello', Model 'pro'.",
+  "modelName": "gemini-3.8-flash-low",
+  "stepIdx": 5,
+  "toolCall": {
+    "args": {
+      "questions": [
+        {
+          "is_multi_select": false,
+          "options": [
+            "(Recommended) Yes, once",
+            "Yes, for the next 5 minutes",
+            "Yes, for this session",
+            "No, proceed on flash"
+          ],
+          "question": "[jev-elevate:pro] Allow subagent 'self' to run on pro (session ceiling: flash)?"
+        }
+      ],
+      "toolAction": "Asking the user to approve a model elevation",
+      "toolSummary": "Approve pro subagent"
+    },
+    "id": "call_3828360107420705999",
+    "name": "ask_question"
+  },
+  "transcriptPath": "/home/rockad/.gemini/antigravity-cli/brain/36a8a0d5-04a2-44d3-82b4-205601b7722d/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": ["/tmp/agy-hook-step1-KNQWwn"],
+  "content": "Created At: 2026-11-13T22:20:00+02:00\nCompleted At: 2026-11-13T22:20:09+02:00\nA1: Yes, once"
+}

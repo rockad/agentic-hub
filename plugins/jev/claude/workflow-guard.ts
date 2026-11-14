@@ -94,6 +94,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import type * as AcornTypes from 'acorn';
+import { readRegularFile } from './safe-read.js';
 import {
   BUILTIN_AGENT_TYPES,
   clip,
@@ -198,12 +199,16 @@ export const NO_FS_RESOLVER: WorkflowResolver = {
 };
 
 function readCapped(file: string): { text: string; label: string } | { error: string } {
-  try {
-    const { size } = fs.statSync(file);
-    if (size > MAX_SCRIPT_BYTES) return { error: `${file} is ${size} bytes, over the ${MAX_SCRIPT_BYTES} byte limit` };
-    return { text: fs.readFileSync(file, 'utf8'), label: file };
-  } catch (err) {
-    return { error: `cannot read ${file} (${err instanceof Error ? err.message : String(err)})` };
+  const read = readRegularFile(file, MAX_SCRIPT_BYTES);
+  switch (read.kind) {
+    case 'ok':
+      return { text: read.text, label: file };
+    case 'too-large':
+      return { error: `${file} is ${read.size} bytes, over the ${MAX_SCRIPT_BYTES} byte limit` };
+    case 'not-regular':
+      return { error: `cannot read ${file} (not a regular file)` };
+    default:
+      return { error: `cannot read ${file} (${read.message})` };
   }
 }
 

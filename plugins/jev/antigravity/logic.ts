@@ -21,7 +21,12 @@ export type AntigravityHookInput = {
 };
 
 export type AntigravityHookDecision = {
-  decision: 'allow' | 'deny' | 'ask' | 'force_ask';
+  /**
+   * `pass` is Jev's own value, never printed: the hook has nothing to decide, so it prints `{}` and Antigravity applies
+   * its normal permission check. `allow` is printed only where Jev deliberately approves (an approved elevation, an
+   * instructed model, a clamp with `overwrite`), because the docs define it as "Automatically allow the tool execution".
+   */
+  decision: 'pass' | 'allow' | 'deny' | 'ask' | 'force_ask';
   reason?: string;
   permissionOverrides?: string[];
   overwrite?: Record<string, unknown>;
@@ -129,29 +134,67 @@ export function buildElevationReason(opts: {
   );
 }
 
-export function parseElevationAnswer(answerText?: string): { approved: boolean; scope?: ApprovalScope; model?: string } {
+/** The prescribed approving labels and the scope each records. `No, proceed on <model>` and anything else record nothing. */
+const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
+  [CHOICE_OPTIONS.once, 'once'],
+  [CHOICE_OPTIONS.fiveMin, '5min'],
+  [CHOICE_OPTIONS.session, 'session']
+]);
+
+/**
+ * The answer to the elevation question, from the PostToolUse `content` field ONLY. Antigravity's ask_question step
+ * reports the user's choice as
+ *
+ *   Created At: ...\nCompleted At: ...\nA1: <chosen option or typed text>\nA2: User Skipped
+ *
+ * (recorded transcripts; one `A<n>:` line per question, `(Recommended)` kept as part of the option text). The rest of
+ * the payload is never read: `toolCall.args` holds the question and the option list the assistant wrote, so reading it
+ * would approve from the options alone.
+ *
+ * `questionIndex` picks the answer of that question (A1 is index 0). Null when there is no `content` string, no such
+ * answer line, or a content with no `A<n>:` line that is more than one line.
+ */
+export function extractAskAnswer(input: AntigravityHookInput | undefined, questionIndex = 0): string | null {
+  const content = input?.content;
+  if (typeof content !== 'string' || content.trim() === '') return null;
+  const answers = new Map<number, string>();
+  let current: number | null = null;
+  for (const line of content.split(/\r?\n/)) {
+    const m = /^A(\d+):[ \t]?(.*)$/.exec(line);
+    if (m) {
+      current = Number(m[1]);
+      answers.set(current, m[2]);
+    } else if (current !== null) {
+      answers.set(current, `${answers.get(current)}\n${line}`);
+    }
+  }
+  if (answers.size === 0) {
+    const bare = content.trim();
+    return bare.includes('\n') ? null : bare;
+  }
+  return answers.get(questionIndex + 1) ?? null;
+}
+
+/** An answer text without its `A1:` prefix and its `(Recommended)` tag (a prefix as Antigravity writes it, or a suffix). */
+function answerLabel(answerText: string): string {
+  return answerText
+    .trim()
+    .replace(/^A\d+:\s*/, '')
+    .replace(/^\(Recommended\)\s+/i, '')
+    .replace(/\s+\(Recommended\)$/i, '')
+    .trim();
+}
+
+/**
+ * Whether an answer approves, and for how long. The answer must be EXACTLY one of the prescribed labels (after the
+ * `A1:` prefix and the `(Recommended)` tag are removed): `Yes, once`, `Yes, for the next 5 minutes`,
+ * `Yes, for this session`. `No, proceed on <model>`, free text ("No, not even once"), a missing answer and anything
+ * else approve nothing. Substring matching is deliberately not used.
+ */
+export function parseElevationAnswer(answerText?: string | null): { approved: boolean; scope?: ApprovalScope } {
   if (!answerText || typeof answerText !== 'string') return { approved: false };
-
-  const norm = answerText.toLowerCase();
-
-  // Model marker check if present
-  let model: string | undefined;
-  const match = answerText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
-  if (match) {
-    model = match[1].toLowerCase();
-  }
-
-  if (norm.includes('yes, once') || norm.includes('once')) {
-    return { approved: true, scope: 'once', model };
-  }
-  if (norm.includes('5 minutes') || norm.includes('5min') || norm.includes('five minutes')) {
-    return { approved: true, scope: '5min', model };
-  }
-  if (norm.includes('this session') || norm.includes('session')) {
-    return { approved: true, scope: 'session', model };
-  }
-
-  return { approved: false, model };
+  const scope = SCOPE_BY_LABEL.get(answerLabel(answerText));
+  return scope ? { approved: true, scope } : { approved: false };
 }
 
 export function evaluateAntigravitySubagentCall(
@@ -160,7 +203,7 @@ export function evaluateAntigravitySubagentCall(
 ): AntigravityHookDecision {
   const toolName = input?.toolCall?.name || '';
   if (toolName !== 'invoke_subagent') {
-    return { decision: 'allow' };
+    return { decision: 'pass' };
   }
 
   const sessionId = input.conversationId || 'default-session';
@@ -171,14 +214,14 @@ export function evaluateAntigravitySubagentCall(
 
   const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
 
-  // If Model is omitted or inherit, it resolves to session model (proved by control) -> allowed
+  // If Model is omitted or inherit, it resolves to session model (proved by control) -> nothing to decide (pass)
   if (!isExplicit || !requestedModel) {
-    return { decision: 'allow' };
+    return { decision: 'pass' };
   }
 
   const requestedRank = modelTierRank(requestedModel);
   if (requestedRank <= sessionCeilingRank) {
-    return { decision: 'allow' };
+    return { decision: 'pass' };
   }
 
   // Requested model exceeds session ceiling: ELEVATION

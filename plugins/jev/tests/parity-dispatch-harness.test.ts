@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildExecutionGuidance } from '../src/tools/dispatch.ts';
+import { buildExecutionGuidance, escalationNote } from '../src/tools/dispatch.ts';
 
 const RUNNER = path.join(import.meta.dir, 'fixtures', 'run-dispatch.ts');
 const MARKERS = ['JEV_HARNESS', 'ANTIGRAVITY_CLI', 'GEMINI_CLI', 'CORTEX_SESSION', 'CLAUDE_CODE', 'CLAUDECODE', 'CLAUDE_PROJECT_DIR', 'CLAUDE_CODE_SESSION_ID', 'OPENCODE_SESSION', 'OPENCODE_HOME'];
@@ -252,5 +252,92 @@ describe('jev_dispatch on Claude Code (5.11)', () => {
     expect(res.executionGuidance).toContain('the Jev guard will ask the user once');
     expect(res.activeSessionModel).toBe('claude-sonnet-5-5');
     expect([res.wasClampedByCeiling, res.requiresUserApproval]).toEqual([false, true]);
+  });
+});
+
+describe('escalationNote when the session model is unknown (review fix)', () => {
+  it('says the guard may not ask instead of promising a question', () => {
+    const note = escalationNote('claude-code', true, null);
+    expect(note).toContain('session model is unknown');
+    expect(note).toContain('may not ask');
+    expect(note).not.toContain('will ask the user once');
+  });
+
+  it('treats a model name Jev cannot place as unknown too', () => {
+    const note = escalationNote('claude-code', true, 'some-other-model');
+    expect(note).toContain('may not ask');
+    expect(note).not.toContain('will ask the user once');
+  });
+
+  it('keeps the known-session wording unchanged', () => {
+    expect(escalationNote('claude-code', true, 'claude-sonnet-5-5')).toBe(
+      ' Opus is above the session model (claude-sonnet-5-5): the Jev guard will ask the user once per call before it runs.'
+    );
+  });
+
+  it('stays empty on an opus session, for a non-pro tier and outside Claude Code', () => {
+    expect(escalationNote('claude-code', true, 'claude-opus-4-8')).toBe('');
+    expect(escalationNote('claude-code', false, null)).toBe('');
+    expect(escalationNote('antigravity', true, null)).toBe('');
+  });
+});
+
+describe('a read-only persona kept for an edit outside Claude Code (review fix)', () => {
+  const NOTE = 'This persona is read-only; the edit may need another agent.';
+
+  it('buildExecutionGuidance adds the line only for an edit on a read-only persona, outside Claude Code', () => {
+    for (const h of ['antigravity', 'opencode', 'cli'] as const) {
+      expect(buildExecutionGuidance(h, false, 'Explore', 'flash', false, true).executionGuidance).toBe(
+        `Delegate to subagent via invoke_subagent(Role: "Explore", Model: "flash"). ${NOTE}`
+      );
+      expect(buildExecutionGuidance(h, false, 'Plan', 'flash', true, true).executionGuidance).toContain(NOTE);
+      expect(buildExecutionGuidance(h, false, 'Explore', 'flash', false, false).executionGuidance).not.toContain(NOTE);
+      expect(buildExecutionGuidance(h, false, 'code_engineer', 'flash', false, true).executionGuidance).not.toContain(NOTE);
+      expect(buildExecutionGuidance(h, true, 'Explore', 'flash', true, true).executionGuidance).not.toContain(NOTE);
+    }
+  });
+
+  it('Claude Code output is unchanged, edit or not', () => {
+    const plain = buildExecutionGuidance('claude-code', false, 'Explore', 'sonnet').executionGuidance;
+    expect(buildExecutionGuidance('claude-code', false, 'Explore', 'sonnet', false, true).executionGuidance).toBe(plain);
+    expect(plain).not.toContain('read-only');
+  });
+
+  it('jev_dispatch on Antigravity: an edit task on Explore carries the line, a non-edit task does not', () => {
+    const answers = { recommendedSubagent: 'Explore', recommendedTier: 'flash' };
+
+    const edit = runTool('antigravity', { tool: 'single', args: { task: 'Update the README file with the new flags' }, answers });
+    const read = runTool('antigravity', { tool: 'single', args: { task: 'Explain how the router picks a tier' }, answers });
+
+    expect(edit.recommendedSubagent).toBe('Explore');
+    expect(edit.executionGuidance).toContain(NOTE);
+    expect(read.recommendedSubagent).toBe('Explore');
+    expect(read.executionGuidance).not.toContain(NOTE);
+  });
+
+  it('jev_dispatch on Claude Code swaps the persona and adds no line', () => {
+    const answers = { recommendedSubagent: 'Explore', recommendedTier: 'flash' };
+
+    const edit = runTool('claude-code', { tool: 'single', args: { task: 'Update the README file with the new flags' }, answers }, claudeEnv());
+
+    expect(edit.recommendedSubagent).not.toBe('Explore');
+    expect(edit.executionGuidance).not.toContain('read-only');
+  });
+
+  it('jev_batch_dispatch on Antigravity: only the edit stage on a read-only persona carries the line', () => {
+    const args = {
+      availableSubagents: ['Explore'],
+      tasks: [
+        { id: 'a', task: 'Rewrite the plan document' },
+        { id: 'b', task: 'Outline the approach, no edits' }
+      ]
+    };
+
+    const plan = runTool('antigravity', { tool: 'batch', args, answers: { sa_a: 'Explore', sa_b: 'Explore' } });
+
+    const [a, b] = plan.tasks;
+    expect([a.subagent, b.subagent]).toEqual(['Explore', 'Explore']);
+    expect(a.executionGuidance).toContain(NOTE);
+    expect(b.executionGuidance).not.toContain(NOTE);
   });
 });

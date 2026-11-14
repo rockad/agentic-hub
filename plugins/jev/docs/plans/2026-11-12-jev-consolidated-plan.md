@@ -1,6 +1,6 @@
 # Jev consolidated plan (2026-11-12)
 
-Living document; the latest status is in section 24. Sources:
+Living document; the latest status is in section 31 (sections 24 and 28 are earlier snapshots). Sources:
 
 - `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` (case 1, on `main`)
 - `plugins/jev/docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md` (case 2, on PR #33)
@@ -499,7 +499,7 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 
 **Verdict.** The original question ("does Antigravity apply a definition's model when the invoke call leaves it empty") is moot in the form asked, because a definition carries no model. The real gap is wider: agentic-hub has no guard on `invoke_subagent` at all, and an omitted or `inherit` Model may run on a model other than the session model.
 
-**Planned work (a later stacked PR, "Antigravity hook").** An Antigravity `PreToolUse` hook for `invoke_subagent`, registered like `claude/hooks.json`: read the flat `args.Model` (and `args.Subagents[].Model` for older shapes); treat omitted and `inherit` as the session model (`active_model` in `quota-state.json`, resolved by the existing ceiling helpers); apply the existing tier-rank check from `governance.ts`; deny or ask for a model above the ceiling with the Yes/No choice the Claude flow uses where the harness allows it. Do not read a model from definition front matter. Test against the real payload shape recorded from agy, not the shape the doppelganger hook assumes.
+**Planned work, built since as #53 (2.3.13), see section 31 ("Antigravity hook").** An Antigravity `PreToolUse` hook for `invoke_subagent`, registered like `claude/hooks.json`: read the flat `args.Model` (and `args.Subagents[].Model` for older shapes); treat omitted and `inherit` as the session model (`active_model` in `quota-state.json`, resolved by the existing ceiling helpers); apply the existing tier-rank check from `governance.ts`; deny or ask for a model above the ceiling with the Yes/No choice the Claude flow uses where the harness allows it. Do not read a model from definition front matter. Test against the real payload shape recorded from agy, not the shape the doppelganger hook assumes.
 
 **Control to include in that work (the evaluation by agy).** Before and with the hook, run the four-call control in a fresh temp project with `--sandbox` and the cheapest model, and record the subagent's generation-model enum for each: `plain` with Model omitted, a definition with front matter `model: flash` with Model omitted, `plain` with `Model: flash_lite`, `plain` with `Model: flash`. The comparison settles whether an omitted Model follows the session model or a default, and it maps the `M…` enums to tier names (the subagent conversation DB under `~/.gemini/antigravity-cli/conversations/` records the enum). The evaluation also covers the downgrade question: whether a rated-cheap delegation can be offered `flash_lite` through the same prescribed question (`AskUserQuestion` equivalent is `ask_question` there). Needs the user's approval for the live calls, since the classifier blocks them by default.
 
@@ -517,6 +517,9 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 | #49 | 2.3.10 | Session model learned from the transcript when SessionStart never ran (found by live verification); highest-tier review fixes: FIFO hang, stale model after a switch, 2 MB chunked scan, SessionStart race, session-id validation | 1367 pass |
 | #51 | 2.3.11 | Workflow guard: static check of `Workflow` scripts against the ceiling (port of cognitive-engine's acorn guard), drift recorder, acorn 8.19.0 | 1900 pass |
 | #52 | 2.3.12 | Edit-capable persona swap on Claude Code only (the user chose to follow the reference) | 1903 pass |
+| #53 | 2.3.13 | Antigravity `invoke_subagent` PreToolUse guard (section 31) | see section 31 |
+| #54 | 2.3.14 | Strict tool-input validation and batch semantic checks | see section 31 |
+| #55 | 2.3.15 | Agent/Task guard parity with the Workflow guard | see section 31 |
 | #50 | docs | This plan: Antigravity findings (section 27) and this status | docs only |
 
 **Highest-tier review of #48 and #49 (Opus, one gate, the user approved it):** #48 ship, #49 ship after fixes; all findings applied (section list in the PR comments). No hard failure found in hook safety, privacy, input handling or non-Claude output (byte-identical to `main` for Antigravity, OpenCode and CLI).
@@ -531,7 +534,7 @@ Shipped: PRs #43 (2.3.5), #44 (2.3.6), #45 (2.3.7) and #46 (2.3.8) are merged; `
 | Session-model fallback (#49) | Real hook process with a real transcript: verified; hand-seeded session record produced the live model-less downgrade question; the unseeded interactive case after merge is the live check to run |
 | Workflow guard (#51) | Real hook process with the captured payload: deny with the marker, silent pass without a model; same from a clean plugin export. **Full interactive Workflow run: planned, see below** |
 | Persona swap (#52) | Unit and parity tests only (non-Claude harnesses) |
-| Antigravity `invoke_subagent` guard | Not built; plan in section 27, with the live control that needs the user's approval |
+| Antigravity `invoke_subagent` guard | Built as #53 (2.3.13); live control done (section 31); the real `ask_question` PostToolUse payload is still to be captured |
 
 **Full interactive Workflow verification (to run by the user in a session started with `--plugin-dir` on the #52 tree, installed jev disabled, sonnet session; each step is read from the Jev decisions log, the state files and the workflow and subagent transcripts afterwards):**
 
@@ -573,3 +576,31 @@ Question: when a Workflow script leaves an agent's model empty and an environmen
 | same | explicit `model: 'haiku'` | opus (session) | `allow`, models `[opus]` | `claude-opus-5-5` (the written haiku was replaced) |
 
 Result: Claude Code applies all three variables to workflow agents, and the guard ranks the resulting model, not the written one, so none of them is a bypass. One correction to a first attempt: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is a flag (`1`, `true`, `yes`, `on`), not a model id; with `FORCE=opus` Claude Code ignored it and the agent ran on its written haiku, which the guard also logged as haiku. The hook sees the environment of the Claude Code process; an environment set only by a later process would not be seen. Approvals in the tests were seeded in the session's approvals file (the headless runs cannot answer a question).
+
+## 31. Status 2026-11-14: stack #48 to #55, Antigravity guard, validation, parity (latest)
+
+**Open stack (merge commits, in this order; each PR's base is the one before it; Doc-Cr requested on each):** #48, #49, #51, #52, #53, #54, #55, then this plan (#50).
+
+| PR | Version | Content | State |
+| --- | --- | --- | --- |
+| #48 to #52 | 2.3.9 to 2.3.12 | See section 28 | Doc-Cr round 2: resolved from the reviewer's side on all five |
+| #53 | 2.3.13 | Antigravity `invoke_subagent` PreToolUse guard (`plugins/jev/antigravity/`, root `hooks.json`, real payload fixture): the Model is read from the flat `args.Model`; omitted and `inherit` follow the session model; above the ceiling is denied with the prescribed Yes/No question; the PostToolUse recorder records an approval from the `content` field only, by exact label | Round 2: recorder fixed (a No never approves); one open finding, see below |
+| #54 | 2.3.14 | Strict zod validation per tool; `jev_batch_dispatch` semantic checks (blank or duplicate ids, unknown or self dependencies, cycles) with did-you-mean hints for unknown keys | No review yet |
+| #55 | 2.3.15 | Agent/Task guard parity: reads the definition model, `CLAUDE_CODE_SUBAGENT_MODEL` and its `_FORCE` flag, the ladder pin, a narrow interim ask for `xhigh` and `max` effort, a front-matter cross-check | Round 1: one open finding, see below |
+
+**Antigravity live control (verified, agy 1.5.8):** an omitted `Model` follows the session model (the three controls ran on the session's own model enum), so the guard treats omitted as the session model. A definition carries no model.
+
+**Open review findings (2026-11-14, round 2 and 3):**
+
+- #53: `isExplicitProOverride` matched the user's prompt by substring, so "jargon", "Argonaut" or a negated "do not use deep reasoning" passed an elevation as instructed. Fix: whole words and phrases, negations skipped, same behaviour as the Claude path.
+- #55: a project or user definition named like a built-in type (`Explore`, `general-purpose`) overrides the built-in and keeps its own `model` (Claude Code docs). The Agent path skipped that lookup, the Workflow guard did not. Fix: look the definition up first for every type name, fall back to "built-in, no model" only when no file claims the name. This also makes the `resolveAgentModel` comment true: built-in types have no model only while no such file exists.
+- The docs confirm that a non-fork Agent call can carry an `effort` parameter, so the interim effort rule has something to read.
+
+**Decisions kept:** the Workflow hook stays fail-open like every other Jev hook (README documents `"onFailure": "block"` on a separate Workflow entry as an opt-in that Jev does not enable). Hook output on pass-through paths in Antigravity is `{}`, because `hooks.md` defines `decision: "allow"` as automatic approval.
+
+**Still unverified:**
+
+- The real `ask_question` PostToolUse payload from Antigravity: no recording exists, `hooks.md` documents no result field, so the fixture is synthetic. If the real payload carries no `content`, no approval is ever recorded and the flow falls to the third-attempt dialog. One real capture settles it.
+- How Antigravity treats `{}` versus empty output on PreToolUse.
+- The live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
+- The model a Workflow agent actually ran on is never logged (no hook sees it).

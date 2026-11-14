@@ -978,6 +978,14 @@ The deny and dialog reasons say where the model came from. Under `JEV_ELEVATION=
 clamped (the environment overrides the rewritten `model`), so it asks. The decisions log carries `model_source`
 (`call`, `definition`, `env-force`, `ladder`, `env`, `inherit`) and never any definition text.
 
+**Effort (interim, narrow).** A literal `xhigh` or `max` on the call's `effort`, or on the `effort:` of the definition
+behind its `subagent_type`, opens the permission dialog (`effort_ask: true` in the log), with the Workflow guard's
+wording (`effortReason`). Dialog only: never the model choice flow and never a deny; when the same call also has a
+model verdict, that verdict goes first and the effort dialog follows on the retry. Unrecognised levels, non-string
+values and any comparison with the session's effort are deliberately **not** checked on this path (cognitive-engine
+RFC 007 says do not build further), and the Workflow guard is unchanged. The model ceiling does not bound effort;
+the non-interim control is `maxEffortLevel: "high"` in the Claude Code settings.
+
 Not verified here: the permission dialog itself (it is shown by Claude Code), whether the assistant follows the
 clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 
@@ -994,6 +1002,9 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
   - Behaviour change: a definition with a model above the session model, or an environment that sets one, now
     triggers the elevation question where it passed silently before. Built-in types are not read from disk.
   - New decisions-log field on an `Agent` call: `model_source`. Never any definition text.
+  - Interim narrow effort rule on the same path: a literal `xhigh` or `max` on the call or on its definition's
+    `effort:` asks (dialog only, `effort_ask: true`). `maxEffortLevel: "high"` in the Claude Code settings is the
+    non-interim control.
 - **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).

@@ -107,7 +107,7 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
-import { resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
+import { agentEffortReason, resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
   answerDowngrade,
@@ -521,6 +521,19 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     logReason = 'definition unreadable or ambiguous'; // the reader's text quotes the definition: it is shown to the user, never logged
   }
 
+  // INTERIM effort rule (Agent/Task only): a literal xhigh or max on the call, or on its definition, opens the dialog.
+  // Dialog only, never the choice flow, never a deny; a model verdict above keeps priority (the ask follows on the retry).
+  let effortAsk = false;
+  if (resolved && !verdict) {
+    const reason = agentEffortReason(call.effort, 'Agent call') ?? agentEffortReason(resolved.definitionEffort, `agent definition "${safeTypeName(call.subagent_type)}"`);
+    if (reason) {
+      verdict = { decision: 'ask', reason: `[jev] ${reason} Yes runs it as it is. No cancels the call and stops the turn.` };
+      elevationState = 'asked';
+      effortAsk = true;
+      clamp = null; // the dialog is stricter than a clamp: the clamp's allow must not hide it
+    }
+  }
+
   // Workflow guard: the agents a Workflow script launches never reach PreToolUse, so the script itself is analysed
   // (workflow-guard.ts). A model above the session model, with no instruction naming it and no covering approval, goes
   // through the same choice flow as an Agent call; anything the analysis cannot prove opens the permission dialog.
@@ -597,6 +610,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     sessionModel,
     session_model_source: sessionModelSource,
     ...(resolved ? { model_source: resolved.source } : {}),
+    ...(effortAsk ? { effort_ask: true } : {}),
     reason:
       logReason ??
       verdict?.reason ??

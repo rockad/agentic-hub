@@ -56,6 +56,15 @@ export function effortReason(effort: unknown, what: string): string | null {
   return `${what}: effort ${JSON.stringify(clip(effort))} is not a level Jev recognises (low, medium, high, xhigh, max), so it cannot be checked.`;
 }
 
+/**
+ * The Agent path's INTERIM effort rule: `effortReason` for a literal `xhigh` or `max` only. Unrecognised levels,
+ * non-string values and the comparison with the session's effort are deliberately not checked there (RFC 007 says do
+ * not build further); the Workflow guard keeps the full `effortReason`.
+ */
+export function agentEffortReason(effort: unknown, what: string): string | null {
+  return typeof effort === 'string' && EFFORT_ASK.has(effort) ? effortReason(effort, what) : null;
+}
+
 // ── Environment overrides of the subagent model ──
 //
 // Claude Code lets the environment set the model of a subagent: `CLAUDE_CODE_SUBAGENT_MODEL` (the default for
@@ -477,6 +486,8 @@ export interface ResolvedAgentModel {
   source: AgentModelSource;
   /** Set when the definition that decides the model could not be established: the guard asks with this text. */
   unreadable?: string;
+  /** The `effort:` of the definition behind the call's `subagent_type`, when one was found and it sets a readable one. */
+  definitionEffort?: string;
 }
 
 /**
@@ -485,8 +496,9 @@ export interface ResolvedAgentModel {
  * `subagent_type` (read from disk, except for Claude Code's built-in types, which have none); else a `jev-ladder-<id>`
  * pin (`ladder`, found by the caller); else `CLAUDE_CODE_SUBAGENT_MODEL`; else the session's own. Same environment
  * resolution as the Workflow guard (`subagentModelCandidates`), minus `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`.
- * A definition is read only when nothing above it decides; a type with no definition file resolves as if it had none
- * (Claude Code itself reports an unknown agent). A definition the strict reader cannot establish is `unreadable`.
+ * A type with no definition file resolves as if it had none (Claude Code itself reports an unknown agent). A
+ * definition the strict reader cannot establish is `unreadable` only when it is what decides the model; the
+ * definition's readable `effort:` is returned whatever decides the model (the narrow interim effort rule reads it).
  */
 export function resolveAgentModel(
   call: { model?: unknown; subagent_type?: unknown },
@@ -498,14 +510,19 @@ export function resolveAgentModel(
   const callWritten = typeof callModel === 'string' ? callModel.trim() !== '' : !!callModel;
   const forced = subagentModelForced(env);
   let definition: string | null = null;
+  let definitionEffort: string | undefined;
   const type = call.subagent_type;
-  if (!forced && !callWritten && typeof type === 'string' && !BUILTIN_AGENT_TYPES.has(type)) {
+  if (typeof type === 'string' && !BUILTIN_AGENT_TYPES.has(type)) {
     const def = readAgentDefinition(type, cwd);
-    if (def.found && def.unreadable) return { model: null, source: 'definition', unreadable: def.unreadable };
-    if (def.found) definition = def.model;
+    if (def.found && typeof def.effort === 'string') definitionEffort = def.effort;
+    if (def.found && !forced && !callWritten) {
+      if (def.unreadable) return { model: null, source: 'definition', unreadable: def.unreadable, ...(definitionEffort !== undefined ? { definitionEffort } : {}) };
+      definition = def.model;
+    }
   }
-  if (callWritten && typeof callModel !== 'string') return { model: callModel as string, source: 'call' };
+  const extra = definitionEffort !== undefined ? { definitionEffort } : {};
+  if (callWritten && typeof callModel !== 'string') return { model: callModel as string, source: 'call', ...extra };
   const [c] = subagentModelCandidates({ call: callModel as string | undefined, definition, ladder }, env);
   const source: AgentModelSource = c.source === 'env-forced' ? 'env-force' : c.source === 'session' || c.source === 'workflow-env' ? 'inherit' : c.source;
-  return { model: c.model, source };
+  return { model: c.model, source, ...extra };
 }

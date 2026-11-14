@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { modelTierRank, rankToTierName } from '../src/core/governance.js';
+import { readRegularFile } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -263,24 +264,53 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
  * `questionIndex` picks the answer of that question (A1 is index 0). Null when there is no `content` string, no such
  * answer line, or a content with no `A<n>:` line that is more than one line.
  */
-export function extractAskAnswer(input: AntigravityHookInput | undefined, questionIndex = 0): string | null {
+/**
+ * Cap on the transcript file size read by PostToolUse for ask_question. Transcripts larger than this
+ * return null without reading or splitting the entire file.
+ */
+export const MAX_TRANSCRIPT_READ_BYTES = 1024 * 1024; // 1 MB
+
+export function extractAskAnswer(
+  input: AntigravityHookInput | undefined,
+  questionIndex = 0,
+  maxBytes = MAX_TRANSCRIPT_READ_BYTES
+): string | null {
   let content = input?.content;
   if ((!content || typeof content !== 'string') && input?.transcriptPath && typeof input?.stepIdx === 'number') {
     try {
-      if (fs.existsSync(input.transcriptPath)) {
-        const text = fs.readFileSync(input.transcriptPath, 'utf8');
-        for (const line of text.trim().split(/\r?\n/)) {
+      const read = readRegularFile(input.transcriptPath, maxBytes);
+      if (read.kind === 'ok') {
+        const lines = read.text.trim().split(/\r?\n/);
+        let matchCount = 0;
+        let matchedStep: Record<string, unknown> | null = null;
+        for (const line of lines) {
           if (!line.trim()) continue;
           try {
             const step = JSON.parse(line);
-            if (step.step_index === input.stepIdx && typeof step.content === 'string') {
-              content = step.content;
-              break;
+            if (typeof step === 'object' && step !== null && step.step_index === input.stepIdx) {
+              matchCount++;
+              matchedStep = step as Record<string, unknown>;
             }
-          } catch {}
+          } catch {
+            // ignore unparseable line
+          }
+        }
+        // Right step & fail closed:
+        // Must match exactly one step (no duplicate indices), and that step must be a GENERIC tool response step
+        if (matchCount === 1 && matchedStep && matchedStep.type === 'GENERIC') {
+          const stepToolId = matchedStep.toolCallId ?? matchedStep.tool_call_id;
+          const inputToolId = input.toolCall?.id;
+          if (typeof stepToolId === 'string' && inputToolId && stepToolId !== inputToolId) {
+            return null;
+          }
+          if (typeof matchedStep.content === 'string') {
+            content = matchedStep.content;
+          }
         }
       }
-    } catch {}
+    } catch {
+      // return null on error
+    }
   }
 
   if (typeof content !== 'string' || content.trim() === '') return null;

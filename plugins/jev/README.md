@@ -484,11 +484,37 @@ Jev writes three local logs outside the Claude hook state. None holds prompt tex
 | `~/.gemini/antigravity-cli/jev_telemetry.jsonl` | every MCP tool, and the Claude hook | tool, harness, tier, model, latency, cost, quota fields |
 | `~/.config/jev/egress-log.jsonl` | the egress guard while a policy or ZDR is active | host, model, byte count, session directories, ZDR markers |
 | `~/.config/jev/claude_decisions.jsonl` | the Claude hook | recommendation, model names, tier and a prompt hash |
+| `~/.config/jev/antigravity_decisions.jsonl` | the Antigravity hook | subagent model, session ceiling, decisions, prompt length and hash |
 
 - Every file is created `0600` and its directory `0700`. Files and directories that already exist with looser modes (older releases wrote `0644` / `0755`) are tightened on the next write. The chmod is best-effort and never blocks or fails the caller.
 - `privateDir` also tightens `~/.gemini/antigravity-cli/` to `0700`, a directory Antigravity owns (it holds the telemetry log); anything else that reads that directory as another user or group loses access.
 - **Field change in `jev_telemetry.jsonl`:** `jev_dispatch` lines no longer carry `task` (the first 100 characters of the prompt). They carry `taskLen` (the task's length in characters) and `taskHash` (the first 12 hex characters of its sha256, stable for equal text) instead. Every other field is unchanged. Lines already in an existing file keep their old `task` text: delete or truncate the file if that matters to you.
 - Nothing in the plugin reads the old `task` field; `src/audit/drift-detector.ts` and `scripts/audit-agentic-gaps.ts` use `tool`, `recommendedTier`, `timestamp` and `sessionId`.
+
+---
+
+## 🪐 Google Antigravity
+
+Antigravity loads the Jev plugin's lifecycle hooks automatically from `hooks.json` at the plugin root.
+
+### `invoke_subagent` Tier Ceiling Guard (`PreToolUse`)
+
+Guards `invoke_subagent` calls against the session model ceiling (`active_model` in `~/.gemini/antigravity-cli/quota-state.json` via Jev's governance helpers):
+
+- **Model Extraction**: Reads flat `toolCall.args.Model` (and legacy `toolCall.args.Subagents[].Model` array shape).
+- **Default Resolution**: Omitted and `inherit` models resolve to the session model (empirically confirmed via 4-call live control) and pass without elevation.
+- **Elevation Flow**: A subagent call requesting `pro` on a session below Pro (e.g. Flash) triggers the choice flow:
+  1. The hook **denies** the call with a reason prescribing `ask_question`:
+     - Question text starts with `[jev-elevate:pro]` naming the subagent, requested model, and session ceiling.
+     - Four vertical choices: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session ceiling>`.
+  2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock). The answer is read **only** from the payload's `content` field (the ask_question step text, `A1: <chosen option>`, one `A<n>:` line per question; the marker question's own line is used) and must equal one of the prescribed labels exactly, after the `A1:` prefix and the `(Recommended)` tag are removed: `Yes, once` (scope `once`), `Yes, for the next 5 minutes` (`5min`), `Yes, for this session` (`session`). `No, proceed on <model>`, free text such as "No, not even once", a missing `content` field and anything else record nothing. The rest of the payload is never read as an answer: `toolCall.args` holds the option list the assistant wrote, so reading it would approve from the options alone. An approval is also recorded only after a denial for that model in the last 15 minutes. **Not verified:** whether the real `PostToolUse` payload of `ask_question` carries `content`: `hooks.md` lists only `toolCall`, `stepIdx` and `error`, and no real capture exists yet (the tests use a clearly marked synthetic payload, `tests/fixtures/agy-ask-question-posttooluse.synthetic.json`, built from the real step text recorded in Antigravity transcripts). If the field is absent, nothing is ever recorded and the choice flow ends in the third-attempt permission dialog.
+  3. On a Yes answer, the retried `invoke_subagent` finds the approval and is **allowed**. On No, the assistant proceeds on the session model.
+  4. **Backstop**: If the assistant retries an unapproved elevation without asking, the 3rd attempt falls back to the harness permission dialog (`ask`).
+- **Prompt Overrides**: If the user prompt explicitly requests pro (e.g. `manual pro approval`, `gemini pro`, `argon`, `deep reasoning`), the call passes directly (`elevation: "instructed"`).
+- **`JEV_ELEVATION` Overrides**:
+  - `JEV_ELEVATION=dialog`: Immediately prompts the user via the permission dialog (`ask`).
+  - `JEV_ELEVATION=clamp`: Rewrites `Model` to the session ceiling on the first attempt via `overwrite: { Model: "<ceiling>" }` (`elevation: "clamped"`).
+- **Fail-Open & Privacy**: On any unexpected error, with Jev mode off, on malformed or empty stdin and for any call that needs no elevation, the hook prints `{}` (no decision), so Antigravity applies its normal permission check. It never prints `"decision": "allow"` for those: Antigravity documents `allow` as "Automatically allow the tool execution", so an explicit allow would approve every `invoke_subagent` call on Jev's say-so. `allow` is printed only where Jev deliberately approves: an approved elevation, an instructed model (`elevation: "instructed"`) and a `clamp` rewrite (`overwrite`). Decisions are logged to `~/.config/jev/antigravity_decisions.jsonl` (`decision: "pass"` for the no-decision case) with the prompt length and the first 12 hex of its sha256, the same fingerprint the telemetry lines use (never raw prompt text). The hook makes no network call, so it loads neither `~/.config/jev/env` nor the plugin `.env`.
 
 ---
 
@@ -941,6 +967,18 @@ the rewritten `model`.
 
 ### Release notes
 
+- **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
+  - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
+  - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).
+  - Flat `args.Model` (and legacy `args.Subagents[].Model` array shape) are checked against the session ceiling.
+  - Omitted and `inherit` models resolve to the session model (empirically settled by 4-call live control) and pass without elevation.
+  - Explicit `Model: pro` on a Flash session triggers elevation choice flow: 1st/2nd attempts are denied with prescribed `ask_question` options (`[jev-elevate:pro]`: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session model>`); 3rd attempt falls back to permission dialog (`ask`).
+  - User approvals are recorded in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (0600 file mode, atomic write with lock).
+  - Explicit `pro` override in user prompt passes (`elevation: "instructed"`).
+  - `JEV_ELEVATION=dialog` asks immediately; `JEV_ELEVATION=clamp` rewrites `Model` to session ceiling on 1st attempt via `overwrite: { Model: <ceiling> }`.
+  - Decisions logged to `antigravity_decisions.jsonl` with the prompt length and the 12-hex task fingerprint (never raw prompt text).
+  - Fail-open on any error (never aborts an agent session) by printing `{}`, not `allow`, so the harness's own permission check stays in force; `allow` only where Jev deliberately approves.
+  - The elevation answer is read only from the `content` field and must equal a prescribed label exactly (review fix: substring matching on the whole payload let the option list approve by itself). The hook no longer loads `~/.config/jev/env` or the plugin `.env`.
 - **2.3.12: edit-capable persona swap on Claude Code only** (as in the reference, cognitive-engine #22; decided by the user):
   - `resolveEditCapableSubagent` leaves a read-only persona (`Plan`, `Explore`) as the router chose it on Antigravity,
     OpenCode and the CLI, in single and batch dispatch; before, it swapped to `self` there (2.3.1). Claude Code

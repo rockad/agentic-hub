@@ -960,6 +960,17 @@ export function onModelKnown(input: HookInput): void {
   pruneOldSessions();
 }
 
+/**
+ * A SessionStart payload that carries no model (a resume names only its `source`): whatever record an earlier run of
+ * the session left is stale evidence, so it is deleted and the transcript learner reads the last turn's model instead
+ * (a record is otherwise authoritative and the transcript is never consulted). Only the session record goes.
+ */
+export function onSessionStartWithoutModel(input: HookInput): void {
+  const sessionId = safeSessionId(input.session_id);
+  if (!sessionId || input.to_model || input.model) return;
+  fs.rmSync(path.join(SESSIONS_DIR, `${sessionId}.json`), { force: true });
+}
+
 function pruneOldSessions(): void {
   const cutoff = Date.now() - SESSION_TTL_MS;
   for (const name of fs.readdirSync(SESSIONS_DIR)) {
@@ -1393,6 +1404,7 @@ async function main(event: string | undefined): Promise<void> {
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
   if (event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
+  if (event === 'session-start') safely(() => onSessionStartWithoutModel(input));
   if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
   if (event === 'session-start') maybeStartCatalogueRefresh();
   if (output) process.stdout.write(JSON.stringify(output));

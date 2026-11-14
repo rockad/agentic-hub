@@ -572,6 +572,9 @@ the hook needs it on every call.
    transcript cannot be stat-ed does the older rule apply: re-check at most once every 60 seconds. A `SessionStart`
    or `PostModelSwitch` event overwrites it and makes it authoritative again, and the learner puts such a record back
    if it lands while the learner is writing.
+4. A `SessionStart` payload that carries no `model` (a resume names only its `source`) deletes the session's record
+   first, so a record an earlier run left can never outrank the transcript: the next call learns the model of the
+   last turn (step 2). A payload that carries a model overwrites the record as before.
 
 The transcript path is read only when it is a regular file that ends in `.jsonl` and whose real path is under
 `~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
@@ -1019,6 +1022,8 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     model before: a top-level flow mapping, a block indented as a whole, a tab-indented `model:` line. A file that
     claims the agent through a flow-mapping, indented or escape-encoded name makes the lookup ambiguous.
     Behaviour change: CR-only line endings and a `---` after leading whitespace are now unreadable (ask).
+  - A `SessionStart` with no `model` (a resume) deletes the stale session record, so the transcript learner reads
+    the last turn's model instead of trusting an older record.
 - **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).

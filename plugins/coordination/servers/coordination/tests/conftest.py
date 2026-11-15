@@ -93,6 +93,15 @@ class PgServer:
         _docker("restart", "-t", "2", self.name)
         self.wait_ready(timeout_s)
 
+    def crash(self) -> None:
+        """SIGKILL the Postgres server process (a crash, not a clean stop)."""
+        _docker("kill", "-s", "KILL", self.name)
+
+    def start_again(self, timeout_s: float = 60) -> None:
+        """Start the crashed container again; the published port is fixed, so it stays the same."""
+        _docker("start", self.name)
+        self.wait_ready(timeout_s)
+
     def wait_ready(self, timeout_s: float = 60) -> None:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:

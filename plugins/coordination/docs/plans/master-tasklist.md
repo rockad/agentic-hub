@@ -9,15 +9,16 @@ The full text of the old tasklist (decision records, workstream checklist, every
 ### 0.1 Start here (copy this into a new Antigravity or Claude Code session)
 
 ```
-You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way: streams S1-SCAF (PR #32, commit 11f7e0f), S1-PG (PR #37, cff63c9) and S1-BKP (PR #42, c3dd5ad) are merged (2026-11-11 and 2026-11-12), and S1-STORE (PR #61) and S1-OBS (PR #62) since 2026-11-15. Wave W4a (S1-AUTH and S1-STATE) was launched on 2026-11-15 and is running in two worktrees. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
+You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way: streams S1-SCAF (PR #32, commit 11f7e0f), S1-PG (PR #37, cff63c9) and S1-BKP (PR #42, c3dd5ad) are merged (2026-11-11 and 2026-11-12), and S1-STORE (PR #61) and S1-OBS (PR #62) since 2026-11-15. Wave W4a (S1-AUTH and S1-STATE) was launched on 2026-11-15: S1-AUTH is built and in PR #65 (open, merge only on the user's word); S1-STATE is built on branch feat/coordination-state (commit 724167d, not pushed, no PR, independent check and your review still to do). The docs were reorganised on 2026-11-15 into two live documents (commit 7db293c). The weekly Claude quota was 95 percent used on 2026-11-15 and resets on 2026-11-20 15:00 (Europe/Helsinki): section 0.7 says how to continue without the original session. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
 1. Read plugins/coordination/AGENTS.md, docs/README.md, then this file, sections 1 to 5.
 2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status; gh pr list. Check every claim in a doc against its evidence file. The S1 entry gate is satisfied (2026-11-11, docs/research/spike-results-2026-11-10-sp3-sp4.md); the user approved the S1 kickoff on 2026-11-11 (Y10). The decision tables Y1 to Y10 and Z1 to Z9 are final (master-plan section 12).
 3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session) and never touch the worktrees of a running build (agentic-hub-wt-auth, agentic-hub-wt-state). Stage explicit paths only. Never push main, tag or release without the user's go.
-4. First action: check whether W4a (streams AUTH and STATE) has finished (gh pr list; read-only git status and git log in the two worktrees). If a stream finished, review its diff, re-run its acceptance yourself, and open one PR per stream (no merge without the user's word). The next wave is W4b (MCP, A2A, ADMIN, one stream at a time, decision Z8); the proposed order MCP, A2A, ADMIN is not yet confirmed by the user, so ask. Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
+4. First action: read section 0.7 (resuming without the original session), then check where W4a (streams AUTH and STATE) stands (gh pr list; read-only git status and git log in the two worktrees). AUTH is PR #65: check its CI and wait for the user's merge word. STATE has a commit but no PR yet: review its diff, re-run its acceptance yourself (section 0.7 lists the checks), push the branch and open one PR (no merge without the user's word). The next wave is W4b (MCP, A2A, ADMIN, one stream at a time, decision Z8); the proposed order MCP, A2A, ADMIN is not yet confirmed by the user, so ask. Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
 5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
 6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
 8. When you finish a step: update sections 1 to 4 of this file (status, milestones, stream tables, todo), commit, then tell the user what changed and what is next. Docs updates go straight to main (user decision, 2026-11-15; no PR for docs); stream code goes one PR per stream.
+9. Quota rule (user, 2026-11-15): when a workflow finishes, or when the weekly quota reaches 3 percent remaining (statusline 7d gauge, `~/.cache/claude-quota.json` on <workstation>, or `jev_quota`), stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
 ```
 
 ### 0.2 Read in this order
@@ -57,11 +58,37 @@ You are continuing the A2A coordination plugin work (repo agentic-hub, folder pl
 - A background Claude Code job has `CLAUDE_CODE_SESSION_ATTENDED=0`, which breaks the wake-listener tests; those need an attended session.
 - Listener owner pid is `$CLAUDE_PID`, not `$PPID`. Details are in `docs/research/spike-results-2026-11-05-sp1.md`.
 
+### 0.7 Resuming without the original session (state of 2026-11-15, 18:10 Europe/Helsinki)
+
+Why this section exists: the main session that ran W3a and W4a may stop (quota). Anything not written here or in git is lost. Labels: [verified] was observed by the main session, [reported] comes from a build agent.
+
+How a wave runs (master-plan section 13), so another account or Antigravity can repeat it:
+
+- The original session drove each wave with one Claude Code `Workflow` script (not in the repo; it only chains agents). The same steps work by hand with subagents (Claude Code `Agent`, Antigravity `invoke_subagent`; the tier rule in section 0.5):
+  1. Build: one agent per stream in its own worktree and branch `feat/coordination-<id>` (`git worktree add ../agentic-hub-wt-<id> -b feat/coordination-<id> origin/main`), told which files are in scope, to commit with explicit paths, never push.
+  2. Check: a separate agent re-runs the stream's acceptance list from master-plan section 4.2 with throwaway secrets, its own compose project name and a free port (not 18120), canary scans with pattern files and a positive control.
+  3. Repair: at most two rounds, only for failed criteria.
+  4. Scope check: `git diff --name-only origin/main...HEAD` must stay inside the stream's files.
+  5. Review by the main session: read the diff, re-run `A2A_TEST_REQUIRE_DOCKER=1 uv run pytest -q` in `plugins/coordination/servers/coordination` (Docker needed), push, open one PR per stream with caveats, no merge without the user's word.
+- Quota note: the 5-hour limit cut agents off twice on 2026-11-15 (a cut-off agent's work stays in its worktree; resume it with a prompt that says to inspect `git log`, `git status` and `git diff` first). With little quota left, run one stream at a time.
+
+Where things are [verified 2026-11-15, 18:10]:
+
+- Merged to `main`: SCAF, PG, BKP, STORE, OBS, the docs (head `7db293c`). Suite on merged `main`: 313 passed, 3 skipped.
+- S1-AUTH: PR #65, branch `feat/coordination-auth`, commit `a0967d7`, worktree `agentic-hub-wt-auth`. 611 passed, 3 skipped, re-run by the main session. CI was pending at 18:09. The caveats and the two design calls to review are in the PR body (a bare `create_app` is unauthenticated; auth failures are not audited until the SQL audit store lands with STATE).
+- S1-STATE: branch `feat/coordination-state`, commit `724167d` (about 4,200 added lines: `service/`, `audit/sql.py`, `store/task_store.py`, tests, `docs/specs/service-layer.md`), worktree `agentic-hub-wt-state`, tree clean, **not pushed, no PR, the independent check had not reported** [workflow still running when this was written]. Briefed design (decision Z6, user chose "one transaction in the store"): `CoordTaskStore.transition` writes the task, its audit row and its `task_index` update in one database transaction (this also closes the crash window STORE documented); the skipped test `tests/test_audit.py::test_transition_and_its_audit_row_commit_together_against_postgres` becomes a real Postgres test (a normal transition leaves exactly one `state_transition` row naming the actor; a forced audit-insert failure leaves state, version and index unchanged and no row); the guess counter is left to S2-LISTEN; the service layer is a plain API and is not wired into `app.py`; migration number m0004 is reserved for STATE, m0003 for AUTH (AUTH used none).
+- Review checklist for STATE: run the full suite with Docker; confirm the placeholder test is no longer skipped; `git diff --stat origin/main...HEAD` shows nothing under `docs/plans` (an earlier stray edit to the old `implementation-plan.md`, now `master-plan.md`, must not land; drop it and move any content that is still valid into `master-plan.md` on `main`); check `docs/specs/audit-events.md` section 2 and the as-built note in `server-api.md` 1.3 match the code.
+- After AUTH and STATE are merged: update this file, then start W4b one stream at a time (MCP, A2A, ADMIN; the order is the main session's proposal, ask the user to confirm).
+- Quota [reported by `~/.cache/claude-quota.json`, 2026-11-15 18:09]: weekly 95 percent used, 5-hour 15 percent used, weekly reset on 2026-11-20 15:00. Under the user's rule (section 0.1, item 9) update the docs when the weekly quota reaches 3 percent remaining.
+- Peers: `claude-cp` (Remote Control, built SCAF, PG and BKP; offline most of the time), `ce-research`, `jev-update`. Do not edit their branches. The scratch status file `~/scratch/a2a-spikes/s1-todo.md` on <workstation> is only an agent log; this file is the status.
+- Antigravity pickup: the user starts agy; a helper never drives or probes it (A8c, hooks and any live agy check are the user's). The session model is the ceiling for subagents; `pro` needs the user's approval.
+
 ## 1. Status at a glance (as of 2026-11-15)
 
 - Stage S0 (spikes) is closed for the S1 entry gate (2026-11-11). Open from it: A8c, and two attended tests that run inside S1.
 - Stage S1: five of the 19 streams are merged to `main` (SCAF, PG, BKP, STORE, OBS). The full suite on merged `main` gave 313 passed, 3 skipped [verified, main session, 2026-11-15].
-- Wave W4a (AUTH and STATE) was launched on 2026-11-15 and is running in two worktrees. Nothing from W4a is merged or has a PR yet.
+- Wave W4a (AUTH and STATE) was launched on 2026-11-15. S1-AUTH is in PR #65 (open; 611 passed, 3 skipped, re-run by the main session [verified]). S1-STATE is committed on its branch (`724167d`), not pushed, and awaits its independent check and review. Nothing from W4a is merged.
+- Weekly quota 95 percent used on 2026-11-15, resets 2026-11-20 15:00 [reported by the quota file]; see section 0.7.
 - Not started: TEST-skel (planned beside W3a, not done), the rest of S1 (W4b to W6), all of S2, S3, go-live and the later tracks.
 - Docs updates go straight to `main` from 2026-11-15 (user decision, no PR for docs); stream code goes one PR per stream, merged on the user's word.
 - Open for the user: confirm the W4b order, A8c in agy, the attended tests, and the user-only items in section 4. No question is open for the agents.
@@ -133,8 +160,8 @@ Deliverables and acceptance of each stream are under its heading in [`master-pla
 | S1-STORE | done (W3a) | PR #61, `0397b6f` | S1-SCAF, S1-PG | 16-24 | critical path; owns the migration directory; caveats in section 5 |
 | S1-OBS | done, writer half (W3a) | PR #62, `d09799f` | S1-SCAF | 4-6 | acceptance 3b split (Z6); also owns `dump_age_h` in `/status` |
 | S1-TEST (skeleton) | not started | none | S1-SCAF | part of 14-22 | planned in the main tree beside W3a, not done; reuses the SP5 load driver |
-| S1-AUTH | building (W4a) | branch `feat/coordination-auth`, one commit `a0967d7` | S1-STORE schema | 10-16 | worktree `agentic-hub-wt-auth`; commit not yet checked [reported by git, unverified]; no schema change, not wired: production audit store, rate-limit numbers (S3-LIMITS), real tailnet identity source (S2-TS) [reported by its build agent, not verified] |
-| S1-STATE | building (W4a) | branch `feat/coordination-state` | S1-STORE | 14-22 | worktree `agentic-hub-wt-state`; uncommitted work; owns the atomic exit test of Z6 |
+| S1-AUTH | built, PR open (W4a) | PR #65, `a0967d7` | S1-STORE schema | 10-16 | worktree `agentic-hub-wt-auth`; 611 passed, 3 skipped, re-run by the main session [verified]; checker 8 of 8; no schema change; not wired: production audit store (STATE), rate-limit numbers (S3-LIMITS), real tailnet identity source (S2-TS), key commands (ADMIN) [reported by its build agent] |
+| S1-STATE | built, awaiting check and review (W4a) | branch `feat/coordination-state`, `724167d`, not pushed | S1-STORE | 14-22 | worktree `agentic-hub-wt-state`; owns the atomic exit test of Z6; main-session review and PR still to do (section 0.7) |
 | S1-MCP | not started (W4b, first) | none | S1-AUTH, S1-STATE | 12-18 | `/mcp` facade; critical path |
 | S1-A2A | not started (W4b, second) | none | S1-AUTH, S1-STATE | 16-24 | `/a2a/v1`, card, push |
 | S1-ADMIN | not started (W4b, third) | none | S1-AUTH, S1-STATE | 12-18 | admin socket, `a2a-coord`; the user tests TTY paths |
@@ -248,7 +275,7 @@ Tick a box when it is done and say so in the commit that changes it. Items marke
 ### 4.2 S1: now running
 
 - [x] W3a done (STORE PR #61, OBS PR #62, both merged 2026-11-15)
-- [ ] W4a: AUTH (`feat/coordination-auth`, worktree `agentic-hub-wt-auth`) and STATE (`feat/coordination-state`, worktree `agentic-hub-wt-state`) building
+- [ ] W4a: AUTH built (PR #65 open, awaiting the user's merge word); STATE built on its branch (`724167d`): independent check, main-session review, push and PR still to do (section 0.7)
 - [ ] TEST-skel (planned beside W3a, not done; no dependency blocks it)
 
 Main-session steps after each workflow (no user needed):

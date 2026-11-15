@@ -18,6 +18,9 @@ import {
   claudeModelTier,
   sessionBelowOpus,
   type JevHarness,
+  type JevMode,
+  type QuotaView,
+  type QuotaClampResult,
   topologicalSortStages,
   estimateTierCost,
   defaultEffortForSubagent,
@@ -252,6 +255,24 @@ export function keepEditsOffFreeTier(tier: string, edits: boolean): string {
 }
 
 /**
+ * The low-quota step for a harness. Claude Code has no Claude-quota source in readQuotaView: its pools are the
+ * Antigravity Gemini buckets, which say nothing about a Claude subscription (and may be a stale file left on the
+ * machine). So on Claude Code the step changes nothing and reports an unknown pool.
+ */
+export function quotaStepForHarness(
+  harness: JevHarness,
+  tier: string,
+  quotaView: Pick<QuotaView, 'active'>,
+  mode: JevMode,
+  edits: boolean
+): QuotaClampResult {
+  if (harness === 'claude-code') {
+    return { tier, wasClampedByQuota: false, strategy: 'unknown', pool: quotaView.active.pool };
+  }
+  return applyLowQuotaClamp(tier, quotaView, mode, edits);
+}
+
+/**
  * The session-model ceiling the clamp compares against. Antigravity's quota file names a Gemini
  * model, which says nothing about a Claude Code session, so in claude-code there is no ceiling
  * here (the Claude hook, which knows the session model, applies its own).
@@ -444,6 +465,8 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
 
   const quotaView = await readQuotaView();
   recommendedSubagent = resolveEditCapableSubagent(harness, recommendedSubagent, task);
+  // Outside Claude Code a read-only persona (research, knowledge-researcher, Plan, Explore) never owns an editing task.
+  if (!isClaude && editsFiles({ task })) recommendedSubagent = resolveEditCapablePersona(recommendedSubagent, subagentCriteria);
   const rawEffort = defaultEffortForSubagent(recommendedSubagent, task);
   const recommendedEffort = applyEffortGovernance(rawEffort, quotaView.strategy, recommendedTier);
 
@@ -455,9 +478,10 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   const ceilingClamping = isClaude ? { ...clamped, ceilingTier: claudeModelTier(claudeModel) ?? 'pro' } : clamped;
   // The quota step follows the ceiling: its only threshold source is the active pool's strategy (evaluatePoolStrategy).
   // Mode "on" clamps a low pool whatever the task text says; "on-demand" lets pro through with a quotaWarning.
-  const quotaStep = applyLowQuotaClamp(ceilingClamping.clampedTier, quotaView, await readJevMode(harness), editsFiles({ task }));
-  // The free tier returns text and cannot edit files: on Claude Code a task worded as an edit goes one tier up.
-  const effectiveTier = isClaude ? keepEditsOffFreeTier(quotaStep.tier, editsFiles({ task })) : quotaStep.tier;
+  // On Claude Code the step is a no-op: the Gemini pools say nothing about the Claude subscription.
+  const quotaStep = quotaStepForHarness(harness, ceilingClamping.clampedTier, quotaView, await readJevMode(harness), editsFiles({ task }));
+  // The free tier returns text and cannot edit files: on every harness a task worded as an edit goes one tier up.
+  const effectiveTier = keepEditsOffFreeTier(quotaStep.tier, editsFiles({ task }));
   const cognitiveTier = normalizeTier(effectiveTier);
   const harnessModels = getHarnessModels();
   const concreteModel = harnessModels[cognitiveTier] || effectiveTier;
@@ -709,7 +733,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const clamped = ceilingExempt ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
     // Quota step: one threshold source (the active pool's strategy). Mode "on" clamps a low pool regardless of
     // approvals or override phrases in the task; "on-demand" leaves pro standing with a quotaWarning.
-    const quotaStep = applyLowQuotaClamp(clamped.clampedTier, quotaView, jevMode, edits);
+    const quotaStep = quotaStepForHarness(activeHarness, clamped.clampedTier, quotaView, jevMode, edits);
     // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
     const tier = keepEditsOffFreeTier(quotaStep.tier, edits);
     const cognitiveTier = normalizeTier(tier);

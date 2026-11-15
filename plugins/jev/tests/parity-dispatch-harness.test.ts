@@ -410,14 +410,14 @@ describe('a read-only persona kept for an edit outside Claude Code (review fix)'
     expect(plain).not.toContain('read-only');
   });
 
-  it('jev_dispatch on Antigravity: an edit task on Explore carries the line, a non-edit task does not', () => {
+  it('jev_dispatch on Antigravity: an edit task is moved off Explore (so no line), a non-edit task stays on it', () => {
     const answers = { recommendedSubagent: 'Explore', recommendedTier: 'flash' };
 
     const edit = runTool('antigravity', { tool: 'single', args: { task: 'Update the README file with the new flags' }, answers });
     const read = runTool('antigravity', { tool: 'single', args: { task: 'Explain how the router picks a tier' }, answers });
 
-    expect(edit.recommendedSubagent).toBe('Explore');
-    expect(edit.executionGuidance).toContain(NOTE);
+    expect(edit.recommendedSubagent).not.toBe('Explore');
+    expect(edit.executionGuidance).not.toContain(NOTE);
     expect(read.recommendedSubagent).toBe('Explore');
     expect(read.executionGuidance).not.toContain(NOTE);
   });

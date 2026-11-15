@@ -374,8 +374,9 @@ function phraseCoversModel(phrase: string, requestedModel?: string | null): bool
   if ((phraseLower.includes('gemini') || phraseLower.includes('argon')) && (reqLower.includes('claude') || reqLower.includes('opus'))) {
     return false;
   }
-  // If phrase specifically names claude, it cannot approve a gemini or argon request
-  if (phraseLower.includes('claude') && (reqLower.includes('gemini') || reqLower.includes('argon'))) {
+  // If phrase specifically names claude (or fable), it cannot approve a gemini or argon request
+  // A bare "fable" is the Claude family too: the word alone names no Gemini model.
+  if ((phraseLower.includes('claude') || phraseLower.includes('fable')) && (reqLower.includes('gemini') || reqLower.includes('argon'))) {
     return false;
   }
 

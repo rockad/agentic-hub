@@ -300,3 +300,121 @@ describe('isExplicitProOverride in the ceiling clamp (W-c)', () => {
     expect(clampTierToSessionCeiling('pro', 'gemini-2.5-flash', "don't use claude fable here").wasClamped).toBe(true);
   });
 });
+
+describe('Claude Code ignores the Gemini quota pools (parity with the base)', () => {
+  const mixedBatch = {
+    availableSubagents: ['self'],
+    tasks: [
+      { id: 'judge', task: 'Decide the reversal of the storage choice', kind: 'judgement', needsEdit: false },
+      { id: 'edit', task: 'Rename the helper', kind: 'settled-edit', needsEdit: true }
+    ]
+  };
+
+  const lowPools: Array<[string, number]> = [
+    ['conserve', 0.2],
+    ['free_only', 0.05]
+  ];
+
+  it.each(lowPools)('batch in mode on under a %s Gemini fixture matches a healthy pool', (_name, five) => {
+    writeConfig('on');
+    writeQuota(0.9, 0.9);
+    const healthy = runTool({ tool: 'batch', args: mixedBatch }, 'claude-code');
+    writeQuota(five, 0.5);
+    const low = runTool({ tool: 'batch', args: mixedBatch }, 'claude-code');
+
+    expect(low.tasks.map((t: any) => [t.tier, t.executionTool, t.requiresUserApproval, t.wasClampedByQuota])).toEqual(
+      healthy.tasks.map((t: any) => [t.tier, t.executionTool, t.requiresUserApproval, t.wasClampedByQuota])
+    );
+    expect(low.tasks.some((t: any) => t.wasClampedByQuota)).toBe(false);
+    expect(low.tasks[0].tier).toBe('pro');
+  });
+
+  it.each(lowPools)('single dispatch in mode on under a %s Gemini fixture is not clamped', (_name, five) => {
+    writeConfig('on');
+    writeQuota(five, 0.5);
+
+    const res = runTool({ tool: 'single', args: { task: 'Design the storage layer' }, answers: { recommendedSubagent: 'self', recommendedTier: 'pro' } }, 'claude-code');
+
+    expect([res.recommendedTier, res.requiresUserApproval]).toEqual(['pro', true]);
+    expect(res.wasClampedByQuota).toBeUndefined();
+    expect(res.quotaPool).toBeUndefined();
+  });
+
+  it('a stale Antigravity quota file does not clamp a Claude session', () => {
+    writeConfig('on');
+    writeQuota(0.05, 0.05);
+    const file = path.join(tmp, '.gemini', 'antigravity-cli', 'quota-state.json');
+    fs.utimesSync(file, new Date(0), new Date(0));
+
+    const res = runTool({ tool: 'single', args: { task: 'Design the storage layer' }, answers: { recommendedSubagent: 'self', recommendedTier: 'pro' } }, 'claude-code');
+
+    expect(res.recommendedTier).toBe('pro');
+  });
+
+  it('mode on-demand adds no Gemini quotaWarning to a Claude judgement stage', () => {
+    writeConfig('on-demand');
+    writeQuota(0.05, 0.5);
+
+    const plan = runTool({ tool: 'batch', args: mixedBatch }, 'claude-code');
+
+    expect(plan.tasks[0].quotaWarning).toBeUndefined();
+    expect(plan.tasks[0].requiresUserApproval).toBe(true);
+  });
+
+  it('the Antigravity clamp is unchanged', () => {
+    writeConfig('on');
+    writeQuota(0.2, 0.5);
+
+    const plan = runTool({ tool: 'batch', args: mixedBatch });
+
+    expect(plan.tasks.map((t: any) => t.tier)).toEqual(['flash_lite', 'flash_lite']);
+    expect(plan.tasks[0].wasClampedByQuota).toBe(true);
+  });
+});
+
+describe('a bare "fable" names no Gemini model (isExplicitProOverride)', () => {
+  it('does not authorise a Gemini request', () => {
+    expect(isExplicitProOverride('write a fable', 'gemini-3-pro')).toBe(false);
+    expect(isExplicitProOverride('Write a short fable for the README intro', 'gemini-3-pro')).toBe(false);
+    expect(isExplicitProOverride('use claude fable for this', 'gemini-3-pro')).toBe(false);
+  });
+
+  it('still covers a Claude or tier-only request', () => {
+    expect(isExplicitProOverride('use fable for this', 'claude-opus-5-5')).toBe(true);
+    expect(isExplicitProOverride('use fable for this', 'pro')).toBe(true);
+  });
+});
+
+describe('jev_dispatch edit safety on every harness', () => {
+  const answers = { recommendedSubagent: 'research', recommendedTier: 'openrouter_free' };
+  const args = { task: 'Edit src/app.ts to rename the helper function', availableSubagents: ['research', 'code-engineer', 'self'] };
+
+  it('an editing task leaves the read-only persona and the free tier on Antigravity (normal pool)', () => {
+    writeConfig('on');
+    writeQuota(0.9, 0.9);
+
+    const res = runTool({ tool: 'single', args, answers });
+
+    expect(res.recommendedSubagent).toBe('code-engineer');
+    expect(res.recommendedTier).toBe('flash_lite');
+    expect(res.executionTool).not.toBe('jev_execute_free');
+  });
+
+  it('the same holds in a free_only pool in on-demand mode', () => {
+    writeConfig('on-demand');
+    writeQuota(0.05, 0.5);
+
+    const res = runTool({ tool: 'single', args, answers });
+
+    expect([res.recommendedSubagent, res.recommendedTier]).toEqual(['code-engineer', 'flash_lite']);
+  });
+
+  it('a task with no edit wording keeps the read-only persona and the free tier', () => {
+    writeConfig('on');
+    writeQuota(0.9, 0.9);
+
+    const res = runTool({ tool: 'single', args: { ...args, task: 'Summarise the helper function' }, answers });
+
+    expect([res.recommendedSubagent, res.recommendedTier, res.executionTool]).toEqual(['research', 'openrouter_free', 'jev_execute_free']);
+  });
+});

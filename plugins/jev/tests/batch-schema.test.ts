@@ -146,8 +146,15 @@ describe('editsFiles guard on the free tier (caller flag, else the wording)', ()
     expect(res.executionGuidance).toContain('cannot edit files');
   });
 
-  it('single: Antigravity is unchanged and keeps the free tier for the same wording', () => {
+  it('single: Antigravity also keeps an edit-wording task off the free tier (edit safety on every harness)', () => {
     const res = run('antigravity', { tool: 'single', args: { task: 'Scaffold the boilerplate files and update the README' }, answers: router });
+
+    expect([res.recommendedTier, res.rawRecommendedTier]).toEqual(['flash_lite', 'openrouter_free']);
+    expect(res.executionTool).not.toBe('jev_execute_free');
+  });
+
+  it('single: Antigravity keeps a task with no edit wording on the free tier', () => {
+    const res = run('antigravity', { tool: 'single', args: { task: 'Scaffold the boilerplate notes' }, answers: router });
 
     expect([res.recommendedTier, res.executionTool]).toEqual(['openrouter_free', 'jev_execute_free']);
   });

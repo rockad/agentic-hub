@@ -69,6 +69,13 @@ describe('Governance & Harness Model Tier Ranking (Argon, Fable, Antigravity)', 
       expect(modelTierRank('flash')).toBe(2);
       expect(modelTierRank('standard')).toBe(2);
     });
+
+    it('ranks Hydrogen models as Tier 2 (flash) explicitly', () => {
+      expect(modelTierRank('hydrogen')).toBe(2);
+      expect(modelTierRank('gemini-hydrogen')).toBe(2);
+      expect(modelTierRank('Gemini 4 Hydrogen (Low)')).toBe(2);
+      expect(modelTierRank('gemini-2.5-hydrogen')).toBe(2);
+    });
   });
 
   describe('clampTierToSessionCeiling with Argon session model', () => {

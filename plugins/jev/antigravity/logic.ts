@@ -56,10 +56,11 @@ export const CHOICE_OPTIONS = {
 
 /** Whole words and whole phrases only: "jargon" and "Argonaut" are not "argon". Matched against lowercase text.
  * Bare "argon" is dropped: in Antigravity only Gemini Pro / Claude Opus (or explicit "gemini argon") are valid model names;
- * bare "argon" collides with argon hashing ("hash it with argon") or chemical argon.
+ * bare "argon" collides with argon hashing ("hash it with argon") or chemical argon. Specific phrases like
+ * "argon subagent", "argon coordinator", "argon agent", or "argon model" are recognized as explicit overrides.
  */
 const PRO_OVERRIDE_PHRASES =
-  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|claude\s+opus|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
+  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|(?:gemini\s+)?argon\s+(?:coordinator|subagent|agent|model)|claude\s+opus|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
 
 /** Negators that indicate negation of the model directive. */
 const NEGATOR_PATTERN =
@@ -94,12 +95,12 @@ function phraseCoversModel(phrase: string, requestedModel?: string | null): bool
   if (phraseRank < reqRank) return false;
 
   // 2. Family compatibility:
-  // If phrase specifically names gemini, it cannot approve a claude/opus request
-  if (phraseLower.includes('gemini') && (reqLower.includes('claude') || reqLower.includes('opus'))) {
+  // If phrase specifically names gemini or argon, it cannot approve a claude/opus request
+  if ((phraseLower.includes('gemini') || phraseLower.includes('argon')) && (reqLower.includes('claude') || reqLower.includes('opus'))) {
     return false;
   }
-  // If phrase specifically names claude, it cannot approve a gemini request
-  if (phraseLower.includes('claude') && reqLower.includes('gemini')) {
+  // If phrase specifically names claude, it cannot approve a gemini or argon request
+  if (phraseLower.includes('claude') && (reqLower.includes('gemini') || reqLower.includes('argon'))) {
     return false;
   }
 

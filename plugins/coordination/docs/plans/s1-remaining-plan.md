@@ -1,7 +1,7 @@
 # S1 remaining: workstreams, waves and dynamic workflows (drafted 2026-11-13, decisions Z1 to Z5 recorded 2026-11-14)
 
 Source: `plugins/coordination/docs/plans/implementation-plan.md` sections 3.1, 4.2, 5 (origin/main).
-Done: S1-PG (PR #37), S1-BKP (PR #42), S1-SCAF (PR #32). The user decided Z1 to Z5 on 2026-11-14 (section 6). Starting W3a still waits for the user's word to merge the docs PR (Z4); no stream has started.
+Done: S1-SCAF (PR #32), S1-PG (PR #37), S1-BKP (PR #42), S1-STORE (PR #61), S1-OBS (PR #62); W3a finished 2026-11-15. The user decided Z1 to Z5 on 2026-11-14 and Z6 to Z9 on 2026-11-15 (section 6). Wave W4a (AUTH and STATE) is running; W4b to W6 have not started.
 
 ## 1. Remaining streams and their dependencies
 
@@ -70,7 +70,9 @@ Size: the session guideline is "under 5 agents" per workflow. One stream is buil
 ## 5. Open items to carry into S1
 
 - `A2A_UID`/`A2A_GID` must match the secret owner (rootless Docker uses 0); `/data` not writable when overridden, so GL-IMPORT needs an answer (before S2).
-- `dump_age_h` into `/status`: assigned to OBS.
+- `dump_age_h` into `/status`: done by OBS (PR #62, merged 2026-11-15).
+- The A8c stub still listens on `127.0.0.1:18120` for the staged A8c run; acceptance runs use another port until A8c cleanup. The A8c result gates the S1-INST placement and the S1-AGY health check.
+- User-owned hygiene: restic password file on `<storage-host>` before S2; the history-rewrite window and the GitHub Support purge decision; the attended tests inside S1 (A8c, `asyncRewake`, GUI-launched Claude).
 - State-volume dir is mode 0777 so the sidecar can write `last_ok`.
 - Non-root `A2A_UID` other than 0 untested under rootless Docker.
 - Issues #39 (memory@agentic-hub 1.0.1) and #40 (lookup package visibility) are unrelated but open.
@@ -91,4 +93,12 @@ Decided 2026-11-15 (after W3a, STORE PR #61 and OBS PR #62 merged):
 | --- | --- | --- |
 | Z6 | S1-OBS acceptance 3b ("every state transition has exactly one audit row naming its actor") | Ratify the split. OBS keeps the writer half (done, merged). The atomic half (transition and its audit row commit in one transaction; a failed audit insert leaves state and version unchanged and no row) is an exit test of S1-STATE, on the `audit` table STORE built. S1-STATE adds the transaction-joining `append_audit` [design]. S1-SEC and S1-GATE cannot pass without it. |
 
-Still open: the agent count for W4b (3 streams, over the session's 5-agent guideline). Decide at W4b: split into two workflows, or the user allows more. Everything else waits on the Z4 merge.
+Decided 2026-11-15 (open items round):
+
+| # | Question | Decision |
+| --- | --- | --- |
+| Z7 | Secret files for a real stack run | The user provides the database password and `dump_ro` secret files at W6 (INST and GATE); never before. |
+| Z8 | W4b agent count | One stream at a time, each branching from the previous merge. Proposed order (critical path first): MCP, A2A, ADMIN [not yet confirmed]. |
+| Z9 | Jev PRs #54, #55, #58 | Left alone; not part of this work. |
+
+No question is open now except the W4b order confirmation.

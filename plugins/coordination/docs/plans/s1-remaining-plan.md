@@ -85,4 +85,10 @@ Size: the session guideline is "under 5 agents" per workflow. One stream is buil
 | Z4 | Plan PR | Open the docs PR with this plan, the ticked tasklist and the handoff; the user merges it before STORE and OBS start. |
 | Z5 | agy side | The user runs A8c now in agy, in parallel with W3a, with the signed-out run last. A helper never drives agy. |
 
+Decided 2026-11-15 (after W3a, STORE PR #61 and OBS PR #62 merged):
+
+| # | Question | Decision |
+| --- | --- | --- |
+| Z6 | S1-OBS acceptance 3b ("every state transition has exactly one audit row naming its actor") | Ratify the split. OBS keeps the writer half (done, merged). The atomic half (transition and its audit row commit in one transaction; a failed audit insert leaves state and version unchanged and no row) is an exit test of S1-STATE, on the `audit` table STORE built. S1-STATE adds the transaction-joining `append_audit` [design]. S1-SEC and S1-GATE cannot pass without it. |
+
 Still open: the agent count for W4b (3 streams, over the session's 5-agent guideline). Decide at W4b: split into two workflows, or the user allows more. Everything else waits on the Z4 merge.

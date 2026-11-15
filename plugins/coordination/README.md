@@ -120,7 +120,7 @@ All links are absolute `file://` links.
 
 - [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md)
 - [`docs/plans/master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
-- [`docs/plans/go-live-migration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md): one-time import of the frozen channel files into the store, then deletion.
+- [`docs/plans/master-plan.md#9-go-live-migration`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md#9-go-live-migration): one-time import of the frozen channel files into the store, then deletion.
 - [`docs/archive/claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/claude-a2a-server-tasklist.md)
 - [`docs/archive/2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/2026-11-03-multi-agent-coordination-alignment.md)
 

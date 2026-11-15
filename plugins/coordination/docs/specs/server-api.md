@@ -132,7 +132,7 @@ Engine rules [design]:
   - Retention [R5, design defaults]: 14 daily dumps and 3 monthly dumps (the first dump of each of the last 3 months). The daily prune never deletes `pre-import-*` files [R12, default applied by the assistant; the user may veto]. After each successful and verified dump the sidecar writes a `last_ok` timestamp file in the same directory.
   - Failure notice [R5, R12]: the server mounts the dump directory read-only, reads `last_ok` and reports `dump_age_h` in `/status` (3.6). A dump older than 36 h is flagged stale and the status client shows it. `dump_age_h` is `null` before the first successful dump [R12, default applied by the assistant; the user may veto]. If the server is down, the restic job's own log is the second check.
   - `a2a-data` stays for go-live import run artefacts only (`/data/imports/<run_id>/`). It is not part of the backup scope [R6].
-  - Pre-import snapshot [R6, R9, R12]: the go-live pre-apply snapshot is a `pg_dump -Fc` named `pre-import-<run_id>.dump` in the same `<media-root>/backup/a2a/` directory, so the second restic job collects it; the host-side importer runs it through the compose stack (go-live-migration.md 13.1). It is never pruned by the daily prune [R12]; removing old ones is manual.
+  - Pre-import snapshot [R6, R9, R12]: the go-live pre-apply snapshot is a `pg_dump -Fc` named `pre-import-<run_id>.dump` in the same `<media-root>/backup/a2a/` directory, so the second restic job collects it; the host-side importer runs it through the compose stack (master-plan.md 9.13.1). It is never pruned by the daily prune [R12]; removing old ones is manual.
 
 ### 1.3 Tables
 
@@ -214,7 +214,7 @@ services:
       A2A_EXPOSURE_STAGE: ${A2A_EXPOSURE_STAGE:-s1}
       A2A_ALLOW_WRITES: ${A2A_ALLOW_WRITES:-0}
     volumes:
-      - a2a-data:/data                          # run artefacts only (go-live import runs, go-live-migration.md), not the database
+      - a2a-data:/data                          # run artefacts only (go-live import runs, master-plan.md section 9), not the database
       - ./config:/config:ro
       - a2a-backup-state:/var/lib/a2a-backup:ro  # named volume the dump sidecar writes last_ok into; read-only here, the server only reads last_ok for dump_age_h in /status [R5]; amended by S1-BKP (a single-file bind mount of a missing file becomes a directory)
     read_only: true
@@ -506,7 +506,7 @@ Visibility [design]:
 
 - A principal sees a task if it is the originator (`from_principal`) or the recipient side (`to_card` equals its card, for local-harness API keys).
 - `remote-peer` principals see only tasks they originated.
-- Tasks with `coord.origin = import` (the one-time channel migration, [go-live-migration.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md) section 6) are visible to every local-harness API key and to no other scope. They have no `task_index` row, so this rule is evaluated from the `coord.origin` marker.
+- Tasks with `coord.origin = import` (the one-time channel migration, [master-plan.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md#9-go-live-migration) section 9.6) are visible to every local-harness API key and to no other scope. They have no `task_index` row, so this rule is evaluated from the `coord.origin` marker.
 - Quarantined tasks are visible to the originator (as `INPUT_REQUIRED` with the hold marker) and to the admin socket (`a2a-coord review`, 3.7). They are never returned to a recipient session through MCP or `/a2a/v1` until released.
 - Implementation note: `a2a-python` supports an owner column and `owner_resolver` [verified]. Recipient card is the natural owner; originator access needs our `task_index`. The SDK's per-owner `ListTasks` filtering does not express "originator or recipient", so `ListTasks` is a wrapper over the store [unverified fit; spikes.md SP5 D11].
 
@@ -646,7 +646,7 @@ Admin access [D15]:
 - The credential is the ability to run a command inside the container, which already implies control of the host's Docker. Docker access on the host is the credential [D15].
 - `review` requires a TTY. `-it` is therefore part of the command; without a TTY the command refuses (8.3). `key create` and `key rotate` need one as well, so a secret is printed only to a terminal.
 - The admin socket serves: API key create, list, rotate and revoke; review list, show, release and deny; `status` (sessions, parked listeners, pending counts, wake budgets, stale offers, schema version); `card check`; and, for the go-live migration, `admin-apply`.
-- Host-side parts: `a2a-coord install` (11.0) and the channel-migration steps that read `~/.agents` and write backups (go-live-migration.md sections 7 and 13) run on the host, because they touch host files. They reach the server, when they need its state, through the same `docker compose exec` route, with the bundle on stdin. Nothing here opens a network path.
+- Host-side parts: `a2a-coord install` (11.0) and the channel-migration steps that read `~/.agents` and write backups (master-plan.md sections 9.7 and 9.13) run on the host, because they touch host files. They reach the server, when they need its state, through the same `docker compose exec` route, with the bundle on stdin. Nothing here opens a network path.
 
 ## 4. MCP tool catalogue
 
@@ -886,7 +886,7 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
 | sender identity | none supplied by client | server-derived from the API key (and handle); stored in `Task.metadata.coord.from` |
 | conversation | `context_id` | server generates when absent; one context belongs to one (originator, recipient card) pair; a `context_id` owned by someone else is answered as not found |
 | origin kind | `Task.metadata.coord.origin` | `local`, `remote` or `import`; server-set |
-| import record | `Task.metadata.coord.import` | provenance of a task imported from the frozen channel files (admin path only; fields in go-live-migration.md 6) |
+| import record | `Task.metadata.coord.import` | provenance of a task imported from the frozen channel files (admin path only; fields in master-plan.md 9.6) |
 | hold marker | `Task.metadata.coord.hold` | `quarantine` while held; server-set |
 | delivery | `Task.metadata.coord.delivery` | `queued`, `offered`, `accepted` |
 | recipient listening | `Task.metadata.coord.recipient_listening` | boolean, so a sender sees "not listening" instead of silent waiting (switchboard badge idea [reported, t1b]) |
@@ -1674,7 +1674,7 @@ Numbers 1, 2, 3, 4, 5, 9, 14 and 17 were resolved by decisions 14 to 36 and remo
 8. Tailscale identity delivery for the S2 identity check [D17, D23]: whether `tailscale serve` on <storage-host> passes a node or user identity to the server (the `Tailscale-User-Login` header is reported; a node name is not), or whether the server must look up the source address, is not covered by the audit. Also whether `CF-Connecting-IP` arrives unchanged from `cloudflared` on the same host [D20, D23]. How the server tells `cloudflared` traffic from `tailscale serve` traffic is no longer open: by listener, port 8121 against 8120 [D-F]. Both remaining items are later-stage checks (spikes.md section 13). `tailscale`, `cloudflared` and `caddy` are not installed on <workstation> today; `cloudflared` runs on <storage-host> [reported by the user].
 9. S3 front-door facts that depend on the user's Cloudflare plan and the exact ingress rule: the request timeout (about 100 s reported), whether the ingress can restrict by path, whether Cloudflare-side rate limiting and mTLS are available. Unverified; checked when the ingress rule is written. The server-side requirements are fixed in 8.4.1 and do not depend on the answers.
 13. Extension URI. `urn:agentic-hub:coordination:v1` is a placeholder; A2A extension URIs normally resolve to documentation. It stays the placeholder through S1 and S2. Choosing and publishing the final URI is an S3 gate item and must be fixed before the public card goes live [D-J]. Assigned to the S3 gate; open until then.
-16. Migration of the frozen file channel [D7] into the store: see [go-live-migration.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md) section 6. Imported tasks are marked `coord.origin = "import"` with provenance in `coord.import` (5.3); the tables here have no import-specific columns.
+16. Migration of the frozen file channel [D7] into the store: see [master-plan.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md#9-go-live-migration) section 9.6. Imported tasks are marked `coord.origin = "import"` with provenance in `coord.import` (5.3); the tables here have no import-specific columns.
 
 ### 12.3 Resolved by decisions 14 to 36 (2026-11-04 and 2026-11-05)
 
@@ -1694,7 +1694,7 @@ Numbers 1, 2, 3, 4, 5, 9, 14 and 17 were resolved by decisions 14 to 36 and remo
 - Where the service runs: [D23]. Production on <storage-host>, dev on <workstation>; the host is configuration (1.5).
 - Credential naming, format and client storage: [D24] (8.2).
 - Release of held tasks: [D19]. Human only, one typed decision per task, no auto-release path (8.3).
-- Go-live timing: [D14]. After S3 (go-live-migration.md).
+- Go-live timing: [D14]. After S3 (master-plan.md section 9).
 
 Resolved by the decisions of 2026-11-09 (`/clarify` session):
 
@@ -1710,7 +1710,7 @@ Resolved by the decisions of 2026-11-09 (second `/clarify` round, R1 to R8):
 - Database password: [R2]. Secret file, mode 0600, outside the repo; `POSTGRES_PASSWORD_FILE` for Postgres, `A2A_DB_PASSWORD_FILE` for the server, no password in `A2A_DB_URL`, no password environment variable, no `trust` authentication (1.2, 1.5).
 - Image pinning: [R3]. Exact tag plus recorded digest chosen at SP5b, the same image in S1, S2 and S3, deliberate upgrades only (1.2).
 - Dump scheduling, retention and failure notice: [R4, R5], with the path and format replaced by R9 and R12 below. A dump sidecar in the compose project writes nightly `pg_dump` files, 14 daily and 3 monthly, with `last_ok`; the server reports `dump_age_h` in `/status`, stale after 36 h (1.2, 3.6).
-- `/data` volume and pre-import dump: [R6]. `a2a-data` holds go-live import run artefacts only, outside the backup scope; the pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>.dump` in `<media-root>/backup/a2a/` [R9, R12] (1.2, go-live-migration.md 13.1).
+- `/data` volume and pre-import dump: [R6]. `a2a-data` holds go-live import run artefacts only, outside the backup scope; the pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>.dump` in `<media-root>/backup/a2a/` [R9, R12] (1.2, master-plan.md 9.13.1).
 - SP5b failure: [R7]. Up to two revise-and-rerun cycles, then stop and ask the user; no automatic fallback to SQLite (12.1).
 - 8121 listener timing (refines D-F): [R8]. Started from s2, host loopback only, remote-peer rules active; the exposure gate is the tunnel route, created only at the S3 go (1.4, 1.6, 8.4.1, 9).
 

@@ -51,7 +51,7 @@ All resolved in DDR-004 decisions 1-36 ([`consolidated-bridge-v2-plan.md`](conso
 
 ## S0 spikes and stacked PRs (2026-11-05)
 
-- [x] **P1: Implementation plan** ([`implementation-plan.md`](implementation-plan.md)), committed `963d3b0`; decisions 25-36 committed `420bc27`.
+- [x] **P1: Implementation plan** ([`master-plan.md`](../plans/master-plan.md)), committed `963d3b0`; decisions 25-36 committed `420bc27`.
 - [x] **P2: Branch** `feat/coordination-s0` from `420bc27`.
 - [x] **P3: Spike workflow** `wf_bf52f70a-49b` (relaunched after the 5-hour limit killed the first run):
   - [x] S0-SCAF stub on 127.0.0.1:18120, SP1 offline listener test, C9 header check ([results](../research/spike-results-2026-11-05-s0-scaf-sp2-c9.md))

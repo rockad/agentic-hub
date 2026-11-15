@@ -161,7 +161,7 @@ Final system inspection:
   - Section 5.1 & 3.5: Confirm `~` handle grammar (`card/name~sid8`) with regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$` requires zero percent-encoding in query strings.
 - `plugins/coordination/docs/specs/spikes.md`:
   - Section 8b ("SP5b follow-up"): Mark follow-up checks complete: (a) `init-dump-role` verified idempotent with rotation; (b) `~` separator evidence recorded; (c) D7 outlier investigated and classified as unverified (lock contention and slow queries ruled out).
-- `plugins/coordination/docs/plans/implementation-plan.md`:
+- `plugins/coordination/docs/plans/master-plan.md`:
   - Mark task `S0-SP5B-FU` complete.
 
 ---

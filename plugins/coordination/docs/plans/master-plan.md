@@ -1,10 +1,28 @@
-# Coordination server: implementation plan and workstreams
+# Coordination plugin: master plan
 
-Status (2026-11-11; first written 2026-11-09): **PLANNING ONLY until the S1 kickoff starts.** SP5b passed on 2026-11-10 and satisfied the S1 storage gate (round-4 C1); SP3 passed and SP4 was recorded (2026-11-10 and 2026-11-11), so the overall S1 entry gate is **satisfied (2026-11-11)** and the user approved the S1 kickoff (Y10); see `pickup-handoff.md` sections 1 and 10. Nothing here is built. This file turns the accepted DDR-004 (40 binding decisions: 25 to 36 of 2026-11-05 closing the former section 6 items, 37 to 40 of 2026-11-09, which also reverse D4's starting engine to Postgres and decide the S3 listener of D20; plus the round-2 decisions R1 to R8 and the round-3 decisions R9 to R14 of the same day, which refine D20, D37, D38 and D39, and the round-4 decisions X1 to X5 of 2026-11-10, which refine or replace R9, R10, R11 and R13; in this file they are written "round-4 X1" to "round-4 X5" so they do not collide with risk ids) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
+This is the whole plan: one of the two live planning documents (the other is [`master-tasklist.md`](master-tasklist.md), which holds the status, milestones and todo). New design goes here; new status goes there. The file was `implementation-plan.md` until 2026-11-15; sections 9 to 13 were folded in from `go-live-migration.md`, `history-rewrite-plan.md`, the decision records of the old tasklist, the decision tables of `pickup-handoff.md` and the S1 plan drafts on 2026-11-15.
 
-Home: `agentic-hub/plugins/coordination`, branch `feat/coordination`. Authoritative inputs, in this order: [plan][plan] (decisions, roadmap, risks, section 7), [server-api][api], [spikes][spikes], [status-client][status], [go-live-migration][golive], [master-tasklist][tasklist], the two agy results ([A6][a6], [A4][a4]), and the plugin [AGENTS.md][agentsmd].
+## Contents
 
-Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D40 (D37 to D40 of 2026-11-09 are in plan section 3); the round-2 decisions of 2026-11-09 are R1 to R8 and the round-3 decisions of the same day are R9 to R14 (recorded in [master-tasklist][tasklist] and folded into plan decisions 20, 37, 38 and 39). Where this file says "SP5" it means the SQLite run of 2026-11-05; "SP5b" is the Postgres rerun that gates S1 (D39). Risk numbers are R1 to R14 from plan section 6 and appear in the `risks` columns and as "plan R12"; every other "R1" to "R8" in this file is a round-2 decision, written "round-2 R<n>" wherever a risk id could be meant, and every "R9" to "R14" that is a decision is written "round-3 R<n>" (a bare "R9" to "R14" in a `risks` column is a risk id).
+1. [Purpose, status, scope, links](#1-purpose-status-scope-links)
+2. [Phase overview](#2-phase-overview)
+3. [Dependency DAG and branch points](#3-dependency-dag-and-branch-points)
+4. [Workstream catalogue](#4-workstream-catalogue) (4.1 S0, 4.2 S1, 4.3 S2, 4.4 S3, 4.5 go-live, 4.6 LT)
+5. [Parallelisation plan](#5-parallelisation-plan)
+6. [Decisions still needed from the user](#6-decisions-still-needed-from-the-user)
+7. [Traceability](#7-traceability)
+8. [Effort roll-up](#8-effort-roll-up)
+9. [Go-live migration](#9-go-live-migration) (folded from `go-live-migration.md`)
+10. [Git history rewrite](#10-git-history-rewrite) (folded from `history-rewrite-plan.md`)
+11. [Decision records](#11-decision-records) (DDR-001 to DDR-004)
+12. [Decision rounds](#12-decision-rounds) (Y1 to Y10, Z1 to Z9, and the earlier rounds in short form)
+13. [Waves and workflow process](#13-waves-and-workflow-process)
+
+Status (2026-11-11; first written 2026-11-09; the status text in this paragraph is kept as written on that date, S1 has been running since the user's go of 2026-11-11 and the live status is in [`master-tasklist.md`](master-tasklist.md)): **PLANNING ONLY until the S1 kickoff starts.** SP5b passed on 2026-11-10 and satisfied the S1 storage gate (round-4 C1); SP3 passed and SP4 was recorded (2026-11-10 and 2026-11-11), so the overall S1 entry gate is **satisfied (2026-11-11)** and the user approved the S1 kickoff (Y10); see section 12.1 of this plan and the status in `master-tasklist.md`. Nothing here is built. This file turns the accepted DDR-004 (40 binding decisions: 25 to 36 of 2026-11-05 closing the former section 6 items, 37 to 40 of 2026-11-09, which also reverse D4's starting engine to Postgres and decide the S3 listener of D20; plus the round-2 decisions R1 to R8 and the round-3 decisions R9 to R14 of the same day, which refine D20, D37, D38 and D39, and the round-4 decisions X1 to X5 of 2026-11-10, which refine or replace R9, R10, R11 and R13; in this file they are written "round-4 X1" to "round-4 X5" so they do not collide with risk ids) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
+
+Home: `agentic-hub/plugins/coordination`, branch `feat/coordination`. Authoritative inputs, in this order: the [archived consolidated plan][plan] (decisions D1 to D40, roadmap, risks, section 7; its status text is out of date, see section 11), the decision records and rounds in sections 11 and 12 of this plan, [server-api][api], [spikes][spikes], [status-client][status], [section 9 of this plan][golive] (the go-live migration), [master-tasklist][tasklist] (status), the two agy results ([A6][a6], [A4][a4]), and the plugin [AGENTS.md][agentsmd].
+
+Evidence labels follow the inputs: **verified** (read in code or docs, or observed on the wire), **reported** (a project or user statement, not reproduced), **unverified** (not yet tested). Decision numbers are written D1 to D40 (D37 to D40 of 2026-11-09 are in plan section 3); the round-2 decisions of 2026-11-09 are R1 to R8 and the round-3 decisions of the same day are R9 to R14 (recorded in section 11.4 of this plan and folded into plan decisions 20, 37, 38 and 39). Where this file says "SP5" it means the SQLite run of 2026-11-05; "SP5b" is the Postgres rerun that gates S1 (D39). Risk numbers are R1 to R14 from plan section 6 and appear in the `risks` columns and as "plan R12"; every other "R1" to "R8" in this file is a round-2 decision, written "round-2 R<n>" wherever a risk id could be meant, and every "R9" to "R14" that is a decision is written "round-3 R<n>" (a bare "R9" to "R14" in a `risks` column is a risk id).
 
 ## 1. Purpose, status, scope, links
 ### 1.1 Purpose
@@ -79,7 +97,7 @@ Every stage that adds a listener needs the user's explicit go. The gates are nec
 
 | phase | entry gate | exit gate | kill switch | cites |
 | --- | --- | --- | --- | --- |
-| S0 | user approves each host change a spike needs; scratch dir and scratch container only | S1 entry gate (D39): SP1, SP2, SP3 passed or failed-with-fallback; SP4 recorded; **SP5b passed on Postgres** (SP5 on SQLite stays as passed but no longer gates; status 2026-11-11: **gate satisfied**: SP5b passed 2026-11-10, SP3 passed, SP4 recorded; earlier round-4 C1 wording "not yet satisfied" is superseded; see `pickup-handoff.md` sections 1 and 10); SP6 optional; A8c does not block; results written and linked from `master-tasklist.md` (edit made with the user's go) | remove spike hook and MCP entries, delete scratch container and directory | [plan 5 S0][plan], [spikes 11][spikes] |
+| S0 | user approves each host change a spike needs; scratch dir and scratch container only | S1 entry gate (D39): SP1, SP2, SP3 passed or failed-with-fallback; SP4 recorded; **SP5b passed on Postgres** (SP5 on SQLite stays as passed but no longer gates; status 2026-11-11: **gate satisfied**: SP5b passed 2026-11-10, SP3 passed, SP4 recorded; earlier round-4 C1 wording "not yet satisfied" is superseded; see section 12.1 and `master-tasklist.md`); SP6 optional; A8c does not block; results written and linked from `master-tasklist.md` (edit made with the user's go) | remove spike hook and MCP entries, delete scratch container and directory | [plan 5 S0][plan], [spikes 11][spikes] |
 | S1 | SP1, SP2, SP3, SP4 (record only) and SP5b done (D39) and the user's go for S1 (lifts planning-only) | round trip both ways between live Claude Code and live agy; idle Claude woken by the stub; agy sees the pending count at its next model call; keyless and wrong-scope requests refused on loopback; quarantine and review end to end with a local test peer; `asyncRewake` `UserPromptSubmit` re-arm test and the GUI-launched Claude test pass (D39); a `pg_dump -Fc` backup restores with `pg_restore` into a scratch Postgres with equal counts; the dump sidecar (compose profile `backup`) writes a dated dump and, once `pg_restore --list` passes, the `last_ok` file, and `dump_age_h` shows in `/status` (round-2 R4, R5; round-3 R12, R14) | `docker compose down` (the Postgres volume survives); `a2a-coord install --uninstall` (chezmoi parts through chezmoi); revoke keys; frozen channel untouched | [plan 5 S1][plan], [api 11.0][api] |
 | S2 | S1 exit; no public route exists; service never started on <storage-host> while a route is present | cross-host wake works from <workstation> and mac to <storage-host>, shown on one workstation before the rest; **public-listener tests on `127.0.0.1:8121` pass (round-2 R8, S2-LISTEN: bound to loopback only, `remote-peer` keys only, only `/a2a/v1` and the public card, uniform "not available" handle errors, the guess counter trips (10 handle-addressed misses within 60 s, then `429` with `Retry-After: 60`) with a `handle_probe_limited` audit row (round-3 R10; round-4 X3: card-addressed sends are outside the counter), per-key rate limits, the fuzz pass)**; the dump sidecar has run under `COMPOSE_PROFILES=backup` and `dump_age_h` shows in `/status`; the second restic job (printed for and installed by the user, with the user-created password file; round-4 X4) has collected a dump from `<media-root>/backup/a2a/`; no public route | turn off `tailscale serve` on <storage-host> (exact command depends on the Tailscale version, unverified) and revoke per-machine keys; or `docker compose down` on <storage-host> | [plan 5 S2][plan], [spikes 13][spikes] L1, L4 |
 | S3 | S2 exit and the user's go to start S3 work (no route; <storage-host> stays at stage `s2`, with the 8121 listener already on loopback since S2, round-2 R8). Route condition, separate: S3 gate passed (quarantine live, rate limits and fuzz pass tested against the 8121 listener in S2 and still green, honest card, final extension URI fixed per D40) and the user's explicit go; then the stage flip (round-3 R13 and round-4 X5: the user runs `a2a-coord expose check`, which must exit 0 and whose manual items the user confirms, sets `A2A_EXPOSURE_STAGE=s3` and the public host in the compose environment and restarts, the server's `s3` start-up checks pass), and only then the user creates the route (the exposure gate) | allowlisted test peer completes a task through quarantine and human release; unknown peer rejected; fuzz report filed in `docs/research/` | delete the route in the tunnel configuration on <storage-host>; revoke all `remote-peer` keys; S1 and S2 keep working | [plan 5 S3][plan], [api 8.4.1, 9][api] |
@@ -269,7 +287,7 @@ Each row says what to do on either outcome. The fallbacks are copied in substanc
 | closed | SP2 A6, agy header | **PASS, verified 2026-11-04** | n/a | S1-INST, S1-AGY | n/a |
 
 ## 4. Workstream catalogue
-Link shorthand: `api N` is [server-api.md][api] section N; `spk N` is [spikes.md][spikes]; `plan N` is the [plan][plan]; `gl N` is [go-live-migration.md][golive]; `st N` is [status-client.md][status]. The target tree is the single layout in [api 1.4][api]: `servers/coordination/src/coordination/...`, `servers/coordination/tests/`, `bin/`, `hooks/hooks.json`, `config/cards.yaml`, `docker-compose.yml`, `plugin.json`.
+Link shorthand: `api N` is [server-api.md][api] section N; `spk N` is [spikes.md][spikes]; `plan N` is section N of the [archived consolidated plan][plan] (full text of D1 to D40, the risks R1 to R14 and the open-decision list; see section 11); `gl N` is section 9.N of this plan ([the folded go-live migration][golive], formerly `go-live-migration.md` section N); `st N` is [status-client.md][status]. The target tree is the single layout in [api 1.4][api]: `servers/coordination/src/coordination/...`, `servers/coordination/tests/`, `bin/`, `hooks/hooks.json`, `config/cards.yaml`, `docker-compose.yml`, `plugin.json`.
 
 ### 4.1 S0: spikes (scratch only)
 All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway key `spike-token`, wake budget 12/h and a kill file ([spk 1][spikes]). Real hook files and user-level configs are not touched.
@@ -401,7 +419,7 @@ All S0 code lives in `~/scratch/a2a-spikes/<id>/`, stub on port 18120, throwaway
 - Acceptance (candidate for adoption): X1 works in default mode with latency comparable to SP1; X3 shows no hold in the modes the user uses; frame shape stable across two minor versions.
 
 #### S0-RES: results write-up and S1 entry gate
-- Goal: one reviewed statement that the S1 entry gate is met. Status (2026-11-11): **satisfied**. S1 storage gate satisfied by SP5b (2026-11-10); SP3 passed and SP4 was recorded (2026-11-11), so the overall S1 entry gate is met (supersedes the round-4 C1 "not yet" wording); see `pickup-handoff.md` sections 1 and 10.
+- Goal: one reviewed statement that the S1 entry gate is met. Status (2026-11-11): **satisfied**. S1 storage gate satisfied by SP5b (2026-11-10); SP3 passed and SP4 was recorded (2026-11-11), so the overall S1 entry gate is met (supersedes the round-4 C1 "not yet" wording); see section 12.1 and `master-tasklist.md`.
 - Spec: [spk 10, 11][spikes], [plan 5 S0][plan].
 - Deliverables: an index of the results files (each spike marked passed, failed-with-fallback or recorded; SP5b is the storage gate and SP5 on SQLite is listed as passed but not gating; A8c is listed as not blocking); the BP decisions taken; spec corrections owed (for example the api 7.5 shape if BP5 fired), listed and not applied silently; a go or no-go line for the user.
 - Acceptance: every must-pass criterion in spikes 11 (as changed by D39: SP5b on Postgres replaces SP5 on SQLite) is met with logs, or its fallback is stated and, where spikes says so, confirmed by the user. The results are linked from `master-tasklist.md` ([spk 11][spikes] makes this part of the S1 entry gate); the link is a separate edit in another file, made with the user's go, and counts as an S0-RES deliverable, not an optional extra.
@@ -781,7 +799,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - `/healthz` returning only `{"ok":true}`.
 - Gates: S1-SEC (its canary test over log, audit and wake capture depends on this stream) and S1-GATE.
 - Acceptance: canary test with a secret key and a body string yields zero hits in audit rows, log output and the healthcheck; one sampled-count row per window rather than one per failed request; every state transition has exactly one audit row naming its actor.
-  - Split (written by the S1-OBS builder in repair round 1, 2026-11-14; **ratified by the user on 2026-11-15, decision Z6** in `s1-remaining-plan.md` section 6): S1-OBS shows the writer half (one append per `state_transition` call, actor required, a failed append reaches the caller). "The transition and its row commit together" needs the state machine, so it is an exit test of **S1-STATE** (its acceptance list, last bullet), using the `audit` table S1-STORE built. S1-STATE also adds the transaction-joining `append_audit` [design: session argument, unit-of-work object or bound `AuditLog`]. S1-OBS counts as done on its writer half; the end-to-end half stays open and unverified until S1-STATE passes it, and S1-SEC and S1-GATE cannot pass without it. See `audit-events.md` section 2.
+  - Split (written by the S1-OBS builder in repair round 1, 2026-11-14; **ratified by the user on 2026-11-15, decision Z6**, section 12.3): S1-OBS shows the writer half (one append per `state_transition` call, actor required, a failed append reaches the caller). "The transition and its row commit together" needs the state machine, so it is an exit test of **S1-STATE** (its acceptance list, last bullet), using the `audit` table S1-STORE built. S1-STATE also adds the transaction-joining `append_audit` [design: session argument, unit-of-work object or bound `AuditLog`]. S1-OBS counts as done on its writer half; the end-to-end half stays open and unverified until S1-STATE passes it, and S1-SEC and S1-GATE cannot pass without it. See `audit-events.md` section 2.
 
 #### S1-TEST: test strategy, TCK and end-to-end
 - Goal: one place that owns how the system is tested at each level.
@@ -1275,7 +1293,7 @@ Nothing in the plan is waiting on a decision today ([plan 7][plan]). Decisions 2
 | 13 | Status extras: `a2a_runs` tool (**kept, decided 2026-11-09, D38**); `--allow-from` versus the tailnet binding for `status-client` keys; whether the binding applies to `status-client` keys; Q1 to Q11 for cognitive-engine | before LT-SRV and LT-ADP | LT | api 12.2 point 10, st 2, 13, 14 | keep `a2a_runs`; no `--allow-from`; binding not applied until decided |
 | 15 | Go-live open points: freeze instant (set on go-live day), `ROLE_AGENT` versus `ROLE_USER` for imported messages, machine name in handles (`<workstation>` versus host `<workstation>-wsl`), turns archive left in the tar, retention of the channel backup tar (not the database dumps, which are decided by round-2 R5), the three `handoff/` prompts | go-live day (role and machine name before GL-IMPORT, which now starts during S2, D36) | GL | gl 15 | `ROLE_AGENT`, `<workstation>`, archive left, user keeps the tar |
 | 16 | Postgres from S1: **decided 2026-11-09 (D4, D37); no longer conditional on SP5** | closed | S1-STORE, S1-PG, S1-BKP | plan 3 D4, D37 | none (decided); SP5b gates S1 |
-| 17 | Spec amendments owed after spikes and decisions. **Applied 2026-11-09**: api 1.6 start-up rule and 8.4.1 for the 8121 listener, api 1.2 storage text and 12.2 points 10 to 12 for D4, D37, D38, spk 8 and 11 for SP5b, spk L2. **Applied 2026-11-09 (round-2 R1 to R8)**: the api text (8121 listener from `s2` in api 1.5, 1.6, 8.4.1 and the stage table, `A2A_DB_PASSWORD_FILE`, `dump_age_h` in api 3.6, the guess counter and audit event, `A2A_ADVERTISE_HANDLES_TO_PEERS` dropped) and the plan and spikes text. The round-2 amendments to `README.md` (the Risk 13 rule), `AGENTS.md` (route target 8121) and `status-client.md` (`dump_age_h`, the sbx isolation test for 8121 as well as 8120) are in those files. **Applied 2026-11-09 (round-3 R9 to R14)**: the api text (dump directory and second restic job, `dump_ro`, `-Fc` and `pg_restore --list`, the `backup` profile in 1.2, 1.4 and 1.5; the guess counter numbers and the `handle_probe_limited` event in 1.3, 3.3.2, 5.2 and 9; `dump_age_h` null in 3.6; the stage flip and `a2a-coord expose check` in 1.6, 8.3, 8.4.1 and 9), `go-live-migration.md` 7 and 13, `spikes.md` SP5b and sections 11 and 13, `status-client.md` section 4, and the stage flip in `README.md` and `AGENTS.md`. **Owed by round 4 (X1 to X5, 2026-11-10; the files other than this plan, spikes and the tasklist are amended in the same round, so check them)**: the handle separator `~` and its regex in api 3.5, 5.1 and the hook templates (X1), `a2a-coord db init-dump-role` and the sidecar-only secret in api 1.2, 1.4, 11 and 12.2 (X2), the guess counter scope in api 3.3.2, 5.2 and 9 (X3), the restic job values in the go-live and ops text (X4), the `expose check` exit codes and checks in api 1.6, 8.3, 8.4.1 and 9 (X5). **Still owed**: api 7.5 hook shape, spk results naming | after the owning spike or decision | docs only | this plan | list the remaining ones in S0-RES and S3-GATE |
+| 17 | Spec amendments owed after spikes and decisions. **Applied 2026-11-09**: api 1.6 start-up rule and 8.4.1 for the 8121 listener, api 1.2 storage text and 12.2 points 10 to 12 for D4, D37, D38, spk 8 and 11 for SP5b, spk L2. **Applied 2026-11-09 (round-2 R1 to R8)**: the api text (8121 listener from `s2` in api 1.5, 1.6, 8.4.1 and the stage table, `A2A_DB_PASSWORD_FILE`, `dump_age_h` in api 3.6, the guess counter and audit event, `A2A_ADVERTISE_HANDLES_TO_PEERS` dropped) and the plan and spikes text. The round-2 amendments to `README.md` (the Risk 13 rule), `AGENTS.md` (route target 8121) and `status-client.md` (`dump_age_h`, the sbx isolation test for 8121 as well as 8120) are in those files. **Applied 2026-11-09 (round-3 R9 to R14)**: the api text (dump directory and second restic job, `dump_ro`, `-Fc` and `pg_restore --list`, the `backup` profile in 1.2, 1.4 and 1.5; the guess counter numbers and the `handle_probe_limited` event in 1.3, 3.3.2, 5.2 and 9; `dump_age_h` null in 3.6; the stage flip and `a2a-coord expose check` in 1.6, 8.3, 8.4.1 and 9), this plan's section 9.7 and 9.13 (the folded go-live migration, formerly `go-live-migration.md` 7 and 13), `spikes.md` SP5b and sections 11 and 13, `status-client.md` section 4, and the stage flip in `README.md` and `AGENTS.md`. **Owed by round 4 (X1 to X5, 2026-11-10; the files other than this plan, spikes and the tasklist are amended in the same round, so check them)**: the handle separator `~` and its regex in api 3.5, 5.1 and the hook templates (X1), `a2a-coord db init-dump-role` and the sidecar-only secret in api 1.2, 1.4, 11 and 12.2 (X2), the guess counter scope in api 3.3.2, 5.2 and 9 (X3), the restic job values in the go-live and ops text (X4), the `expose check` exit codes and checks in api 1.6, 8.3, 8.4.1 and 9 (X5). **Still owed**: api 7.5 hook shape, spk results naming | after the owning spike or decision | docs only | this plan | list the remaining ones in S0-RES and S3-GATE |
 | 18 | Remaining design defaults in api 1.5 (TTLs, quotas, 15 min `active` window) | tuned after S1-GATE | none | api 12.2 point 7 | keep the starting values |
 | 19 | Remaining design questions: extension URI. (Peer handles for remote peers and handle spoofing within one key are **decided 2026-11-09, D38**: handles addressable, uniform "not available" error, no bind code, accepted risk; round-2 R1: "accepted by the user 2026-11-09, mitigated by the guess counter".) | **at the S3 gate** (D40), before the public card goes live | S3-CARD, S3-GATE | api 12.2 point 13 | keep the placeholder `urn:agentic-hub:coordination:v1` |
 
@@ -1382,11 +1400,723 @@ Assumptions behind the numbers:
 - The S1 critical path (98 to 152 h) bounds the elapsed time of S1 if enough parallel capacity exists; elapsed time is not estimated here beyond the 3-day S0 plan in [spikes.md][spikes].
 - Every BP that fires can add work as described in section 3.2; none is counted in the totals except where stated above.
 
+## 9. Go-live migration
+
+Folded from `go-live-migration.md` (written 2026-11-04) into this plan on 2026-11-15, with the text unchanged except for the headings, the heading numbers (old section N is now 9.N) and the internal "section N" citations, which follow them. In this section "open point N" means the numbered list in 9.15. The workstreams that build and run it are GL-IMPORT, GL-REHEARSE, GL-APPLY and GL-RETIRE in section 4.5; citations written `gl N` elsewhere in this plan mean section 9.N.
+
+Status: PLANNING ONLY. Written 2026-11-04. Nothing in this document is built, and nothing in `~/.agents` was modified while writing it (read-only inspection).
+
+Scope: implements decision 7 of the 2026-11-04 /clarify session, with the timing and exception set by decision 14 of the same day's /cplain session. The file channels are frozen. **Go-live is after S3 (the public stage)**, not after S1. Until then the channel stays frozen with one exception: Antigravity may still use it for research on this work. After S3, a one-time migration imports them into the coordination store, a tar backup of the originals is taken, and the channel files are deleted.
+
+Build timing (decision 36, 2026-11-05): the importer (GL-IMPORT) is built during S2 and S3 against copies of the channel files, so it is ready when S3 exits. The S3 final gate (FG) covers the server and the importer together; there is no separate go-live gate. After S3 exit the order is: dress rehearsal (GL-REHEARSE), the user's go, the real import (GL-APPLY), then retirement (GL-RETIRE). Because Antigravity may append research messages after the copies were taken (decision 14), the importer must tolerate messages appended after the freeze, and the dry run is rerun at go-live on the live files.
+
+Timing consequences (decision 14):
+
+- The server is live at S1, S2 and S3 before this migration runs. The migration is the last step of the roadmap, not an S1 follow-on.
+- The channel files can grow between now and go-live, because Antigravity may append research blocks. Every number in section 9.10.2 is a 2026-11-04 measurement and must be re-measured at go-live. The parser treats those late blocks like any other (same fence grammar, section 9.4).
+- Late Antigravity appends are expected, not "post-freeze appends". The freeze instant for the import (section 9.2, open point 1) is therefore the start of go-live day, when the user tells Antigravity to stop.
+
+Related documents:
+
+- [Evidence synthesis](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md)
+- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md)
+- [Master tasklist](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
+- [a2a-python and bridges audit (TaskStore, DatabaseTaskStore)](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md)
+
+Evidence labels used below:
+
+- `[verified]`: measured by reading the files on <workstation>-wsl on 2026-11-04.
+- `[inferred]`: my reading of the evidence, not directly stated anywhere.
+- `[reported]`: taken from the audit documents, not re-checked here.
+- `[unverified]`: needs a spike or a user answer.
+
+### 9.1 What this is and what it is not
+
+- It is a one-time, idempotent, reviewable import of historical messages. The history becomes searchable A2A data.
+- It is not a live bridge. Imported data never reaches a session as work: no wake, no inbox entry, no re-offer (section 9.6.4).
+- It is a CLI subcommand, `a2a-coord import-channels`, written at go-live. It is not written now, and this document does not authorise any code.
+- Bodies in the old channel are untrusted data like any other body (decision 10). Old instructions inside them ("to: claude, do X") are history, never commands.
+
+### 9.2 Preconditions (the go-live gate for this migration)
+
+- The S3 exit gate has passed (decision 14) and the user declares go-live. The server runs with the spikes done and the store in the compose project's Postgres service (named volume `a2a-pgdata`, user decision 2026-11-09 D-A, replacing the earlier SQLite file on `a2a-data`); the import goes through the in-container admin socket (section 9.7).
+- Between 2026-11-04 and go-live the channel is frozen for everyone except Antigravity's research use (decision 14). On go-live day the user stops that too. The last write seen on 2026-11-04 was the final block of the coordination channel (conversation `01VA3JtCyASmfR8Q7Vcvehe7`, message 1, 14:22:23+02:00) `[verified]`; later blocks are expected.
+- The user records the exact freeze instant in the run manifest (open point 1). Blocks that begin after it are reported as post-freeze appends. Blocks between 2026-11-04 and the freeze instant are ordinary imported content.
+- No watcher is running (section 9.11). A running watcher is only a warning, but a stale one should be stopped before deletion.
+- Explicit user go for the apply step, and a second explicit go (typed, on a real TTY) for the deletion step.
+- Dress rehearsal done on a scratch store (section 9.12) before touching the real database.
+
+### 9.3 Inventory and scope
+
+Inventory of `~/.agents` on 2026-11-04 `[verified]`:
+
+| File | Size (bytes) | What it is | Decision |
+| --- | --- | --- | --- |
+| `bridge-v2-coordination-channel.md` | 146056 | Live channel, 51 fenced blocks, 2026-11-03 13:50 to 2026-11-04 14:22 | IN SCOPE |
+| `antigravity-claude-bridge-cognitive-engine.md` | 177834 | Live channel, 65 live fenced blocks plus 3 archived blocks, 2026-10-28 to 2026-11-03 | IN SCOPE |
+| `cognitive-engine-bridge-turns-archive-2026-10.md` | 50249 | Older transcript in a different format ("### Turn N"), 10 turns, no conversation ids, no year | OUT (default) |
+| `handoff/*.md` (3 files) | 3624 to 6274 | Kickoff prompts for fresh sessions | OUT |
+| `cognitive-engine-tasklist.md`, `bridge-v2-coordination-tasklist.md` | 44763, 8768 | Hand-edited trackers | OUT |
+| `agent-bridge-protocol.md` and the `bridge-v2-*-draft.md` files | various | Protocol notes and spec drafts (already copied into this repo as specs and research) | OUT |
+| `session-registry.json` | 1573 | Two-entry registry of transcript paths (2026-10-28) | OUT, retire (section 9.11) |
+| `watch-bridge.sh` | 1278 | Old watcher | OUT, retire (section 9.11) |
+| `cognitive-engine-docker-tests.lock` | 0 | Docker/GPU contention lock | OUT, keep: BuildSlot (DDR-001..003 scope) is still in force |
+| `cognitive-engine-stage*.md`, `cognitive-engine-wsb-threat-model.md` | various | cognitive-engine design notes | OUT |
+
+Why each OUT decision:
+
+- Turns archive: no author id, no conversation id, no year, no message numbers. Parsing it would need a second, guess-based parser for a file that is already an inert archive. It stays on disk, is included in the backup tar as a courtesy, and is not deleted by this tool. Optional later import is open point 2.
+- Handoff prompts: documents addressed to a future session, no delimiters, no author, no per-message timestamp. They are not messages. The old watcher also counted files in that directory, so the mechanism retires with the watcher, but the files themselves are the user's to keep or delete.
+- Tasklists and drafts: living documents, not a message stream. Their content is either already in this repo or is cognitive-engine's own tracker.
+- `session-registry.json`: only two agent entries from 2026-10-28. The importer does not need it, because author and conversation id are in every fence. It is superseded by `POST /sessions`.
+
+Two regions inside one in-scope file need a rule:
+
+- `antigravity-claude-bridge-cognitive-engine.md` has a section `## ARCHIVE (inert copy of the blocks exchanged in the old hub file; fences indented, not counted)` at line 16, ending at `## LIVE BLOCKS` at line 127 `[verified]`. It holds 3 blocks (claude 317124a3 messages 1 and 2, antigravity 0e89deec message 1) with a 4-space indent.
+- Default: import them, flagged `region: archive`. They are the only on-disk copy of those messages in the live file, and live `reply-to` fields point at them (for example `claude:317124a3-...:1`).
+- Flag `--no-archive-region` skips them. Their reply-to targets then stay unresolved.
+
+### 9.4 Observed format and the quirks the parser must tolerate
+
+Fence grammar as actually used `[verified]`:
+
+- Begin: `---<author> conversation <conv-id> message <n> [reply-to <harness>:<conv-id>:<m>[,<m2>...]] begin <ISO-8601>---`
+- End: `---<author> conversation <conv-id> message <n> [reply-to ...] end <ISO-8601>---`
+- Fences start at column 0 in live regions. All 119 observed timestamps carry the offset `+02:00`.
+- First body line is `to: <list>`. Second line is usually `about: <one line>` (111 of 116 live blocks); 5 blocks in the cognitive channel use `status:` there instead. A `MODEL SERVING:` line appears inside the body of 63 blocks and is kept as body text.
+- Observed `to:` values: `claude`, `antigravity`, `all`, and comma lists such as `antigravity, all`, `claude, all`, `antigravity, claude`.
+- Authors observed: `claude` and `antigravity`. The watcher script accepts any `[a-zA-Z0-9_-]+`, so the parser accepts the same class.
+
+Quirks measured on 2026-11-04 `[verified]`. The parser must handle each without failing:
+
+- The end fence drops `reply-to` in 36 blocks (30 coordination, 6 cognitive). The begin fence is authoritative.
+- Begin and end timestamps differ by 30 seconds in 4 blocks (conversation 0e89deec, messages 15 to 18). Both are kept.
+- Begin timestamps are not monotonic once in the cognitive channel (12:54:49 after 12:55:00 on 2026-10-29). File order is the sequence; timestamps are data.
+- `reply-to` can list several message numbers (`...:4,5`, `...:8,9`, `...:12,13`).
+- `reply-to` can point into the other channel file. Examples: `claude:012hq2t73Akvdk6rcqPug6ea:8` and `antigravity:8343b610-...:26` are cited from the coordination channel but live in the cognitive channel.
+- Message numbers have gaps: conversation 0e89deec has no 12 to 14 and no 25 to 28 in the files, and 317124a3 has no 16. Gaps are reported as information, not errors.
+- The pair (conversation, message number) is not unique across files: antigravity 0e89deec message 2 exists in both channels with different content. The idempotency key therefore includes the source file.
+- `to:` can contain several recipients, and some blocks address `all`.
+- Fence-looking lines at deeper indent (rule examples, the archive section) are inert text and are never fences.
+- No CRLF, no NUL, no fence inside a ``` code block at column 0, and no stray text between blocks were found `[verified]`. The importer still checks for all of them.
+- Largest block 8087 bytes, total body bytes 131987 (coordination) and 148249 (cognitive) `[verified]`.
+- A scan of both files for four credential patterns (`sk-or-`, `ghp_`, `AKIA...`, PEM headers) found no match `[verified]`. The words "token" and "secret" appear only in discussion. The importer repeats a scan and refuses to import a block that matches (section 9.7).
+
+### 9.5 Parse rules
+
+Inputs: a fixed profile per channel file, not discovered at run time. The profile names the file, a slug, and optional region markers. Profiles for this migration:
+
+- `coordination-channel`: file `bridge-v2-coordination-channel.md`, no archive region.
+- `cognitive-engine-channel`: file `antigravity-claude-bridge-cognitive-engine.md`, archive region from the line matching `^## ARCHIVE` up to the line matching `^## LIVE BLOCKS`, with a 4-space indent.
+
+Algorithm, per file:
+
+- Read as strict UTF-8. Reject NUL. Reject a file larger than 16 MiB. Normalise CRLF to LF for hashing and record that a normalisation happened.
+- Pass 1, scan lines in order, state machine with three states: preamble, between blocks, inside block.
+  - In the live region only a column-0 line that matches the begin regex opens a block.
+  - In the archive region, strip exactly 4 leading spaces from every line before matching. A line with more than 4 spaces keeps its remaining indent and cannot be a fence.
+  - Inside a block, a second begin fence is an error (nested begin). The matching end fence must repeat author, conversation id and message number, otherwise error.
+  - A reply-to on the end fence must equal the begin fence's if present. Absent is fine.
+  - End of file inside a block is an error (unterminated).
+  - Non-blank text outside any block after the first fence is an error (stray text). Blank lines are ignored.
+  - Text before the first fence (the preamble) and the archive section heading are not messages. They are recorded in the run manifest by line range and sha256, and preserved in the backup. They are not stored as A2A objects.
+- Block fields:
+  - `author_harness`, `conversation_id`, `message_number` from the begin fence.
+  - `begin_ts` and `end_ts` as the original strings, plus UTC-normalised values. A timestamp without an offset is a warning and is read as `+02:00`; none exist today.
+  - `reply_to_raw` from the begin fence, split into `(harness, conversation_id, [numbers])`.
+  - `inner` = the lines strictly between the fences joined with LF, no trailing LF, no stripping (de-indented in the archive region).
+  - `to_raw` = text after `to:` on the first inner line. If the first line is not `to:`, warning and `to_raw` is empty.
+  - `about` = text after `about:` on the second line when present. `status_header` = text after `status:` there when present.
+  - `seq` = zero-based index in file order, archive region first.
+  - `line_begin` and `line_end` = source line numbers.
+  - `content_sha256` = sha256 of the UTF-8 bytes of `inner`.
+- Pass 2, resolve `reply-to` (section 9.6.3) across both files, because refs cross files.
+- Strict by default: any error aborts before anything is written, with a full report. Warnings never abort. `--allow-errors` is deliberately not provided (a bad parse must be fixed in the profile or the tool, not skipped).
+
+### 9.6 Mapping to A2A objects
+
+A2A objects follow `a2a.proto` (`Task`, `TaskStatus`, `Message`, `Part`, `Role`) `[verified]` against [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto) at commit `4735f48`. The handle and card names follow decision 6.
+
+#### 9.6.1 Identity
+
+- Author card: `claude` maps to `claude-code@<workstation>`, `antigravity` maps to `antigravity@<workstation>`. The machine part is `<workstation>` per the decisions; the host reports `<workstation>-wsl` `[verified]`, so the machine name is a profile setting and not read from the OS (open point 4).
+- Author handle: `<card>/<lowercased conversation_id>`, for example `claude-code@<workstation>/012hq2t9cjjjdcy9jysndaej`. The name charset in server-api.md 5.1 is lowercase only (`[a-z0-9._-]`), and some conversation ids contain uppercase letters, so the handle uses the lowercased id (this option, not a hash). An imported handle is a historical author label, not a live session: it carries no `~<sid8>` suffix, so it does not fit the session part regex of 5.1 (`^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`, round-4 X1); whether imported handles are exempt from that regex is [design, open]. The raw conversation id is kept only in metadata (`coord.import.conversation_id`). The dry-run aborts if two distinct raw ids collide after lowercasing. Handles are our extension (decision 6). Imported handles are never registered as live sessions: no `/sessions` row, no listener, no card routing.
+- `to:` mapping: `claude` to `claude-code@<workstation>`, `antigravity` to `antigravity@<workstation>`, `all` to the literal `*`. Unknown tokens are kept as raw strings and reported.
+
+#### 9.6.2 Containers
+
+- One A2A context per channel file. `context_id` = `uuid5(NS, "context|" + slug)`.
+- `NS` is a fixed namespace uuid5 derived from the string `urn:agentic-hub:coordination:import:v1`, documented in the tool, never random. This is what makes ids reproducible and the import idempotent.
+- One Task per channel message. Rationale `[inferred]`: `reply-to` refers to individual messages, and A2A's native cross-reference (`Message.reference_task_ids`) refers to tasks, so a per-message task is the smallest unit that keeps the reply graph queryable. `ListTasks` by `context_id` returns the thread.
+- `task_id` = `uuid5(NS, "task|" + slug + "|" + region + "|" + author + "|" + conversation_id + "|" + message_number)`, where `region` is `live` or `archive`.
+- `message_id` = `uuid5(NS, "msg|" + the same key)`.
+
+#### 9.6.3 Task and Message fields
+
+Task:
+
+- `id`, `context_id` as above.
+- `status.state` = `TASK_STATE_COMPLETED`. `status.timestamp` = `end_ts` in UTC. No `status.message`.
+- `history` = the single Message below. `artifacts` = empty.
+- `metadata.coord.origin` = `"import"` and `metadata.coord.import` = the compact import record (below). Both sit under the server-set `coord` key defined in server-api.md 5.3.
+
+Message:
+
+- `role` = `ROLE_AGENT` for every imported message `[inferred]`. A2A's `ROLE_USER` means "the client side of a request"; imported items are historical statements by agents, not requests, and giving them `ROLE_USER` would make old text look like a user instruction. Open point 3 asks the user to confirm.
+- `parts` = one text Part with `inner` verbatim (including the `to:` and `about:` lines, so the body is lossless and the hash is checkable from the store).
+- `context_id`, `task_id` as above.
+- `reference_task_ids` = the resolved target task ids of `reply-to` (A2A-native).
+- `metadata.coord.origin` = `"import"`, and `metadata.coord.import` with these keys:
+  - `run_id`, `source_slug`, `source_file` (basename only), `region`, `seq`, `line_begin`, `line_end`
+  - `content_sha256`, `begin_ts`, `end_ts`
+  - `author_harness`, `author_card`, `author_handle`, `conversation_id`, `message_number`
+  - `to_raw`, `to` (mapped list), `about`, `status_header`
+  - `reply_to_raw` and `reply_to`, a list of objects `{harness, conversation_id, number, resolved_task_id|null, resolution}`
+- `extensions` is left empty. Declaring an extension URI requires the card to declare it too, which belongs to the handle-mapping document.
+
+Reply-to resolution:
+
+- Look for the target `(harness, conversation_id, number)` among parsed blocks in the same channel file (live first, then archive). If none, look in the other file.
+- If both files match, take the same-file match and record `resolution: "ambiguous-same-file"` with the other candidate id.
+- Exactly one match: `resolution: "resolved"`. None: `resolved_task_id: null`, `resolution: "unresolved"`. No id is ever invented.
+- Known on 2026-11-04 `[verified]`: every distinct `reply-to` target (including each number in a comma list) exists as a block in one of the two files, archive region included. Unresolved refs appear only if `--no-archive-region` is used.
+
+#### 9.6.4 Never offered, never woken
+
+- Terminal `COMPLETED` tasks are not offered by `a2a_inbox` (which lists SUBMITTED and queued items only). A2A forbids restarting a terminal task, so a stray `SendMessage` with an imported `task_id` fails by protocol.
+- The apply path writes through the server's admin path directly into the task store. It does not publish queue events, does not touch the wake logic, and does not count against the 20/h wake budget.
+- Imported tasks carry `metadata.coord.origin = "import"` (the trust field from decision 10; server-api.md 5.3 defines the value and 3.3.3 the visibility rule). They are visible to `local-harness` API keys only. The `remote-peer` and `status-client` scopes never see them, because the old channel discusses internal paths, plans and unreleased work.
+- Imported tasks are exempt from any TTL or retention sweep the server later adds.
+- Bodies reach a model only through tool results, framed as untrusted data like any other body. They are never placed in a wake stub or in injected context.
+
+### 9.7 Import safety
+
+- The import path is not network-reachable. It is an admin operation of the `a2a-coord` CLI (same family as `key create` and `review`), reached the way every admin command is (decision 15): inside the container, over the in-container Unix socket, with no admin HTTP endpoint and no admin API-key scope. No API-key scope grants it, including `local-harness`. Docker access on the host that runs the container is the credential.
+- Packaging (the route is decided by decision 15; the exact wiring is `[unverified]` until built): the CLI parses and plans on the host (`uv run`), then sends the bundle on stdin to `docker compose exec -T coordination a2a-coord admin-apply -`. In production the container runs on <storage-host> (decision 23), so the command is `ssh <storage-host> docker compose exec -T coordination a2a-coord admin-apply -` with the bundle piped through the SSH session. The channel files live on <workstation> (`~/.agents`), so parse, plan, tar backup and deletion happen on <workstation>; the store is the Postgres service's, `/data/imports/<run_id>/` is on <storage-host>'s `a2a-data` volume, and the pre-apply store snapshot goes to `<media-root>/backup/a2a/` on <storage-host>'s host (R6, R9, section 9.13.1) (the service name `coordination` follows server-api.md 1.4 and stays a placeholder until S1 settles the layout). `-T` is correct here because `admin-apply` needs no TTY; the typed confirmations (`retire-channels`) run in the host-side part on a real TTY. `a2a-coord` has two parts, as server-api.md 3.7 states: the host-side wrapper does parse, plan, backup, retire and the TTY confirmation, and the in-container admin-socket client does `admin-apply`. The server process talks to the store, so decision 4 (one server process owns the store; Postgres since D-A) holds. No bind mount of `~/.agents` into the container is needed.
+- The server re-validates every record from the bundle: recomputes the uuid5 ids, recomputes `content_sha256` from the text Part, checks `state == COMPLETED`, checks `coord.origin == "import"`. A bundle that disagrees with itself is rejected whole.
+- Credential scan on every `inner` (same four patterns plus the generic `Bearer <long token>` form). A match aborts with the line number and never prints the matched text.
+- Hard limits: block under 1 MiB, file under 16 MiB, at most 10,000 blocks per run. The current data is far below all of them.
+- Parsing is plain text. No URL, `file://` link or path inside a body is fetched, opened or resolved.
+
+### 9.8 CLI shape (specified now, built at go-live)
+
+One entry, no flags needed for the safe default:
+
+- `a2a-coord import-channels`: dry-run. Parses both profiles, resolves replies, diffs against the store, prints and writes the report. Changes nothing. Writes a plan file `plan-<plan_id>.json` holding source sha256 values and the full task-id list.
+- `a2a-coord import-channels --apply --plan <plan_id>`: writes. Refuses if any source file hash changed since the plan, if the plan is older than 24 hours, or if the store now holds a conflict (section 9.9).
+- `a2a-coord import-channels --verify --run <run_id>`: read-back verification (section 9.10). Also runs automatically at the end of `--apply`.
+- `a2a-coord import-channels --rollback --run <run_id>`: removes exactly what that run created (section 9.13.3).
+- `a2a-coord retire-channels --run <run_id>`: backup, verify the tar, confirm, delete (section 9.13). Separate command on purpose, so import and deletion can never be one keystroke.
+
+Options:
+
+- `--source-dir` (default `~/.agents`), `--no-archive-region`, `--report-dir`.
+- `--batch-size` (default 50 tasks per transaction).
+
+Exit codes:
+
+- 0 success.
+- 2 parse error.
+- 3 idempotency conflict.
+- 4 verification mismatch.
+- 5 precondition failure (server down, plan stale, source changed, wrong TTY).
+
+Run artefacts live on the server volume under `/data/imports/<run_id>/`: `manifest.json`, `report.md`, `plan.json`. They contain hashes, counts and keys, never message bodies. The `a2a-data` volume holds these import run artefacts only and is not part of the backup scope (server-api.md 1.2, R6).
+
+### 9.9 Idempotency
+
+- Identity: the uuid5 task id (section 9.6.2). Same source block gives the same id on every run.
+- Content hash: `content_sha256` of `inner`.
+- Per block, the apply step compares against the store:
+  - id absent: insert.
+  - id present with the same hash and `coord.origin == "import"`: skip, count as `unchanged`.
+  - id present with a different hash: conflict. The run aborts before writing anything, with both hashes in the report. It never overwrites. (Channels are append-only; a changed block means the file was edited or the key collided.)
+  - id present but without `coord.origin == "import"`: conflict, same handling. This protects live tasks from a bad key.
+- Duplicate content under different keys (same hash, different ids) is reported, not merged.
+- Writes go in batches of 50 inside one transaction each. A crash leaves complete batches only, and a re-run finishes the rest. No partial task exists.
+- Running the apply twice must report `inserted: 0` the second time. This is a required test.
+
+### 9.10 Dry-run report and verification
+
+#### 9.10.1 Dry-run report (always produced, markdown plus json)
+
+- Source files: path, size, mtime, sha256, line count.
+- Counts per file, per region, per author, per conversation.
+- First and last `begin_ts` per file (by file order) and the overall min and max in UTC.
+- Warnings: end-fence reply-to dropped, begin/end timestamp differences, non-monotonic timestamps, message-number gaps, unknown `to:` tokens, post-freeze appends.
+- Errors: nested, unterminated, mismatched, stray text, credential match, encoding.
+- `reply-to` resolution table: resolved, ambiguous, unresolved counts.
+- Store diff: would insert N, unchanged N, conflicts N.
+- A sample of 3 mapped objects, bodies truncated to 200 characters.
+
+#### 9.10.2 Expected numbers on 2026-11-04 `[verified]`, to re-measure at go-live
+
+| File | Region | antigravity | claude | Total |
+| --- | --- | --- | --- | --- |
+| coordination channel | live | 18 | 33 | 51 |
+| cognitive-engine channel | live | 27 | 38 | 65 |
+| cognitive-engine channel | archive | 1 | 2 | 3 |
+
+Per conversation:
+
+- Coordination channel: `012hq2t73Akvdk6rcqPug6ea` 3, `012hq2t9CJjJdCY9JySndAEj` 29, `01VA3JtCyASmfR8Q7Vcvehe7` 1, `0e89deec-98b6-48fc-8c5d-fd210899c0d1` 1, `8343b610-a41a-4ee9-a2e5-0f1dde92f456` 17.
+- Cognitive-engine channel, live: `012hq2t73Akvdk6rcqPug6ea` 13, `317124a3-9df0-4a5a-b6d0-df42be2cc6ea` 25, `0e89deec-98b6-48fc-8c5d-fd210899c0d1` 23, `8343b610-a41a-4ee9-a2e5-0f1dde92f456` 4.
+
+First and last begin timestamps (file order):
+
+- Coordination: 2026-11-03T13:50:00+02:00 to 2026-11-04T14:22:23+02:00.
+- Cognitive live: 2026-10-28T23:11:32+02:00 to 2026-11-03T16:03:43+02:00.
+- Cognitive archive: 2026-10-28T23:06:08+02:00 to 2026-10-28T23:10:00+02:00.
+
+Total imported tasks expected: 119 with the archive region, 116 without.
+
+#### 9.10.3 Verification (after apply, and on demand)
+
+Verification reads back over the server's HTTP surface (`ListTasks` by `context_id`, `GetTask`), not from the manifest, so it tests the real path.
+
+- Count per context equals parsed count. Count per author equals parsed count. Count per conversation equals parsed count.
+- Independent cross-check of the parser: for each file, `rg -c '^---<author> conversation .* end '` (the same primitive the old watchers used) equals the parsed live count per author. The archive region is checked with a 4-space-anchored pattern.
+- First and last `begin_ts` read from the store (ordered by `metadata.coord.import.seq`) equal the report values, as exact strings.
+- Every stored task re-hashed: sha256 of the text Part equals `metadata.coord.import.content_sha256` equals the source hash from the plan. All 119, not a sample; the data is small.
+- Every task is `TASK_STATE_COMPLETED` with `coord.origin == "import"`.
+- `reference_task_ids` count equals the number of resolved reply-to targets in the report.
+- No wake side effects: for every registered handle, `a2a_inbox` shows nothing new, the wake budget counters did not move, and the server log window of the run contains no wake event.
+- Verification result is written to the manifest. `--verify` exit code 4 means any mismatch, with a line per mismatch.
+
+### 9.11 Retirement list (listed here, not touched by this document)
+
+To retire after the import is verified, on the user's decision:
+
+- `~/.local/bin/watch-bridge-coordination.sh`: watches `bridge-v2-coordination-channel.md`, inotify loop, state file `bridge-watch-coordination.seen` `[verified]`.
+- `~/.agents/watch-bridge.sh`: watches the cognitive-engine channel and the `handoff/` directory `[verified]`.
+- State files under `~/.local/state`: `bridge-watch.seen`, `bridge-watch-cognitive-engine.seen`, `bridge-watch-cognitive-engine-claude.seen`, `bridge-watch-coordination.seen`, `handoff-watch.seen` `[verified]`.
+- `~/.agents/session-registry.json`: superseded by `POST /sessions`.
+- Session-only loops that die with their sessions: the Claude Code Monitor (30-minute limit) and one-shot cron fallbacks, as described in `agent-bridge-protocol.md`. Nothing to delete, but they should not be re-armed.
+- The Antigravity persistent watcher mentioned in the channel text (daemon task, PID 3444326, 2026-10-28) `[reported]`. No `watch-bridge` process was running on <workstation>-wsl at inspection time `[verified]`; other machines were not checked (open point 6).
+- Copies of `watch-bridge.sh` under the Antigravity `brain/*/scratch` directories are session scratch and out of our control. Ignore.
+
+Not retired:
+
+- `~/.agents/cognitive-engine-docker-tests.lock`: BuildSlot contention lock, still in force.
+
+References that will dangle once the channel files are deleted (annotate as historical, do not rewrite history):
+
+- Outside the repo: `bridge-v2-coordination-tasklist.md`, `cognitive-engine-tasklist.md`, `agent-bridge-protocol.md`, `bridge-v2-heartbeat-spec-draft.md`, `handoff/2026-11-02-next-session-kickoff.md`.
+- Inside the repo: `file://` links to the channel in [the consolidated plan](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) (the baseline table row and the "Operational Channel" references).
+- User-scope config: none found. A search of `~/.claude/CLAUDE.md` and `~/.claude/settings.json` found no reference to the channel files `[verified]`.
+
+### 9.12 Dress rehearsal and tests (before the real run)
+
+- Synthetic fixtures only. Real channel files stay out of the repo, since they contain internal paths and plans.
+- Unit fixtures, one per quirk in section 9.4: end fence without reply-to, 30-second timestamp gap, non-monotonic timestamps, comma `reply-to`, cross-file reply-to, number gap, key collision across files, indented archive region with a deeper-indented fake fence, nested begin, unterminated block, stray text, mismatched end, CRLF, NUL, oversize block, credential-like string.
+- Property tests: parse then render then re-parse is stable; applying twice inserts zero the second time; any one-byte change in a block produces a conflict.
+- Dress rehearsal: copy the two real files read-only into a scratch directory, run the full dry-run and apply against a scratch Postgres database (a scratch compose project with its own volume), check the section 9.10.3 list, then drop the scratch database and its volume.
+- Wake canary on the scratch server: park a listener on a throwaway handle, run the apply, expect no 200 on the listener (it must stay in 408 rounds).
+- Run only the real store after the user's go.
+
+### 9.13 Backup, deletion, rollback
+
+#### 9.13.1 Backup before deletion
+
+- Pre-apply store snapshot [R6, R9, R12]: a `pg_dump` of the coordination database in custom format (`-Fc`), taken while the server runs, named `pre-import-<run_id>.dump` and written into the same directory as the nightly dumps, `<media-root>/backup/a2a/` on <storage-host> (server-api.md 1.2), so the second restic job on `<storage-host>` (own script `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh`, own repository `rclone:<gdrive-remote>:backups/restic-a2a`, tag `a2a-dumps`, user-crontab line `45 5 * * *` in <storage-host>'s local time; server-api.md 1.2, X4, user decision 2026-11-10) collects it. The host-side importer runs it through the compose stack; the exact command, and which database role it runs as, are [design]. It no longer goes to `/data`: `a2a-data` is for import run artefacts only and is not backed up. It is the rollback anchor for the store. Its restore into a scratch database is checked the way the nightly dump restore is, with `pg_restore` (server-api.md 1.2, D-B, R12). The nightly dump (`a2a-<UTC timestamp>.dump`) is written by the dump sidecar into the same directory and is not this snapshot. The daily prune never deletes `pre-import-*` files [R12, default applied by the assistant; the user may veto]; removing old ones is manual. Whether the restic job covers the directory is confirmed on <storage-host> in task S2-DEPLOY (S1-BKP writes the job's text; the second job is a new job, not an addition to the existing one, R9), so the runbook confirms the snapshot file is present in that directory before apply.
+- Source backup: a tar of exactly the following, taken after verification and before deletion:
+  - the two in-scope channel files
+  - `cognitive-engine-bridge-turns-archive-2026-10.md`
+  - the `handoff/` directory
+  - `session-registry.json`
+  - `watch-bridge.sh` and `~/.local/bin/watch-bridge-coordination.sh`
+  - the five state files from section 9.11
+  - the freeze manifest and the run manifest
+- Format: gzip tar with paths relative to `$HOME` (for example `.agents/bridge-v2-coordination-channel.md`), mtimes and modes preserved. Default location `${XDG_DATA_HOME:-$HOME/.local/share}/a2a-coord/backups/channels-<run_id>.tar.gz` (outside `~/.agents`, which is being cleaned).
+- The tar is verified, not trusted: list it, extract into a temporary directory, compare sha256 of every member against the plan. A mismatch aborts deletion.
+- The tar's own sha256 goes into the run manifest. The tool never deletes a backup. The user decides retention.
+
+#### 9.13.2 Deletion, only after confirmation
+
+Preconditions the tool checks, in order. Any failure stops with exit 5:
+
+- Verification for this run passed and is recorded.
+- The backup tar verified.
+- Each file still has the sha256 recorded in the plan (nothing was appended after backup).
+- stdin and stdout are a real TTY. Agents cannot run this step, the same rule as `a2a-coord review`.
+- The user types the exact phrase `delete 2 channel files after verified import <run_id>`. A bare `yes` is not accepted.
+
+Deleted: the two in-scope channel files, nothing else. Everything else in section 9.11 is the user's manual decision. The tool prints the paths it removed and records them in the manifest.
+
+#### 9.13.3 Rollback
+
+- Store only (before file deletion): `a2a-coord import-channels --rollback --run <run_id>` deletes exactly the task ids listed in that run's manifest, and only those whose stored `content_sha256` and `coord.origin == "import"` still match. Anything that differs is left and reported. Uses `TaskStore.delete` `[reported]` (audit t1c). A full `pg_restore` of the `pre-import-<run_id>.dump` file from `<media-root>/backup/a2a/` is the heavy alternative.
+- Files (after deletion): extract the tar back over `$HOME` with `tar -C "$HOME" -xzf <tar> --keep-old-files`, so an existing file is never overwritten. Then re-run the dry-run, which must again report the same hashes.
+- Both: restore files first, roll the store back, then re-import from a fresh plan. Idempotency makes this safe to repeat.
+- Rollback never touches live tasks, API keys or sessions.
+
+### 9.14 Runbook (go-live day)
+
+- Confirm the S3 exit gate has passed and the user has declared go-live (decision 14).
+- Confirm the channel is frozen, including Antigravity's research use, which stops now. Record the freeze instant and the sha256 of both files.
+- Stop any watcher still running (section 9.11).
+- Dry-run. Read the report. Compare against the section 9.10.2 numbers. Resolve every error and every ambiguous reply-to.
+- User go. Take the pre-apply store snapshot (`pre-import-<run_id>.dump` in `<media-root>/backup/a2a/`, section 9.13.1) and confirm the file is there. Apply with the plan id. Let the automatic verify finish.
+- Read the verify output. Spot-check three tasks through a normal MCP `a2a_get` call.
+- Run `retire-channels`: backup, tar verification, typed confirmation on a real TTY, delete.
+- User retires the section 9.11 items by hand and annotates the dangling references.
+- Record completion in the master tasklist with the run id and the tar path.
+
+### 9.15 Open points
+
+Not resolvable from the evidence, in rough priority:
+
+- 1. Freeze instant. The decision says "frozen now" without a time, and decision 14 allows Antigravity research appends until go-live. The last write seen is 2026-11-04T14:22:23+02:00 `[verified]` and is no longer the last write that will exist. The user fixes the instant on go-live day (when Antigravity stops) so that only appends after it are flagged.
+- 2. Turns archive. Import it with a second, guess-based parser (year inferred as 2026, no ids), or leave it as a plain file in the tar. Default here is leave it.
+- 3. Role for imported messages. `ROLE_AGENT` for all (recommended) or `ROLE_USER` for the sender side. Needs user confirmation.
+- 4. Machine name in handles. Decisions say `<workstation>`, the host name is `<workstation>-wsl`. Profile setting; confirm.
+- 5. Closed by decision 15 (2026-11-04, /cplain): admin path is `docker compose exec -it` over an in-container Unix socket, no TCP, no API key scope. Defined in server-api.md 3.7.
+- 6. Other machines. Only <workstation>-wsl was inspected. Whether the Mac or <storage-host> hold their own copies of the channel files, watcher scripts or state files was not checked. Closer to go-live this matters more, since mac and <storage-host> will be tailnet peers by then (S2).
+- 7. Does `DatabaseTaskStore` let the importer set its own created and updated timestamps? Not confirmed in the audit. If it does not, ordering and dates come from `metadata.coord.import.seq` and `begin_ts`, and the store's own timestamps will show the import time. Needs a spike on a scratch store.
+- 8. Closed: visibility is `metadata.coord.origin = "import"`, visible to local-harness API keys only (server-api.md 5.3 and 3.3.3).
+- 9. Retention of the backup tar. The tool never deletes it; how long to keep it is the user's call.
+- 10. Whether to keep the three `handoff/` prompts. They are untouched by this plan and backed up.
+
+## 10. Git history rewrite
+
+Folded from `history-rewrite-plan.md` (written 2026-11-11) into this plan on 2026-11-15; the text is unchanged except for the headings, which are numbered 10.1 to 10.7. Decision Y4 (section 12.1) decided to rewrite the history later, in a planned window; the window is not scheduled and nothing has been run. It is a user-only action: no agent rewrites history or force-pushes.
+
+Status: PLANNING ONLY. Written 2026-11-11. Nothing in this document has been run. No rewriting command has been executed, and no ref has been changed.
+
+Label convention: statements are marked verified (checked directly), reported (from documentation or the owner, not re-checked) or unverified (assumed).
+
+### 10.1 Goal and non-goals
+
+Goal:
+
+- Remove machine-specific details from the full git history of `rockad/agentic-hub`, so history matches the scrubbed tip.
+
+Context:
+
+- The repository is public.
+- The tip was scrubbed on 2026-11-11 (PR #30). The scrubbed details remain in earlier commits (verified by the nature of git history).
+- The owner decided on 2026-11-11 to rewrite history later, in a planned window.
+
+Non-goals and severity:
+
+- No secrets were found in history (reported by the scrub review). Exposure is low severity, so this is hygiene, not incident response.
+- No credential rotation is part of this plan.
+- This plan does not change repository content at the tip.
+
+### 10.2 What a rewrite changes and breaks
+
+- Every commit SHA changes from the first rewritten commit onward.
+- Tags and GitHub releases must be recreated, because they point at old SHAs. Known tags (verified locally): `jev-v2.3.0`, `jev-v2.3.1`, `pre-split-2026-10-05`. The remote list must be captured too, since local tags may be incomplete.
+- Open PRs and non-default branches are orphaned or must be rebased onto the new history.
+- Every local clone and every worktree diverges and must be reset or re-cloned.
+- Other repositories or notes that cite agentic-hub SHAs (for example the cognitive-engine repo and vault notes) point at commits that no longer exist on the default branch.
+- Forks and third-party clones keep the old history. Nothing in this plan can change them.
+
+Documented limitation (reported, not verified):
+
+- GitHub keeps old objects reachable through `refs/pull/*` and cached views, so a force-push alone does not fully remove them.
+- Full removal needs a purge request to GitHub Support. Whether Support grants it is unverified.
+
+### 10.3 Prerequisites
+
+- Merge or close all open PRs.
+- Tell every session that uses the repo: other Claude sessions, `agy`, and every worktree.
+- Take a full mirror backup clone (`git clone --mirror`) and keep it offline.
+- Capture the lists of tags, releases and branches (names, target SHAs, release notes) into a file outside the repo.
+- Prepare the replacement map locally (see below).
+- Complete a dry run on a mirror copy, with a diff of `git grep` results before and after.
+
+Replacement map:
+
+- The map is a text file for `git filter-repo --replace-text`.
+- Each line has the form `literal==>replacement`.
+- Example lines with fake values only: `old-host.example==>` followed by the placeholder `<storage-host>`, and `fake-home-prefix==>` followed by `~`.
+- The real map is built locally from the placeholder table used in the scrub (workstation host, storage host, LAN IPs, mount root, cloud remotes, private domain hosts, home path, file links).
+- The real map is kept outside git (for example under `~/.config/`), mode 0600, and deleted after the rewrite is verified.
+- The real map is never committed, pasted into an issue or PR, or quoted in any public file.
+
+### 10.4 Order of steps
+
+1. Freeze. Announce the window, stop all sessions that write to the repo, and confirm no open PRs.
+2. Mirror backup. Make the offline mirror clone and capture the tag, release and branch lists.
+3. Dry run on a copy. Clone the mirror to a scratch location, run `git filter-repo --replace-text` there, then verify with `git log -S` and `git grep` over all refs. Compare against the pre-rewrite results.
+4. Owner force-push. Only the owner pushes: all branches and all tags, with force. No agent pushes.
+5. Recreate GitHub releases from the captured list, pointing at the new tags.
+6. Reset or re-clone every worktree and clone. Do not merge old history into the new history.
+7. Request the GitHub Support purge of unreachable objects and `refs/pull/*` caches (if the owner decides to ask).
+8. Verify and record. Run the checklist below, then delete the local replacement map and record the outcome.
+
+### 10.5 Verification checklist
+
+- `git log -S` for each real literal, over all refs, returns nothing (run locally with the private map).
+- `git grep` over every ref returns nothing for each placeholder source pattern (class of pattern, not the value).
+- Commit count and the tree at the tip match the pre-rewrite tip, apart from SHAs. Compare file contents, not SHAs.
+- All expected tags and releases exist and point at rewritten commits.
+- A fresh clone builds and the plugin tests pass.
+- Old SHAs cited elsewhere are listed and updated or annotated.
+- GitHub Support reply recorded, if requested.
+
+### 10.6 Rollback
+
+- Before the force-push: discard the dry-run copy. Nothing changed.
+- After the force-push: the offline mirror backup holds the old history. Rolling back means force-pushing the old refs from the mirror, which re-publishes the removed details. It restores SHAs for others, but undoes the hygiene goal.
+- A force-push cannot be undone in the sense of un-publishing. Anyone who fetched the new history must reset again.
+- Keep the mirror until the verification is complete and the owner confirms. The mirror itself contains the removed details, so store it privately and delete it when no longer needed.
+
+### 10.7 Open decisions for the owner
+
+- The window date and duration.
+- Whether to ask GitHub Support for a purge.
+- Whether forks or third-party clones exist (check the fork list and clone traffic on GitHub; unverified today).
+- Which dependent repositories and notes to update after the SHAs change.
+- How long to retain the offline mirror backup.
+
+## 11. Decision records
+
+Folded from section 1 of the old master tasklist (the full old tasklist is kept as `archive/master-tasklist-through-2026-11-14.md`) into this plan on 2026-11-15. The four records below keep their wording; only the headings are numbered 11.1 to 11.4. Where a record says "the plan, Section 3", it means [the archived consolidated plan][plan], which still holds the full text of decisions 1 to 13 and 37 to 40, the risk analysis (risks R1 to R14, cited as "plan R12" in this file) and the open-decision list; those texts are binding and this plan cites them by number. Decisions 14 to 36 and the rounds D-A to D-J, R1 to R14, X1 to X5 and C1 to C5 are written out in 11.4. The later rounds Y1 to Y10 and Z1 to Z9 are in section 12.
+
+### 11.1 DDR-001: Option 4 Hybrid Adoption (Partial Superseded)
+- **Status**: **ACCEPTED & APPROVED BY USER** (`2026-11-03T14:07:22+02:00`), then **PARTLY SUPERSEDED** the same day: the `phone-a-friend` half was withdrawn at the user's request (not two-way; removed completely, uninstalled and deleted). The `BuildSlot` half stands and is implemented (C6).
+
+### 11.2 DDR-002: Communication Foundation — ACP with A2A Principles
+- **Status**: **SUPERSEDED by DDR-004 (2026-11-04)**: both the file-channel carrier and ACP (ACP removed from the plan entirely, file channel frozen). Originally **ACCEPTED & APPROVED BY USER** (`2026-11-03T15:21:25+02:00`), **PHASING APPROVED BY USER** (`2026-11-03T15:30:55+02:00`). Text below is historical.
+- **Note**: the "Context" and "Decision" blocks further down mix DDR-002 and DDR-001 (Option 4) content; left as recorded. The authoritative records are in [the archived consolidated plan][plan], Section 3, and in 11.4 below.
+- **Verbatim User Approval**: `"Do you approve Claude's "A2A principles immediately + ACP carrier drop-in ready" phasing plan? - Yes"`
+- **Phasing Architecture**:
+  - **Phase 1 (Immediate / Principles)**: Adopt A2A task-state vocabulary (`SUBMITTED`, `WORKING`, `INPUT_REQUIRED`, `COMPLETED`, `CANCELED`, `FAILED`, `REJECTED`), agent-card-style identity in session heartbeats, and format messages in JSON-RPC envelopes over the existing live file channel.
+  - **Phase 2 (Carrier Drop-In)**: Track ACP remote transport standards (HTTP/WebSocket) and live session exposure. Transition transport to ACP as a drop-in wire carrier once remote transports land and interactive TUI participation is supported.
+- **Context**: Replacement for the synchronous delegation / task-sync layer after phone-a-friend retirement, satisfying the hard requirements of symmetric two-way communication and persistent conversation-to-conversation interaction.
+- **Decision**:
+  - **Adopt ACP (Agent Client Protocol) as the Standard Session Transport**: Standardized bidirectional JSON-RPC session protocol connecting live agent sessions across harnesses (OpenCode, Zed, Antigravity, Claude Code) with native stream, cancellation, and turn state.
+  - **Apply A2A (Agent-to-Agent) Principles for Peer Mesh Coordination**: Decentralized peer-to-peer federation: symmetric peer agency (no caller/subordinate hierarchy), mutual capability advertisement, distributed task negotiation, and local advisory leases.
+  - **Zero Daemon Overhead**: Decoupled from `cognitive-engine` <storage-host>; builds on native session hooks and standard JSON-RPC wire interfaces.
+- **Context**: Evaluated embedding a multi-agent coordination daemon in `cognitive-engine` vs. decoupled alternatives vs. CLI relay frameworks.
+- **Decision**:
+  - **Adopt Option 4 (O4: Recommended Hybrid)**:
+    - **Delegation & Reviews (Workflow Layer)**: Adopt `freibergergarcia/phone-a-friend` (Apache-2.0) for synchronous delegation and review loops, solving the 17+ hour silent stall without polling.
+    - **Resource Contention (Substrate Layer)**: Adopt the zero-daemon `BuildSlot` Python Protocol in [`packages/harness2`](https://github.com/rockad/cognitive-engine/tree/main/packages/harness2) backed by cross-process flocking, serializing rootless Docker and GPU access.
+    - **Zero Core Daemons**: No coordination daemon is embedded in `cognitive-engine`; no external mailbox daemon is required to run.
+  - **Exclusion of `mcp_agent_mail_rust`**: Excluded due to the restrictive `OpenAI/Anthropic Rider`. Standing rule enforced: skip any option restricting partner agents.
+
+### 11.3 DDR-003: Side-by-Side Peer Architecture (IN FORCE)
+- **Status**: **ACCEPTED & APPROVED BY USER** (2026-11-03). Never launch, drive or wrap `agy`; the restrictive-terms rule applies to Antigravity too. Carrier wording amended by DDR-004 (peers communicate through the server). Full record in [the archived consolidated plan][plan], Section 3.
+
+### 11.4 DDR-004: A2A Coordination Server (ACCEPTED 2026-11-04)
+- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 36 from later (2026-11-04 and 2026-11-05, `/cplain` and after), decisions 37 to 40, the round-2 decisions R1 to R8, the round-3 decisions R9 to R14 (2026-11-09, `/clarify`) and the round-4 decisions X1 to X5 (2026-11-10, `/clarify`; the D-A to D-J, R1 to R8, R9 to R14 and X1 to X5 blocks below) recorded in [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
+- **Summary**:
+  - A2A server on `a2a-python` (>= 1.3.0), `uv`, Docker; one server process owns the database, which is Postgres in the compose project from S1 (SQLite WAL on named volume `a2a-data` superseded 2026-11-09, D-A); MCP tools served at `/mcp` on port 8120.
+  - Identity: one Agent Card per harness and machine, per-session handles under it.
+  - Wake: Claude Code `asyncRewake` long-poll; agy surfacing only (accepted asymmetry; nothing wraps agy).
+  - Inbound trust by origin (`SUBMITTED`, `QUARANTINED`, `REJECTED`); scoped bearer API keys.
+  - Staged exposure (revised by decision 23): S1 dev on <workstation> (localhost), S2 production on <storage-host> with workstations over the tailnet, S3 public HTTPS (the user's existing Cloudflare Tunnel on <storage-host> pointing at <storage-host>'s own loopback port 8121, decision 20 as amended 2026-11-09 (D-F); the 8121 listener runs from stage `s2` and the route is created only at the S3 go (R8); hostname `<a2a-host>`).
+  - cognitive-engine: optional one-way status client, built after S1; posts to <storage-host> over the tailnet.
+  - Decisions 2026-11-09 (`/clarify` session, user decisions, final; D-A to D-J):
+    - D-A: storage is Postgres from S1, reversing decision 4's starting engine. Kept: SDK `VersionedDatabaseTaskStore` with a version row seeded at task creation, `CoordTaskStore`, the custom parked-task `RequestHandler`, the `task_index` side table, our tables on SQLAlchemy Core. Retired: the single-connection `BEGIN IMMEDIATE` write engine, the WAL and filesystem caveats, "Postgres by URL change" language, `sqlite3 .backup`. `A2A_DB_URL` points at Postgres. The server is still one process. SQLite evidence kept as the reason a wrapper exists: [SP5 results](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md) (about 23 writes/s at 10x, p99 write 17 to 35 ms, ceiling about 430 saves/s, 0 lost after `kill -9`). Tripwires that would have forced a move, not hit (user chose Postgres anyway): more than one writer process, network filesystem, failover need, about 100x load.
+    - D-B: Postgres operation: pinned image, chosen when SP5b runs (no major version stated; refined by R3 to exact tag plus digest); named volume; no published port (compose network only); password from a secret file (refined by R2); nightly `pg_dump` into the existing backup route on <storage-host> (mechanism settled by R4 to R6 and refined by R9 to R14: dump sidecar under compose profile `backup`, `<media-root>/backup/a2a/`, a second restic job), restore tested as SP5 D7 with `pg_restore`; up to about one day of loss accepted. WAL archiving and point-in-time restore not adopted. Host-installed Postgres not adopted.
+    - D-C: agy post-install health check: the user runs a real `a2a_hello` in a fresh agy session and the installer confirms the bind on the server; the installer never starts or drives agy (DDR-003). Same as the decision 24 update.
+    - D-D: S1 entry gate is SP1, SP2, SP3 and SP4 (record only) and the new SP5b (status 2026-11-10: SP5b passed; SP3 and SP4 were still open, so the gate was not yet satisfied, C1; result recorded 2026-11-11: SP3 passed and SP4 recorded, see [results](../research/spike-results-2026-11-10-sp3-sp4.md)). SP5 on SQLite stays recorded as passed but no longer gates. Inside S1, not before: `asyncRewake` on a `UserPromptSubmit` command hook and the GUI-launched Claude test (decision 34), each with its own exit test.
+    - D-E: A8c, a new agy spike runbook, non-blocking for S1, tests the three items A8b left open (user-level `.mcp.json`, `agy plugin install` and uninstall, tool use while signed out). The signed-out run is the last run and changes the user's real agy login; the user signs out, the helper never does.
+    - D-F: S3 listener is decided. The Cloudflare Tunnel targets loopback port 8121, the public listener (remote-peer keys only, only `/a2a/v1` and the public card, `CF-Connecting-IP` trusted only there). Port 8120 stays tailnet-only (local-harness keys). The `Host`-based `A2A_TUNNEL_HOSTS` design is a rejected alternative. Timing refined by R8: the listener runs from stage `s2` on loopback; the route is created only at the S3 go.
+    - D-G: every remote-peer key may address session handles (before: cards only). Reverses open point 11 of `server-api` 12.2.
+    - D-H: an unknown handle and a handle outside the key's `cards_allowed` return the same "not available" error (refined by R1: a handle that exists inside `cards_allowed` yields a held task, with a per-key guess counter and audit row); the handle list is never returned to remote-peer keys; sessions sharing one API key may claim each other's handles (accepted risk, no bind code). Exposure is only to peers holding a remote-peer key. Resolves open point 12.
+    - D-I: `a2a_runs` (read-only, scoped to the caller) is kept. Resolves open point 10.
+    - D-J: the extension URI stays the placeholder `urn:agentic-hub:coordination:v1` through S1 and S2; the final URI is an S3 gate item. Open point 13 stays open until then.
+  - Round-2 decisions 2026-11-09 (second `/clarify` round, user decisions, final; R1 to R8; they refine D-B, D-F, D-H and the SP5b rule of D-D and are folded into plan decisions 20, 37, 38 and 39):
+    - R1 (handles, refines D-H): a handle that exists inside a card in the key's `cards_allowed` yields a held task, while an unknown, ended or disallowed handle yields the uniform "not available" `REJECTED` task. A per-API-key rate limit on "not available" responses (the guess counter) writes an audit row when it trips. Exposure stays limited to peers holding a remote-peer key. Confirmed without change: ended handles return "not available"; the `A2A_ADVERTISE_HANDLES_TO_PEERS` flag stays dropped; the sbx isolation test text covers port 8121 as well as 8120. The spec's accepted-risk wording for existence visibility inside `cards_allowed` becomes "accepted by the user 2026-11-09, mitigated by the guess counter".
+    - R2 (database password): secret file, mode 0600, outside the repo. Postgres reads `POSTGRES_PASSWORD_FILE`; the server reads `A2A_DB_PASSWORD_FILE` and composes its SQLAlchemy connection at start-up; `A2A_DB_URL` contains no password. No password environment variable, no trust authentication.
+    - R3 (image pinning): the Postgres image is pinned by exact tag plus a recorded digest, chosen when SP5b runs; the same image runs in S1, S2 and S3. Upgrades are a deliberate change: `pg_dump`, upgrade, restore test. No major-only tag, no `latest`. No version number is stated (SP5 D10 happened to use 17.11; that is a record, not the pin).
+    - R4 (dump scheduling): a dump sidecar container in the same compose project runs `pg_dump` nightly (about 02:00, default [design]) and writes dated files into a host directory on <storage-host>. **Path and restic hand-off replaced by R9 below**: the directory is `<media-root>/backup/a2a/` (the earlier `/srv/a2a-dumps` is gone), and the earlier "adding that directory to the existing restic job is [unverified]" is closed (R9 adds a second restic job instead). No systemd timer on <storage-host> (it would need root); the server process does not run the dump. The sidecar needs only `pg_dump` tooling and read access to the database (refined by R11: a separate read-only role `dump_ro`).
+    - R5 (retention and failure notice): the sidecar keeps 14 daily and 3 monthly dumps (the first dump of each of the last 3 months), numbers [design] defaults, and writes a `last_ok` timestamp file. The server reads it (read-only mount) and reports `dump_age_h` in `/status`; stale when older than 36 h; the status client shows it. If the server is down, the second restic job's own log (R9) is the second check.
+    - R6 (`/data` volume and pre-import dump): the `a2a-data` volume stays, for go-live import run artefacts only (`/data/imports/<run_id>/`); it is not part of the backup scope. The go-live pre-apply snapshot is a `pg_dump` named `pre-import-<run_id>` written into the same dump directory so restic collects it; the host-side importer runs it through the compose stack. **Replaced by R9 and R12 below**: the directory is `<media-root>/backup/a2a/`, the file is `pre-import-<run_id>.dump`, and the daily prune never deletes `pre-import-*` files (the earlier "kept with the monthly dumps or manual [design]" is gone).
+    - R7 (SP5b failure): up to two revise-and-rerun cycles (wrapper tuning, isolation level, the seeded version row, a Postgres setting), then stop S1 storage work and ask the user. No automatic fallback to SQLite.
+    - R8 (8121 listener timing): the server starts the 8121 public listener from stage `s2`, bound to host loopback only (`127.0.0.1:8121`), with the remote-peer rules active, so the public-listener rules, handle errors, rate limits and the fuzz pass are tested in S2. The exposure gate is the Cloudflare Tunnel route, created only at the S3 go (explicit user decision). Replaces "the server opens 8121 only when `A2A_EXPOSURE_STAGE` is `s3`" and any compose comment saying nothing listens on 8121 before the S3 gate; the start-up checks and the stage table are updated consistently; S2 gate lists gain the public-listener tests; the S3 gate keeps the tunnel route and the go.
+    - Fact (verified over ssh on 2026-11-09): <storage-host> is a Raspberry Pi 5 Model B Rev 1.0, 4 cores at 2.4 GHz, 8 GB RAM, Debian 12 aarch64. The user states speed is not a concern, so there is no load-test-on-core task; SP5b runs on <workstation> as planned.
+  - Round-3 decisions 2026-11-09 (third `/clarify` round, user decisions, final; R9 to R14; they refine R1, R4, R5, R6 and R8 and are folded into plan decisions 20, 37, 38 and 39):
+    - R9 (dump location and restic hand-off; replaces the R4 and R6 path `/srv/a2a-dumps` and the R4 "restic job collects it [unverified]"): the dump sidecar writes dated dumps into `<media-root>/backup/a2a/` on <storage-host> (a user-owned directory in the existing backup area, next to `<media-root>/backup/gitea/` where the nightly Gitea backup already lands); the `pre-import-<run_id>.dump` snapshot (R12 name) goes there too. The existing restic job is `<media-root>/knowledge-archive/ops/restic-backup.sh`, run from the user's crontab at 05:30; it is single-source (`SRC=<media-root>/knowledge-archive`, tag `knowledge-archive`, aborts if `SRC` is not a git repo, `forget --keep-last 3 --prune` scoped to its tag), so it cannot simply be extended. A **second small restic job** is added: its own script (for example `a2a-restic-backup.sh`, same style as the existing one), its own user-crontab line (about 05:45, [design]), its own tag `a2a-dumps`, tag-scoped retention (for example `keep-last 3 --prune --tag a2a-dumps`, [design]); whether the restic repository on Drive is the same or its own is [design]. **Values fixed by X4 (2026-11-10):** own repository `rclone:<gdrive-remote>:backups/restic-a2a`, crontab line `45 5 * * *` in <storage-host>'s local time, retention `restic forget --keep-last 3 --prune --tag a2a-dumps`. The installer never edits <storage-host>'s crontab; it prints the script and the crontab line for the user to install. Verified read-only on <storage-host>, 2026-11-09: the cron line and script above; rsnapshot covers only `/etc`, `/usr/local` and `/home` into `<media-root>/backup/rsnapshot/`; `media1` and `media2` are two partitions of one disk, so there is no disk redundancy and the Drive copy is the offsite copy; <storage-host> runs Docker 29.7.2 and the user is in the `docker` group. "Adding the path to the existing restic job is [unverified]" is closed (a new job, not an addition).
+    - R10 (guess counter policy; completes R1): per API key, 10 "not available" answers within 60 s trips the counter. While tripped, any handle-addressed `SendMessage` from that key gets `429` with `Retry-After: 60`. One audit row per trip, event `handle_probe_limited`, fields `key_id` and `window_count`. It clears by itself after 60 s without further misses. No key quarantine, no human release.
+    - R11 (dump role; refines R4): the sidecar connects as a separate read-only role `dump_ro` (`CREATE ROLE dump_ro LOGIN; GRANT pg_read_all_data TO dump_ro`) with its own secret file (for example `secrets/pg_dump_password`, mode 0600, outside the repo), mounted only into the sidecar. The server's role and secret are never in the sidecar. A Postgres init script creates the role on first initialisation of the data volume; a volume that already exists needs a one-off migration step (how it is run is [design]). **Replaced by X2 (2026-11-10):** the host command `a2a-coord db init-dump-role` covers a fresh volume, an existing volume and rotation; no init script.
+    - R12 (dump format; refines R4 and R5): `pg_dump` custom format (`-Fc`). File names `a2a-<UTC timestamp>.dump` for nightly dumps and `pre-import-<run_id>.dump` for the go-live snapshot. Before the sidecar writes the `last_ok` stamp it verifies the new file with `pg_restore --list`; a failed verification means no `last_ok` update. The SP5b D7 restore test restores with `pg_restore`. Defaults applied by the assistant (the user may veto): the daily prune never deletes `pre-import-*` files; `dump_age_h` is null before the first successful dump.
+    - R13 (exposure stage flip; refines R8): the flip to `A2A_EXPOSURE_STAGE=s3` is a deliberate human step. (1) The user runs the read-only command `a2a-coord expose check`, which prints the S3 gate list (quarantine live, rate limits live, fuzz report green, honest card, extension URI fixed, and the other gate items) and exits non-zero if any item is not met (refined by X5, 2026-11-10: exit codes 0, 1 and 2; runtime checks now, the fuzz report, honest card and extension URI as manual items until S3). (2) The user sets `A2A_EXPOSURE_STAGE=s3` (and the public host) in the compose environment and restarts the stack. (3) The server's start-up checks for `s3` refuse to start if a condition fails. (4) The user then creates the Cloudflare Tunnel route to `127.0.0.1:8121`. There is no runtime admin command for this and the stage is not derived from other configuration. Default applied by the assistant (the user may veto): S2 loopback tests of the 8121 listener send `Host: 127.0.0.1:8121`.
+    - R14 (backup compose profile; refines R4): the dump sidecar is a compose service defined from S1 with `profiles: ["backup"]`; it does not start by default (S1 dev on <workstation>). At S2 on <storage-host> the stack runs with `COMPOSE_PROFILES=backup`. SP5b D7 runs it once with `docker compose --profile backup run --rm dump` so the real sidecar is tested. A mis-set profile (backups silently off) is caught by the `dump_age_h` stale flag (stale when older than 36 h, R5).
+  - Round-4 decisions 2026-11-10 (fourth `/clarify` round, user decisions, final; X1 to X5; they refine or replace R9, R10, R11 and R13 and the values agy wrote in commit `c17402b` and folded into plan decisions 37 to 39). The decisions follow an independent audit of the overnight SP5b work ([`audit-2026-11-10-sp5b-s1-gate.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/audit-2026-11-10-sp5b-s1-gate.md)); corrections C1 to C5 are listed after the decisions:
+    - X1 (handle grammar; replaces the `#` separator of commit `db17ada`): the handle keeps the JID-like shape `card/name~sid8`, for example `claude-code@<workstation>/c6-same~3f2a9c1d`. Name first, `~` separator, `sid8` the first 8 hex characters of the session id, always present. Session part regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$` (`~` is outside the name charset, so the split is exact). `@` and `/` stay: they are legal unencoded in a URL query string (RFC 3986 section 3.4) and handles never appear as URL path segments (JSON bodies and query parameters such as `/wake/pending?session=` and `/sessions?handle=`). `#` is rejected: it starts a URL fragment and needs `%23` (a raw `#` silently truncates an unencoded `curl` URL). Prior art: XMPP addresses have the same shape (RFC 7622); Matrix identifiers need `%23` for `#`. The user chose this over a flat dotted token, a sid-first form and `#` with `%23`. The SP5b separator verdict becomes "`#` needs `%23` in URL queries, `~` adopted by user decision 2026-11-10"; the unnamed-session form stays [design, open]. The SP2 Claude results file records `#` on the wire and is a historical record, not edited.
+    - X2 (`dump_ro` password; refines R11, replaces agy's wording that the secret is also mounted into Postgres): the host command `a2a-coord db init-dump-role` (idempotent; run by the installer after Postgres is up and again on rotation) reads the secret file on the host and feeds `psql` in the Postgres container over stdin with `docker compose exec -T`: `CREATE ROLE dump_ro LOGIN` if it does not exist, else `ALTER ROLE dump_ro PASSWORD`, then `GRANT pg_read_all_data TO dump_ro`. The secret file (for example `secrets/pg_dump_password`, mode 0600, outside the repo) is mounted only into the sidecar. No init script mounts it into Postgres (the `01-init.sh` and `0444` text is removed). One mechanism covers a fresh volume, an existing volume and rotation. SP5b tested the init-script route, so the D7 role setup is retested through the command route (SP5b follow-up item (a)). The command is added to the `a2a-coord` command list.
+    - X3 (guess counter scope; confirms and completes R10): the counter covers handle-addressed sends only ("not available" answers: unknown, ended or disallowed handle). Card-addressed sends stay outside it (an unknown or disallowed card is `403 CardNotAllowed`, not counted) and remain under the per-key `SendMessage` limit of 10 per minute (`server-api` 3.3.2). Reason: card existence is public by design (D32: the front-desk card is public, member cards and listings need any valid key), so there is nothing to enumerate. The audit's claim that bypassing the counter allows an unthrottled flood is wrong because of the 10 per minute limit.
+    - X4 (restic job on <storage-host>; replaces agy's values and the "about 05:45, [design]" of R9): verified read-only on <storage-host> 2026-11-10: the rclone remotes are `<gdrive-remote>:` and `<odrive-remote>:` (no remote named `gdrive:`), <storage-host>'s time zone is Europe/Helsinki (EET) so cron runs in local time, and `<media-root>/knowledge-archive` is a clean git repo. Chosen: repository `rclone:<gdrive-remote>:backups/restic-a2a` (its own repo); its own password file `~/.config/a2a-coord/restic-password` (mode 0600, created by the user); script `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh` (decision 28 location; printed by the installer for the user to install; never written into the knowledge-archive git repo); crontab line `45 5 * * *` in <storage-host>'s local time, after the existing 05:30 knowledge-archive job; retention `restic forget --keep-last 3 --prune --tag a2a-dumps` (same rule as the existing job); tag `a2a-dumps`; source directory `<media-root>/backup/a2a/`. Removed: `rclone:gdrive:`, "05:45 UTC", the script path inside `knowledge-archive/ops` and `--keep-daily 7`.
+    - X5 (`a2a-coord expose check`; refines R13, replaces agy's seven rules): exit codes 0 all conditions met, 1 at least one unmet (itemised report), 2 could not evaluate (admin socket or database error). Checked by the server now: quarantine enforced for remote-peer keys; per-key rate limits and the guess counter enabled; `dump_age_h` below 36 h (null counts as unmet); port 8121 bound to host loopback only. Listed as manual until S3 and marked [design] (task S3-EXPOSE-CHECK): fuzz report green, honest card, extension URI fixed. Agy's fuzz-report file path, 30-day freshness rule and card-honesty query are not adopted (proposal, not adopted).
+    - Corrections after the audit (user, 2026-11-10):
+      - C1 (gate wording): the S1 entry gate is NOT satisfied. S1 storage gate satisfied by SP5b; overall S1 entry gate is NOT yet satisfied (SP3 and SP4 are still open). (Update 2026-11-11: SP3 and SP4 are now recorded, so the gate is satisfied; see spikes section 11.) Every statement that S0 is complete or the S1 entry gate is passed is withdrawn.
+      - C2 (D7 outlier): a 1,036.82 ms `CancelTask` (`transition.versioned` n=95, p99 = max = 1,036.82 ms in `logs/d7-load.out`) was observed during the D7 dump; the cause is unverified (the `pg_dump` `ACCESS SHARE` explanation is not accepted: `ACCESS SHARE` does not conflict with row-level writes). The 200 ms p99 gate was evaluated on D2 only (p99 18.66 ms).
+      - C3 ("0 deadlocks"): inferred from an empty `db_errors` count in `d2.out`; there is no separate deadlock counter in the logs.
+      - C4 (SP5b follow-up, owner: an agy run on <workstation>, not gating S1): (a) D7 role setup through the command route of X2, (b) separator evidence with `~` across URL query, shell, JSON body and storage key, (c) try to establish the cause of the 1,036.82 ms outlier. Result file: `docs/research/spike-results-<date>-sp5b-followup.md`.
+      - C5 (handoff and audit): the audit file exists and is not rewritten; the pickup handoff carries the corrected gate wording and the new next actions.
+  - Decisions 14 to 36 (14 to 24 on 2026-11-04, 25 to 36 on 2026-11-05):
+    - 14: go-live after S3; the file channel stays frozen until then, except that Antigravity may use it for research on this work.
+    - 15: admin commands run inside the container over an unpublished Unix socket; no admin endpoint or scope; on <storage-host> in production (`ssh <storage-host>`).
+    - 16: one installer `a2a-coord install --claude --agy`; non-secret parts of chezmoi-managed files go through chezmoi; the R8 grey area accepted.
+    - 17: every harness machine gets one `local-harness` API key plus a Tailscale identity check (all harness keys, including <workstation>, from decision 23).
+    - 18: remote peers hold per-peer API keys; the allowlist is the key holders.
+    - 19: quarantine release only by a human on a TTY, one typed decision per task.
+    - 20: public front door is the existing Cloudflare Tunnel on <storage-host>.
+    - 21: all six research clones deleted.
+    - 22: blocking `SendMessage` capped at 60 s.
+    - 23: portable image; production on <storage-host>, dev and spikes on <workstation>; workstations reach <storage-host> over the tailnet from day one.
+    - 24: service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, `a2a-coord key create|list|rotate|revoke`); Claude Code key in `A2A_API_KEY`, agy key literal in an unmanaged 0600 plugin-scoped file; chezmoi-managed files never hold keys.
+    - 25: spike host changes allowed under "borrow and put back" (back up, use the harness CLI, prefer project scope, restore, verify, `chezmoi diff` clean).
+    - 26: agy hook entries in the user-level `~/.gemini/config/hooks.json`; hooks exit fast and silently if the server is unreachable or a workspace has an opt-out marker.
+    - 27: agy inbox instruction from `SessionStart` `injectSteps`; the installer never writes any `AGENTS.md`.
+    - 28: hook scripts copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink.
+    - 29: card routing: parked listener, then newest `active` session, then card queue.
+    - 30: an unseen agy `conversation_id` on a `local-harness` key auto-registers a handle on its first `tools/call`.
+    - 31: card discovery per path (`/agents/<card>/.well-known/agent-card.json`) plus a front-desk root card.
+    - 32: the front-desk card is public and generic; member cards and listings need a valid API key.
+    - 33: `A2A-Version` strict (missing or 0.3 returns `VersionNotSupported`).
+    - 34: Claude key from `~/.config/a2a-coord/api-key` (0600, unmanaged), env export through one non-secret chezmoi shell line, `~/.claude.json` fallback.
+    - 35: streaming and push deferred until a peer needs them.
+    - 36: go-live importer built during S2 and S3; one final gate (FG) for server and importer; GL-REHEARSE, user go, GL-APPLY, GL-RETIRE after S3 exit.
+- **Scope**: daemon and container restrictions lifted; **planning only remains**, implementation only where strictly necessary for a spike.
+- **Superseded by it**: DDR-002 (carrier and ACP), old Phase 2 ledger forks A and B, Phase 3 swarmail, Phase 4 ACP, heartbeat sidecar files. **Still in force**: DDR-001 exclusions (`mcp_agent_mail_rust`), DDR-003, BuildSlot (PR #13), symmetric agency.
+
+## 12. Decision rounds
+
+Folded on 2026-11-15 from sections 1, 9, 10, 11 and 12 of `pickup-handoff.md`, from the decision tables of the S1 plan drafts (`s1-remaining-plan.md` and its consolidated successor) and from the old master tasklist. Decisions in these tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]. 12.1 to 12.3 are the rounds after DDR-004; the earlier rounds are in 11.4 and in short form in 12.4.
+
+### 12.1 Fifth round, 2026-11-11 (Y1 to Y10)
+
+The user decided these on 2026-11-11, after the SP3 and SP4 results (`docs/research/spike-results-2026-11-10-sp3-sp4.md` section 4 holds the evidence for Y5 to Y8). They are final: do not reopen them. Status labels: **done** (reported by the user), **decided** (the docs follow it; the code or spec text is not written yet), **open** (needs a user action), **in progress**.
+
+| ID | Decision | Status | What it changes |
+| --- | --- | --- | --- |
+| Y1 | PR #21 (GHCR hardening) merged now. | done 2026-11-11 (reported) | The GHCR publishing hardening is on `main`; nothing in the coordination docs. |
+| Y2 | Delete the old `ghcr.io/rockad/lookup:latest` tag. | open, user action | Package settings only; the helper's token has no package scope, so an agent cannot do it. |
+| Y3 | The default host in `plugins/gitea/.mcp.json` becomes a placeholder URL. | in progress (separate branch) | The gitea plugin default; no coordination spec changes. |
+| Y4 | Rewrite the agentic-hub git history later, in a planned window. | decided, not scheduled | Plan note: [section 10 of this plan](#10-git-history-rewrite) (formerly `history-rewrite-plan.md`). Needs an owner force-push; until then no history rewrite and no force-push by any agent. |
+| Y5 | The agy `PreInvocation` hook injects with `systemMessage` plus the tested dedupe rule (not `ephemeralMessage`). | decided | Decision 9 (note appended); the hook spec in `server-api.md` 11.2 and BP13 in this plan (then `implementation-plan.md`) were aligned on 2026-11-11 (`systemMessage` chosen, about 200 ms connect timeout, `{}` on no announcement). |
+| Y6 | Hook timing: connect timeout about 200 ms, keep the tested dedupe, no throttle, always exit 0 with `{}`. | decided | Decision 9 (note appended); the shipped hook script at S1-AGY. Evidence: a down stub costs about 1.03 s at a 1 s connect timeout, and agy does not kill a slow hook at its timeout (P5, P6, verified). |
+| Y7 | Decision 26 stands: agy hooks in the user-level `~/.gemini/config/hooks.json`, opt-out by the `.a2a-optout` marker. | decided | Nothing changes; decision 26 stays as written. Evidence: user-level hooks ran in trusted workspaces and `.a2a-optout` was honoured with no network call (P8, verified); behaviour in an untrusted workspace past the trust dialog stays unverified. |
+| Y8 | No held `Stop` park for now. agy keeps `SessionStart` `injectSteps` plus `a2a_inbox` and `a2a_wait` (decision 27 baseline, no idle wake). The K6 background-watcher route stays a future option. | decided | Decision 27 (note appended); SP4 stays record-only. K6 (a finished background command wakes an idle agy, verified) is not built. |
+| Y9 | The installer merges into `~/.gemini/config/hooks.json` by its own key only, takes a byte-copy backup first, re-reads the file right before writing, and writes atomically. | decided | Installer rules for S1 (`server-api.md` 11 to be aligned when S1 starts). Reason: the user's own tab-sync tool also edits that file (it did so twice during the SP3 run, reported). |
+| Y10 | Start S1 now; run A8c, the `asyncRewake` test and the GUI-launched Claude test inside S1. | approved | `master-tasklist.md` sections 3 and 4: the S1 kickoff needs no further go; the three attended tests move from "open spikes" to S1 exit tests. |
+
+User-only actions (an agent must not do these):
+
+- Delete the old `ghcr.io/rockad/lookup:latest` tag in the package settings (Y2).
+- Schedule the history-rewrite window and run the owner force-push when the plan is ready (Y4; the plan note is [section 10 of this plan](#10-git-history-rewrite); not scheduled).
+- Earlier user-only items stay in `master-tasklist.md` section 4 (restic password file and crontab at S2, the S3 go, hygiene actions).
+
+Superseded by this round: the former section 10 was a list of proposals from the SP3 and SP4 results; Y5 to Y9 decide them. The SP4 findings (K1 to K6: `Stop` timeout not enforced at 30 s, orphan scripts on Esc, Ctrl-C and `/exit`, a cap of 10 continues, typed input queued) remain the reason Y8 ships no park.
+
+### 12.2 Sixth round, 2026-11-14 (Z1 to Z5)
+
+Final, like 12.1. The user decided these on 2026-11-14 (sixth clarify round).
+
+| # | Question | Decision |
+| --- | --- | --- |
+| Z1 | First wave | W3a: STORE and OBS in parallel, two worktrees (`feat/coordination-store`, `feat/coordination-obs`); TEST-skel in the main tree. |
+| Z2 | PR granularity | One PR per stream to `main`, merged on the user's word; the next wave branches from the merged `main`. |
+| Z3 | Execution engine | One `Workflow` script reused per wave (section 13). The user's choice counts as the opt-in for the `Workflow` tool. |
+| Z4 | Plan PR | Open the docs PR with this plan, the ticked tasklist and the handoff; the user merges it before STORE and OBS start. |
+| Z5 | agy side | The user runs A8c now in agy, in parallel with W3a, with the signed-out run last. A helper never drives agy. |
+
+Open at the time: the agent count for W4b (decided on 2026-11-15 as Z8, 12.3).
+
+### 12.3 Round of 2026-11-15 (Z6 to Z9)
+
+Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 merged on 2026-11-15); Z7 to Z9 in the open-items round of the same day.
+
+| # | Question | Decision |
+| --- | --- | --- |
+| Z6 | S1-OBS acceptance 3b ("every state transition has exactly one audit row naming its actor") | Ratify the split. OBS keeps the writer half (done, merged). The atomic half (transition and its audit row commit in one transaction; a failed audit insert leaves state and version unchanged and no row) is an exit test of S1-STATE, on the `audit` table STORE built. S1-STATE adds the transaction-joining `append_audit` [design]. S1-SEC and S1-GATE cannot pass without it. |
+| Z7 | Secret files for a real stack run | The user provides the database password and `dump_ro` secret files at W6 (INST and GATE); never before. |
+| Z8 | W4b agent count | One stream at a time, each branching from the previous merge. Proposed order (critical path first): MCP, A2A, ADMIN [not yet confirmed]. |
+| Z9 | Jev PRs #54, #55, #58 | Left alone; not part of this work. |
+
+The only question left open after this round was the W4b order confirmation (Z8; tracked in `master-tasklist.md`).
+
+### 12.4 Earlier rounds in short form (2026-11-09 and 2026-11-10)
+
+These are the short summaries kept from `pickup-handoff.md` section 1 and 9; the full wording of every item is in 11.4 (DDR-004) and, for decisions 1 to 13 and 37 to 40, in [the archived consolidated plan][plan] section 3.
+
+- The five S1 `[design]` points of commit `c17402b` were proposals by the overnight agy run, not settled facts. The user decided them on 2026-11-10 in a fourth `/clarify` round (X1 to X5); the docs follow these decisions, and `docs/specs/server-api.md` 12.2 and the tasklist were aligned to them in the same round:
+  - X1, handle grammar: `card/name~sid8` (for example `claude-code@<workstation>/c6-same~3f2a9c1d`), session part regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`; replaces the `#` separator of commit `db17ada`. `@` and `/` stay (legal in a URL query string); `#` is rejected (URL fragment, needs `%23`).
+  - X2, `dump_ro` password: the host command `a2a-coord db init-dump-role` (idempotent; run by the installer after Postgres is up and again on rotation) feeds `psql` in the Postgres container over stdin. The secret file is mounted only into the sidecar; no init script mounts it into Postgres. The D7 role setup is retested through the command route in the SP5b follow-up.
+  - X3, guess counter scope: handle-addressed sends only ("not available" answers). Card-addressed sends stay outside it (403 `CardNotAllowed`, not counted) and stay under the per-key `SendMessage` limit of 10 per minute.
+  - X4, second restic job: repository `rclone:<gdrive-remote>:backups/restic-a2a`, password file `~/.config/a2a-coord/restic-password` (mode 0600, created by the user), cron `45 5 * * *` in <storage-host>'s local time (Europe/Helsinki), `restic forget --keep-last 3 --prune --tag a2a-dumps`, source `<media-root>/backup/a2a/`.
+  - X5, `a2a-coord expose check`: exit 0 all met, 1 at least one unmet, 2 could not evaluate. Runtime checks now; fuzz report, honest card and extension URI listed as manual until S3 ([design], task S3-EXPOSE-CHECK).
+- Decisions from 2026-11-09 `/clarify` rounds:
+  - **D-A to D-J:** Postgres in the compose project from S1 (reverses decision 4's SQLite), SP5b gate, 8121 public listener, handle addressing, A8c, final extension URI at S3.
+  - **R1 to R8:** handle guess counter, DB password via secret file, exact image pin, dump sidecar, retention, `a2a-data` for import artefacts only, SP5b failure rule, 8121 listener from stage s2.
+  - **R9 to R14:** dumps in `<media-root>/backup/a2a/` plus a second restic job, guess counter numbers (10 misses per 60 s, 429), read-only role `dump_ro`, `pg_dump -Fc` verified with `pg_restore --list`, manual s3 flip after `a2a-coord expose check`, compose profile `backup`.
+  - **Handle grammar:** `name#sid8` was adopted across specs, plans and tasklists in commit `db17ada`; round-4 X1 replaces the separator with `~` (`name~sid8`).
+
+- **Postgres image pin settled**: `postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` (D-B, R3).
+- **Guess counter scope (X3)**: the counter covers handle-addressed sends only ("not available" answers). Card-addressed sends are outside it (403 `CardNotAllowed`) and stay under the per-key `SendMessage` limit of 10 per minute; card existence is public by design (D32), so there is nothing to enumerate.
+
+## 13. Waves and workflow process
+
+Folded on 2026-11-15 from the S1 plan drafts (`s1-remaining-plan.md` sections 2 to 4 and the consolidated draft that succeeded it). It refines the suggested waves of 5.3 for the remaining S1 streams and records how a wave is built and checked. Which wave is running, and which streams are done, is status and lives in `master-tasklist.md`. Waves are a sequence, not a schedule: no dates are given for work that has not started.
+
+### 13.1 Waves
+
+- **W3a**: STORE and OBS in two worktrees. STORE goes first because the schema and the migration directory are the shared hot spot (`app.py`, `pyproject.toml`, `uv.lock`, migrations). TEST-skel runs in the main tree beside it (decision Z1).
+- **W4a**: AUTH and STATE, two worktrees in parallel (different modules). They start only after STORE is merged.
+- **W4b**: MCP, A2A and ADMIN, one stream at a time, each branching from the previous merge (decision Z8). It starts after AUTH and STATE are merged. The proposed order is MCP, A2A, ADMIN (critical path first); the user has not confirmed it [not yet confirmed].
+- **W5a**: ID, then WAKE (sequential, same session surface).
+- **W5b**: CLAUDE and AGY in parallel (own files, no worktree). The user's live checks follow.
+- **W6**: INST, DOC, the SEC suite and the full TEST; then the opus review of SEC; then GATE.
+- **W7** (S2): DEPLOY, TS, ONBOARD, WAKE and GATE, sequential, the user on <storage-host> and the workstations.
+- **W8** (S2 and S3 build): S2-LISTEN and the per-key part of S3-LIMITS, then S3-FUZZ against the 8121 listener before the S2 gate; then S3-CARD and S3-PEER after the S2 gate. No route on <storage-host>.
+- **W7b**: GL-IMPORT beside S2 and the S3 build, in its own worktree; done before S3-GATE (D36).
+- **W9**: S3-GATE with the final verification, the user's go, S3-CF and S3-EXIT.
+- **W10**: GL-REHEARSE, the user's go, GL-APPLY and GL-RETIRE.
+- **W11**: LT-SRV and LT-ADP, on S1 exit and the user's go (D13).
+
+### 13.2 Merge rule
+
+- One pull request per stream to `main`, merged only on the user's word ("merge it"); the next wave branches from the merged `main` (decision Z2). The same rule applied to S1-PG and S1-BKP.
+- Docs updates are committed straight to `main` (user decision of 2026-11-15, no pull request for docs).
+
+### 13.3 One `Workflow` script per wave
+
+One script is reused for every wave (decision Z3; the user's choice counts as the opt-in for the `Workflow` tool). It is plain JavaScript and takes `args = {wave, streams:[{id, planSection, base}]}`. Stages per stream, with no barrier between streams:
+
+- **build** (sonnet, own worktree): reads the stream section of this plan and the interface protocols from S1-SCAF, builds, runs its own unit tests and commits on `feat/coordination-<id>`. The brief says not to touch files outside its scope.
+- **independent check** (a separate sonnet, no edit rights beyond throwaway files): re-runs the stream's acceptance list from section 4 with throwaway secrets, its own project name and port, canary scans with pattern files and a positive control. It returns structured `{criterion, pass, evidence}`.
+- **repair** (sonnet, at most 2 rounds): only for failed criteria. Still failing after 2 rounds, the stream returns `blocked` and stops; there is no silent third try.
+- **scope check**: the stream returns `{stream, branch, sha, passed, failed, filesOutsideScope}`, and a diff-scope check flags edits outside the stream's files.
+
+Decided in script code from the results, not by a model:
+
+- A stream whose `filesOutsideScope` touches another stream's module is held, not merged.
+- When STORE reports a schema change, the script marks AUTH and STATE `needsRebase` before they start.
+- The wave list shrinks to the streams whose dependencies show `passed`.
+
+### 13.4 Verification rules
+
+- After each workflow the main session reads each diff and re-runs the stream's suite and acceptance itself (as for S1-PG and S1-BKP). Agents inside the workflow do not replace that review.
+- The main session uses `jev_judge` on each diff as a weak signal, opens one pull request per stream, discloses caveats in the pull request body, and merges only on the user's word.
+- Every statement is labelled verified, reported or unverified, and a label is never upgraded without a re-run.
+
+### 13.5 Models and size
+
+- Sonnet for every build, check and repair agent; the model is passed explicitly on every call.
+- Opus only for the SEC adversarial review (3 independent skeptics, the majority refutes) and for the single final verification at GATE. Quota under 20% means ask before any opus escalation.
+- Size: the session guideline is under 5 agents per workflow. One stream is 2 to 4 agents (build, check, and repair), so two streams fit roughly and W4b with three streams (about 6 to 9 agents) does not. Decision Z8 resolves it: W4b runs one stream at a time.
+
+### 13.6 User-bound steps that cannot be automated
+
+- ADMIN: the TTY paths (`key create`, `review release`) by hand.
+- CLAUDE: live hook checks in the user's Claude sessions.
+- AGY: live checks in the user's own agy session; the A8c result decides the placement for INST and the health check. A helper never launches, drives or probes agy.
+- INST: the user runs the installer.
+- GATE: live sessions with CC and AGY.
+- S2 and S3: everything on <storage-host>, Tailscale, the tunnel route and the stage flip.
+
 [plan]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md
 [api]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md
 [spikes]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md
 [status]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md
-[golive]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md
+[golive]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md#9-go-live-migration
 [tasklist]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md
 [a6]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a6.md
 [a4]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md

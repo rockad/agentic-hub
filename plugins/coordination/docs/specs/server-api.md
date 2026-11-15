@@ -140,6 +140,7 @@ Two migration streams run at start, SDK first and ours second [design]:
 
 - SDK stream: `a2a-python` ships Alembic migrations and an `a2a-db` CLI [verified]. Covers `tasks` and the push-config table.
 - Our stream: numbered migrations plus a `coord_schema_version` row. The server refuses to start against a newer schema than it knows (pattern borrowed from Docker Agent, `t1c` section 4).
+- As built by S1-STORE (branch `feat/coordination-store`, not yet merged): both streams run in one transaction at every start, so a failure in either leaves the database as it was. The SDK stream uses the SDK's own revision files with the version table `a2a_alembic_version`, driven by our own Alembic `env.py` (the SDK's reads `DATABASE_URL`, a URL with a password in it, which `A2A_DB_URL` forbids). A fresh database gets the SDK tables from the SDK models and is stamped at head, because the SDK revisions only alter existing tables. Our steps are modules `store/migrations/mNNNN_<name>.py` with frozen DDL; `store/tables.py` is the schema at head and a test fails if the two disagree. A newer `coord_schema_version`, or an SDK revision this SDK does not know, ends the start with a one-line reason and a non-zero exit, before anything changes. Pool: SQLAlchemy defaults (5, overflow 10), what SP5b ran, plus `pool_pre_ping` [design].
 
 Our tables [design]:
 
@@ -305,6 +306,7 @@ No secrets in files. Non-secret structure (card definitions) is the only config 
 | `A2A_QUARANTINE_TTL_H` | `72` [design] | unreleased held task expires to REJECTED |
 | `A2A_WORKING_TTL_H` | `24` [design] | WORKING task of an ended session expires to FAILED |
 | `A2A_SESSION_IDLE_TTL_H` | `12` [design] | session with no authenticated call is marked ended |
+| `A2A_RETAIN_DAYS` | `30` [design] | terminal tasks are purged this many days after their last status change by the retention job (1.3); remote `REJECTED` tasks go after 24 h, a fixed rule; `audit` is never pruned. Added to this table by S1-STORE: 1.3 and the plan already named the variable |
 | `A2A_MAX_BODY_BYTES` | `65536` [design] | request body cap |
 | `A2A_MAX_WAIT_S` | `50` [verified fit, SP2 C8 and A7; was `240`] | cap for the MCP tool `a2a_wait` (local sessions only); Claude Code's per-call limit is 60 s and agy's is 180 s (4.5) |
 | `A2A_SEND_BLOCK_MAX_S` | `60` [D22] | cap for a blocking `SendMessage` on `/a2a/v1`; below Cloudflare's reported ~100 s timeout. Not raised above 60 without the user |

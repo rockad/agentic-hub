@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { modelTierRank, rankToTierName } from '../src/core/governance.js';
-import { readRegularFile } from '../claude/safe-read.js';
+import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -266,22 +266,29 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
  * answer line, or a content with no `A<n>:` line that is more than one line.
  */
 /**
- * Cap on the transcript file size read by PostToolUse for ask_question. Transcripts larger than this
- * return null without reading or splitting the entire file.
+ * Tail window size for reading transcripts in PostToolUse for ask_question.
+ * Transcripts larger than this have only their last N bytes read.
  */
-export const MAX_TRANSCRIPT_READ_BYTES = 1024 * 1024; // 1 MB
+export const TRANSCRIPT_TAIL_WINDOW_BYTES = 1024 * 1024; // 1 MB
+export const MAX_TRANSCRIPT_READ_BYTES = TRANSCRIPT_TAIL_WINDOW_BYTES;
 
 export function extractAskAnswer(
   input: AntigravityHookInput | undefined,
   questionIndex = 0,
-  maxBytes = MAX_TRANSCRIPT_READ_BYTES
+  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES
 ): string | null {
   let content = input?.content;
   if ((!content || typeof content !== 'string') && input?.transcriptPath && typeof input?.stepIdx === 'number') {
     try {
-      const read = readRegularFile(input.transcriptPath, maxBytes);
+      const read = readRegularFileTail(input.transcriptPath, maxBytes);
       if (read.kind === 'ok') {
-        const lines = read.text.trim().split(/\r?\n/);
+        let text = read.text;
+        // Drop the first partial line when the window does not start at byte 0
+        if (read.truncated) {
+          const firstNewline = text.indexOf('\n');
+          text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+        }
+        const lines = text.trim().split(/\r?\n/);
         let matchCount = 0;
         let matchedStep: Record<string, unknown> | null = null;
         for (const line of lines) {
@@ -293,7 +300,7 @@ export function extractAskAnswer(
               matchedStep = step as Record<string, unknown>;
             }
           } catch {
-            // ignore unparseable line
+            // ignore unparseable or partial line
           }
         }
         // Right step & fail closed:

@@ -351,20 +351,40 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     }
   });
 
-  it('handles a transcript larger than the cap in PostToolUse without recording an approval', () => {
-    const largeFile = path.join(home, 'large_transcript.jsonl');
-    // Write 1.5MB of padding before the target step (exceeds 1MB cap)
+  it('handles a transcript larger than the window (1.5 MB) with answer at the end: records approval in PostToolUse and subsequent pre-tool-use allows', () => {
+    const largeFile = path.join(home, 'large_transcript_end.jsonl');
+    // Write 1.5MB of padding before the target step (exceeds 1MB window)
     const padding = '{"step_index":0,"type":"GENERIC","content":"padding"}\n'.repeat(30_000);
     const line = '{"step_index":1,"type":"GENERIC","content":"A1: Yes, once"}\n';
     fs.writeFileSync(largeFile, padding + line);
 
-    expect(pre('c-cap-proc').decision).toBe('deny');
-    const post = run('post-tool-use', answered('c-cap-proc', undefined, {
+    expect(pre('c-tail-proc').decision).toBe('deny');
+    const post = run('post-tool-use', answered('c-tail-proc', undefined, {
       transcriptPath: largeFile,
       stepIdx: 1
     }));
     expect(post.exitCode).toBe(0);
     expect(post.stdout.toString().trim()).toBe('{}');
-    expect(approvalsOf('c-cap-proc')).toEqual([]);
+    expect(approvalsOf('c-tail-proc')).toMatchObject([{ model: 'pro', scope: 'once' }]);
+    expect(pre('c-tail-proc').decision).toBe('allow');
+  });
+
+  it('handles a transcript larger than the window with answer outside the tail window: records nothing and pre-tool-use stays denied', () => {
+    const largeFile = path.join(home, 'large_transcript_outside.jsonl');
+    // Target step is at the very beginning
+    const targetLine = '{"step_index":1,"type":"GENERIC","content":"A1: Yes, once"}\n';
+    // 1.5 MB of padding after the target step, pushing it outside the 1 MB window
+    const padding = '{"step_index":0,"type":"GENERIC","content":"padding"}\n'.repeat(30_000);
+    fs.writeFileSync(largeFile, targetLine + padding);
+
+    expect(pre('c-outside-proc').decision).toBe('deny');
+    const post = run('post-tool-use', answered('c-outside-proc', undefined, {
+      transcriptPath: largeFile,
+      stepIdx: 1
+    }));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(approvalsOf('c-outside-proc')).toEqual([]);
+    expect(pre('c-outside-proc').decision).toBe('deny');
   });
 });

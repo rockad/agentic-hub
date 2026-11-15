@@ -195,12 +195,16 @@ describe('jev_batch_dispatch on Claude Code (5.4, 5.11)', () => {
   });
 });
 
-describe('Antigravity and OpenCode are unchanged (5.11)', () => {
-  it.each(['antigravity', 'opencode', 'cli'])('%s batch keeps invoke_subagent, the keyword tier and no Claude fields', (harness) => {
+describe('Antigravity and OpenCode: legacy items unchanged, stage rubric and edit safety per item (5.11, WS1)', () => {
+  const HARNESSES = ['antigravity', 'opencode', 'cli'];
+  const FREE_GUIDANCE =
+    'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).';
+
+  it.each(HARNESSES)('%s legacy items keep invoke_subagent, the keyword tier and none of kind, needsEdit, tierSource', (harness) => {
     const args = {
       availableSubagents: ['Plan', 'self'],
       tasks: [
-        { id: 'a', task: 'Scaffold the notes', kind: 'judgement', needsEdit: true },
+        { id: 'a', task: 'Scaffold the notes' },
         { id: 'b', task: 'Tidy the rest' }
       ]
     };
@@ -209,13 +213,116 @@ describe('Antigravity and OpenCode are unchanged (5.11)', () => {
 
     const [a, b] = plan.tasks;
     expect([a.tier, a.executionTool]).toEqual(['openrouter_free', 'jev_execute_free']);
-    expect(a.executionGuidance).toBe(
-      'CRITICAL QUOTA RULE: Free-tier eligible. Do NOT call invoke_subagent. Execute directly via jev_execute_free or jev_agent_free at $0.00 cost (0 Gemini quota).'
-    );
+    expect(a.executionGuidance).toBe(FREE_GUIDANCE);
     expect([b.tier, b.executionTool]).toEqual(['flash', 'invoke_subagent']);
     expect(b.executionGuidance).toBe(`Delegate to subagent via invoke_subagent(Role: "${b.subagent}", Model: "${b.concreteModel}").`);
     for (const t of plan.tasks) expect(['kind', 'needsEdit', 'tierSource'].filter((k) => k in t)).toEqual([]);
     expect(plan.activeSessionModel).toBe('unknown');
+  });
+
+  it.each(HARNESSES)('%s honours the stage rubric and edit safety for kind and needsEdit', (harness) => {
+    const args = {
+      availableSubagents: ['Plan', 'self'],
+      tasks: [{ id: 'a', task: 'Scaffold the notes', kind: 'judgement', needsEdit: true }]
+    };
+
+    const plan = runTool(harness, { tool: 'batch', args, answers: { sa_a: 'Plan' } }, claudeEnv());
+
+    const [a] = plan.tasks;
+    // STAGE_RUBRIC.judgement is pro; the keyword rule would have said openrouter_free (scaffolding).
+    expect([a.tier, a.tierSource, a.kind, a.needsEdit]).toEqual(['pro', 'kind', 'judgement', true]);
+    expect([a.executionTool, a.requiresUserApproval]).toEqual(['invoke_subagent', true]);
+    expect(a.subagent).toBe('self');
+    expect(a.executionGuidance).not.toContain('read-only');
+    expect(plan.requiresUserApproval).toBe(true);
+  });
+
+  it.each(HARNESSES)('%s keeps an editing stage off the free tier, also from the wording alone', (harness) => {
+    const task = 'Scaffold the boilerplate files and update the README';
+    const args = { tasks: [{ id: 'a', task }, { id: 'b', task, needsEdit: true }, { id: 'c', task, needsEdit: false }] };
+
+    const plan = runTool(harness, { tool: 'batch', args, offline: true }, claudeEnv());
+
+    expect(plan.tasks.map((t: any) => t.tier)).toEqual(['flash_lite', 'flash_lite', 'openrouter_free']);
+    expect(plan.tasks[2].executionTool).toBe('jev_execute_free');
+    // Only an item that supplied needsEdit reports the rubric fields; the wording-only one stays legacy.
+    expect(plan.tasks.map((t: any) => ['kind' in t, 'needsEdit' in t, 'tierSource' in t])).toEqual([
+      [false, false, false],
+      [false, true, true],
+      [false, true, true]
+    ]);
+    expect(plan.tasks.map((t: any) => t.tierSource)).toEqual([undefined, 'keyword', 'keyword']);
+  });
+
+  it.each([
+    ['research', 'code-engineer', ['research', 'code-engineer', 'self']],
+    ['knowledge-researcher', 'Code Engineer', ['knowledge-researcher', 'Code Engineer', 'self']],
+    ['Knowledge Researcher', 'Code Engineer', ['Knowledge Researcher', 'Code Engineer', 'self']],
+    ['Explore', 'self', ['Explore', 'self']],
+    ['Plan', 'self', ['Plan']]
+  ])('swaps the read-only %s for %s on an editing stage (kebab-case and display names)', (readOnly, expected, available) => {
+    const args = { availableSubagents: available, tasks: [{ id: 'a', task: 'Rewrite the plan document' }] };
+
+    const plan = runTool('antigravity', { tool: 'batch', args, answers: { sa_a: readOnly } });
+
+    expect(plan.tasks[0].subagent).toBe(expected);
+    expect('tierSource' in plan.tasks[0]).toBe(false);
+  });
+
+  it('keeps a read-only persona on a stage that does not edit', () => {
+    const args = {
+      availableSubagents: ['research', 'code-engineer'],
+      tasks: [
+        { id: 'a', task: 'Outline the approach, no edits', needsEdit: false },
+        { id: 'b', task: 'Summarise the findings' }
+      ]
+    };
+
+    const plan = runTool('opencode', { tool: 'batch', args, answers: { sa_a: 'research', sa_b: 'research' } });
+
+    expect(plan.tasks.map((t: any) => t.subagent)).toEqual(['research', 'research']);
+  });
+
+  it('a mixed batch reports the rubric fields only on items that supply kind or needsEdit', () => {
+    const args = {
+      availableSubagents: ['self'],
+      tasks: [
+        { id: 'legacy', task: 'Tidy the rest' },
+        { id: 'kind', task: 'Fold the decisions into the spec', kind: 'settled-edit' },
+        { id: 'edit', task: 'Tick the boxes', needsEdit: true },
+        { id: 'judge', task: 'Decide the reversal', kind: 'judgement', needsEdit: false }
+      ]
+    };
+
+    const plan = runTool('antigravity', { tool: 'batch', args, offline: true });
+
+    const by = Object.fromEntries(plan.tasks.map((t: any) => [t.taskId, t]));
+    expect(['kind', 'needsEdit', 'tierSource'].filter((k) => k in by.legacy)).toEqual([]);
+    expect([by.kind.kind, 'needsEdit' in by.kind, by.kind.tierSource, by.kind.tier]).toEqual(['settled-edit', false, 'kind', 'flash']);
+    expect([('kind' in by.edit), by.edit.needsEdit, by.edit.tierSource]).toEqual([false, true, 'keyword']);
+    expect([by.judge.kind, by.judge.needsEdit, by.judge.tierSource, by.judge.tier, by.judge.requiresUserApproval]).toEqual(['judgement', false, 'kind', 'pro', true]);
+    expect([by.legacy.requiresUserApproval, by.kind.requiresUserApproval, by.edit.requiresUserApproval]).toEqual([false, false, false]);
+  });
+
+  it('a judgement stage is exempt from the session-model ceiling, a keyword-pro stage is not', () => {
+    fs.mkdirSync(path.join(tmp, '.gemini', 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, '.gemini', 'antigravity-cli', 'quota-state.json'),
+      JSON.stringify({ schema: 2, buckets: {}, active_model: 'flash', updated_at: Math.floor(Date.now() / 1000) })
+    );
+    const args = {
+      availableSubagents: ['self'],
+      tasks: [
+        { id: 'a', task: 'Decide the reversal', kind: 'judgement' },
+        { id: 'b', task: 'Fold the decisions into the spec', kind: 'settled-edit' },
+        { id: 'c', task: 'Architecture overhaul of the schema' }
+      ]
+    };
+
+    const plan = runTool('antigravity', { tool: 'batch', args, offline: true });
+
+    expect(plan.tasks.map((t: any) => t.tier)).toEqual(['pro', 'flash', 'flash']);
+    expect(plan.activeSessionModel).toBe('flash');
   });
 
   it.each(['antigravity', 'opencode', 'cli'])('%s single dispatch keeps invoke_subagent and has no Claude session field', (harness) => {
@@ -324,7 +431,7 @@ describe('a read-only persona kept for an edit outside Claude Code (review fix)'
     expect(edit.executionGuidance).not.toContain('read-only');
   });
 
-  it('jev_batch_dispatch on Antigravity: only the edit stage on a read-only persona carries the line', () => {
+  it('jev_batch_dispatch on Antigravity: the edit stage is moved off the read-only persona, so no stage carries the line', () => {
     const args = {
       availableSubagents: ['Explore'],
       tasks: [
@@ -336,8 +443,8 @@ describe('a read-only persona kept for an edit outside Claude Code (review fix)'
     const plan = runTool('antigravity', { tool: 'batch', args, answers: { sa_a: 'Explore', sa_b: 'Explore' } });
 
     const [a, b] = plan.tasks;
-    expect([a.subagent, b.subagent]).toEqual(['Explore', 'Explore']);
-    expect(a.executionGuidance).toContain(NOTE);
+    expect([a.subagent, b.subagent]).toEqual(['self', 'Explore']);
+    expect(a.executionGuidance).not.toContain(NOTE);
     expect(b.executionGuidance).not.toContain(NOTE);
   });
 });

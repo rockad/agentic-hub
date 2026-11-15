@@ -81,12 +81,19 @@ describe('jev_batch_dispatch output with the new fields absent', () => {
     'dependencies', 'canRunParallel', 'scaffoldFirst', 'boilerplateType', 'effort', 'requiresUserApproval', 'estimatedCostUsd'
   ];
 
-  it.each(['antigravity', 'opencode', 'cli'])('%s tasks keep exactly the 2.3.x keys, even when kind and needsEdit are sent', (harness) => {
-    const tasks = [{ id: 'a', task: 'Tidy the notes' }, { id: 'b', task: 'Tidy the rest', kind: 'judgement', needsEdit: true }];
+  it.each(['antigravity', 'opencode', 'cli'])('%s tasks keep exactly the 2.3.x keys unless the item sends kind or needsEdit', (harness) => {
+    const tasks = [
+      { id: 'a', task: 'Tidy the notes' },
+      { id: 'b', task: 'Tidy the rest', kind: 'judgement', needsEdit: true },
+      { id: 'c', task: 'Tidy the lot', needsEdit: false }
+    ];
 
     const plan = run(harness, { tool: 'batch', args: { tasks }, offline: true });
 
-    for (const t of plan.tasks) expect(Object.keys(t)).toEqual(KEYS);
+    const [a, b, c] = plan.tasks;
+    expect(Object.keys(a)).toEqual(KEYS);
+    expect(Object.keys(b)).toEqual([...KEYS, 'kind', 'needsEdit', 'tierSource']);
+    expect(Object.keys(c)).toEqual([...KEYS, 'needsEdit', 'tierSource']);
   });
 
   it('claude-code adds kind and needsEdit to a task only when the caller sent them', () => {

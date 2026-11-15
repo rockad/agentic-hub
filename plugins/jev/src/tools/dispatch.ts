@@ -60,13 +60,13 @@ export const batchDispatchInputSchema = strictObject({
           .enum(['mechanical', 'settled-edit', 'judgement'])
           .optional()
           .describe(
-            "Optional, Claude Code only: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives haiku, settled-edit (spec or plan edit with a decision already made) gives sonnet, judgement (an error is expensive) gives opus"
+            "Optional: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives flash_lite (haiku on Claude Code), settled-edit (spec or plan edit with a decision already made) gives flash (sonnet), judgement (an error is expensive) gives pro (opus). On Antigravity and OpenCode the tier, kind and tierSource are reported for an item only when it supplies kind or needsEdit"
           ),
         needsEdit: z
           .boolean()
           .optional()
           .describe(
-            'Optional, Claude Code only: the stage edits files, so read-only subagent types (Plan, Explore) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
+            'Optional: the stage edits files, so read-only personas (Plan, Explore, research, knowledge-researcher) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
           )
       })
     )
@@ -82,7 +82,7 @@ export const dispatchToolDefinition: Tool = {
 
 export const batchDispatchToolDefinition: Tool = {
   name: 'jev_batch_dispatch',
-  description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags. On Claude Code, classify each task with kind (mechanical, settled-edit, judgement) and needsEdit to get the model per stage (haiku, sonnet, opus), Agent() guidance and no read-only persona or free tier for an edit stage.',
+  description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags. On every harness a task that edits files gets no read-only persona and no free tier; classify a task with kind (mechanical, settled-edit, judgement) and needsEdit to get the tier per stage (flash_lite, flash, pro; haiku, sonnet, opus on Claude Code), plus Agent() guidance on Claude Code.',
   inputSchema: inputJsonSchema(batchDispatchInputSchema)
 };
 
@@ -271,6 +271,37 @@ export function telemetryHarness(): { harness?: 'claude-code' } {
 export function resolveEditCapableSubagent(harness: JevHarness, subagent: string, taskText: string): string {
   if (harness !== 'claude-code') return subagent;
   return editCapableSubagent(subagent, taskText, 'general-purpose');
+}
+
+/**
+ * Personas that cannot edit files outside Claude Code: the Claude Code read-only types plus the workspace
+ * research personas. Compared on a normalised name, so `knowledge-researcher`, `Knowledge Researcher` and
+ * `knowledge_researcher` are one persona. Claude Code keeps its own, narrower set (isReadOnlySubagent).
+ */
+const READ_ONLY_PERSONAS: ReadonlySet<string> = new Set(['research', 'knowledge-researcher', 'plan', 'explore']);
+
+/** Edit-capable personas to swap in, in priority order, as normalised names (kebab-case and display names alike). */
+const EDIT_CAPABLE_PERSONAS: readonly string[] = ['code-engineer', 'self'];
+
+const normalisePersona = (name: string): string => (name || '').trim().toLowerCase().replace(/[\s_-]+/g, '-');
+
+/** Whether a persona is read-only for batch edit safety on Antigravity and OpenCode. */
+export function isReadOnlyPersona(name: string): boolean {
+  return READ_ONLY_PERSONAS.has(normalisePersona(name));
+}
+
+/**
+ * Outside Claude Code: the persona that carries an editing task. A read-only persona is replaced by the first
+ * edit-capable workspace persona in priority order (code-engineer, Code Engineer, then self); any other persona
+ * is returned as given. `self` is always available, so the replacement never fails.
+ */
+export function resolveEditCapablePersona(subagent: string, workspaceAgents: Record<string, string>): string {
+  if (!isReadOnlyPersona(subagent)) return subagent;
+  for (const wanted of EDIT_CAPABLE_PERSONAS) {
+    const found = Object.keys(workspaceAgents).find((name) => normalisePersona(name) === wanted);
+    if (found) return found;
+  }
+  return 'self';
 }
 
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
@@ -557,6 +588,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   // Candidate subagents for a task. On Claude Code a stage that edits files never gets a read-only type
   // (Plan, Explore); the caller's `needsEdit` wins when given, otherwise the wording decides (editsFiles).
+  // Elsewhere the candidates are unchanged and a read-only pick is swapped afterwards (resolveEditCapablePersona).
   const candidatesFor = (item: { needsEdit?: unknown; task?: string }): Record<string, string> => {
     if (!isClaude || !editsFiles(item)) return workspaceAgents;
     const editable = Object.fromEntries(Object.entries(workspaceAgents).filter(([name]) => !isReadOnlySubagent(name)));
@@ -625,33 +657,38 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const scaffolding = detectScaffoldingTask(taskText);
 
     const kind = isStageKind(item.kind) ? item.kind : undefined;
+    const edits = editsFiles(item);
+    // The stage rubric is active for an item that says what it is (kind) or whether it edits (needsEdit). On
+    // Claude Code every item is rubric-evaluated; elsewhere an item supplying neither keeps the legacy keyword tier
+    // and reports none of kind, needsEdit and tierSource.
+    const rubricItem = isClaude || kind !== undefined || typeof item.needsEdit === 'boolean';
     let subagent = subagentAssignments[item.id] || 'self';
     let rawTier: string;
     let tierSource: SubTask['tierSource'];
-    if (isClaude) {
-      // A read-only type cannot carry out an edit stage, whatever routed it there.
-      if (editsFiles(item) && isReadOnlySubagent(subagent)) subagent = 'general-purpose';
-      // The caller's classification first, then the router's answer under the stage rubric, then whole words.
-      if (kind) {
-        rawTier = STAGE_RUBRIC[kind].tier;
-        tierSource = 'kind';
-      } else if (routerTiers[item.id]) {
-        rawTier = routerTiers[item.id];
-        tierSource = 'router';
-      } else {
-        rawTier = classifyBatchTier(taskText);
-        tierSource = 'keyword';
-      }
-      // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
-      rawTier = keepEditsOffFreeTier(rawTier, editsFiles(item));
+    // A read-only persona cannot carry out an edit stage, whatever routed it there (every harness).
+    if (edits) {
+      subagent = isClaude
+        ? isReadOnlySubagent(subagent) ? 'general-purpose' : subagent
+        : resolveEditCapablePersona(subagent, workspaceAgents);
+    }
+    // The caller's classification first, then (Claude Code) the router's answer under the stage rubric, then whole words.
+    if (kind) {
+      rawTier = STAGE_RUBRIC[kind].tier;
+      tierSource = 'kind';
+    } else if (isClaude && routerTiers[item.id]) {
+      rawTier = routerTiers[item.id];
+      tierSource = 'router';
     } else {
-      subagent = resolveEditCapableSubagent(activeHarness, subagent, taskText);
       rawTier = classifyBatchTier(taskText);
+      tierSource = 'keyword';
     }
 
+    // A judgement stage is exempt from the session-model ceiling (its pro tier is the point); the quota step that
+    // follows the ceiling is a separate stage. On Claude Code no ceiling model is read here, so this changes nothing.
     const ceilingModel = ceilingModelForHarness(activeHarness, quotaView.active_model);
-    const clamped = clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
-    const tier = clamped.clampedTier;
+    const clamped = kind === 'judgement' ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
+    // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
+    const tier = keepEditsOffFreeTier(clamped.clampedTier, edits);
     const cognitiveTier = normalizeTier(tier);
     const harnessModels = getHarnessModels();
     const concreteModel = harnessModels[cognitiveTier] || tier;
@@ -692,8 +729,9 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
       effort: taskEffort,
       requiresUserApproval: requiresApproval,
       estimatedCostUsd: taskCost,
-      // Claude Code only: the caller's own fields echoed when given, and what set the tier.
-      ...(isClaude ? { ...(kind ? { kind } : {}), ...(typeof item.needsEdit === 'boolean' ? { needsEdit: item.needsEdit } : {}), tierSource } : {})
+      // Rubric-evaluated items only (all on Claude Code; elsewhere those with kind or needsEdit): the caller's own
+      // fields echoed when given, and what set the tier.
+      ...(rubricItem ? { ...(kind ? { kind } : {}), ...(typeof item.needsEdit === 'boolean' ? { needsEdit: item.needsEdit } : {}), tierSource } : {})
     });
   }
 

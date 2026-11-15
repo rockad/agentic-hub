@@ -1,9 +1,14 @@
-"""Minimal database connection for S1-PG: prove at start-up that Postgres answers.
+"""Database connection parameters and the start-up check.
 
-S1-STORE replaces the use of this module with its own engine. What stays is the rule it
-enforces (spec 1.2, 1.5): `A2A_DB_URL` carries no password; the password is read from the file
-`A2A_DB_PASSWORD_FILE` and handed to the driver as a connect argument. It is never put into a
-URL string, a log line or an exception message.
+S1-PG added the check that Postgres answers. S1-STORE keeps this module as the one place that
+turns `A2A_DB_URL` plus `A2A_DB_PASSWORD_FILE` into connection arguments (`engine.py` builds the
+engine from them) and extends `check_database`: once the database answers, both migration streams
+are brought to head, and a schema newer than this code knows ends the process with a one-line
+reason. `app.main` already calls `check_database`, so the server does this at every start.
+
+The rule this module enforces (spec 1.2, 1.5): `A2A_DB_URL` carries no password; the password is
+read from the file `A2A_DB_PASSWORD_FILE` and handed to the driver as a connect argument. It is
+never put into a URL string, a log line or an exception message.
 """
 
 from __future__ import annotations
@@ -146,10 +151,29 @@ def _describe(exc: BaseException, password: str) -> str:
     return text.replace(password, "***") if password else text
 
 
+async def _migrate(params: ConnectParams) -> None:
+    # Imported here: the SDK models and Alembic are heavy, and `schema` imports this module.
+    from coordination.store import schema
+    from coordination.store.engine import make_engine_from_params
+
+    engine = make_engine_from_params(params)
+    try:
+        await schema.migrate_all(engine)
+    finally:
+        await engine.dispose()
+
+
 def check_database(config: Config, *, attempts: int = 10, delay_s: float = 2.0) -> None:
-    """Start-up check. Exits non-zero with a clear message if the database cannot be reached."""
+    """Start-up check. Exits non-zero with a one-line reason if the database cannot be used.
+
+    Waits for the database to answer, then brings both migration streams to head (the SDK's
+    first, ours second). A schema newer than this code knows, or a failed migration, exits too.
+    """
+    from coordination.store.migrations import MigrationError, SchemaTooNew
+
     try:
         params = params_from_config(config)
         asyncio.run(wait_for_database(params, attempts=attempts, delay_s=delay_s))
-    except (DbConfigError, DatabaseUnavailable) as exc:
+        asyncio.run(_migrate(params))
+    except (DbConfigError, DatabaseUnavailable, SchemaTooNew, MigrationError) as exc:
         raise SystemExit(f"coordination: {exc}") from None

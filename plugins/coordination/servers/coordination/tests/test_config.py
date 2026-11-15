@@ -11,7 +11,7 @@ SPEC_VARS = {
     "A2A_ALLOWED_ORIGINS", "A2A_TRUSTED_PROXY_IPS", "A2A_CARDS_FILE", "A2A_KEY_PEPPER",
     "A2A_WAKE_ROUND_S", "A2A_WAKE_BUDGET_PER_H", "A2A_REOFFER_AFTER_S", "A2A_REOFFER_MAX",
     "A2A_SUBMITTED_TTL_H", "A2A_QUARANTINE_TTL_H", "A2A_WORKING_TTL_H",
-    "A2A_SESSION_IDLE_TTL_H", "A2A_MAX_BODY_BYTES", "A2A_MAX_WAIT_S", "A2A_SEND_BLOCK_MAX_S",
+    "A2A_SESSION_IDLE_TTL_H", "A2A_RETAIN_DAYS", "A2A_MAX_BODY_BYTES", "A2A_MAX_WAIT_S", "A2A_SEND_BLOCK_MAX_S",
     "A2A_PUSH_ENABLED", "A2A_PUSH_ALLOW_HOSTS", "A2A_PUSH_ENC_KEY", "A2A_STATUS_ENABLED",
     "A2A_ENFORCE_TAILNET_IDENTITY", "A2A_ADMIN_SOCKET", "A2A_LOG_LEVEL",
 }
@@ -40,6 +40,7 @@ def test_defaults_with_empty_environment():
     assert (c.reoffer_after_s, c.reoffer_max) == (600, 5)
     assert (c.submitted_ttl_h, c.quarantine_ttl_h, c.working_ttl_h) == (168, 72, 24)
     assert c.session_idle_ttl_h == 12
+    assert c.retain_days == 30
     assert c.max_body_bytes == 65536
     assert (c.max_wait_s, c.send_block_max_s) == (50, 60)
     assert c.push_enabled is False and c.push_allow_hosts == ()
@@ -62,7 +63,7 @@ def test_every_variable_is_applied():
         "A2A_CARDS_FILE": "/c.yaml", "A2A_KEY_PEPPER": "pepper",
         "A2A_WAKE_ROUND_S": "1", "A2A_WAKE_BUDGET_PER_H": "2", "A2A_REOFFER_AFTER_S": "3",
         "A2A_REOFFER_MAX": "4", "A2A_SUBMITTED_TTL_H": "5", "A2A_QUARANTINE_TTL_H": "6",
-        "A2A_WORKING_TTL_H": "7", "A2A_SESSION_IDLE_TTL_H": "8", "A2A_MAX_BODY_BYTES": "9",
+        "A2A_WORKING_TTL_H": "7", "A2A_SESSION_IDLE_TTL_H": "8", "A2A_RETAIN_DAYS": "12", "A2A_MAX_BODY_BYTES": "9",
         "A2A_MAX_WAIT_S": "10", "A2A_SEND_BLOCK_MAX_S": "11", "A2A_PUSH_ENABLED": "1",
         "A2A_PUSH_ALLOW_HOSTS": "x.example,y.example", "A2A_PUSH_ENC_KEY": "fernet",
         "A2A_STATUS_ENABLED": "1", "A2A_ENFORCE_TAILNET_IDENTITY": "0",
@@ -80,6 +81,7 @@ def test_every_variable_is_applied():
     assert c.cards_file == "/c.yaml" and c.key_pepper == "pepper"
     assert (c.wake_round_s, c.wake_budget_per_h, c.reoffer_after_s, c.reoffer_max) == (1, 2, 3, 4)
     assert (c.submitted_ttl_h, c.quarantine_ttl_h, c.working_ttl_h, c.session_idle_ttl_h) == (5, 6, 7, 8)
+    assert c.retain_days == 12
     assert (c.max_body_bytes, c.max_wait_s, c.send_block_max_s) == (9, 10, 11)
     assert c.push_enabled is True and c.push_allow_hosts == ("x.example", "y.example")
     assert c.push_enc_key == "fernet" and c.status_enabled is True
@@ -94,7 +96,7 @@ def test_tailnet_identity_default_follows_stage():
 
 
 def test_other_variables_are_ignored():
-    c = Config.from_env({"A2A_UNKNOWN": "x", "COMPOSE_PROFILES": "backup", "A2A_RETAIN_DAYS": "1"})
+    c = Config.from_env({"A2A_UNKNOWN": "x", "COMPOSE_PROFILES": "backup", "A2A_RETAIN": "1"})
     assert c == Config.from_env({})
 
 
@@ -102,6 +104,7 @@ def test_other_variables_are_ignored():
     "name,value",
     [
         ("A2A_PORT", "eighty"),
+        ("A2A_RETAIN_DAYS", "thirty"),
         ("A2A_ALLOW_WRITES", "yes"),
         ("A2A_ENV", "prod"),
         ("A2A_EXPOSURE_STAGE", "s4"),

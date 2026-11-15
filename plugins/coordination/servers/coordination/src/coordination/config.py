@@ -86,6 +86,7 @@ class Config:
     quarantine_ttl_h: int = 72
     working_ttl_h: int = 24
     session_idle_ttl_h: int = 12
+    retain_days: int = 30  # A2A_RETAIN_DAYS: terminal tasks are purged after this (spec 1.3)
     max_body_bytes: int = 65536
     max_wait_s: int = 50
     send_block_max_s: int = 60
@@ -148,6 +149,7 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
     "quarantine_ttl_h": ("A2A_QUARANTINE_TTL_H", _int),
     "working_ttl_h": ("A2A_WORKING_TTL_H", _int),
     "session_idle_ttl_h": ("A2A_SESSION_IDLE_TTL_H", _int),
+    "retain_days": ("A2A_RETAIN_DAYS", _int),
     "max_body_bytes": ("A2A_MAX_BODY_BYTES", _int),
     "max_wait_s": ("A2A_MAX_WAIT_S", _int),
     "send_block_max_s": ("A2A_SEND_BLOCK_MAX_S", _int),

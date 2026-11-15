@@ -1,6 +1,6 @@
 # Jev consolidated plan (2026-11-12)
 
-Living document; the latest status is in section 31 (sections 24 and 28 are earlier snapshots). Sources:
+Living document; the latest status is in section 32 (earlier sections hold prior snapshots). Sources:
 
 - `plugins/jev/docs/case-studies/2026-11-09-model-tier-for-multi-stream-workflow.md` (case 1, on `main`)
 - `plugins/jev/docs/case-studies/2026-11-11-pretooluse-dialog-on-pinned-model.md` (case 2, on PR #33)
@@ -601,6 +601,39 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 
 **Open items:**
 
-- #58: the transcript read in `extractAskAnswer` (`antigravity/logic.ts`) uses `existsSync` then `readFileSync` on a path taken from the hook's stdin: a FIFO or other non-regular file hangs the hook (the #51 class), and every `ask_question` PostToolUse reads the whole transcript. Wanted: stat first and require a regular file, non-blocking open, bounded read from the end of the file (or the step offset), tests with a FIFO and a large transcript; also check that the matched step really is the `ask_question` result of `toolCall.id`, not any step with that index. Comment posted on #58.
-- Merge #58, #54, #55 after Doc-Cr; then `git switch main && git pull` in the main checkout (detached on the 2.3.12 tip so the installed plugin runs the stack) and delete the worktrees.
-- Not verified: the live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; name matching and plugin manifest semantics against a real Claude Code; the model a Workflow agent actually ran on is never logged (no hook sees it).
+- The live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
+- The model a Workflow agent actually ran on is never logged (no hook sees it).
+
+---
+
+## 32. 2026-11-15 snapshot: Orchestrator integration, PR queue & issue audit
+
+See [2026-11-15-jev-orchestrator-augmentation-plan.md](./2026-11-15-jev-orchestrator-augmentation-plan.md) for the complete architecture, clarified decisions (forks 1–7), and WS0–WS5 engineering specifications (`v2.3.16`–`v2.3.17`).
+
+**Current repository & PR state (verified 2026-11-15 against `origin/main` `291b88e`):**
+
+- `plugins/jev` on `main` declares `2.3.12` in `package.json` and `.claude-plugin/plugin.json`.
+- PR `#58` (`feat/jev-antigravity-hook`) merged to `main` on `2026-11-15T09:10:15Z` at `5ce432b86222b12d49af3f63ca904321656b3437`.
+- PR `#54` (`feat/jev-tool-validation`, `v2.3.14`, head `2fb323f4bd45af9101fe882767cfd798c6c35114`) is open targeting `main`, `MERGEABLE`, CI `Run Test Suites` `SUCCESS`.
+- PR `#55` (`feat/jev-agent-guard-parity`, `v2.3.15`, head `b27937b390b85c076f732cf358e3d7d71451d3c0`) is open targeting `feat/jev-tool-validation`, `MERGEABLE`, CI `Run Test Suites` `SUCCESS`.
+- PR `#10` (`fix/jev-small-tails`) is `CLOSED`, with remote branch `refs/heads/fix/jev-small-tails` still on `origin` at `d4d89186f33e604ddd09e638772fa65c1b49af10`. Verified superseded by `main` and recorded here ahead of Issue `#27` branch deletion in WS0.
+- Local `.claude/worktrees/` still holds `ag-hook`, `guard-parity`, `jev-install`, and `validation`, queued for pruning in WS0 once `#54` and `#55` merge.
+
+**Summary of verified bugs & gaps addressed by the augmentation plan:**
+
+- **Orchestrator quota & subagent ceiling misclassification (`plugins/jev/src/core/governance.ts`, `antigravity/hook.ts`):** `gemini-pro-orchestrator-g1-pro` misses `/argon/i` in `readQuotaView()`, is shadowed by stale `quota-state.json` `active_model`, and receives `modelTierRank === 3` (`pro`), allowing Orchestrator's execution turn to bypass `[jev-elevate:pro]`. WS1–WS2 map Orchestrator/Argon to `gemini-argon-wtu-weekly`, set `subagentCeilingRank` to `2` (`flash`), and prefer live `input.modelName`.
+- **Companion workspace hook drift (`doppelganger/.agents/hooks/jev-pre-tool.sh`, `.agents/hooks.json`):** Legacy script inspects `.Subagents[]` only, emits `{"decision":"allow"}` instead of empty stdout, misses `write_file`/`edit_file` (`.Path`), and ignores `.harnesses.antigravity.mode`. WS4 consolidates `invoke_subagent` checks into `plugins/jev` and updates `jev-pre-tool.sh` with a 6-file Orchestrator write guard (`3` files standard).
+- **Preflight telemetry snippet leak (`doppelganger/scripts/jev-preflight.ts:348`):** Still logs `cleanTask.slice(0, 120)` instead of `taskFingerprint()` (`taskLen` + `taskHash`). Fixed in WS4 alongside phase-aware Orchestrator Planner/Executor directives.
+- **Claude-only batch stage rubric (`plugins/jev/src/tools/dispatch.ts`):** `kind`, `needsEdit`, `keepEditsOffFreeTier`, and read-only persona swaps are gated behind `if (isClaude)`. WS1 enables them additively across harnesses while preserving unchanged output when omitted.
+- **Antigravity parity gaps (`plugins/jev/antigravity/`, `hooks.json`):** WS2 Part B adds `[jev-downgrade:flash_lite]` (`ask` / `auto` / `off`), and WS3 adds a fail-closed Python static analyzer (`workflow-guard.ts`) on `PreToolUse`/`PostToolUse` for `run_workflow`.
+
+**Related repository issues (`rockad/agentic-hub`, verified 2026-11-15):**
+
+- Issues `#13` and `#23` inform cross-harness edit-capable persona fallback (`code-engineer` / `Code Engineer` / `self`) and write tool coverage (`write_file` / `edit_file`).
+- Issue `#27` closes with WS0 cleanup of `origin/fix/jev-small-tails` (`d4d89186f33e604ddd09e638772fa65c1b49af10`).
+- Issue `#24` sets wording bounds for any future `plugins/jev` RFC 005 notice (`"relocating to cognitive-engine"`, never `"retired"`).
+- Issue `#28` (`commit.ts` trailers for Coordination S1) remains deferred until S1 opens.
+
+**Still unverified:**
+
+- Live Antigravity `run_workflow` hook envelope field names (`Script` vs. `ScriptPath` casing) and whether `invoke_subagent` accepts `overwrite: { Model: "flash_lite" }` when `Model` was originally omitted (`inherit`).

@@ -303,7 +303,12 @@ Waiting on the user:
 - [ ] (user) Provide the secret files (database password, `dump_ro` secret; mode 0600, outside the repo) at W6 (Z7); nothing earlier needs them
 - [ ] (user) ADMIN TTY paths, CLAUDE and AGY live checks, run the installer (W4b to W6)
 - [x] Housekeeping checked 2026-11-15 [verified by the main session]: nothing left to prune in the agy trusted workspaces or the Claude project entry; the Obsidian bearer rotation was decided unnecessary by the user
-- [x] Jev PRs #54, #55, #58 left alone (Z9)
+- [x] PR #58 (`feat/jev-antigravity-hook`) merged into `main` (commit `5ce432b`, 2026-11-15) [verified]
+- [x] PR #54 (`feat/jev-tool-validation`) retargeted to `main` (head `2fb323f`), all CI checks passing [verified]
+- [x] PR #55 (`feat/jev-agent-guard-parity`) synced with #54 (head `b27937b`), all CI checks passing [verified]
+- [ ] (user) Merge word for PR #54 (`feat/jev-tool-validation`), then PR #55 (`feat/jev-agent-guard-parity`)
+- [ ] Housekeeping: prune merged worktree `.claude/worktrees/ag-hook` and delete local branch `feat/jev-antigravity-hook`
+- [ ] Housekeeping: clean detached worktree `.claude/worktrees/jev-install`
 
 Blocked until their dependencies merge:
 
@@ -416,7 +421,7 @@ S1 items carried from the old tasklist (the stream that owns each is in brackets
 - **S1 scoping result:** whether one exists is [unverified] (carried from the old tasklist).
 - **Out of scope, observed in A8b:** `lookup` and `recall` time out at startup in every agy session and delay MCP startup by about 2 minutes (memory plugin setup, not this plugin).
 - **Issues #39 and #40** (memory plugin version bump, lookup package visibility) are unrelated to coordination and still open [verified with `gh issue list`, 2026-11-15].
-- **Jev PRs #54, #55 and #58** are left alone (Z9).
+- **Jev PR stack (#58, #54, #55):** PR #58 (`feat/jev-antigravity-hook`) merged into `main` (`5ce432b`, 2026-11-15); PR #54 (`feat/jev-tool-validation`) retargeted to `main` with checks passing; PR #55 (`feat/jev-agent-guard-parity`) synced with #54 with checks passing. Housekeeping remaining: prune worktrees (`.claude/worktrees/ag-hook`, `.claude/worktrees/jev-install`), await user merge word for PR #54.
 - **Shared checkout.** `ce-research` switches branches in `~/projects/agentic-hub`; the worktrees of running builds (`agentic-hub-wt-auth`, `agentic-hub-wt-state`) must not be touched by another session. The STATE build edits plan, spec and audit docs in its own worktree [reported by `git status` in that worktree, 2026-11-15], so its PR will conflict with the 2026-11-15 docs reorganisation (the plan was renamed from `implementation-plan.md` to `master-plan.md`); rebase it onto the new names.
 - **Plan status text.** The status paragraph at the top of `master-plan.md` section 1 was written 2026-11-11 and is kept as written; this file is the live status.
 

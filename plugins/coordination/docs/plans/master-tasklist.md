@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > This tracker coordinates the exploration, architectural evaluation, protocol design, and implementation of the A2A coordination plugin (formerly Multi-Agent Bridge v2) across participating sessions (Google Antigravity, Claude Code, and additional agents).
-> Home: [`agentic-hub/plugins/coordination`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination), branch `feat/coordination`. The former `agents-bridge` repo is retired. Canonical plan: [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md).
+> Home: [`agentic-hub/plugins/coordination`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination), branch `feat/coordination`. The former `agents-bridge` repo is retired. Canonical plan: [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md).
 > The flowchart below is the historical Option 4 decision flow (2026-11-03); the current roadmap is in Section 4.
 
 ```mermaid
@@ -48,7 +48,7 @@ flowchart TD
 - **Status**: **ACCEPTED & APPROVED BY USER** (2026-11-03). Never launch, drive or wrap `agy`; the restrictive-terms rule applies to Antigravity too. Carrier wording amended by DDR-004 (peers communicate through the server). Full record in the plan, Section 3.
 
 ### DDR-004: A2A Coordination Server (ACCEPTED 2026-11-04)
-- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 36 from later (2026-11-04 and 2026-11-05, `/cplain` and after), decisions 37 to 40, the round-2 decisions R1 to R8, the round-3 decisions R9 to R14 (2026-11-09, `/clarify`) and the round-4 decisions X1 to X5 (2026-11-10, `/clarify`; the D-A to D-J, R1 to R8, R9 to R14 and X1 to X5 blocks below) recorded in [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
+- **Status**: **ACCEPTED (2026-11-04)** after the `/clarify` session; 13 binding decisions plus decisions 14 to 36 from later (2026-11-04 and 2026-11-05, `/cplain` and after), decisions 37 to 40, the round-2 decisions R1 to R8, the round-3 decisions R9 to R14 (2026-11-09, `/clarify`) and the round-4 decisions X1 to X5 (2026-11-10, `/clarify`; the D-A to D-J, R1 to R8, R9 to R14 and X1 to X5 blocks below) recorded in [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) Section 3. Evidence in [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md).
 - **Summary**:
   - A2A server on `a2a-python` (>= 1.3.0), `uv`, Docker; one server process owns the database, which is Postgres in the compose project from S1 (SQLite WAL on named volume `a2a-data` superseded 2026-11-09, D-A); MCP tools served at `/mcp` on port 8120.
   - Identity: one Agent Card per harness and machine, per-session handles under it.
@@ -154,7 +154,7 @@ flowchart TD
 - **C3: Heartbeat Contract** (implementation **SUPERSEDED** 2026-11-04):
   - [x] Draft delivered in [`docs/specs/heartbeat-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/heartbeat-spec.md); kept as history.
   - ~~Implementation (C3.1 Claude, A4 Antigravity)~~ **SUPERSEDED by DDR-004**: heartbeat sidecar files are not built; liveness is now a parked `/wake/listen` listener or a registered session (`/sessions`).
-- [x] **C7: A2A coordination server research (2026-11-04)**: tracked in [`claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/claude-a2a-server-tasklist.md). Audit and synthesis done; **DDR-004 ACCEPTED** (2026-11-04). Follow-on work is in Section 4.
+- [x] **C7: A2A coordination server research (2026-11-04)**: tracked in [`claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/claude-a2a-server-tasklist.md). Audit and synthesis done; **DDR-004 ACCEPTED** (2026-11-04). Follow-on work is in Section 4.
 - **A7 / C4: ACP & A2A Research Deliverables** (**SUPERSEDED** 2026-11-04):
   - ~~Research document on ACP session integration and A2A peer principles~~ **SUPERSEDED by DDR-004**: ACP removed from the plan; A2A research is delivered by the 2026-11-04 audit and the plan.
 - [x] **C6: `BuildSlot` Protocol Implementation (`feat/buildslot-protocol`)** (reported by `cognitive-engine-5b`, 2026-11-03; branch and SHA verified by Claude/macp with `git ls-remote`):
@@ -180,7 +180,7 @@ flowchart TD
 
 ## 4. Coordination plugin workstreams
 
-Roadmap and gates: [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) Section 5. Status: planning, with S0 spikes in progress (2026-11-05). The headless S0 parts are done; the interactive Claude Code spikes and the agy spikes (user-run) remain. Each stage that adds a listener needs the user's explicit go.
+Roadmap and gates: [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) Section 5. Status: planning, with S0 spikes in progress (2026-11-05). The headless S0 parts are done; the interactive Claude Code spikes and the agy spikes (user-run) remain. Each stage that adds a listener needs the user's explicit go.
 
 - [ ] **S0 Spikes** ([`spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md); runbooks: [`spike-runbooks-2026-11-05.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-runbooks-2026-11-05.md)):
   - [x] Scaffolding (2026-11-05): scratch stub on `127.0.0.1:18120` built and self-tested (all cases pass), stub patched for SP1 T11, SP2 A4 and `/sessions/end`; agy SP2 helper prep done ([results](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-05-s0-scaf-sp2-c9.md)). Stub was stopped then. It is running again on `127.0.0.1:18120` for the A8c staging (staged 2026-11-12) and stays up until A8c cleanup, done with the user [reported by the session that staged it; the listening port was checked with `ss` on 2026-11-15]. S1 acceptance runs must use another port while it is up.

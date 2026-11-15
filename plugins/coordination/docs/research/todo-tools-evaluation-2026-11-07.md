@@ -206,7 +206,7 @@ Nothing here was installed or run.
 These are not about the three tools, but they came up and need an owner.
 
 - **Port clash on 8120 (verified).**
-  - coordination decision 5 puts the A2A server on `:8120` ([`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) line 131).
+  - coordination decision 5 puts the A2A server on `:8120` ([`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) line 131).
   - cognitive-engine RFC 001 and plan WS3 put the Harness² FastMCP daemon on `127.0.0.1:8120` (`docs/plans/2026-10-26-multi-track-implementation-plan.md` lines 209 and 258). Track 3 Slice 1 is reported done there.
   - Both are planned for the same machines. One must move before coordination S1. Ports in use or reserved: 8100, 8101, 8105, 8110, 8115 (Jev HTTP) and 11434. Candidate free ports to evaluate: 8125 and 8130.
 - **cognitive-engine does not know the coordination plugin exists (verified).** Its RFCs and plans have no reference to it. Coordination's status client contract ([`status-client.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md)) and the "sbx must never reach the server" rule should be recorded in cognitive-engine RFC 001 or 004. Otherwise Track 3 may open the sbx allow rule to the wrong port.

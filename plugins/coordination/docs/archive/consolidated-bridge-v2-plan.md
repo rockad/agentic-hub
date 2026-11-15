@@ -458,15 +458,15 @@ Still open (not user decisions of the earlier kind):
 - **Plans** (`docs/plans/`):
   - [`master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md): decision records and workstream checklist.
   - [`go-live-migration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md): channel-file import and deletion.
-  - [`claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/claude-a2a-server-tasklist.md): research workstream (historical).
-  - [`2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/2026-11-03-multi-agent-coordination-alignment.md): earlier alignment note (historical).
+  - [`claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/claude-a2a-server-tasklist.md): research workstream (historical).
+  - [`2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/2026-11-03-multi-agent-coordination-alignment.md): earlier alignment note (historical).
 - **Specifications** (`docs/specs/`):
   - [`server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md): endpoints, handles, trust states, auth scopes, admin socket, installer, front-door consequences.
   - [`status-client.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md): cognitive-engine one-way status contract.
   - [`spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md): S0 spike definitions.
   - [`buildslot-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/buildslot-spec.md): BuildSlot protocol (in force).
   - [`heartbeat-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/heartbeat-spec.md): historical, superseded.
-  - [`paf-trial-protocol-obsolete.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/paf-trial-protocol-obsolete.md): obsolete.
+  - [`paf-trial-protocol-obsolete.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/paf-trial-protocol-obsolete.md): obsolete.
 - **Research** (`docs/research/`):
   - [`a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): DDR-004 synthesis; inputs in `a2a-audit-2026-11-04/`:
     - [`t1a-a2a-mcp-bridges.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1a-a2a-mcp-bridges.md)
@@ -491,7 +491,7 @@ Still open (not user decisions of the earlier kind):
 
     - Spec references in this plugin use pinned URLs of the form `https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto`.
 - **Retired repo copies**:
-  - [`agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/agents-bridge-AGENTS.md) and [`agents-bridge-README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/agents-bridge-README.md): historical.
+  - [`agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md) and [`agents-bridge-README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-README.md): historical.
 - **Verification status of earlier unchecked items**:
   - Antigravity hooks page: read 2026-11-04 (six events, `command` handlers only, no async or rewake option); see `t1b-wake-mechanisms.md` section 4.
   - Whether `~/.gemini` is shared between Gemini CLI and agy (relevant to `bd setup gemini`): still unverified; moot while beads is superseded.

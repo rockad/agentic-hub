@@ -1,11 +1,11 @@
 # AGENTS.md
 
-Rules for Google Antigravity, Claude Code and any other AI coding assistant working in `plugins/coordination`. Carried over from the old `agents-bridge` rules ([`docs/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/agents-bridge-AGENTS.md), kept as history) and updated for the 2026-11-04 decisions.
+Rules for Google Antigravity, Claude Code and any other AI coding assistant working in `plugins/coordination`. Carried over from the old `agents-bridge` rules ([`docs/archive/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md), kept as history) and updated for the 2026-11-04 decisions.
 
 ## Read first
 
 - Starting in a new session (Antigravity or another Claude Code session)? Read [`docs/plans/pickup-handoff.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/pickup-handoff.md) first: current state, next actions in order, process and repository rules.
-- Read [`docs/plans/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) before doing any work here.
+- Read [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) before doing any work here.
 - The plan records DDR-004 (accepted 2026-11-04) and its 36 binding decisions (13 from the `/clarify` session, 14 to 24 on 2026-11-04, 25 to 36 on 2026-11-05); they override anything older in `docs/`. Superseded:
   - DDR-002 file-channel carrier and ACP
   - old Phase 2 ledger forks A and B

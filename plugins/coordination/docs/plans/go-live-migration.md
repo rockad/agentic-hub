@@ -15,7 +15,7 @@ Timing consequences (decision 14):
 Related documents:
 
 - [Evidence synthesis](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md)
-- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
+- [Consolidated plan with DDR-001 to DDR-004 and decisions 1 to 22](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md)
 - [Master tasklist](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
 - [a2a-python and bridges audit (TaskStore, DatabaseTaskStore)](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md)
 
@@ -298,7 +298,7 @@ Not retired:
 References that will dangle once the channel files are deleted (annotate as historical, do not rewrite history):
 
 - Outside the repo: `bridge-v2-coordination-tasklist.md`, `cognitive-engine-tasklist.md`, `agent-bridge-protocol.md`, `bridge-v2-heartbeat-spec-draft.md`, `handoff/2026-11-02-next-session-kickoff.md`.
-- Inside the repo: `file://` links to the channel in [the consolidated plan](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) (the baseline table row and the "Operational Channel" references).
+- Inside the repo: `file://` links to the channel in [the consolidated plan](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) (the baseline table row and the "Operational Channel" references).
 - User-scope config: none found. A search of `~/.claude/CLAUDE.md` and `~/.claude/settings.json` found no reference to the channel files `[verified]`.
 
 ## 12. Dress rehearsal and tests (before the real run)

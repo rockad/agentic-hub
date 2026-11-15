@@ -13,7 +13,7 @@ Evidence sources (all under `docs/research/`):
 - [`t1b-wake-mechanisms.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1b-wake-mechanisms.md): wake designs (section 5), agy hooks (section 4).
 - [`t1c-bridges-and-sdks.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t1c-bridges-and-sdks.md): a2a-python details and gaps.
 - [`t2-cognitive-engine-integration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-audit-2026-11-04/t2-cognitive-engine-integration.md): cognitive-engine constraints.
-- [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): DDR-001 to DDR-004.
+- [`consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md): DDR-001 to DDR-004.
 - A2A 1.0.1 sources (read-only): [`a2a.proto`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/specification/a2a.proto) and [`specification.md`](https://github.com/a2aproject/A2A/blob/4735f4876449c6f381825d8a841b31b16c6ad0c4/docs/specification.md).
 
 Labels used on claims:

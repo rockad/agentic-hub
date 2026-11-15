@@ -113,16 +113,16 @@ All links are absolute `file://` links.
 ### Start here
 
 - [`docs/plans/pickup-handoff.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/pickup-handoff.md): for a new session (Antigravity or another Claude Code session) taking over: state, next actions in order, process and repository rules.
-- [`docs/plans/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 36 decisions of 2026-11-04 and 2026-11-05 (13 from `/clarify`, 11 later on 2026-11-04, 12 on 2026-11-05), and the S0-S3 roadmap.
+- [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 36 decisions of 2026-11-04 and 2026-11-05 (13 from `/clarify`, 11 later on 2026-11-04, 12 on 2026-11-05), and the S0-S3 roadmap.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 
 ### Plans
 
-- [`docs/plans/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md)
+- [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md)
 - [`docs/plans/master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
 - [`docs/plans/go-live-migration.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/go-live-migration.md): one-time import of the frozen channel files into the store, then deletion.
-- [`docs/plans/claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/claude-a2a-server-tasklist.md)
-- [`docs/plans/2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/2026-11-03-multi-agent-coordination-alignment.md)
+- [`docs/archive/claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/claude-a2a-server-tasklist.md)
+- [`docs/archive/2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/2026-11-03-multi-agent-coordination-alignment.md)
 
 ### Specs
 
@@ -131,7 +131,7 @@ All links are absolute `file://` links.
 - [`docs/specs/spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md): S0 spikes and the S1 gate.
 - [`docs/specs/buildslot-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/buildslot-spec.md): Docker and GPU contention (cognitive-engine PR #13). Still in force.
 - [`docs/specs/heartbeat-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/heartbeat-spec.md): historical. Liveness is now a parked listener or a session registration.
-- [`docs/specs/paf-trial-protocol-obsolete.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/paf-trial-protocol-obsolete.md): obsolete.
+- [`docs/archive/paf-trial-protocol-obsolete.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/paf-trial-protocol-obsolete.md): obsolete.
 
 ### Research
 
@@ -157,8 +157,8 @@ Earlier research:
 
 ### Historical (from `agents-bridge`)
 
-- [`docs/agents-bridge-README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/agents-bridge-README.md): the old repository README. It still describes ACP and a zero-daemon core, both superseded.
-- [`docs/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/agents-bridge-AGENTS.md): the old repository rules, carried over and updated into [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md).
+- [`docs/archive/agents-bridge-README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-README.md): the old repository README. It still describes ACP and a zero-daemon core, both superseded.
+- [`docs/archive/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md): the old repository rules, carried over and updated into [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md).
 
 ## History
 

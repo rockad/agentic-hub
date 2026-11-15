@@ -2,7 +2,7 @@
 
 Status: DRAFT runbooks. Nothing in this file has been run. No spike result is recorded here.
 Branch: `feat/coordination-s0` (nothing committed). Host: <workstation> (WSL2). Written by a Claude Code helper subagent.
-Plan: [spikes.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md) sections 1, 3 to 7, 10, 11. Decisions: [consolidated-bridge-v2-plan.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md) (DDR-004, decisions 1 to 36). Server design: [server-api.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md). Scaffolding result: [spike-results-2026-11-05-s0-scaf-sp2-c9.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-05-s0-scaf-sp2-c9.md).
+Plan: [spikes.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md) sections 1, 3 to 7, 10, 11. Decisions: [consolidated-bridge-v2-plan.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) (DDR-004, decisions 1 to 36). Server design: [server-api.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md). Scaffolding result: [spike-results-2026-11-05-s0-scaf-sp2-c9.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-05-s0-scaf-sp2-c9.md).
 
 Labels: **verified** (observed or read in a file by the author of this runbook on 2026-11-05), **reported** (a claim not reproduced), **unverified** (not tested). Every runbook step is a plan, not an observation.
 

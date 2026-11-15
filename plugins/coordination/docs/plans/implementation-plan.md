@@ -1382,7 +1382,7 @@ Assumptions behind the numbers:
 - The S1 critical path (98 to 152 h) bounds the elapsed time of S1 if enough parallel capacity exists; elapsed time is not estimated here beyond the 3-day S0 plan in [spikes.md][spikes].
 - Every BP that fires can add work as described in section 3.2; none is counted in the totals except where stated above.
 
-[plan]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/consolidated-bridge-v2-plan.md
+[plan]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md
 [api]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md
 [spikes]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md
 [status]: https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md

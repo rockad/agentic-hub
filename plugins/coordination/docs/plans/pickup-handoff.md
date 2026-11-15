@@ -54,7 +54,7 @@ Written 2026-11-09, updated 2026-11-10 after SP5b passed, S1 design items were r
 
 1. `plugins/coordination/AGENTS.md` and `README.md` (orientation and rules).
 2. `docs/plans/master-tasklist.md` (the living task list; section 4 is the plugin workstreams).
-3. `docs/plans/consolidated-bridge-v2-plan.md`: decisions 4, 6, 8, 16, 20, 24, 26 and 37 to 40; the S0 status block; the "Still open" list.
+3. `docs/archive/consolidated-bridge-v2-plan.md`: decisions 4, 6, 8, 16, 20, 24, 26 and 37 to 40; the S0 status block; the "Still open" list.
 4. `docs/specs/spikes.md`: section 8 and 8b (SP5 and SP5b), section 11 (the S1 entry gate and its status), the A8b and A8c entries.
 5. `docs/specs/server-api.md`: 1.2 and 1.4 (storage and compose), 5.2 (handle addressing), 5.4 (session binding), 8.4.1 (public listener), 11 (installer and hooks), 12.2 (S1 design details).
 6. `docs/plans/implementation-plan.md` (task ids such as S0-SP5B, S1-PG, S1-BKP, S2-LISTEN, S3-EXPOSE-CHECK) and `docs/plans/go-live-migration.md`.

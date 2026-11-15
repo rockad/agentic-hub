@@ -582,13 +582,12 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 
 ## 31. Status 2026-11-14 (evening): five PRs merged, three open
 
-**Merged to `main` by Doc-Cr (merge commits, 2026-11-14):** #48 (2.3.9), #49 (2.3.10), #51 (2.3.11), #52 (2.3.12), #53 (2.3.13, Antigravity `invoke_subagent` guard, first version). #50 (this plan, sections 27 to 31) merged by the owner.
+**Merged to `main` by Doc-Cr (merge commits, 2026-11-14):** #48 (2.3.9), #49 (2.3.10), #51 (2.3.11), #52 (2.3.12), #53 (2.3.13, Antigravity `invoke_subagent` guard, first version). #50 (this plan, sections 27 to 31) merged by the owner. **Merged 2026-11-15:** #58 (2.3.13 follow-up, `5ce432b`, Antigravity guard round 5 + resolved `extractAskAnswer` FIFO/bounded-tail `readRegularFileTail` and `stepIdx`/`toolCallId` check at `ffd6f6c`).
 
 **Open (each PR's base is the previous one; merge commits in this order; Doc-Cr to review):**
 
 | PR | Version | Content | State |
 | --- | --- | --- | --- |
-| #58 | 2.3.13 follow-up | Antigravity guard round 5, from the Antigravity session: `extractSubagentModel` judges the highest-ranked model of flat `Model`/`model` and every `Subagents[]` entry; `isExplicitProOverride` drops bare `argon`, widens the negation window to the clause and needs family and rank coverage; PreToolUse pass-through exits 0 with empty stdout; PostToolUse reads the answer from `transcriptPath` at `stepIdx`; real captured fixture | Verified live; 1980 tests; no review yet; one finding open, see below |
 | #54 | 2.3.14 | Strict zod validation per tool; `jev_batch_dispatch` semantic checks (blank or duplicate ids, unknown or self dependencies, cycles) with did-you-mean hints | Doc-Cr should-fix applied: SDK floor raised to `^1.23.0` (`adaf1cc`), because `zod-json-schema-compat` is missing from 1.6.1 to 1.22.0; Opus gate found nothing; re-review pending |
 | #55 | 2.3.15 | Agent/Task guard parity: definition model and effort, `CLAUDE_CODE_SUBAGENT_MODEL` and its `_FORCE` flag, ladder pin, interim effort rule, front-matter cross-check, plus the round-4 and round-5 fixes below, and the OTLP test stub | Doc-Cr round 4 resolved at `37f718c`; later commits re-review pending; 2298 tests |
 
@@ -604,8 +603,8 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 
 **Open items:**
 
-- #58: the transcript read in `extractAskAnswer` (`antigravity/logic.ts`) uses `existsSync` then `readFileSync` on a path taken from the hook's stdin: a FIFO or other non-regular file hangs the hook (the #51 class), and every `ask_question` PostToolUse reads the whole transcript. Wanted: stat first and require a regular file, non-blocking open, bounded read from the end of the file (or the step offset), tests with a FIFO and a large transcript; also check that the matched step really is the `ask_question` result of `toolCall.id`, not any step with that index. Comment posted on #58.
-- Merge #58, #54, #55 after Doc-Cr; then `git switch main && git pull` in the main checkout (detached on the 2.3.12 tip so the installed plugin runs the stack) and delete the worktrees.
+- #58 (**resolved & merged 2026-11-15**, `ffd6f6c` / `5ce432b`): `extractAskAnswer` (`antigravity/logic.ts`) now uses FIFO-safe, 1 MB tail-bounded `readRegularFileTail` plus exact `stepIdx` and `toolCallId` verification.
+- Merge #54 and #55 after Doc-Cr; then `git switch main && git pull` in the main checkout and delete the worktrees.
 - Not verified: the live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; name matching and plugin manifest semantics against a real Claude Code; the model a Workflow agent actually ran on is never logged (no hook sees it).
 
 ---
@@ -656,7 +655,7 @@ Checked directly against GitHub (`gh`) and `origin` on `2026-11-15` against `ori
 
 | PR / Worktree | Ref / Path | State | Relationship to This Plan |
 |---|---|---|---|
-| **PR `#58`** | `feat/jev-antigravity-hook` -> `main` | **MERGED** (`5ce432b86222b12d49af3f63ca904321656b3437`, `2026-11-15T09:10:15Z`) | Landed initial Antigravity `invoke_subagent` `PreToolUse`/`PostToolUse` guard and `Hydrogen`/scoped `Argon` ceiling tests |
+| **PR `#58`** | `feat/jev-antigravity-hook` -> `main` | **MERGED** (`5ce432b86222b12d49af3f63ca904321656b3437`, `2026-11-15T09:10:15Z`) | Landed round-5 follow-up to `#53`'s initial `invoke_subagent` guard: `extractSubagentModel` flat/`Subagents[]` ranking, clause-scoped `isExplicitProOverride`, empty-stdout pass-through, `readRegularFileTail` + `toolCallId` transcript parsing (`ffd6f6c`), and `Hydrogen`/scoped `Argon` ceiling tests |
 | **PR `#54`** | `feat/jev-tool-validation` -> `main` (`2fb323f4bd45af9101fe882767cfd798c6c35114`) | **OPEN**, `MERGEABLE`, CI `Run Test Suites` **SUCCESS** | `v2.3.14`: strict MCP Zod validation, hints, semantic DAG checks, `@modelcontextprotocol/sdk` `^1.23.0` (`@Doc-Cr` review addressed; **reported** 2,093 tests) |
 | **PR `#55`** | `feat/jev-agent-guard-parity` -> `feat/jev-tool-validation` (`b27937b390b85c076f732cf358e3d7d71451d3c0`) | **OPEN**, `MERGEABLE`, CI `Run Test Suites` **SUCCESS** | `v2.3.15`: Claude `Agent` parity with `Workflow` guard, `.claude/agents/*.md`, YAML cross-checks (`@Doc-Cr` Round 4 & Opus Round 5 addressed; **reported** 2,298 tests) |
 | **PR `#10`** | `fix/jev-small-tails` (`d4d89186f33e604ddd09e638772fa65c1b49af10`) | **CLOSED** (remote branch `refs/heads/fix/jev-small-tails` still on `origin`) | Superseded by `main`; branch deletion tracked in Issue `#27` |
@@ -680,15 +679,15 @@ All five defects below were directly **verified** in workspace source files and 
 1. **Bug 1 — Orchestrator Model ID Misclassified in Quota Pool & Subagent Ceiling**
    - **Live observation (`Verified`):** When Antigravity runs on Orchestrator, hook stdin passes `modelName: "gemini-pro-orchestrator-g1-pro"`, while `$HOME/.gemini/antigravity-cli/quota-state.json` still contained stale `active_model: "Gemini 4 Hydrogen (Medium)"` alongside `gemini-5h: 0.8581`, `gemini-argon-wtu-weekly: 0.3384`, and `gemini-weekly: 0.4856`.
    - **Stale model precedence (`plugins/jev/antigravity/hook.ts:132-141`):** `quotaView?.active_model` is resolved first via `ceilingModelForHarness('antigravity', quotaView?.active_model)` and `input.modelName` is used only when `activeModel` is falsy, masking mid-session UI model switches.
-   - **MCP server blind spot (`plugins/jev/src/core/governance.ts:219,240`, `plugins/jev/src/tools/dispatch.ts:344-354,590`):** `readQuotaView()`, `jev_dispatch`, and `jev_batch_dispatch` execute in the long-lived MCP server process, which never receives hook stdin `input.modelName`. Fixing precedence inside `antigravity/hook.ts` alone still leaves MCP tools reading stale `quota-state.json` unless `antigravity/hook.ts` and `jev-preflight.ts` persist live `input.modelName` to a shared session file (`antigravity-session.json`) that `readQuotaView()` checks against `quota-state.json` timestamps.
+   - **MCP server blind spot (`plugins/jev/src/core/governance.ts:219,240`, `plugins/jev/src/tools/dispatch.ts:344-354,590`):** `readQuotaView()`, `jev_dispatch`, and `jev_batch_dispatch` execute in the long-lived MCP server process, which never receives hook stdin `input.modelName`. Persisting live `input.modelName` per conversation (`$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` + `latest.json` with `7200s` TTL) and resolving `active_model` per field in `readQuotaView()` keeps both hooks and MCP tools immune to 30s statusline refreshes overwriting `quota-state.json`.
    - **Missed Argon/Orchestrator weekly bucket (`plugins/jev/src/core/governance.ts:240`):** `isArgonActive` checks only `/argon/i.test(activeModel)`, missing `orchestrator` and misreading `gemini-weekly` instead of `gemini-argon-wtu-weekly`.
    - **Permissive `pro` ceiling & `inherit` bypass (`plugins/jev/src/core/governance.ts:316-323`, `353`):** `modelTierRank("gemini-pro-orchestrator-g1-pro")` matches `"pro"` and returns rank `3` (`pro`). Consequently, `evaluateAntigravitySubagentCall()` sets `sessionCeilingRank === 3`, letting Orchestrator's execution turn invoke `Model: "pro"` subagents without `[jev-elevate:pro]`. Furthermore, because Antigravity resolves omitted or `Model: "inherit"` on `invoke_subagent` to the session model (section 31), blindly passing `"inherit"` through under Orchestrator would also run the subagent on the Tier 3 session model above `flash`.
 
 2. **Bug 2 — Companion Workspace Hook (`doppelganger/.agents/hooks/jev-pre-tool.sh`) Has Stale Schemas & Auto-Allows Calls**
-   - **Dead subagent inspection (`jev-pre-tool.sh:71-115`):** Parses only `.toolCall.args.Subagents // []` and never checks flat `.toolCall.args.Model`, making all subagent lockout/conserve/escalation logic no-ops on modern Antigravity `invoke_subagent` payloads.
+   - **Working `<10%` lockout (`jev-pre-tool.sh:39-68`) vs. dead `Subagents[]` inspection (`jev-pre-tool.sh:71-115`):** Lines `39–68` write `/tmp/jev-last-subagent-ts` and run the `<10%` emergency lockout *before* parsing `.toolCall.args.Subagents // []`, so both work on today's flat-`Model` payloads. Only lines `71–115` (enum validation, `openrouter_free` rejection, `<=25%` conserve throttle, and `pro` `force_ask`) read `.toolCall.args.Subagents // []` without checking flat `.toolCall.args.Model`, making those four checks no-ops on modern `invoke_subagent` payloads. Removing `invoke_subagent` from `doppelganger/.agents/hooks.json` in WS4 therefore must be gated until `v2.3.16` (WS2 Part A) is active in `~/.gemini/config/hooks.json`.
    - **Unsafe `{"decision":"allow"}` pass-through (`jev-pre-tool.sh:18,34,117,195,199`):** Emits JSON `"allow"` instead of exiting `0` with empty stdout, bypassing normal Antigravity user permission prompts and deviating from the verified empty-stdout pass-through contract documented in section 31.
    - **Legacy write tool names (`doppelganger/.agents/hooks.json:13`, `jev-pre-tool.sh:121-122`):** Matches `write_to_file|replace_file_content` and reads `.toolCall.args.TargetFile`, missing Antigravity's native `write_file` and `edit_file` (`.toolCall.args.Path`).
-   - **Ignored per-harness override (`jev-pre-tool.sh:11`, `jev-pre-invocation.sh:29`):** Reads `.defaults.mode` only instead of `.harnesses.antigravity.mode // .defaults.mode // "off"`.
+   - **Ignored per-harness override (`jev-pre-tool.sh:11`, `jev-pre-invocation.sh:29`):** Reads `.defaults.mode` only instead of `.harnesses.antigravity.mode // .defaults.mode` with `$HOME/.config/jev/mode.json` fallback.
 
 3. **Bug 3 — Prompt Snippet Leak in Workspace Preflight Telemetry (`doppelganger/scripts/jev-preflight.ts:348`)**
    - **Finding (`Verified`):** Line `348` writes `task: cleanTask.slice(0, 120)` into `$HOME/.gemini/antigravity-cli/jev_telemetry.jsonl`, bypassing PR `#43`'s privacy rule (`taskFingerprint()` emitting `taskLen` and 12-hex `taskHash` only).
@@ -704,15 +703,15 @@ All five defects below were directly **verified** in workspace source files and 
 
 ### 32.4 Clarified Architectural Decisions & Contracts
 
-All seven design forks were resolved explicitly during the `/clarify` design walkthrough on `2026-11-15`:
+All design forks from the `/clarify` walkthrough (`2026-11-15`) and PR `#66` review rounds are resolved explicitly below:
 
 | # | Decision Topic | Approved Design Choice |
 |---|---|---|
 | 1 | **Release Sequencing & Housekeeping** | Merge PR `#54` (`v2.3.14`) then PR `#55` (`v2.3.15`) into `main`; delete `origin/fix/jev-small-tails` (`d4d89186f33e604ddd09e638772fa65c1b49af10`) and close Issue `#27`; prune `.claude/worktrees/*`; land Orchestrator integration in isolated worktrees off merged `main` |
-| 2 | **Orchestrator Ceiling, Live Session Sync & `inherit` Semantics** | Persist live `input.modelName` from `antigravity/hook.ts` and `jev-preflight.ts` into `$HOME/.config/jev/antigravity-session.json` so `readQuotaView()` maps `orchestrator` / `argon` to `gemini-argon-wtu-weekly` in both hooks and MCP tools; set Orchestrator subagent ceiling rank to `2` (`flash`); on non-Orchestrator sessions (`subagentCeilingRank === modelTierRank`), let omitted/`inherit` pass through with empty stdout (`decision: "pass"`), whereas on Orchestrator (`rank 3` session vs. `flash` ceiling) treat omitted/`inherit` as above ceiling (`deny` prescribing `Model: "flash"` / `[jev-elevate:pro]`, or `allow` + `overwrite: { Model: "flash" }` if live WS2 tests confirm Antigravity honors `overwrite`) |
-| 3 | **Hook Responsibility Boundary** | Consolidate all `invoke_subagent` checks (`openrouter_free`/invalid model rejection, `<10%` lockout, `<=20%` `flash_lite` throttle, upward `[jev-elevate:pro]`, downward `[jev-downgrade:flash_lite]`) into `plugins/jev/antigravity/`; slim `doppelganger/.agents/hooks/jev-pre-tool.sh` to `run_command` and write tools with empty-stdout pass-through and `.harnesses.antigravity.mode` precedence |
-| 4 | **Multi-File Write Guard Under Orchestrator** | Update `jev-pre-tool.sh` & `doppelganger/.agents/hooks.json` for `write_file\|edit_file\|write_to_file\|replace_file_content` via `.toolCall.args.Path // .toolCall.args.TargetFile`; scope counters by `.conversationId // .sessionId`; allow up to **6** distinct edited files on Orchestrator (**3** on standard sessions), resetting within `<15m` by tailing `jev_telemetry.jsonl` (`jev_batch_dispatch` / `jev_dispatch`) and `$HOME/.config/jev/antigravity_decisions.jsonl` (`tool_name == "invoke_subagent"`, matching `session_id`, `decision` in `pass`/`allow`) |
-| 5 | **`jev_batch_dispatch` Stage Rubric Parity** | Enforce `keepEditsOffFreeTier` and edit-capable persona swaps (`research` / `knowledge-researcher` -> `code-engineer` / `Code Engineer` / `self`) across **every** editing task item on Antigravity and OpenCode (`editsFiles(item)`); activate `STAGE_RUBRIC[item.kind]` tier lookup (preserving `pro` + `requiresUserApproval: true` for `judgement` instead of silently clamping) and additive output fields (`kind`, `needsEdit`, `tierSource`) **per task item** when `kind` or `needsEdit` is present on that item, omitting those three fields on items that supply neither |
+| 2 | **Orchestrator Ceiling, Per-Conversation Session Sync & `inherit` Semantics** | Persist live `input.modelName` per conversation to `$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` (`latest.json` pointer, `7200s` TTL, optional live `pid`); resolve `readQuotaView()` **per field** (`active_model` from active non-expired session record so 30s statusline refreshes cannot clobber it; bucket fractions from `quota-state.json`); set Orchestrator subagent ceiling rank to `2` (`flash`); pass omitted/`inherit` through with empty stdout on non-Orchestrator sessions (`subagentCeilingRank === modelTierRank`), whereas on Orchestrator map omitted/`inherit` (`requestedModel = null`) to `rankToTierName(modelTierRank(sessionModel))` (`"pro"`) before `isExplicitProOverride()` and `approvals.claim()`/`deny()`/`buildElevationReason()`, prescribing explicit `Model: "flash"` / `[jev-elevate:pro]` (or `allow` + `overwrite: { Model: "flash" }` once verified live) |
+| 3 | **Hook Responsibility Boundary & Low-Quota Thresholds** | Consolidate all `invoke_subagent` checks (`openrouter_free`/invalid model rejection, lockout at strict `< 0.10`, conserve `flash_lite` throttle at strict `< 0.20` aligned with user Low-Quota Protocol instead of `<= 0.25`, upward `[jev-elevate:pro]`, downward `[jev-downgrade:flash_lite]`) into `plugins/jev/antigravity/`; gate removal of `invoke_subagent` from `doppelganger/.agents/hooks.json` until `v2.3.16` (WS2 Part A) is active; resolve `doppelganger` workspace hook mode via `.harnesses.antigravity.mode // .defaults.mode` then `mode.json` `.mode` with `"on"` fallback default (`plugins/jev` library keeps `"off"` default for unconfigured installs) |
+| 4 | **Multi-File Write Guard Under Orchestrator** | Update `jev-pre-tool.sh` & `doppelganger/.agents/hooks.json` for `write_file\|edit_file\|write_to_file\|replace_file_content` via `.toolCall.args.Path // .toolCall.args.TargetFile`; preserve existing path exemptions (`plans/\|/brain/\|.agents/memory/\|.agents/rules/`); detect Orchestrator from `modelName` or `antigravity-sessions/<conversationId>.model.json` (falling back to `transcriptPath` only if `-f` regular non-FIFO via bounded `tail -c 262144`); scope counters by `.conversationId // .sessionId`; allow up to **6** distinct edited files on Orchestrator (**3** on standard sessions), resetting within `<15m` via portable `jq` `fromdateiso8601`/`.epoch` tailing of `jev_telemetry.jsonl` (`jev_batch_dispatch` / `jev_dispatch`) and `$HOME/.config/jev/antigravity_decisions.jsonl` (`tool_name == "invoke_subagent"`, matching `session_id`, `decision` in `pass`/`allow`) |
+| 5 | **`jev_batch_dispatch` Stage Rubric Parity & Quota Override** | Enforce `keepEditsOffFreeTier` and edit-capable persona swaps (`research` / `knowledge-researcher` -> `code-engineer` / `Code Engineer` / `self`) across **every** editing task item on Antigravity and OpenCode (`editsFiles(item)`); activate `STAGE_RUBRIC[item.kind]` tier lookup and additive output fields (`kind`, `needsEdit`, `tierSource`) **per task item** when `kind` or `needsEdit` is present (omitting all three on items supplying neither); exempt `kind: "judgement"` only from the **session-model ceiling** when quota is healthy (`normal`), then enforce low-quota clamping (`<20%` `conserve` / `<10%` `free_only`) afterward so `pro` is never emitted below `20%` |
 | 6 | **Antigravity Subagent Downgrade Flow** | Add full `[jev-downgrade:flash_lite]` parity (`ask` / `auto` / `off` via `models.downgrade.mode` and `JEV_DOWNGRADE`, router cumulative $P(\text{openrouter\_free} + \text{flash\_lite}) \ge 0.6$, 10-minute normalized signature cache, `PostToolUse` `ask_question` recorder via bounded `transcriptPath` tail at `stepIdx`, session disable option) |
 | 7 | **Antigravity Python `run_workflow` Static Guard** | Add fail-closed static Python analyzer (`plugins/jev/antigravity/workflow-guard.ts`) and pin store (`plugins/jev/antigravity/workflow-pin.ts`) wired to `PreToolUse` (`invoke_subagent\|run_workflow`) and `PostToolUse` (`ask_question\|run_workflow`): re-analyze current `Script` / `ScriptPath` on every `PreToolUse`; literal `model="pro"` routes via model-scoped `[jev-elevate:pro]` in `approvals.ts` with `sha256:<12hex>` in question prose/logs; dynamic `model=`, `**kwargs`, or unreadable `ScriptPath` triggers `decision: "ask"`; `PreToolUse` pins `scripts[]` by `toolCall.id` and `PostToolUse` re-hashes `ScriptPath` strictly to log `workflow_changed` audit events |
 
@@ -723,9 +722,10 @@ All seven design forks were resolved explicitly during the `/clarify` design wal
 |                          ANTIGRAVITY + ORCHESTRATOR + JEV                             |
 |                                                                                       |
 |  [1] PreInvocation: doppelganger/scripts/jev-preflight.ts (+ jev-pre-invocation.sh)   |
-|      |-- Reads $HOME/.config/jev/config.json (.harnesses.antigravity.mode // defaults)|
-|      |-- Persists live modelName -> $HOME/.config/jev/antigravity-session.json (0600) |
-|      |-- Reads quotaView (antigravity-session.json vs quota-state.json -> argon pool) |
+|      |-- Mode: config.json (.harnesses.antigravity.mode // .defaults.mode)            |
+|      |   -> mode.json (.mode) -> "on" default for doppelganger workspace hooks        |
+|      |-- Persists live modelName -> antigravity-sessions/<convId>.model.json (7200s)  |
+|      |-- Reads quotaView per-field (session active_model + quota-state.json buckets)  |
 |      |-- Logs taskFingerprint ONLY (taskLen + 12-hex taskHash; zero prompt substrings)|
 |      '-- Injects Phase-Aware Orchestrator Directive:                                  |
 |            * Planner turn: read in-context; single-stream <=6 files -> exit_plan_mode; |
@@ -733,23 +733,25 @@ All seven design forks were resolved explicitly during the `/clarify` design wal
 |            * Executor turn: jev_execute_free ($0), flash subagent ceiling, jev_judge  |
 |                                                                                       |
 |  [2] Workspace PreToolUse: doppelganger/.agents/hooks/jev-pre-tool.sh                 |
-|      |-- Matcher: run_command|write_file|edit_file|write_to_file|replace_file_content |
+|      |-- Matcher (until WS2 active): keeps invoke_subagent; then write/run tools only |
+|      |-- Mode fallback: config.json -> mode.json -> "on" default                      |
 |      |-- run_command (git commit): deny staged conflict markers                       |
-|      |-- Write tools: read .Path // .TargetFile; allow <=6 files on Orchestrator      |
-|      |   (<=3 standard) unless <15m dispatch (jev_telemetry.jsonl) or invoke_subagent |
-|      |   (antigravity_decisions.jsonl for matching conversationId) reset counter      |
+|      |-- Write tools: read .Path // .TargetFile; exempt plans/|/brain/|.agents/...    |
+|      |   allow <=6 files on Orchestrator (via modelName/session file/bounded transcript|
+|      |   tail, FIFO-safe) or <=3 standard unless <15m dispatch/subagent reset via     |
+|      |   portable jq fromdateiso8601/.epoch (jev_telemetry + antigravity_decisions)   |
 |      '-- Pass-through: exit 0 with EMPTY stdout (never {"decision":"allow"})          |
 |                                                                                       |
 |  [3] Plugin PreToolUse & PostToolUse: agentic-hub/plugins/jev/antigravity/hook.ts     |
-|      |-- Active model: input.modelName (persisted to antigravity-session.json)        |
-|      |   or quotaView.active_model -> readQuotaView() sees live UI model in MCP too   |
+|      |-- Active model: input.modelName (persisted per conversation with 7200s TTL)    |
+|      |   -> readQuotaView() merges session active_model + quota-state.json buckets    |
 |      |-- Subagent ceiling: subagentCeilingRank("...orchestrator...") === 2 ("flash")  |
 |      |-- invoke_subagent (logic.ts):                                                  |
 |      |     * Reject Model: "openrouter_free" or invalid tier strings                  |
-|      |     * Quota lockout (<10% free_only) & conserve throttle (<=20% flash_lite)    |
+|      |     * Quota lockout (<10% free_only) & conserve throttle (<20% flash_lite)     |
 |      |     * Non-Orchestrator omit/"inherit" -> pass; Orchestrator omit/"inherit"     |
-|      |       -> deny prescribing explicit flash / [jev-elevate:pro] (or overwrite)   |
-|      |     * Elevation: Model "pro" > ceiling "flash" -> [jev-elevate:pro] / 3rd ask  |
+|      |       maps requestedModel -> "pro" before isExplicitProOverride & claim/deny   |
+|      |     * Elevation: "pro" > ceiling "flash" -> [jev-elevate:pro] / 3rd ask        |
 |      |     * Downgrade: explicit "flash" & P(<=flash_lite)>=0.6 -> ask | auto         |
 |      |-- run_workflow (workflow-guard.ts + workflow-pin.ts):                          |
 |      |     * Re-analyzes current Script / FIFO-safe ScriptPath on every PreToolUse    |
@@ -773,10 +775,13 @@ export function isOrchestratorModel(model?: string | null): boolean;
 export function subagentCeilingRank(sessionModel?: string | null): number;
 export function isExplicitProOverride(promptText?: string, requestedModel?: string | null): boolean;
 
+export const ANTIGRAVITY_SESSION_TTL_SEC = 7200;
+
 export interface AntigravitySessionRecord {
+  conversationId: string;
   model: string;
-  conversationId?: string;
-  updated_at: number; // Unix epoch seconds matching quota-state.json
+  updated_at: number; // Unix epoch seconds
+  pid?: number;       // Optional owning harness/launcher pid for liveness checks
 }
 
 // plugins/jev/antigravity/logic.ts
@@ -795,7 +800,7 @@ export interface PythonWorkflowAnalysis {
 
 1. **Empty-Stdout Pass-Through (`Antigravity`):** Any non-intervening `PreToolUse` exit MUST terminate with code `0` and `0` stdout bytes (`decision: "pass"`). Emitting `{"decision":"allow"}` is reserved strictly for intentional Jev interventions (approved elevation or intentional parameter overwrite) where allowed by Antigravity hook semantics.
 2. **Zero Prompt Text in Telemetry:** Neither `plugins/jev` nor `doppelganger/scripts/jev-preflight.ts` may persist raw prompt substrings to `jev_telemetry.jsonl`, `antigravity_decisions.jsonl`, or `claude_decisions.jsonl`. Only `taskLen` and 12-hex `taskHash` are written, under `0600` files / `0700` dirs.
-3. **Edit-Safety Always On, Additive Rubric Per Item:** On Antigravity and OpenCode, `keepEditsOffFreeTier` and edit-capable persona swaps run on **every** task item where `editsFiles(item)` is true; `STAGE_RUBRIC[item.kind]` and additive fields (`kind`, `needsEdit`, `tierSource`) activate **per task item** when `kind` or `needsEdit` is supplied on that item, and are omitted from items that supply neither (preserving legacy per-item field shape).
+3. **Edit-Safety & Low-Quota Clamp Always On, Additive Rubric Per Item:** On Antigravity and OpenCode, `keepEditsOffFreeTier` and edit-capable persona swaps run on **every** task item where `editsFiles(item)` is true; `STAGE_RUBRIC[item.kind]` and additive fields (`kind`, `needsEdit`, `tierSource`) activate **per task item** when `kind` or `needsEdit` is supplied on that item, and are omitted from items that supply neither; under `<20%` (`conserve`) or `<10%` (`free_only`) quota, low-quota clamping overrides even `judgement` stages so `pro` is never recommended below `20%`.
 4. **Fail-Open Hook Runtime, Fail-Closed Static Workflow Parsing:** Unexpected runtime errors, missing API keys, or router timeouts in hooks exit `0` with empty stdout. Inside `workflow-guard.ts`, ambiguous or dynamic `model=` expressions and unreadable `ScriptPath` targets fail closed to `decision: "ask"` (the native permission prompt) rather than silently passing or trapping the model in an infinite `deny` loop.
 
 ### 32.5 Implementation Workstreams (WS0–WS5)
@@ -827,7 +832,9 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
   - `plugins/jev/package.json`, `plugins/jev/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and root `marketplace.json` (bump to `2.3.16` with `WS2 Part A`)
 - **Changes in `governance.ts`:**
   - Add `isOrchestratorModel(model)` matching `/\borchestrator\b/i` and `isOrchestratorOrArgon(model)` matching `/\b(?:argon|orchestrator)\b/i`.
-  - Update `readQuotaView()` so it also reads `$HOME/.config/jev/antigravity-session.json` (via `readRegularFile`, matching `path.dirname($JEV_CONFIG_FILE)` when set); whenever `antigravity-session.json`'s `updated_at` (Unix epoch seconds) is strictly newer than `quota-state.json`'s `updated_at` (or `quota-state.json` lacks `active_model`), adopt `session.model` as `active_model`. This ensures MCP server tools (`readQuotaView()`, `jev_dispatch`, `jev_batch_dispatch`) see live UI switches to `gemini-pro-orchestrator-g1-pro` even without hook stdin.
+  - Update `readQuotaView(opts?: { conversationId?: string })` to resolve precedence **per field rather than per file**:
+    - Always read bucket fractions (`gemini-5h`, `gemini-argon-wtu-weekly`, `gemini-weekly`, `3p-*`), `stale`, and quota `updated_at` from `quota-state.json`.
+    - Read `$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` (respecting `path.dirname($JEV_CONFIG_FILE)`, `safeSessionId`, and `readRegularFile`) when `opts?.conversationId` or `process.env.ANTIGRAVITY_CONVERSATION_ID` is present; otherwise read the freshest non-expired record (`nowSec - updated_at <= 7200`, and alive via `process.kill(pid, 0)` when `pid` is present) from `$HOME/.config/jev/antigravity-sessions/` (pointed to by `latest.json` and pruning expired `>7200s` `.model.json` files best-effort). Whenever an active non-expired session record exists, prefer `session.model` over `quota-state.json`'s `active_model` regardless of `quota-state.json`'s `updated_at`, so 30-second statusline refreshes never clobber the live Orchestrator model inside MCP tools (`readQuotaView()`, `jev_dispatch`, `jev_batch_dispatch`).
   - Update `readQuotaView()` (`governance.ts:240`) so `isArgonActive` (and pool labeling for `gemini-argon-wtu-weekly`) activates when `active_model` matches `isOrchestratorOrArgon`. Ensure `"Argon"` override checks remain distinct from raw `"orchestrator"` subagent ceiling behavior.
   - Introduce `subagentCeilingRank(sessionModel)`:
     - Returns `2` (`flash`) when `isOrchestratorModel(sessionModel)` is true, keeping Orchestrator's planning model (Tier 3) separate from the subagent ceiling (`flash`).
@@ -837,7 +844,7 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
 - **Changes in `dispatch.ts`:**
   - Enforce edit safety on **every** task item across Antigravity, OpenCode, and Claude Code whenever `editsFiles(item)` is true (`keepEditsOffFreeTier` promotes `openrouter_free` -> `flash_lite` in both `handleDispatchTool` at `dispatch.ts:356` and batch execution, and `candidatesFor(item)` / `resolveEditCapableSubagent(harness, subagent, taskText, workspaceAgents)` filters or replaces read-only personas such as `research`, `knowledge-researcher`, `Plan`, or `Explore` with edit-capable workspace personas in priority order `code-engineer`, `Code Engineer`, `self`, handling both kebab-case and display-name definitions per Issues `#13` and `#23`).
   - Activate `STAGE_RUBRIC[kind]` tier lookup (`dispatch.ts:573-582`) and additive response fields (`kind`, `needsEdit`, `tierSource` at `dispatch.ts:634`) **per task item** on Antigravity and OpenCode whenever that item supplies `kind` (`mechanical`, `settled-edit`, `judgement`) or boolean `needsEdit`; items supplying neither keep legacy `classifyBatchTier(taskText)` and omit `kind`, `needsEdit`, and `tierSource` from their planned-task object while still receiving the edit-safety guards above.
-  - Mirror Claude Code's rubric handling for `judgement` stages (`dispatch.ts:591-605`, `parity-dispatch-harness.test.ts:122`): when `kind === 'judgement'` (or a rubric-evaluated stage recommends `pro` above `subagentCeilingRank(ceilingModel)`, including under Orchestrator's `flash` subagent ceiling), skip `clampTierToSessionCeiling()` so `tier: "pro"` and `requiresUserApproval: true` are preserved rather than silently clamped down to `flash`, and extend `escalationNote()` (`dispatch.ts:161-168`) for Antigravity when `isPro` is true below a rank-`3` subagent ceiling to warn that `[jev-elevate:pro]` approval will run at `invoke_subagent` time. On non-rubric calls where `clampTierToSessionCeiling()` clamps `pro` -> `flash`, report `wasClampedByCeiling: true` (`dispatch.ts:377`) and `sessionCeilingTier: "flash"` accurately.
+  - Mirror Claude Code's rubric handling for `judgement` stages (`dispatch.ts:591-605`, `parity-dispatch-harness.test.ts:122`) **with a post-ceiling low-quota override**: when `kind === 'judgement'` (or a rubric-evaluated stage recommends `pro` above `subagentCeilingRank(ceilingModel)`, including under Orchestrator's `flash` subagent ceiling), exempt it from the **session-model ceiling** (`clampTierToSessionCeiling()`) only when quota is healthy; immediately afterward, if `quotaView.strategy` is `'conserve'` (`<20%`) or `'free_only'` (`<10%`) — or active pool `min_remaining < 0.20` — enforce the Low-Quota Protocol (`"The pro tier is strictly prohibited"`) by clamping `tier` to `flash_lite` (or `openrouter_free` when `free_only` and `!editsFiles(item)`) with `requiresUserApproval: false`. Only when `pro` survives the low-quota clamp should `requiresUserApproval: true` (`anyProRequested: true`) and an `escalationNote()` warning (`[jev-elevate:pro]` at `invoke_subagent` time) be emitted. On non-rubric calls where `clampTierToSessionCeiling()` clamps `pro` -> `flash`, report `wasClampedByCeiling: true` (`dispatch.ts:377`) and `sessionCeilingTier: "flash"` accurately.
   - Add strict Zod validation checks in `plugins/jev/src/tools/dispatch.ts` / server schemas (matching PR `#54` conventions) so `kind` and `needsEdit` accept valid values cleanly on every harness.
 - **Updates in `plugins/jev/tests/parity-dispatch-harness.test.ts`:**
   - Split `describe('Antigravity and OpenCode are unchanged (5.11)')` (`lines 198–220`, which currently passes `{ kind: 'judgement', needsEdit: true }` on task `a` and expects `openrouter_free` and empty `['kind', 'needsEdit', 'tierSource']`) into:
@@ -854,14 +861,16 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
   - `plugins/jev/src/core/quota-policy.ts` or shared quota helper (as appropriate)
   - `plugins/jev/tests/antigravity-hook.test.ts`
 - **Part A (`v2.3.16` — Ceiling, Precedence & Policy Consolidation):**
-  - **Live model precedence & session persistence (`antigravity/hook.ts`):** When `input.modelName` is non-empty, write `{ model: trimmedModel, conversationId, updated_at }` (Unix epoch seconds, `mode 0600` via `privateFile`) to `$HOME/.config/jev/antigravity-session.json` (respecting `JEV_CONFIG_FILE` directory), and resolve active session model as `const rawModel = trimmedModel || quotaView?.active_model;` followed by `ceilingModelForHarness('antigravity', rawModel)`. Both hook decisions and subsequent MCP tool calls (`readQuotaView()`, `jev_dispatch`, `jev_batch_dispatch`) immediately see UI switches to `gemini-pro-orchestrator-g1-pro` even while `quota-state.json` still reports `Gemini 4 Hydrogen (Medium)`.
-  - **Omitted/`inherit` subagent policy (`antigravity/logic.ts`):** Because Antigravity resolves omitted `Model` or `Model: "inherit"` to the session model (section 31):
+  - **Live model precedence & per-conversation persistence (`antigravity/hook.ts`):** When `input.modelName` is non-empty, write `{ conversationId, model: trimmedModel, updated_at, pid }` (Unix epoch seconds, `mode 0600` via `privateFile`) to `$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` (sanitized via `safeSessionId`, plus `latest.json` pointer and best-effort pruning of expired `>7200s` entries, respecting `path.dirname($JEV_CONFIG_FILE)`), pass `{ conversationId: input.conversationId }` to `readQuotaView()`, and resolve active session model as `const rawModel = trimmedModel || quotaView?.active_model;` followed by `ceilingModelForHarness('antigravity', rawModel)`. Both hook decisions and concurrent or subsequent MCP tool calls (`readQuotaView()`, `jev_dispatch`, `jev_batch_dispatch`) resolve the right conversation's model even across 30-second statusline rewrites of `quota-state.json`.
+  - **Numeric epoch in decision logs (`antigravity/hook.ts`):** Emit integer `epoch: Math.floor(Date.now() / 1000)` alongside ISO-8601 `timestamp` in `$HOME/.config/jev/antigravity_decisions.jsonl` so downstream shell/jq checks can read epochs without GNU `date -d`.
+  - **Omitted/`inherit` subagent policy & `[jev-elevate:pro]` claim resolution (`antigravity/logic.ts`):** Because `extractSubagentModel()` returns `{ requestedModel: null, isExplicit: false }` when `Model` is omitted or `"inherit"`, and Antigravity resolves omitted/`inherit` to the session model (section 31):
     - On non-Orchestrator sessions (`isOrchestratorModel(sessionModel) === false`, where `subagentCeilingRank(sessionModel) === modelTierRank(sessionModel)`), omitted or `Model: "inherit"` passes through with empty stdout (`decision: "pass"`) under normal quota.
-    - On Orchestrator sessions (`isOrchestratorModel(sessionModel) === true`, session rank `3` vs. `flash` subagent ceiling rank `2`), omitted or `Model: "inherit"` evaluates at session rank `3` (`> flash`), so unless an active `pro` approval (`[jev-elevate:pro]`) or explicit user Pro override exists, `evaluateAntigravitySubagentCall()` must NOT pass it through unchecked: deny with `[jev-elevate:pro]` prescribing explicit `Model: "flash"` / `"flash_lite"` (with the 3rd-attempt `ask` backstop), or emit `decision: "allow"` + `overwrite: { Model: "flash" }` once live WS2 verification confirms Antigravity honors `overwrite` on omitted/`inherit` `Model` arguments.
-  - **Consolidated `invoke_subagent` guards (`antigravity/logic.ts`):** Move the safety checks previously fragmented into shell hooks directly into `evaluateAntigravitySubagentCall()`:
+    - On Orchestrator sessions (`isOrchestratorModel(sessionModel) === true`, session rank `3` vs. `flash` subagent ceiling rank `2`), map `{ requestedModel: null }` to `const effectiveRequestedModel = rankToTierName(modelTierRank(sessionModel))` (`"pro"`) **before** evaluating `isExplicitProOverride(lastUserInput, effectiveRequestedModel)`, `approvals.claim(sessionId, effectiveRequestedModel, nowMs)`, `approvals.attempt(...)`, `approvals.deny(sessionId, effectiveRequestedModel, nowMs)`, and `buildElevationReason(...)`. When the user approves `[jev-elevate:pro]`, re-invoking with `Model` omitted or `"inherit"` (as well as explicit `Model: "pro"`) claims the `"pro"` approval and returns `decision: "allow"`; without approval, it denies prescribing explicit `Model: "flash"` / `"flash_lite"` or `[jev-elevate:pro]` (with the 3rd-attempt `ask` backstop, or `allow` + `overwrite: { Model: "flash" }` once live WS2 verification confirms Antigravity honors `overwrite` on omitted/`inherit` arguments).
+  - **Consolidated `invoke_subagent` guards & explicit low-quota thresholds (`antigravity/logic.ts`):** Move the safety checks previously fragmented into shell hooks directly into `evaluateAntigravitySubagentCall()` with thresholds aligned to the user-scope Low-Quota Protocol:
     - Reject `Model: "openrouter_free"` and unknown model enum values with actionable `deny` guidance pointing to `jev_execute_free` / `jev_agent_free`.
-    - Enforce quota `<10%` emergency lockout (`free_only`: deny paid `invoke_subagent` tiers unless user explicitly overrides via `[jev-elevate:*]` or prompt directive) and `<=20%` conserve throttle (`flash` / `pro` downgraded or gated to `flash_lite`).
-    - Enforce `subagentCeilingRank` (`flash` under Orchestrator) so `Model: "pro"` (and unapproved omitted/`inherit` on Orchestrator) triggers `[jev-elevate:pro]` (`once`, `5min`, `session`) with the 3rd-attempt permission dialog backstop (`decision: "ask"`).
+    - Enforce emergency lockout strictly at `< 0.10` (`<10%` remaining across active 5h/weekly pool -> `free_only`: deny paid `invoke_subagent` tiers unless user explicitly overrides via `[jev-elevate:*]` or prompt directive).
+    - Enforce conserve throttle strictly at `< 0.20` (`<20%` remaining -> `flash` / `pro` denied/clamped to `flash_lite`), retiring `jev-pre-tool.sh`'s legacy `<= 0.25` threshold and aligning strict `<` comparisons with the user-scope Low-Quota Protocol.
+    - Enforce `subagentCeilingRank` (`flash` under Orchestrator) so `Model: "pro"` and unapproved omitted/`inherit` calls on Orchestrator route through `[jev-elevate:pro]` (`once`, `5min`, `session`) with the 3rd-attempt permission dialog backstop (`decision: "ask"`).
 - **Part B (`v2.3.17` — `[jev-downgrade:flash_lite]` Parity):**
   - Mirror Claude Code's downgrade flow in `antigravity/logic.ts`, `antigravity/hook.ts`, and `antigravity/approvals.ts`:
     - Trigger condition: `invoke_subagent` with `Model: "flash"` (or `Model: "inherit"` / omitted on a non-conserve standard `flash` session when explicitly configured; under Orchestrator, omitted/`inherit` is handled first by Part A's ceiling policy), mode is `ask` or `auto` (`models.downgrade.mode` in `config.json`, overridden by `JEV_DOWNGRADE=ask|auto|off`), and not disabled for the conversation in `approvals.ts`.
@@ -905,21 +914,23 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
   - `doppelganger/.agents/hooks.json`
 - **Changes:**
   - **Fix privacy leak (`jev-preflight.ts`):** Import `taskFingerprint` from `plugins/jev` shared module (or compute identical `taskLen` + 12-hex `taskHash`) and remove `task: cleanTask.slice(0, 120)`.
-  - **Persist live `modelName` (`jev-preflight.ts`):** When preflight stdin carries non-empty `modelName`, update `$HOME/.config/jev/antigravity-session.json` (`{ model, conversationId, updated_at }` in Unix epoch seconds, `mode 0600`) so subsequent MCP tool calls (`jev_batch_dispatch`, `jev_dispatch`) in the same turn read the live model via `readQuotaView()`.
-  - **Config lookup consistency:** Read `.harnesses.antigravity.mode // .defaults.mode // "off"` in `jev-preflight.ts`, `jev-pre-invocation.sh`, and `jev-pre-tool.sh`.
+  - **Persist per-conversation `modelName` (`jev-preflight.ts`):** When preflight stdin carries non-empty `modelName`, update `$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` (`{ conversationId, model, updated_at, pid }` in Unix epoch seconds with `7200s` TTL and `mode 0600`, plus `latest.json` pointer) so concurrent and subsequent MCP tool calls (`jev_batch_dispatch`, `jev_dispatch`) resolve that conversation's live model via `readQuotaView()`.
+  - **Config lookup consistency (explicit workspace decision):** Resolve mode in `jev-preflight.ts`, `jev-pre-invocation.sh`, and `jev-pre-tool.sh` as `.harnesses.antigravity.mode // .defaults.mode` from `$HOME/.config/jev/config.json`, falling back to `.mode` in `$HOME/.config/jev/mode.json`, and defaulting to `"on"` when neither file defines a mode so workspace commit-marker and write guards remain active unless explicitly disabled (`plugins/jev` library code retains `"off"` for unconfigured third-party installs).
   - **Orchestrator-aware preflight (`jev-preflight.ts`):**
     - Detect Orchestrator via `modelName`.
     - Skip unnecessary single-task `callJev` round-trips when turn is a short prompt or `[plan review]` hand-back.
     - Inject phase-aware Orchestrator directives (Planner: keep single-stream edits up to 6 files in-context, run `jev_batch_dispatch` with `kind` + `needsEdit` only for genuine multi-stream workstreams; Executor: offload mechanical text with `jev_execute_free`, obey `flash` subagent ceiling, gate diff with `jev_judge`).
-  - **Clean `jev-pre-tool.sh` & `hooks.json`:**
-    - Remove `invoke_subagent` from `doppelganger/.agents/hooks.json` matcher and remove dead `.Subagents[]` inspection and `/tmp/jev-last-subagent-ts` writes from `jev-pre-tool.sh`.
-    - Update `hooks.json` matcher to `run_command|write_file|edit_file|write_to_file|replace_file_content`.
+  - **Rollout-gated cleanup of `jev-pre-tool.sh` & `hooks.json`:**
+    - Gate removing `invoke_subagent` from `doppelganger/.agents/hooks.json` (and removing `/tmp/jev-last-subagent-ts` / lines `39–115` in `jev-pre-tool.sh`) on verifying that `plugins/jev` `v2.3.16` (WS2 Part A) is installed and active in `$HOME/.gemini/config/hooks.json` so the working `<10%` emergency lockout (`jev-pre-tool.sh:39-68`) is never lost before the plugin guard takes over.
+    - Once gated, update `hooks.json` matcher to `run_command|write_file|edit_file|write_to_file|replace_file_content`.
     - Replace all `echo '{"decision":"allow"}'` outputs with `exit 0` and `0` stdout bytes.
-    - Read `.toolCall.args.Path // .toolCall.args.TargetFile` and track distinct edited files per `.conversationId // .sessionId`.
-    - Compute `LAST_DISPATCH_EPOCH` (to reset the per-conversation edited-files counter within a `<15m` / `<900s` window without requiring `invoke_subagent` to trigger `jev-pre-tool.sh`) from the max timestamp across two JSONL logs:
+    - Read `.toolCall.args.Path // .toolCall.args.TargetFile` and **preserve** the existing path exemptions `(plans/|/brain/|\.agents/memory/|\.agents/rules/)` (`jev-pre-tool.sh:124-127`) so Orchestrator plans, artifacts, and memory/rule files do not burn the write budget.
+    - Track distinct edited files per `.conversationId // .sessionId`.
+    - Compute `LAST_DISPATCH_EPOCH` (to reset the per-conversation edited-files counter within `<15m` / `<900s` without `invoke_subagent` firing `jev-pre-tool.sh`) **portably** inside `jq` (avoiding GNU `date -d` failures on macOS BSD `date`) by reading numeric `.epoch // ((.timestamp_ms // 0) / 1000)` or parsing ISO-8601 `.timestamp` via `sub("\\.[0-9]+Z$"; "Z") | sub("\\+00:00$"; "Z") | fromdateiso8601` across the max of two JSONL tails:
       - `${JEV_TELEMETRY_FILE:-$HOME/.gemini/antigravity-cli/jev_telemetry.jsonl}`: latest entry matching `"tool"` in `("jev_batch_dispatch", "jev_dispatch", "jev_select_model")` within `<900s`
       - `${JEV_CONFIG_FILE:+$(dirname "$JEV_CONFIG_FILE")/antigravity_decisions.jsonl}` (default `$HOME/.config/jev/antigravity_decisions.jsonl`, written by `plugins/jev/antigravity/hook.ts` on every `invoke_subagent` call): latest entry within `<900s` matching the active `.conversationId` (`(.session_id == $convId)` when non-empty) where `"tool_name"` is `"invoke_subagent"` and `"decision"` is `"pass"` or `"allow"`
-    - Enforce write threshold of **6** distinct files on Orchestrator sessions (matching `modelName` or `exit_plan_mode` marker in `transcriptPath`) and **3** on standard sessions unless reset within `<15m` by `LAST_DISPATCH_EPOCH`.
+    - Detect Orchestrator sessions cleanly by checking `.modelName` (`/orchestrator/i`) or `$HOME/.config/jev/antigravity-sessions/<conversationId>.model.json` first; only inspect `.transcriptPath` when `[ -f "$TRANSCRIPT_PATH" ] && [ ! -p "$TRANSCRIPT_PATH" ]` (FIFO-safe) with a bounded tail (`tail -c 262144 "$TRANSCRIPT_PATH" | grep -q '"exit_plan_mode"'`) to avoid `#51`-class hangs.
+    - Enforce write threshold of **6** distinct files on Orchestrator sessions and **3** on standard sessions unless reset within `<15m` by `LAST_DISPATCH_EPOCH`.
 
 #### WS5 — Documentation, Version Sync & Release Finalization (`agentic-hub`)
 
@@ -943,7 +954,7 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
 
 1. TypeScript type-check:
    - `bun x tsc --noEmit -p plugins/jev/tsconfig.json`
-2. Full test suite under isolated `HOME` (no leakage from `$HOME/.config/jev`, including `antigravity-session.json` and `antigravity-workflow-pins/`):
+2. Full test suite under isolated `HOME` (no leakage from `$HOME/.config/jev`, including `antigravity-sessions/` and `antigravity-workflow-pins/`):
    - `env -i PATH="$PATH" HOME="$(mktemp -d)" bun test --cwd plugins/jev`
 3. Marketplace & skill layout gate (repo root):
    - `bash scripts/check-skills-marketplace.sh`
@@ -952,17 +963,18 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
 
 #### Live / Stdin Hook Envelope Verification (`agentic-hub` + `doppelganger`)
 
-1. **Orchestrator ceiling & live session sync:** Pipe `invoke_subagent` payload with `modelName: "gemini-pro-orchestrator-g1-pro"` and `args.Model: "pro"` (even when fixture `quota-state.json` says `Gemini 4 Hydrogen (Medium)`) -> expect `decision: "deny"` containing `[jev-elevate:pro]`, `$HOME/.config/jev/antigravity-session.json` updated to `"gemini-pro-orchestrator-g1-pro"`, and `readQuotaView()` / `jev_dispatch` reflecting `ceilingTier: "flash"`.
-2. **Omitted / `inherit` under Orchestrator vs. standard session:**
-   - Pipe `invoke_subagent` with `modelName: "gemini-pro-orchestrator-g1-pro"` and `Model: "inherit"` (or omitted `Model`, normal quota, no active `[jev-elevate:pro]`) -> expect `decision: "deny"` with `[jev-elevate:pro]` prescribing explicit `Model: "flash"` / `"flash_lite"` (or `decision: "allow"` + `overwrite: { Model: "flash" }` once `overwrite` is verified live).
+1. **Orchestrator ceiling & per-conversation session sync:** Pipe `invoke_subagent` payload with `conversationId: "conv-orch-1"`, `modelName: "gemini-pro-orchestrator-g1-pro"`, and `args.Model: "pro"` (while fixture `quota-state.json` has a newer `updated_at` and stale `active_model: "Gemini 4 Hydrogen (Medium)"`, alongside another expired or `Hydrogen` conversation file) -> expect `decision: "deny"` containing `[jev-elevate:pro]`, `$HOME/.config/jev/antigravity-sessions/conv-orch-1.model.json` written with `0600`, and `readQuotaView({ conversationId: "conv-orch-1" })` / `jev_dispatch` reflecting `active_model: "gemini-pro-orchestrator-g1-pro"` and `ceilingTier: "flash"`.
+2. **Omitted / `inherit` under Orchestrator vs. standard session & `[jev-elevate:pro]` claim:**
+   - Pipe `invoke_subagent` with `modelName: "gemini-pro-orchestrator-g1-pro"` and `Model: "inherit"` (or omitted `Model`, normal quota, no active `[jev-elevate:pro]`) -> expect `decision: "deny"` with `[jev-elevate:pro]` prescribing explicit `Model: "flash"` / `"flash_lite"` (or `decision: "allow"` + `overwrite: { Model: "flash" }` once `overwrite` is verified live); then record `"Yes, once"` via `ask_question` and re-invoke with `Model` omitted or `"inherit"` -> expect `approvals.claim(..., "pro", ...)` to match and return `decision: "allow"`.
    - Pipe `invoke_subagent` with standard non-Orchestrator `modelName: "flash"` and `Model: "inherit"` (normal quota, downgrade off) -> expect exit `0` and **0 bytes** on stdout.
-3. **Python `run_workflow` literal & dynamic checks:**
+3. **Low-quota override on `kind: "judgement"` & conserve `<20%` boundary:** Run `jev_batch_dispatch` with `kind: "judgement"` at `19%` and `9%` remaining quota -> expect `pro` strictly clamped to `flash_lite` (or `openrouter_free` if non-editing at `9%`) with `requiresUserApproval: false`.
+4. **Python `run_workflow` literal & dynamic checks:**
    - Literal `agent(..., model="pro")` -> expect `decision: "deny"` with `[jev-elevate:pro]` and `(sha256:<12hex>)` (recording `model: "pro"` in `approvals.ts`), plus `workflow-pin.ts` pin creation under `toolCall.id` when allowed.
    - Dynamic `agent(..., model=tier)` -> expect `decision: "ask"`.
-4. **`jev-pre-tool.sh` pass-through & write threshold:**
+5. **`jev-pre-tool.sh` pass-through, exemptions, & portable timestamps:**
    - Pipe 4th distinct `edit_file` under standard session -> expect exit `0`, `deny` mentioning `jev_batch_dispatch`.
-   - Pipe 4th distinct `edit_file` under Orchestrator session -> expect exit `0`, **0 bytes** on stdout (`allow` up to 6).
-5. **Telemetry privacy check:** Execute `jev-preflight.ts` on a synthetic prompt -> confirm `$HOME/.gemini/antigravity-cli/jev_telemetry.jsonl` records `taskLen` and `taskHash` with **zero** raw prompt substrings.
+   - Pipe edits to `/brain/` plan artifacts and 4th distinct code `edit_file` under Orchestrator session -> expect exit `0`, **0 bytes** on stdout (`/brain/` exempted; code edits allowed up to 6; FIFO/transcript check safe and `jq` ISO-8601 parse works without GNU `date -d`).
+6. **Telemetry privacy check:** Execute `jev-preflight.ts` on a synthetic prompt -> confirm `$HOME/.gemini/antigravity-cli/jev_telemetry.jsonl` records `taskLen` and `taskHash` with **zero** raw prompt substrings.
 
 #### Open Review Questions for `@Doc-Cr` / Claude Code
 

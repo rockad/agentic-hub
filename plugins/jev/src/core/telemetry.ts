@@ -64,6 +64,8 @@ export async function logTelemetry(entry: Record<string, unknown>): Promise<void
   try {
     const payload = {
       timestamp: new Date().toISOString(),
+      // Integer Unix seconds beside the ISO string, so a `jq` filter can compare times without GNU `date -d`.
+      epoch: Math.floor(Date.now() / 1000),
       harness: 'antigravity',
       ...entry
     };

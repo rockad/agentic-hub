@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { inputJsonSchema, strictObject } from './schema.js';
+import { conversationIdSchema, inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
@@ -38,7 +38,7 @@ import {
   type BatchDispatchPlan
 } from '../core/index.js';
 import { STAGE_RUBRIC, TIER_CRITERIA, isStageKind } from '../stage-rubric.js';
-import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria } from '../../claude/logic.js';
+import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria, safeSessionId } from '../../claude/logic.js';
 
 /** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
 export const dispatchInputSchema = strictObject({
@@ -46,7 +46,8 @@ export const dispatchInputSchema = strictObject({
   availableSubagents: z
     .array(z.string())
     .optional()
-    .describe('Optional candidate subagents (defaults to dynamically discovered workspace agents)')
+    .describe('Optional candidate subagents (defaults to dynamically discovered workspace agents)'),
+  conversationId: conversationIdSchema
 });
 
 export const batchDispatchInputSchema = strictObject({
@@ -74,7 +75,8 @@ export const batchDispatchInputSchema = strictObject({
       })
     )
     .describe('Array of task descriptions or phase items to plan and dispatch in parallel'),
-  availableSubagents: z.array(z.string()).optional().describe('Optional list of candidate subagents')
+  availableSubagents: z.array(z.string()).optional().describe('Optional list of candidate subagents'),
+  conversationId: conversationIdSchema
 });
 
 export const dispatchToolDefinition: Tool = {
@@ -309,10 +311,13 @@ export function resolveEditCapablePersona(subagent: string, workspaceAgents: Rec
 
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
-  const { task, availableSubagents } = (args || {}) as {
+  const { task, availableSubagents, conversationId: rawConversationId } = (args || {}) as {
     task: string;
     availableSubagents?: string[];
+    conversationId?: string;
   };
+  // Sanitized once; recorded as `sessionId` (null when omitted or nothing safe is left).
+  const conversationId = safeSessionId(rawConversationId);
 
   if (!task) {
     throw new Error('jev_dispatch requires a non-empty "task" string');
@@ -419,7 +424,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
       confidence = Math.min(saAnswer?.confidence ?? 0.85, tierAnswer?.confidence ?? 0.85);
     } catch (fallbackErr: any) {
       const latencyMs = Math.round(performance.now() - start);
-      await logTelemetry({ tool: 'jev_dispatch', ...telemetryHarness(), status: 'error', error: String(fallbackErr), latencyMs });
+      await logTelemetry({ tool: 'jev_dispatch', ...telemetryHarness(), sessionId: conversationId ?? null, status: 'error', error: String(fallbackErr), latencyMs });
       throw new Error(
         `jev_dispatch: all dispatch tiers failed. Tier 1 (Jev Decisions API) and Tier 2 (${FALLBACK_MODEL}) both unavailable. ` +
         `Last error: ${fallbackErr.message}. Ensure OPENROUTER_API_KEY is set and valid in mcp_config.json.`
@@ -497,6 +502,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   await logTelemetry({
     tool: 'jev_dispatch',
     ...telemetryHarness(),
+    sessionId: conversationId ?? null,
     // Metadata only: the prompt text never reaches the telemetry file.
     ...taskFingerprint(task),
     ...result
@@ -558,10 +564,13 @@ export function matchSubagentByKeywords(
 
 export async function handleBatchDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
-  const { tasks, availableSubagents } = (args || {}) as {
+  const { tasks, availableSubagents, conversationId: rawConversationId } = (args || {}) as {
     tasks: Array<{ id: string; task: string; dependencies?: string[]; kind?: string; needsEdit?: boolean }>;
     availableSubagents?: string[];
+    conversationId?: string;
   };
+  // Sanitized once; recorded as `sessionId` (null when omitted or nothing safe is left).
+  const conversationId = safeSessionId(rawConversationId);
 
   if (!Array.isArray(tasks) || tasks.length === 0) {
     throw new Error('jev_batch_dispatch requires a non-empty "tasks" array');
@@ -774,6 +783,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
   await logTelemetry({
     tool: 'jev_batch_dispatch',
     ...telemetryHarness(),
+    sessionId: conversationId ?? null,
     taskCount: plannedTasks.length,
     estimatedCostUsd: manifest.estimatedCostUsd,
     requiresUserApproval: anyProRequested,

@@ -289,13 +289,18 @@ def test_canary_yields_zero_hits_in_logs_audit_rows_and_healthcheck(canaries, lo
     assert log_text.count("\n") >= 1  # the probe route did log (control: the log is not empty)
     assert "[redacted]" in log_text or "[REDACTED]" in log_text  # and the header was masked, not dropped
     assert store.rows and {r.event for r in store.rows} >= {AuditEvent.AUTH_FAILURE_SAMPLED}
+    # The secret part is cut at the fixed prefix, not at the last "_": token_urlsafe can contain
+    # "_", so splitting on it made this needle empty or one character on some runs (flaky).
+    secret = key.removeprefix("a2ak_dev_canary1_")
+    assert len(secret) >= 24
+    needles = [key, secret, body]
     for name, text in {
         "log": log_text,
         "audit": audit_text,
         "healthcheck": health_out.out + health_out.err,
         "responses": responses_text,
     }.items():
-        assert scan(text, [key, key.split("_")[-1], body]) == [], name
+        assert scan(text, needles) == [], name
 
 
 def test_log_scan_over_the_raw_header_dump_without_the_middleware_would_leak(canaries):

@@ -150,7 +150,10 @@ Each item: its own branch off `origin/main` in a temporary worktree, not in the 
 | 6 | Old unmerged branches (`feat/jev-modular-sqlite-ram-cache`, `rfc/harness2-jev-unified-cognitive-substrate`) | Content check against cognitive-engine, then delete or keep; deleting on `origin` needs a separate go |
 | 7 | Final gate | One Opus gate after 2.3.4 with `jev_judge` alongside: backport diff against the parity table plus the case 1 verdict on the coordination diff |
 
-Rules for every release: own branch off `origin/main` in a temporary worktree (never edit `plugins/jev` in the shared checkout: the marketplace entry is a local directory source, so an edit there changes the installed plugin for every session; verified from case 2 section 8 and a peer report), a test that fails on the old code, a PR, no merge or push without a go.
+Rules for every release:
+
+- **Plans and docs (`plugins/jev/docs/**`) live on `main`:** maintain the single consolidated plan (`plugins/jev/docs/plans/2026-11-12-jev-consolidated-plan.md`) on `main` without leaving diverging plan edits stranded on code feature branches.
+- **Code and runtime work runs in feature branches and isolated worktrees (`../agentic-hub-wt-*`):** own branch off `origin/main` in a temporary worktree (never edit `plugins/jev` in the shared checkout: the marketplace entry is a local directory source, so an edit there changes the installed plugin for every session; verified from case 2 section 8 and a peer report), a test that fails on the old code, one PR per stream into `main`, and no merge or push without explicit approval.
 
 ## 7. Parity table
 
@@ -601,8 +604,9 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 
 **Open items:**
 
-- The live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
-- The model a Workflow agent actually ran on is never logged (no hook sees it).
+- #58: the transcript read in `extractAskAnswer` (`antigravity/logic.ts`) uses `existsSync` then `readFileSync` on a path taken from the hook's stdin: a FIFO or other non-regular file hangs the hook (the #51 class), and every `ask_question` PostToolUse reads the whole transcript. Wanted: stat first and require a regular file, non-blocking open, bounded read from the end of the file (or the step offset), tests with a FIFO and a large transcript; also check that the matched step really is the `ask_question` result of `toolCall.id`, not any step with that index. Comment posted on #58.
+- Merge #58, #54, #55 after Doc-Cr; then `git switch main && git pull` in the main checkout (detached on the 2.3.12 tip so the installed plugin runs the stack) and delete the worktrees.
+- Not verified: the live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; name matching and plugin manifest semantics against a real Claude Code; the model a Workflow agent actually ran on is never logged (no hook sees it).
 
 ---
 
@@ -611,6 +615,10 @@ Result: Claude Code applies all three variables to workflow agents, and the guar
 - **Status:** Draft plan for pre-implementation review (`@Doc-Cr` / Claude Code)
 - **Repository scope:** `plugins/jev/` in `agentic-hub` (primary) and companion hooks/scripts in `doppelganger`
 - **Target releases:** `v2.3.16` and `v2.3.17` (after merging PR `#54` and PR `#55` on top of `origin/main` `291b88e`, where `plugins/jev` currently declares `2.3.12`)
+- **Workflow & branch rule:**
+  - **Plans and docs (`plugins/jev/docs/**`) live on `main`:** keep `plugins/jev/docs/plans/2026-11-12-jev-consolidated-plan.md` as the single living plan on `main` and land docs/status updates directly on `main` rather than carrying plan edits inside code feature branches.
+  - **Implementation work runs in feature branches and isolated worktrees (`../agentic-hub-wt-*`):** never edit `plugins/jev` runtime files (`src/`, `claude/`, `antigravity/`, `hooks.json`, manifests) in the shared `main` checkout; branch off merged `main` per release stream and merge via PR.
+- **Note on Section 31:** PR `#55` (`feat/jev-agent-guard-parity`) carried updated Section 31 notes (`Status 2026-11-14 (evening)`); those updates are folded directly into Section 31 above so PR `#55` requires no conflicting plan edits on `2026-11-12-jev-consolidated-plan.md`.
 - **Evidence conventions used in section 32:**
   - **Verified:** directly observed in repository files, git state, GitHub API (`gh`), or local config/state snapshots on `2026-11-15`
   - **Reported:** documented in existing plan files, PR descriptions, or prior session logs without re-running the underlying test suite in this branch
@@ -789,7 +797,7 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
 - **Targets:** `rockad/agentic-hub` PR `#54`, PR `#55`, Issue `#27`, `.claude/worktrees/*`
 - **Steps:**
   - Confirm user/maintainer merge of PR `#54` (`feat/jev-tool-validation` -> `main`, `v2.3.14`).
-  - Retarget/rebase PR `#55` (`feat/jev-agent-guard-parity`) onto updated `main`, confirm green CI, and merge (`v2.3.15`).
+  - Retarget/rebase PR `#55` (`feat/jev-agent-guard-parity`) onto updated `main`; when rebasing/merging PR `#55`, resolve `plugins/jev/docs/plans/2026-11-12-jev-consolidated-plan.md` to `main`'s canonical version (since PR `#55`'s Section 31 updates are already incorporated in section 31 above), confirm green CI, and merge (`v2.3.15`).
   - Comment SHA `d4d89186f33e604ddd09e638772fa65c1b49af10` on Issue `#27` confirming `refs/heads/fix/jev-small-tails` is superseded by `main`, delete the remote branch (`git push origin --delete fix/jev-small-tails`), and close Issue `#27`.
   - Prune local detached/merged Jev worktrees (`.claude/worktrees/ag-hook`, `.claude/worktrees/guard-parity`, `.claude/worktrees/jev-install`, `.claude/worktrees/validation`).
   - Create clean worktree `../agentic-hub-wt-jev-orch` on branch `feat/jev-orchestrator-integration` off merged `main`.
@@ -894,11 +902,11 @@ Release slicing separates core Orchestrator fixes (`v2.3.16`, small diff for fas
   - `plugins/jev/package.json`
   - `plugins/jev/.claude-plugin/plugin.json`
   - `.claude-plugin/marketplace.json` (verify plugin version entry aligns)
-  - `plugins/jev/docs/plans/2026-11-12-jev-consolidated-plan.md` (this consolidated plan)
+  - `plugins/jev/docs/plans/2026-11-12-jev-consolidated-plan.md` (updated on `main` directly rather than carried in code feature branches)
 - **Deliverables:**
   - Document Orchestrator subagent ceiling (`flash`), cross-harness `jev_batch_dispatch` stage rubric (`kind`, `needsEdit`), `[jev-downgrade:flash_lite]`, and Python `run_workflow` guard behavior.
   - Keep any RFC 005 phrasing consistent with Issue `#24` (`"relocating to cognitive-engine"`, never `"retired"`).
-  - Update section 32+ of this consolidated plan with observed verification evidence and merged PR SHAs.
+  - Land ongoing plan/status updates to section 32+ directly on `main` (with observed verification evidence and merged PR SHAs) so plans and docs live on `main` while feature branches and worktrees hold implementation changes only.
 
 ### 32.6 Verification Matrix & Review Checklist
 

@@ -6,6 +6,9 @@ import {
   callJevRouter,
   readQuotaView,
   clampTierToSessionCeiling,
+  modelTierRank,
+  applyLowQuotaClamp,
+  readJevMode,
   detectScaffoldingTask,
   isFreeTierMechanicalTask,
   isReadOnlySubagent,
@@ -445,8 +448,11 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   const claudeModel = isClaude ? activeClaudeSessionModel() : null;
   const clamped = clampTierToSessionCeiling(recommendedTier, ceilingModelForHarness(harness, quotaView.active_model), task);
   const ceilingClamping = isClaude ? { ...clamped, ceilingTier: claudeModelTier(claudeModel) ?? 'pro' } : clamped;
+  // The quota step follows the ceiling: its only threshold source is the active pool's strategy (evaluatePoolStrategy).
+  // Mode "on" clamps a low pool whatever the task text says; "on-demand" lets pro through with a quotaWarning.
+  const quotaStep = applyLowQuotaClamp(ceilingClamping.clampedTier, quotaView, await readJevMode(harness), editsFiles({ task }));
   // The free tier returns text and cannot edit files: on Claude Code a task worded as an edit goes one tier up.
-  const effectiveTier = isClaude ? keepEditsOffFreeTier(ceilingClamping.clampedTier, editsFiles({ task })) : ceilingClamping.clampedTier;
+  const effectiveTier = isClaude ? keepEditsOffFreeTier(quotaStep.tier, editsFiles({ task })) : quotaStep.tier;
   const cognitiveTier = normalizeTier(effectiveTier);
   const harnessModels = getHarnessModels();
   const concreteModel = harnessModels[cognitiveTier] || effectiveTier;
@@ -468,6 +474,8 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     executionGuidance,
     sessionCeilingTier: ceilingClamping.ceilingTier,
     wasClampedByCeiling: ceilingClamping.wasClamped,
+    ...(quotaStep.wasClampedByQuota ? { wasClampedByQuota: true, quotaStrategy: quotaStep.strategy, quotaPool: quotaStep.pool } : {}),
+    ...(isPro && quotaStep.quotaWarning ? { quotaWarning: quotaStep.quotaWarning } : {}),
     ...(isClaude ? { activeSessionModel: claudeModel ?? 'unknown' } : {}),
     scaffoldFirst: scaffoldingCheck.scaffoldFirst,
     boilerplateType: scaffoldingCheck.boilerplateType,
@@ -561,6 +569,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   const quotaView = await readQuotaView();
   const activeHarness = detectActiveHarness();
+  const jevMode = await readJevMode(activeHarness);
   const isClaude = activeHarness === 'claude-code';
   const claudeModel = isClaude ? activeClaudeSessionModel() : null;
   const cfg = loadJevConfigSync();
@@ -683,12 +692,17 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
       tierSource = 'keyword';
     }
 
-    // A judgement stage is exempt from the session-model ceiling (its pro tier is the point); the quota step that
-    // follows the ceiling is a separate stage. On Claude Code no ceiling model is read here, so this changes nothing.
+    // A judgement stage (or a rubric-evaluated stage whose rubric tier is pro) is exempt from the session-model
+    // ceiling only: its pro tier is the point. The quota step that follows is separate, and nothing exempts from it.
+    // On Claude Code no ceiling model is read here, so the ceiling changes nothing.
     const ceilingModel = ceilingModelForHarness(activeHarness, quotaView.active_model);
-    const clamped = kind === 'judgement' ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
+    const ceilingExempt = kind === 'judgement' || (tierSource !== 'keyword' && modelTierRank(rawTier) >= 3);
+    const clamped = ceilingExempt ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
+    // Quota step: one threshold source (the active pool's strategy). Mode "on" clamps a low pool regardless of
+    // approvals or override phrases in the task; "on-demand" leaves pro standing with a quotaWarning.
+    const quotaStep = applyLowQuotaClamp(clamped.clampedTier, quotaView, jevMode, edits);
     // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
-    const tier = keepEditsOffFreeTier(clamped.clampedTier, edits);
+    const tier = keepEditsOffFreeTier(quotaStep.tier, edits);
     const cognitiveTier = normalizeTier(tier);
     const harnessModels = getHarnessModels();
     const concreteModel = harnessModels[cognitiveTier] || tier;
@@ -728,6 +742,8 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
       boilerplateType: scaffolding.boilerplateType,
       effort: taskEffort,
       requiresUserApproval: requiresApproval,
+      ...(quotaStep.wasClampedByQuota ? { wasClampedByQuota: true } : {}),
+      ...(requiresApproval && quotaStep.quotaWarning ? { quotaWarning: quotaStep.quotaWarning } : {}),
       estimatedCostUsd: taskCost,
       // Rubric-evaluated items only (all on Claude Code; elsewhere those with kind or needsEdit): the caller's own
       // fields echoed when given, and what set the tier.

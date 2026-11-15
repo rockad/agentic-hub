@@ -15,6 +15,10 @@ export interface SubTask {
   boilerplateType?: string | null;
   effort?: string;
   requiresUserApproval: boolean;
+  /** Present (true) only when Jev mode "on" lowered the tier because the active quota pool is low. */
+  wasClampedByQuota?: boolean;
+  /** Present only when pro survives in a low pool (mode "on-demand"): names the pool and its remaining percent. */
+  quotaWarning?: string;
   estimatedCostUsd: number;
   /** Echoed from the caller's input when given (case study 5.4); on Antigravity and OpenCode only for an item that supplies kind or needsEdit. */
   kind?: 'mechanical' | 'settled-edit' | 'judgement';

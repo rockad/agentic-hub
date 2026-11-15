@@ -11,7 +11,7 @@ import {
   getCachedDecision,
   setCachedDecision
 } from './cache.js';
-import { JEV_CONFIG_FILE } from './config.js';
+import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
 import { getTracer } from '../tracing.js';
 
@@ -329,6 +329,100 @@ export function rankToTierName(rank: number): 'openrouter_free' | 'flash_lite' |
   return 'pro';
 }
 
+/** Whole words and whole phrases only: "jargon" and "Argonaut" are not "argon". Matched against lowercase text.
+ * Bare "argon" is dropped: in Antigravity only Gemini Pro / Claude Opus (or explicit "gemini argon") are valid model names;
+ * bare "argon" collides with argon hashing ("hash it with argon") or chemical argon. Specific phrases like
+ * "argon subagent", "argon coordinator", "argon agent", or "argon model" are recognized as explicit overrides.
+ */
+const PRO_OVERRIDE_PHRASES =
+  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|(?:gemini\s+)?argon\s+(?:coordinator|subagent|agent|model)|claude\s+opus|(?:claude\s+)?fable|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
+
+/** Negators that indicate negation of the model directive. */
+const NEGATOR_PATTERN =
+  /\b(?:don'?t|do\s+not|never|not|no|without|avoid|stop|instead\s+of|rather\s+than)\b/i;
+
+/** Affirmative contrast resets: "but", "however", or an imperative directive after a completed negative clause like "Do not rush, use deep reasoning". */
+const AFFIRMATIVE_RESET_PATTERN =
+  /\b(?:but|however)\b|\b(?:rush|worry|panic|hesitate|stop|wait|delay)\s*,\s*(?:please\s+)?(?:use|run|launch|start|go\s+with|prefer|pick|select)\b/i;
+
+/** Phrases where "no" is an idiom rather than a negation of the model directive. */
+const NON_NEGATING_NO_IDIOMS =
+  /\bno\s+(?:idea|doubt|problem|worries|matter\s+what)\b/i;
+
+function phraseModelRank(phrase: string): number {
+  if (phrase.includes('fable')) return 4;
+  if (phrase.includes('pro') || phrase.includes('opus') || phrase.includes('argon') || phrase.includes('reasoning') || phrase.includes('architecture')) {
+    return 3;
+  }
+  return 2;
+}
+
+/** Check if the phrase tier and family cover the requested model. E.g. "gemini pro" does not authorize claude opus. */
+function phraseCoversModel(phrase: string, requestedModel?: string | null): boolean {
+  if (!requestedModel) return true;
+
+  const phraseLower = phrase.toLowerCase();
+  const reqLower = requestedModel.toLowerCase();
+
+  // 1. Rank check: phrase tier rank must cover requested model tier rank
+  const phraseRank = phraseModelRank(phraseLower);
+  const reqRank = modelTierRank(reqLower);
+  if (phraseRank < reqRank) return false;
+
+  // 2. Family compatibility:
+  // If phrase specifically names gemini or argon, it cannot approve a claude/opus request
+  if ((phraseLower.includes('gemini') || phraseLower.includes('argon')) && (reqLower.includes('claude') || reqLower.includes('opus'))) {
+    return false;
+  }
+  // If phrase specifically names claude, it cannot approve a gemini or argon request
+  if (phraseLower.includes('claude') && (reqLower.includes('gemini') || reqLower.includes('argon'))) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isExplicitProOverride(promptText?: string, requestedModel?: string | null): boolean {
+  // A typographic apostrophe is an apostrophe: "Don’t use gemini pro" is the same negation as "Don't".
+  const text = (promptText || '').replace(/[‘’ʼ]/g, "'").toLowerCase();
+  for (const m of text.matchAll(PRO_OVERRIDE_PHRASES)) {
+    const matchIndex = m.index!;
+    const matchedPhrase = m[0];
+
+    // Check sentence / clause boundary before the match
+    const textBeforeMatch = text.slice(0, matchIndex);
+    let sentenceStart = 0;
+    for (const b of textBeforeMatch.matchAll(/[.!?;\n]/g)) {
+      sentenceStart = b.index! + b[0].length;
+    }
+
+    const clauseBefore = textBeforeMatch.slice(sentenceStart);
+
+    // Look for negators in the clause before the match
+    const negMatch = NEGATOR_PATTERN.exec(clauseBefore);
+    if (negMatch) {
+      // Check if this is a false negator idiom ("no idea", "no doubt", etc.)
+      const idiomMatch = NON_NEGATING_NO_IDIOMS.exec(clauseBefore);
+      if (idiomMatch && idiomMatch.index <= negMatch.index && idiomMatch.index + idiomMatch[0].length >= negMatch.index + negMatch[0].length) {
+        // Negator was part of idiom, continue check
+      } else {
+        // Check for affirmative contrast or completed negative clause before comma
+        const between = clauseBefore.slice(negMatch.index + negMatch[0].length);
+        if (!AFFIRMATIVE_RESET_PATTERN.test(between)) {
+          // Clause is negated!
+          continue;
+        }
+      }
+    }
+
+    // Verify the named model/phrase covers requestedModel
+    if (phraseCoversModel(matchedPhrase, requestedModel)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function clampTierToSessionCeiling(
   recommendedTier: string,
   activeModel?: string,
@@ -338,17 +432,8 @@ export function clampTierToSessionCeiling(
     return { clampedTier: recommendedTier, wasClamped: false, ceilingTier: 'pro' };
   }
 
-  const text = promptText.toLowerCase();
-  const explicitProOverride =
-    text.includes('deep reasoning') ||
-    text.includes('cross-system architecture') ||
-    text.includes('manual pro approval') ||
-    text.includes('claude opus') ||
-    text.includes('gemini pro') ||
-    text.includes('gemini argon') ||
-    text.includes('argon') ||
-    text.includes('claude fable') ||
-    text.includes('fable');
+  // Whole phrases with negation handling, shared with the Antigravity hook (a bare "argon" is not an override).
+  const explicitProOverride = isExplicitProOverride(promptText, recommendedTier);
 
   const ceilingRank = modelTierRank(activeModel);
   const ceilingTier = rankToTierName(ceilingRank);
@@ -367,6 +452,55 @@ export function clampTierToSessionCeiling(
     wasClamped: false,
     ceilingTier
   };
+}
+
+export interface QuotaClampResult {
+  tier: string;
+  /** The Jev mode "on" lowered the tier because the active pool is low. */
+  wasClampedByQuota: boolean;
+  /** Set only when the tier is still `pro` in a low pool (mode "on-demand"): names the pool and what is left. */
+  quotaWarning?: string;
+  strategy: QuotaStrategy;
+  pool: 'gemini' | '3p';
+}
+
+/**
+ * The low-quota step of the dispatch tools, applied AFTER the session-model ceiling (a stage exempt from the
+ * ceiling is still subject to it). The one threshold source is the pool strategy from evaluatePoolStrategy
+ * (config-overridable thresholds, already resolved on `quotaView.active.strategy`); no percentage is read here.
+ *
+ * - mode "on": `conserve` clamps to flash_lite, `free_only` to openrouter_free (flash_lite when the item edits
+ *   files, since the free tier cannot edit). Approvals and override phrases in the task text cannot lift it.
+ * - mode "on-demand": the tier survives; a `pro` tier carries a `quotaWarning` naming the pool and its remaining %.
+ * - mode "off", or a `normal` / `unknown` pool: unchanged.
+ */
+export function applyLowQuotaClamp(
+  tier: string,
+  quotaView: Pick<QuotaView, 'active'>,
+  mode: JevMode,
+  editsFiles: boolean
+): QuotaClampResult {
+  const { pool, strategy, min_remaining } = quotaView.active;
+  const unchanged: QuotaClampResult = { tier, wasClampedByQuota: false, strategy, pool };
+  if (mode === 'off' || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
+
+  const rank = modelTierRank(tier);
+  if (mode === 'on') {
+    const floorTier = strategy === 'free_only' ? (editsFiles ? 'flash_lite' : 'openrouter_free') : 'flash_lite';
+    if (rank > modelTierRank(floorTier)) {
+      return { ...unchanged, tier: floorTier, wasClampedByQuota: true };
+    }
+    return unchanged;
+  }
+
+  if (rank >= 3) {
+    const left = typeof min_remaining === 'number' ? ` (${Math.round(min_remaining * 100)}% remaining)` : '';
+    return {
+      ...unchanged,
+      quotaWarning: `The ${pool} quota pool is in ${strategy}${left}: pro tier needs explicit user approval.`
+    };
+  }
+  return unchanged;
 }
 
 // ── Thinking Effort Governance ───────────────────────────────────────────────

@@ -9,7 +9,8 @@ Two rows of that table are not read here because they are not server variables:
 are read only so the table stays complete; they are the host side of the compose
 port mapping and the server does not listen on them.
 
-Start-up checks (spec 1.6) are not part of this module. It only parses and types.
+Start-up checks (spec 1.6) are not part of this module (they are `coordination.auth.startup`). It
+only parses and types, plus the one derived field `public_listener_enabled`.
 """
 
 from __future__ import annotations
@@ -107,6 +108,10 @@ class Config:
     enforce_tailnet_identity: bool = False  # default is stage-dependent, see from_env
     admin_socket: str = "/run/a2a/admin.sock"
     log_level: str = "info"
+    # Derived, not a variable of its own (S1-AUTH, [design]): is the public listener on? Spec 1.5:
+    # `A2A_PUBLIC_LISTEN` is "started at s2 and s3, not at s1". Unset, it follows the stage; set to
+    # a value, it is on; set to the empty string, it is off. See `from_env`.
+    public_listener_enabled: bool = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> Config:
@@ -120,6 +125,9 @@ class Config:
             # Spec 1.5: "0 at s1, 1 at s2 and s3".
             stage = values.get("exposure_stage", cls.exposure_stage)
             values["enforce_tailnet_identity"] = stage != "s1"
+        stage = values.get("exposure_stage", cls.exposure_stage)
+        explicit = environ.get("A2A_PUBLIC_LISTEN")
+        values["public_listener_enabled"] = (stage != "s1") if explicit is None else explicit.strip() != ""
         return cls(**values)
 
     @property
@@ -175,7 +183,10 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
 #: Every environment variable this module reads, in table order.
 ENV_VARS: tuple[str, ...] = tuple(name for name, _ in _SPEC.values())
 
-assert set(_SPEC) == {f.name for f in fields(Config)}, "Config fields and _SPEC differ"
+#: Fields that are computed from variables in `_SPEC` and are not variables themselves.
+DERIVED = frozenset({"public_listener_enabled"})
+
+assert set(_SPEC) | DERIVED == {f.name for f in fields(Config)}, "Config fields and _SPEC differ"
 
 
 def load() -> Config:

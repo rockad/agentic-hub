@@ -649,6 +649,114 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
     }
   });
 
+  it('extractAskAnswer reads answer from the tail when transcript is larger than the window (3 MB)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-tail-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Create ~3 MB of padding steps
+      const paddingLine = '{"step_index":0,"source":"USER","type":"USER_INPUT","content":"padding message text for large file"}\n';
+      const repeatCount = Math.ceil((3 * 1024 * 1024) / paddingLine.length);
+      fs.writeFileSync(transcriptFile, paddingLine.repeat(repeatCount));
+      // Append target step at the end
+      fs.appendFileSync(
+        transcriptFile,
+        '{"step_index":999,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: (Recommended) Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-tail-large',
+        stepIdx: 999,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBe('(Recommended) Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null when transcript is larger than the window but matching step sits outside the window', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-tail-outside-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Target step is at the very beginning
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":42,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      // Append 2 MB of filler lines after it, pushing step 42 outside the 1 MB tail window
+      const paddingLine = '{"step_index":0,"type":"GENERIC","content":"filler lines pushing earlier steps out of window"}\n';
+      const repeatCount = Math.ceil((2 * 1024 * 1024) / paddingLine.length);
+      fs.appendFileSync(transcriptFile, paddingLine.repeat(repeatCount));
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-tail-outside',
+        stepIdx: 42,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer drops the first partial line when window cuts mid-line without breaking parsing', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mid-cut-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Create a file where tail window cuts right in the middle of a JSON line
+      // E.g. filler 500 bytes, window = 200 bytes
+      const filler = '{"step_index":1,"type":"GENERIC","content":"very long filler text that will be cut mid-line by the tail window"}\n';
+      fs.writeFileSync(transcriptFile, filler.repeat(10));
+      fs.appendFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mid-cut',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      // Set window to 150 bytes: the window start will land inside one of the filler lines
+      expect(extractAskAnswer(input, 0, 150)).toBe('Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads answer from a real transcript over 1 MB when step is at the end (real check)', () => {
+    const realSource = '/home/rockad/.gemini/antigravity-cli/brain/06b5e0c4-25b4-4f5c-9308-c9b85e316c60/.system_generated/logs/transcript_full.jsonl';
+    if (!fs.existsSync(realSource)) return;
+    const stat = fs.statSync(realSource);
+    if (stat.size <= 1024 * 1024) return;
+
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-real-1m-'));
+    try {
+      const copyPath = path.join(testDir, 'transcript_full.jsonl');
+      fs.copyFileSync(realSource, copyPath);
+      // Append a synthetic answer step at the end (stepIdx 99999)
+      const answerStep = '{"step_index":99999,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: (Recommended) Yes, once"}\n';
+      fs.appendFileSync(copyPath, answerStep);
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-real-large',
+        stepIdx: 99999,
+        transcriptPath: copyPath,
+        toolCall: { name: 'ask_question' }
+      };
+
+      const ans = extractAskAnswer(input, 0);
+      expect(ans).toBe('(Recommended) Yes, once');
+      expect(parseElevationAnswer(ans)).toEqual({ approved: true, scope: 'once' });
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
   it('extractAskAnswer returns null if matching step has wrong type (not GENERIC)', () => {
     const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-type-test-'));
     try {

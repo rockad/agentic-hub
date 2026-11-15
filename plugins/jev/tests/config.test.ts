@@ -256,6 +256,9 @@ describe('Jev Multi-Level Configuration Engine (v2 Schema & Cascading Loader)', 
       expect(normalizeTier('flash')).toBe('standard');
       expect(normalizeTier('sonnet')).toBe('standard');
       expect(normalizeTier('claude-3-7-sonnet')).toBe('standard');
+      expect(normalizeTier('hydrogen')).toBe('standard');
+      expect(normalizeTier('gemini-hydrogen')).toBe('standard');
+      expect(normalizeTier('gemini-4-hydrogen')).toBe('standard');
     });
 
     it('normalizes deep / pro / opus variants to "deep"', () => {

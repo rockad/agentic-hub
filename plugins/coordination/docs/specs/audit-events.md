@@ -1,6 +1,6 @@
 # Audit events and observability (S1-OBS)
 
-Status 2026-11-14: built on branch `feat/coordination-obs`, not merged. Source: [`server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) 1.3 (audit rules), 1.5 (`A2A_LOG_LEVEL`), 2.1, 3.6 (`dump_age_h`), 3.7 (`/healthz`); implementation plan section S1-OBS.
+Status 2026-11-15: merged to `main` (PR #62, `d09799f`). The acceptance split in section 2 was ratified by the user on 2026-11-15 (decision Z6). Source: [`server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) 1.3 (audit rules), 1.5 (`A2A_LOG_LEVEL`), 2.1, 3.6 (`dump_age_h`), 3.7 (`/healthz`); implementation plan section S1-OBS.
 
 Labels: **spec** is written in `server-api.md`. **[design]** is a choice S1-OBS made where the spec is silent; any of it can change without reopening a decision.
 
@@ -28,9 +28,9 @@ The plan's S1-OBS acceptance line has two halves. Only the first can be shown in
 | OBS half | `AuditLog.state_transition` makes exactly one append per call, requires and records the actor, refuses unknown states, and lets a failed append reach the caller: no swallow, no buffer, no retry, no stray row | `tests/test_audit.py`: `test_one_state_transition_call_makes_exactly_one_append`, `test_state_transition_names_its_actor_and_is_one_row_each`, `test_failed_transition_append_leaves_no_row_and_is_never_retried_behind_the_caller`, `test_store_failure_propagates` | tested against the in-memory double only |
 | end-to-end half | the transition and its audit row commit in one transaction, against the real state machine and the Postgres test container: a failed audit insert leaves the task state and version unchanged and no row; a normal transition leaves exactly one row naming the actor | not in this stream: it needs S1-STATE and the `audit` table from S1-STORE | **handed over**, unverified; a skipped placeholder test marks it (`test_transition_and_its_audit_row_commit_together_against_postgres`) |
 
-- The end-to-end half is an exit test of S1-STATE and S1-STORE (see the acceptance lists in `implementation-plan.md`). It is a gap in how the acceptance list was assigned, not a defect found in S1-OBS.
+- The end-to-end half is an exit test of S1-STATE (decision Z6, 2026-11-15; see its acceptance list in `implementation-plan.md`), using the `audit` table S1-STORE already built. It is a gap in how the acceptance list was assigned, not a defect found in S1-OBS.
 - S1-OBS does not claim the guarantee. What S1-OBS promises is narrower: given a store whose `append_audit` joins the caller's transaction, the writer adds nothing that would break atomicity.
-- Open for S1-STORE and S1-STATE [design]: how `append_audit` joins the transaction (a connection or session argument, a unit-of-work object, or an `AuditLog` bound to the current transaction). S1-OBS does not choose.
+- Owned by S1-STATE [design] (Z6): how `append_audit` joins the transaction (a connection or session argument, a unit-of-work object, or an `AuditLog` bound to the current transaction). S1-OBS does not choose. S1-STORE (merged) provides the table only, not a transaction-joining append.
 
 ## 3. Event types
 

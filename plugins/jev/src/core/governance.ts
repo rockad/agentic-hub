@@ -238,12 +238,17 @@ export async function readQuotaView(): Promise<QuotaView> {
   }
 
   const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel));
+  const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
+  const hydrogenWeeklyKey = Object.keys(buckets).find((k) => /hydrogen/i.test(k) && /week|7d/i.test(k));
+  const hydrogenFiveKey = Object.keys(buckets).find((k) => /hydrogen/i.test(k) && /5h/i.test(k));
 
   const geminiFive = (isArgonActive && argonFiveKey ? buckets[argonFiveKey]?.effective_remaining_fraction : undefined)
+    ?? (isHydrogenActive && hydrogenFiveKey ? buckets[hydrogenFiveKey]?.effective_remaining_fraction : undefined)
     ?? buckets['gemini-5h']?.effective_remaining_fraction ?? null;
   const geminiWeekly = (isArgonActive ? buckets[argonWeeklyKey]?.effective_remaining_fraction : undefined)
+    ?? (isHydrogenActive && hydrogenWeeklyKey ? buckets[hydrogenWeeklyKey]?.effective_remaining_fraction : undefined)
     ?? buckets['gemini-weekly']?.effective_remaining_fraction ?? null;
   const p3Five = buckets['3p-5h']?.effective_remaining_fraction ?? null;
   const p3Weekly = buckets['3p-weekly']?.effective_remaining_fraction ?? null;
@@ -273,7 +278,7 @@ export async function readQuotaView(): Promise<QuotaView> {
   const stale = updatedAt === null || nowSec - updatedAt > QUOTA_STALE_SECONDS;
 
   // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
-  const isGeminiActive = !activeModel || /gemini/i.test(activeModel) || p3Min === null;
+  const isGeminiActive = !activeModel || /gemini|argon|hydrogen/i.test(activeModel) || p3Min === null;
   const active = isGeminiActive
     ? { pool: 'gemini' as const, five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining, strategy: geminiStrategy }
     : { pool: '3p' as const, five_hour: p3Five, weekly: p3Weekly, min_remaining: p3Min, strategy: p3Strategy };
@@ -312,7 +317,7 @@ export function modelTierRank(tierOrModel: string): number {
   const t = (tierOrModel || '').toLowerCase();
   if (t.includes('free') || t === 'openrouter_free') return 0;
   if (t.includes('flash_lite') || t.includes('flash-lite')) return 1;
-  if (t.includes('flash') || t.includes('cheap') || t.includes('standard')) return 2;
+  if (t.includes('flash') || t.includes('hydrogen') || t.includes('cheap') || t.includes('standard')) return 2;
   if (t.includes('pro') || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t === 'deep') return 3;
   return 2;
 }

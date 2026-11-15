@@ -1,5 +1,7 @@
+import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { modelTierRank, rankToTierName } from '../src/core/governance.js';
+import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -52,50 +54,154 @@ export const CHOICE_OPTIONS = {
   no: (ceiling: string) => `No, proceed on ${ceiling}`
 };
 
-/** Whole words and whole phrases only: "jargon" and "Argonaut" are not "argon". Matched against lowercase text. */
+/** Whole words and whole phrases only: "jargon" and "Argonaut" are not "argon". Matched against lowercase text.
+ * Bare "argon" is dropped: in Antigravity only Gemini Pro / Claude Opus (or explicit "gemini argon") are valid model names;
+ * bare "argon" collides with argon hashing ("hash it with argon") or chemical argon. Specific phrases like
+ * "argon subagent", "argon coordinator", "argon agent", or "argon model" are recognized as explicit overrides.
+ */
 const PRO_OVERRIDE_PHRASES =
-  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|argon|claude\s+opus|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
+  /(?<![\w-])(?:manual\s+pro\s+approval|gemini\s+pro|gemini\s+argon|(?:gemini\s+)?argon\s+(?:coordinator|subagent|agent|model)|claude\s+opus|deep\s+reasoning|cross-system\s+architecture)(?![\w-])/g;
 
-/** "do not use deep reasoning", "without manual pro approval", "avoid argon": the phrase is named to rule it out. Same negators as the Claude path. */
-const PRO_OVERRIDE_NEGATION =
-  /\b(?:don'?t|do\s+not|never|not|no|without|avoid|stop|instead\s+of|rather\s+than)\s+(?:[\w'-]+\s+){0,2}$/i;
+/** Negators that indicate negation of the model directive. */
+const NEGATOR_PATTERN =
+  /\b(?:don'?t|do\s+not|never|not|no|without|avoid|stop|instead\s+of|rather\s+than)\b/i;
 
-export function isExplicitProOverride(promptText?: string): boolean {
+/** Affirmative contrast resets: "but", "however", or an imperative directive after a completed negative clause like "Do not rush, use deep reasoning". */
+const AFFIRMATIVE_RESET_PATTERN =
+  /\b(?:but|however)\b|\b(?:rush|worry|panic|hesitate|stop|wait|delay)\s*,\s*(?:please\s+)?(?:use|run|launch|start|go\s+with|prefer|pick|select)\b/i;
+
+/** Phrases where "no" is an idiom rather than a negation of the model directive. */
+const NON_NEGATING_NO_IDIOMS =
+  /\bno\s+(?:idea|doubt|problem|worries|matter\s+what)\b/i;
+
+function phraseModelRank(phrase: string): number {
+  if (phrase.includes('fable')) return 4;
+  if (phrase.includes('pro') || phrase.includes('opus') || phrase.includes('argon') || phrase.includes('reasoning') || phrase.includes('architecture')) {
+    return 3;
+  }
+  return 2;
+}
+
+/** Check if the phrase tier and family cover the requested model. E.g. "gemini pro" does not authorize claude opus. */
+function phraseCoversModel(phrase: string, requestedModel?: string | null): boolean {
+  if (!requestedModel) return true;
+
+  const phraseLower = phrase.toLowerCase();
+  const reqLower = requestedModel.toLowerCase();
+
+  // 1. Rank check: phrase tier rank must cover requested model tier rank
+  const phraseRank = phraseModelRank(phraseLower);
+  const reqRank = modelTierRank(reqLower);
+  if (phraseRank < reqRank) return false;
+
+  // 2. Family compatibility:
+  // If phrase specifically names gemini or argon, it cannot approve a claude/opus request
+  if ((phraseLower.includes('gemini') || phraseLower.includes('argon')) && (reqLower.includes('claude') || reqLower.includes('opus'))) {
+    return false;
+  }
+  // If phrase specifically names claude, it cannot approve a gemini or argon request
+  if (phraseLower.includes('claude') && (reqLower.includes('gemini') || reqLower.includes('argon'))) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isExplicitProOverride(promptText?: string, requestedModel?: string | null): boolean {
   // A typographic apostrophe is an apostrophe: "Don’t use gemini pro" is the same negation as "Don't".
   const text = (promptText || '').replace(/[‘’ʼ]/g, "'").toLowerCase();
   for (const m of text.matchAll(PRO_OVERRIDE_PHRASES)) {
-    if (!PRO_OVERRIDE_NEGATION.test(text.slice(Math.max(0, m.index! - 30), m.index!))) return true;
+    const matchIndex = m.index!;
+    const matchedPhrase = m[0];
+
+    // Check sentence / clause boundary before the match
+    const textBeforeMatch = text.slice(0, matchIndex);
+    let sentenceStart = 0;
+    for (const b of textBeforeMatch.matchAll(/[.!?;\n]/g)) {
+      sentenceStart = b.index! + b[0].length;
+    }
+
+    const clauseBefore = textBeforeMatch.slice(sentenceStart);
+
+    // Look for negators in the clause before the match
+    const negMatch = NEGATOR_PATTERN.exec(clauseBefore);
+    if (negMatch) {
+      // Check if this is a false negator idiom ("no idea", "no doubt", etc.)
+      const idiomMatch = NON_NEGATING_NO_IDIOMS.exec(clauseBefore);
+      if (idiomMatch && idiomMatch.index <= negMatch.index && idiomMatch.index + idiomMatch[0].length >= negMatch.index + negMatch[0].length) {
+        // Negator was part of idiom, continue check
+      } else {
+        // Check for affirmative contrast or completed negative clause before comma
+        const between = clauseBefore.slice(negMatch.index + negMatch[0].length);
+        if (!AFFIRMATIVE_RESET_PATTERN.test(between)) {
+          // Clause is negated!
+          continue;
+        }
+      }
+    }
+
+    // Verify the named model/phrase covers requestedModel
+    if (phraseCoversModel(matchedPhrase, requestedModel)) {
+      return true;
+    }
   }
   return false;
 }
 
+/**
+ * Extract the requested subagent model from toolCall.args.
+ *
+ * NOTE on schemas:
+ * - Antigravity 1.5.8 sends a flat object with `Model` (e.g. `{"TypeName": "...", "Prompt": "...", "Model": "flash_lite"}`).
+ *   This is the verified, real schema recorded in `tests/fixtures/agy-invoke-subagent.json`.
+ * - `args.Subagents[]` / `args.subagents[]` and lowercase `model` keys are defensive fallbacks for backward compatibility
+ *   with older schemas and case-tolerance.
+ *
+ * When multiple models are named across flat arguments and arrays, all non-inherit explicit models are collected
+ * and the highest-ranked one is returned so that nested elevations are never masked by an earlier lower-tier entry
+ * or an `args.Model === "inherit"`.
+ */
 export function extractSubagentModel(args?: Record<string, unknown>): { requestedModel: string | null; isExplicit: boolean } {
   if (!args || typeof args !== 'object') {
     return { requestedModel: null, isExplicit: false };
   }
 
-  // 1. Flat args.Model (current real Antigravity schema)
-  if (typeof args.Model === 'string' && args.Model.trim().length > 0) {
-    const m = args.Model.trim().toLowerCase();
-    if (m === 'inherit') {
-      return { requestedModel: null, isExplicit: false };
-    }
-    return { requestedModel: m, isExplicit: true };
-  }
+  const candidates: string[] = [];
 
-  // 2. Backward compatibility with older args.Subagents[] shape
-  if (Array.isArray(args.Subagents) && args.Subagents.length > 0) {
-    for (const sub of args.Subagents) {
-      if (sub && typeof sub === 'object' && typeof (sub as Record<string, unknown>).Model === 'string') {
-        const m = ((sub as Record<string, unknown>).Model as string).trim().toLowerCase();
-        if (m && m !== 'inherit') {
-          return { requestedModel: m, isExplicit: true };
+  const addCandidate = (val: unknown) => {
+    if (typeof val === 'string') {
+      const trimmed = val.trim().toLowerCase();
+      if (trimmed.length > 0 && trimmed !== 'inherit') {
+        candidates.push(trimmed);
+      }
+    }
+  };
+
+  // 1. Flat model keys (Model is the real agy 1.5.8 schema; model is a defensive lowercase fallback)
+  addCandidate(args.Model);
+  addCandidate(args.model);
+
+  // 2. Subagent array keys (defensive backwards-compatibility fallbacks)
+  const subArrays = [args.Subagents, args.subagents];
+  for (const arr of subArrays) {
+    if (Array.isArray(arr)) {
+      for (const item of arr) {
+        if (item && typeof item === 'object') {
+          const rec = item as Record<string, unknown>;
+          addCandidate(rec.Model);
+          addCandidate(rec.model);
         }
       }
     }
   }
 
-  return { requestedModel: null, isExplicit: false };
+  if (candidates.length === 0) {
+    return { requestedModel: null, isExplicit: false };
+  }
+
+  // Sort descending by model tier rank and pick highest
+  candidates.sort((a, b) => modelTierRank(b) - modelTierRank(a));
+  return { requestedModel: candidates[0], isExplicit: true };
 }
 
 export function buildElevationQuestion(opts: {
@@ -146,8 +252,9 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
 ]);
 
 /**
- * The answer to the elevation question, from the PostToolUse `content` field ONLY. Antigravity's ask_question step
- * reports the user's choice as
+ * The answer to the elevation question, read from the PostToolUse `content` field or the session transcript step.
+ * Antigravity's real ask_question PostToolUse payload does not send `content` directly on stdin; instead it passes
+ * `transcriptPath` and `stepIdx`. The step in the transcript reports the user's choice as:
  *
  *   Created At: ...\nCompleted At: ...\nA1: <chosen option or typed text>\nA2: User Skipped
  *
@@ -158,8 +265,62 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
  * `questionIndex` picks the answer of that question (A1 is index 0). Null when there is no `content` string, no such
  * answer line, or a content with no `A<n>:` line that is more than one line.
  */
-export function extractAskAnswer(input: AntigravityHookInput | undefined, questionIndex = 0): string | null {
-  const content = input?.content;
+/**
+ * Tail window size for reading transcripts in PostToolUse for ask_question.
+ * Transcripts larger than this have only their last N bytes read.
+ */
+export const TRANSCRIPT_TAIL_WINDOW_BYTES = 1024 * 1024; // 1 MB
+export const MAX_TRANSCRIPT_READ_BYTES = TRANSCRIPT_TAIL_WINDOW_BYTES;
+
+export function extractAskAnswer(
+  input: AntigravityHookInput | undefined,
+  questionIndex = 0,
+  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES
+): string | null {
+  let content = input?.content;
+  if ((!content || typeof content !== 'string') && input?.transcriptPath && typeof input?.stepIdx === 'number') {
+    try {
+      const read = readRegularFileTail(input.transcriptPath, maxBytes);
+      if (read.kind === 'ok') {
+        let text = read.text;
+        // Drop the first partial line when the window does not start at byte 0
+        if (read.truncated) {
+          const firstNewline = text.indexOf('\n');
+          text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+        }
+        const lines = text.trim().split(/\r?\n/);
+        let matchCount = 0;
+        let matchedStep: Record<string, unknown> | null = null;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const step = JSON.parse(line);
+            if (typeof step === 'object' && step !== null && step.step_index === input.stepIdx) {
+              matchCount++;
+              matchedStep = step as Record<string, unknown>;
+            }
+          } catch {
+            // ignore unparseable or partial line
+          }
+        }
+        // Right step & fail closed:
+        // Must match exactly one step (no duplicate indices), and that step must be a GENERIC tool response step
+        if (matchCount === 1 && matchedStep && matchedStep.type === 'GENERIC') {
+          const stepToolId = matchedStep.toolCallId ?? matchedStep.tool_call_id;
+          const inputToolId = input.toolCall?.id;
+          if (typeof stepToolId === 'string' && inputToolId && stepToolId !== inputToolId) {
+            return null;
+          }
+          if (typeof matchedStep.content === 'string') {
+            content = matchedStep.content;
+          }
+        }
+      }
+    } catch {
+      // return null on error
+    }
+  }
+
   if (typeof content !== 'string' || content.trim() === '') return null;
   const answers = new Map<number, string>();
   let current: number | null = null;
@@ -233,7 +394,7 @@ export function evaluateAntigravitySubagentCall(
   const typeName = String(args.TypeName || args.Role || 'subagent');
 
   // Check explicit override in user prompt
-  if (isExplicitProOverride(input.lastUserInput)) {
+  if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
     return { decision: 'allow', elevation: 'instructed' };
   }
 

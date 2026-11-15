@@ -6,6 +6,7 @@ import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
   extractAskAnswer,
+  MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
   type AntigravityHookInput,
   type AntigravityHookDecision
@@ -210,13 +211,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
   });
 
   describe('explicit pro override matching', () => {
-    const overrides = (prompt: string, elevationMode?: 'dialog') =>
+    const overrides = (prompt: string, elevationMode?: 'dialog', requestedModel: string = 'pro') =>
       evaluateAntigravitySubagentCall(
         {
           conversationId: 'c-ovr',
           lastUserInput: prompt,
           modelName: 'gemini-3.8-flash-low',
-          toolCall: { id: 't-ovr', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'x', Model: 'pro' } }
+          toolCall: { id: 't-ovr', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'x', Model: requestedModel } }
         },
         { approvals, sessionModelOverride: 'gemini-3.8-flash-low', elevationMode, now: () => 1000 }
       );
@@ -229,7 +230,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       'Don’t use Claude Opus for this',
       'Never use cross-system architecture thinking',
       'Run it without manual pro approval',
-      'avoid argon'
+      'avoid argon',
+      "I don't want you to use gemini pro here",
+      'Do not, under any circumstances, use gemini pro',
+      'never let a subagent use gemini pro',
+      'hash it with argon',
+      'use argon for this',
+      'Argon, please.'
     ]) {
       it(`does not treat "${prompt}" as an explicit override`, () => {
         const d = overrides(prompt);
@@ -246,9 +253,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       'Use Claude Opus for this',
       'manual pro approval granted',
       'use deep reasoning',
-      'use argon for this',
-      'Argon, please.',
-      'Do not rush, use deep reasoning'
+      'Do not rush, use deep reasoning',
+      'run an argon subagent',
+      'use argon coordinator',
+      'spawn an argon agent',
+      'select the argon model',
+      'use gemini argon coordinator',
+      'use gemini argon subagent'
     ]) {
       it(`still treats "${prompt}" as an explicit override`, () => {
         const d = overrides(prompt);
@@ -256,6 +267,147 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
         expect(d.elevation).toBe('instructed');
       });
     }
+
+    it('"use gemini pro" must not approve a Claude Opus request', () => {
+      const d = overrides('use gemini pro', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:claude-opus-5-5]');
+    });
+
+    it('"run an argon subagent" must not approve a Claude Opus request', () => {
+      const d = overrides('run an argon subagent', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:claude-opus-5-5]');
+    });
+
+    it('"Use Claude Opus for this" must not approve a Gemini Argon request', () => {
+      const d = overrides('Use Claude Opus for this', undefined, 'gemini-argon');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:gemini-argon]');
+    });
+
+    it('"run an argon subagent" approves a Gemini Argon request', () => {
+      const d = overrides('run an argon subagent', undefined, 'gemini-argon');
+      expect(d.decision).toBe('allow');
+      expect(d.elevation).toBe('instructed');
+    });
+
+    it('"Use Claude Opus for this" approves a Claude Opus request', () => {
+      const d = overrides('Use Claude Opus for this', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('allow');
+      expect(d.elevation).toBe('instructed');
+    });
+  });
+
+  describe('Finding A: mixed Subagents[] and lowercase model shapes', () => {
+    it('denies mixed Subagents[] with lower-tier first and pro second: {"Subagents":[{"Model":"flash"},{"Model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mixed',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-mix',
+          name: 'invoke_subagent',
+          args: {
+            Subagents: [
+              { Role: 'helper', Model: 'flash' },
+              { Role: 'expert', Model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies Model: "inherit" when Subagents[] contains pro: {"Model":"inherit","Subagents":[{"Model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-inherit-sub',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-inh',
+          name: 'invoke_subagent',
+          args: {
+            Model: 'inherit',
+            Subagents: [
+              { Role: 'expert', Model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies lowercase model key: {"model":"pro"}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-lc-key',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-lc',
+          name: 'invoke_subagent',
+          args: {
+            TypeName: 'expert',
+            Prompt: 'work',
+            model: 'pro'
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
+
+    it('denies lowercase subagents array and model keys: {"subagents":[{"model":"pro"}]}', () => {
+      const input: AntigravityHookInput = {
+        conversationId: 'c-lc-arr',
+        lastUserInput: 'run subagents',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 't-lc-arr',
+          name: 'invoke_subagent',
+          args: {
+            subagents: [
+              { role: 'expert', model: 'pro' }
+            ]
+          }
+        }
+      };
+
+      const decision = evaluateAntigravitySubagentCall(input, {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => 1000
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.elevation).toBe('denied');
+      expect(decision.reason).toContain('[jev-elevate:pro]');
+    });
   });
 
   it('supports backward compatibility with older args.Subagents[] shape', () => {
@@ -434,6 +586,261 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
     expect(
       extractAskAnswer({ toolCall: { name: 'ask_question', args: { questions: [{ question: 'q', options: ['Yes, once'] }] } }, lastUserInput: 'Yes, once' } as AntigravityHookInput)
     ).toBeNull();
+  });
+
+  it('extractAskAnswer reads from transcriptPath at stepIdx when content is omitted (real Antigravity PostToolUse)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-transcript-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"start"}\n' +
+        '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","content":"ask"}\n' +
+        '{"step_index":2,"source":"MODEL","type":"GENERIC","content":"Created At: 2026-11-14T16:37:35+02:00\\nCompleted At: 2026-11-14T16:38:00+02:00\\nA1: (Recommended) Yes, once"}\n'
+      );
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-transcript',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: {
+          name: 'ask_question',
+          args: {
+            questions: [
+              {
+                question: '[jev-elevate:pro] Allow subagent?',
+                options: ['(Recommended) Yes, once', 'No']
+              }
+            ]
+          }
+        }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBe('(Recommended) Yes, once');
+      const parsed = parseElevationAnswer(extractAskAnswer(input, 0));
+      expect(parsed.approved).toBe(true);
+      expect(parsed.scope).toBe('once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null for a transcript larger than the cap', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cap-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-cap',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      // When cap is smaller than the file size, returns null:
+      expect(extractAskAnswer(input, 0, 10)).toBeNull();
+      // When cap is larger than the file size, returns the answer:
+      expect(extractAskAnswer(input, 0, 10_000)).toBe('Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer reads answer from the tail when transcript is larger than the window (3 MB)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-tail-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Create ~3 MB of padding steps
+      const paddingLine = '{"step_index":0,"source":"USER","type":"USER_INPUT","content":"padding message text for large file"}\n';
+      const repeatCount = Math.ceil((3 * 1024 * 1024) / paddingLine.length);
+      fs.writeFileSync(transcriptFile, paddingLine.repeat(repeatCount));
+      // Append target step at the end
+      fs.appendFileSync(
+        transcriptFile,
+        '{"step_index":999,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: (Recommended) Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-tail-large',
+        stepIdx: 999,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBe('(Recommended) Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null when transcript is larger than the window but matching step sits outside the window', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-tail-outside-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Target step is at the very beginning
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":42,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      // Append 2 MB of filler lines after it, pushing step 42 outside the 1 MB tail window
+      const paddingLine = '{"step_index":0,"type":"GENERIC","content":"filler lines pushing earlier steps out of window"}\n';
+      const repeatCount = Math.ceil((2 * 1024 * 1024) / paddingLine.length);
+      fs.appendFileSync(transcriptFile, paddingLine.repeat(repeatCount));
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-tail-outside',
+        stepIdx: 42,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer drops the first partial line when window cuts mid-line without breaking parsing', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mid-cut-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Create a file where tail window cuts right in the middle of a JSON line
+      // E.g. filler 500 bytes, window = 200 bytes
+      const filler = '{"step_index":1,"type":"GENERIC","content":"very long filler text that will be cut mid-line by the tail window"}\n';
+      fs.writeFileSync(transcriptFile, filler.repeat(10));
+      fs.appendFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mid-cut',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      // Set window to 150 bytes: the window start will land inside one of the filler lines
+      expect(extractAskAnswer(input, 0, 150)).toBe('Yes, once');
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads answer from a real transcript over 1 MB when step is at the end (real check)', () => {
+    const realSource = '/home/rockad/.gemini/antigravity-cli/brain/06b5e0c4-25b4-4f5c-9308-c9b85e316c60/.system_generated/logs/transcript_full.jsonl';
+    if (!fs.existsSync(realSource)) return;
+    const stat = fs.statSync(realSource);
+    if (stat.size <= 1024 * 1024) return;
+
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-real-1m-'));
+    try {
+      const copyPath = path.join(testDir, 'transcript_full.jsonl');
+      fs.copyFileSync(realSource, copyPath);
+      // Append a synthetic answer step at the end (stepIdx 99999)
+      const answerStep = '{"step_index":99999,"type":"GENERIC","content":"Created At: x\\nCompleted At: y\\nA1: (Recommended) Yes, once"}\n';
+      fs.appendFileSync(copyPath, answerStep);
+
+      const input: AntigravityHookInput = {
+        conversationId: 'c-real-large',
+        stepIdx: 99999,
+        transcriptPath: copyPath,
+        toolCall: { name: 'ask_question' }
+      };
+
+      const ans = extractAskAnswer(input, 0);
+      expect(ans).toBe('(Recommended) Yes, once');
+      expect(parseElevationAnswer(ans)).toEqual({ approved: true, scope: 'once' });
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null if matching step has wrong type (not GENERIC)', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-type-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Step 2 has type PLANNER_RESPONSE instead of GENERIC:
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"PLANNER_RESPONSE","content":"Created At: x\\nCompleted At: y\\nA1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-wrong-type',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null and fails closed on duplicate step index', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-dup-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      // Two lines share step_index: 2
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n' +
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-dup',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null if step toolCallId does not match input.toolCall.id', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-id-test-'));
+    try {
+      const transcriptFile = path.join(testDir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":2,"type":"GENERIC","toolCallId":"call_other","content":"A1: Yes, once"}\n'
+      );
+      const input: AntigravityHookInput = {
+        conversationId: 'c-mismatch-id',
+        stepIdx: 2,
+        transcriptPath: transcriptFile,
+        toolCall: { id: 'call_expected', name: 'ask_question' }
+      };
+
+      expect(extractAskAnswer(input, 0)).toBeNull();
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractAskAnswer returns null for a FIFO without blocking', () => {
+    const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-fifo-test-'));
+    try {
+      const fifoPath = path.join(testDir, 'fifo_pipe');
+      const r = Bun.spawnSync(['mkfifo', fifoPath]);
+      if (r.exitCode === 0) {
+        const input: AntigravityHookInput = {
+          conversationId: 'c-fifo',
+          stepIdx: 2,
+          transcriptPath: fifoPath,
+          toolCall: { name: 'ask_question' }
+        };
+        // Should return null immediately without blocking on the open FIFO
+        expect(extractAskAnswer(input, 0)).toBeNull();
+      }
+    } finally {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps a multi-line free-text answer whole, so it can never equal a label', () => {

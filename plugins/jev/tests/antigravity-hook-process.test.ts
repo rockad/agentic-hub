@@ -40,12 +40,12 @@ function run(event: string, input: object, extraEnv: Record<string, string> = {}
 }
 
 describe('Antigravity hook as a process', () => {
-  it('passes the captured real payload fixture through with {} (no explicit allow)', () => {
+  it('passes the captured real payload fixture through with empty stdout (no explicit allow)', () => {
     const raw = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
     const proc = run('pre-tool-use', raw);
 
     expect(proc.exitCode).toBe(0);
-    expect(JSON.parse(proc.stdout.toString())).toEqual({});
+    expect(proc.stdout.toString().trim()).toBe('');
   });
 
   it('denies Model: pro on a flash session with prescribed ask_question options', () => {
@@ -126,7 +126,7 @@ describe('Antigravity hook as a process', () => {
     expect(out3.decision).toBe('deny');
   });
 
-  it('passes everything through with {} when Jev mode is off', () => {
+  it('passes everything through with empty stdout when Jev mode is off', () => {
     fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'off' } }));
 
     const payload = {
@@ -145,32 +145,37 @@ describe('Antigravity hook as a process', () => {
 
     const proc = run('pre-tool-use', payload);
     expect(proc.exitCode).toBe(0);
-    expect(JSON.parse(proc.stdout.toString())).toEqual({});
+    expect(proc.stdout.toString().trim()).toBe('');
     expect(fs.existsSync(path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl'))).toBe(false);
   });
 
-  it('fails open on malformed stdin without approving anything: prints {}', () => {
-    for (const event of ['pre-tool-use', 'post-tool-use']) {
-      const proc = Bun.spawnSync(['bun', HOOK, event], {
-        stdin: new TextEncoder().encode('{ not-json'),
-        env: { ...process.env, HOME: home }
-      });
-      expect(proc.exitCode).toBe(0);
-      expect(JSON.parse(proc.stdout.toString())).toEqual({});
-    }
+  it('fails open on malformed stdin without approving anything: empty stdout on pre-tool-use, {} on post-tool-use', () => {
+    const pre = Bun.spawnSync(['bun', HOOK, 'pre-tool-use'], {
+      stdin: new TextEncoder().encode('{ not-json'),
+      env: { ...process.env, HOME: home }
+    });
+    expect(pre.exitCode).toBe(0);
+    expect(pre.stdout.toString().trim()).toBe('');
+
+    const post = Bun.spawnSync(['bun', HOOK, 'post-tool-use'], {
+      stdin: new TextEncoder().encode('{ not-json'),
+      env: { ...process.env, HOME: home }
+    });
+    expect(post.exitCode).toBe(0);
+    expect(JSON.parse(post.stdout.toString())).toEqual({});
   });
 
-  it('prints {} for empty stdin, for a tool other than invoke_subagent and for an unreadable config', () => {
+  it('prints empty stdout for empty stdin, for a tool other than invoke_subagent and for an unreadable config', () => {
     const empty = Bun.spawnSync(['bun', HOOK, 'pre-tool-use'], { stdin: new TextEncoder().encode(''), env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json') } });
-    expect(JSON.parse(empty.stdout.toString())).toEqual({});
+    expect(empty.stdout.toString().trim()).toBe('');
 
     const other = run('pre-tool-use', { conversationId: 'c', toolCall: { id: 'x', name: 'run_command', args: { CommandLine: 'ls' } } });
-    expect(JSON.parse(other.stdout.toString())).toEqual({});
+    expect(other.stdout.toString().trim()).toBe('');
 
     fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), '{ broken');
     const broken = run('pre-tool-use', { conversationId: 'c', modelName: 'gemini-3.8-flash-low', toolCall: { id: 'x', name: 'invoke_subagent', args: { Model: 'pro' } } });
     expect(broken.exitCode).toBe(0);
-    expect(JSON.parse(broken.stdout.toString()).decision).not.toBe('allow');
+    expect(broken.stdout.toString().trim()).toBe('');
   });
 
   it('post-tool-use always prints {}', () => {
@@ -326,5 +331,60 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(pre('c-multi-b').decision).toBe('deny');
     run('post-tool-use', withArgs('c-multi-b', 'A1: whatever\nA2: Yes, once'));
     expect(approvalsOf('c-multi-b')).toMatchObject([{ model: 'pro', scope: 'once' }]);
+  });
+
+  it('handles a FIFO as transcriptPath in PostToolUse without hanging, recording nothing', () => {
+    const fifoPath = path.join(home, 'transcript_fifo');
+    const mk = Bun.spawnSync(['mkfifo', fifoPath]);
+    if (mk.exitCode === 0) {
+      expect(pre('c-fifo-proc').decision).toBe('deny');
+      const start = Date.now();
+      const post = run('post-tool-use', answered('c-fifo-proc', undefined, {
+        transcriptPath: fifoPath,
+        stepIdx: 2
+      }));
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(3000);
+      expect(post.exitCode).toBe(0);
+      expect(post.stdout.toString().trim()).toBe('{}');
+      expect(approvalsOf('c-fifo-proc')).toEqual([]);
+    }
+  });
+
+  it('handles a transcript larger than the window (1.5 MB) with answer at the end: records approval in PostToolUse and subsequent pre-tool-use allows', () => {
+    const largeFile = path.join(home, 'large_transcript_end.jsonl');
+    // Write 1.5MB of padding before the target step (exceeds 1MB window)
+    const padding = '{"step_index":0,"type":"GENERIC","content":"padding"}\n'.repeat(30_000);
+    const line = '{"step_index":1,"type":"GENERIC","content":"A1: Yes, once"}\n';
+    fs.writeFileSync(largeFile, padding + line);
+
+    expect(pre('c-tail-proc').decision).toBe('deny');
+    const post = run('post-tool-use', answered('c-tail-proc', undefined, {
+      transcriptPath: largeFile,
+      stepIdx: 1
+    }));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(approvalsOf('c-tail-proc')).toMatchObject([{ model: 'pro', scope: 'once' }]);
+    expect(pre('c-tail-proc').decision).toBe('allow');
+  });
+
+  it('handles a transcript larger than the window with answer outside the tail window: records nothing and pre-tool-use stays denied', () => {
+    const largeFile = path.join(home, 'large_transcript_outside.jsonl');
+    // Target step is at the very beginning
+    const targetLine = '{"step_index":1,"type":"GENERIC","content":"A1: Yes, once"}\n';
+    // 1.5 MB of padding after the target step, pushing it outside the 1 MB window
+    const padding = '{"step_index":0,"type":"GENERIC","content":"padding"}\n'.repeat(30_000);
+    fs.writeFileSync(largeFile, targetLine + padding);
+
+    expect(pre('c-outside-proc').decision).toBe('deny');
+    const post = run('post-tool-use', answered('c-outside-proc', undefined, {
+      transcriptPath: largeFile,
+      stepIdx: 1
+    }));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(approvalsOf('c-outside-proc')).toEqual([]);
+    expect(pre('c-outside-proc').decision).toBe('deny');
   });
 });

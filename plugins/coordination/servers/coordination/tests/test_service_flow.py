@@ -177,9 +177,30 @@ def test_concurrent_respond_on_a_queued_card_task_claims_it_once(config):
 
     res, index, stored, rows = run(go())
     assert sum(1 for r in res if not isinstance(r, BaseException)) == 1
-    assert [type(r) for r in res if isinstance(r, BaseException)] in ([AlreadyClaimed], [InvalidTransition])
+    assert [type(r) for r in res if isinstance(r, BaseException)] == [AlreadyClaimed]  # spec 4.9
+    assert [r.code for r in res if isinstance(r, BaseException)] == ["already_claimed"]
     assert stored.task.status.state == S.TASK_STATE_WORKING and index.to_handle in (H_A1, H_A2)
     assert len(rows) == 2  # creation, then exactly one SUBMITTED -> WORKING
+
+
+def test_many_way_respond_race_on_a_queued_card_task_gives_every_loser_already_claimed(config):
+    handles = [f"{CARD_A}/s{i}~aaaaaa{i:02d}" for i in range(8)]
+
+    async def go():
+        async with service_env(config) as env:
+            task = await env.service.send_message(local(CARD_B, H_B1), CARD_A, msg("q"))
+            for h in handles:
+                await env.add_session(h)
+            res = await asyncio.gather(
+                *(env.service.respond(local(CARD_A, h), task.id, "working") for h in handles),
+                return_exceptions=True,
+            )
+            return res, await env.transitions_of(task.id)
+
+    res, rows = run(go())
+    assert sum(1 for r in res if not isinstance(r, BaseException)) == 1
+    assert [type(r) for r in res if isinstance(r, BaseException)] == [AlreadyClaimed] * 7
+    assert len(rows) == 2
 
 
 def test_an_unconfirmed_routed_card_task_goes_back_to_the_queue_and_the_next_session_claims_it(config):

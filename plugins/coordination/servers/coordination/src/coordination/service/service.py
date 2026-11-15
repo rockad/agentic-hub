@@ -612,16 +612,25 @@ class CoordinationService:
         values: dict[str, Any] = {"expires_at": None, "next_offer_at": None}
         if claim:
             values["to_handle"] = handle
-        result = await self._transition(
-            task_id,
-            to=to_state,
-            actor=Actor.RECIPIENT,
-            who=caller.actor,
-            viewer=caller.viewer,
-            mutate=extra,
-            index_update=lambda _b, _a: values,
-            index_expect={"to_handle": None} if claim else None,
-        )
+        try:
+            result = await self._transition(
+                task_id,
+                to=to_state,
+                actor=Actor.RECIPIENT,
+                who=caller.actor,
+                viewer=caller.viewer,
+                mutate=extra,
+                index_update=lambda _b, _a: values,
+                index_expect={"to_handle": None} if claim else None,
+            )
+        except InvalidTransition:
+            if claim:
+                # A concurrent claimer won the compare-and-swap and moved the task on, so the
+                # state check failed first; a lost claim race is `already_claimed` (spec 4.9).
+                after = await self._store.get_index(task_id)
+                if after is not None and after.to_handle is not None and after.to_handle != handle:
+                    raise AlreadyClaimed(task_id) from None
+            raise
         return await self._view(result.task, await self._store.get_index(task_id))
 
     async def _progress(

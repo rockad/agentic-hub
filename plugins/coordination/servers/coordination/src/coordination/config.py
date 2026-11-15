@@ -21,6 +21,8 @@ from typing import Any
 
 ENVS = ("dev", "live")
 STAGES = ("s1", "s2", "s3")
+#: `A2A_LOG_LEVEL` values (S1-OBS). Lower-case names that both `logging` and uvicorn accept.
+LOG_LEVELS = ("debug", "info", "warning", "error", "critical")
 
 
 class ConfigError(ValueError):
@@ -57,6 +59,14 @@ def _choice(options: tuple[str, ...]) -> Callable[[str, str], str]:
     return parse
 
 
+def _log_level(name: str, raw: str) -> str:
+    """Case-insensitive, stored lower-case. An unknown level is an error, not a silent `info`."""
+    level = raw.strip().lower()
+    if level in LOG_LEVELS:
+        return level
+    raise ConfigError(f"{name}: expected one of {', '.join(LOG_LEVELS)}, got {raw!r}")
+
+
 @dataclass(frozen=True)
 class Config:
     """Typed server configuration. Build it with `Config.from_env`."""
@@ -86,6 +96,7 @@ class Config:
     quarantine_ttl_h: int = 72
     working_ttl_h: int = 24
     session_idle_ttl_h: int = 12
+    retain_days: int = 30  # A2A_RETAIN_DAYS: terminal tasks are purged after this (spec 1.3)
     max_body_bytes: int = 65536
     max_wait_s: int = 50
     send_block_max_s: int = 60
@@ -148,6 +159,7 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
     "quarantine_ttl_h": ("A2A_QUARANTINE_TTL_H", _int),
     "working_ttl_h": ("A2A_WORKING_TTL_H", _int),
     "session_idle_ttl_h": ("A2A_SESSION_IDLE_TTL_H", _int),
+    "retain_days": ("A2A_RETAIN_DAYS", _int),
     "max_body_bytes": ("A2A_MAX_BODY_BYTES", _int),
     "max_wait_s": ("A2A_MAX_WAIT_S", _int),
     "send_block_max_s": ("A2A_SEND_BLOCK_MAX_S", _int),
@@ -157,7 +169,7 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
     "status_enabled": ("A2A_STATUS_ENABLED", _flag),
     "enforce_tailnet_identity": ("A2A_ENFORCE_TAILNET_IDENTITY", _flag),
     "admin_socket": ("A2A_ADMIN_SOCKET", _str),
-    "log_level": ("A2A_LOG_LEVEL", _str),
+    "log_level": ("A2A_LOG_LEVEL", _log_level),
 }
 
 #: Every environment variable this module reads, in table order.

@@ -2,8 +2,8 @@
 
 The dump sidecar writes one line to `last_ok` after a dump has passed `pg_restore --list`: the
 UTC time of that dump in ISO-8601, for example `2026-11-12T02:00:00Z`. The server mounts the
-file read-only (`A2A_DUMP_LAST_OK_FILE`) and only reads it. There is no `/status` endpoint
-yet; this module is the helper it will call.
+file read-only (`A2A_DUMP_LAST_OK_FILE`) and only reads it. `status_fields` is what the
+`/status` response carries (S1-OBS wired it into `app.py`, spec 3.6).
 
 `None` means "unknown", not "fresh": the file is absent, empty or unparsable (before the first
 successful dump, or a mis-set `backup` compose profile). `is_stale` is false for `None`, so the
@@ -59,3 +59,13 @@ def dump_age_h(last_ok_path: str | Path, now: datetime) -> float | None:
 def is_stale(age_h: float | None) -> bool:
     """True when the dump is older than 36 hours. `None` (unknown) is not stale."""
     return age_h is not None and age_h > STALE_AFTER_H
+
+
+def status_fields(last_ok_path: str | Path, now: datetime) -> dict[str, float | None]:
+    """The operational field of the `/status` response (spec 3.6): `{"dump_age_h": ...}`.
+
+    A number of hours, or `null` before the first successful dump. The spec's response carries
+    this one field and nothing else, so there is no separate stale flag: a client compares the
+    number with 36 (`STALE_AFTER_H`), as the server's own warning log does.
+    """
+    return {"dump_age_h": dump_age_h(last_ok_path, now)}

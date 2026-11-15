@@ -6,11 +6,17 @@ import json
 import sys
 import urllib.request
 
-from coordination.config import load
+from coordination.config import ConfigError, load
 
 
 def check(timeout: float = 3.0) -> bool:
-    host, port = load().listen_host_port
+    """True if `/healthz` answers exactly `{"ok":true}`. Prints nothing, whatever happens.
+
+    A bad configuration is unhealthy too, and is reported as False rather than as a traceback."""
+    try:
+        host, port = load().listen_host_port
+    except ConfigError:
+        return False
     if host in ("0.0.0.0", "::"):
         host = "127.0.0.1"
     try:

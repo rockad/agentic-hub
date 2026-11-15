@@ -469,6 +469,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - The backup and restore test is S1-BKP.
   - No dialect-specific SQL in our tables (SQLAlchemy Core only); the unit suite runs against a Postgres container, the only engine S1 supports.
   - A retention test with a fake clock purges exactly the rows the rule names.
+  - Audit atomicity (handed over from S1-OBS, `audit-events.md` section 2) [design]: the store offers a way for `append_audit` to join the caller's transaction, and a test against the Postgres service shows that a failed audit insert rolls back the surrounding write and leaves no row.
 - Branch: BP15, BP16, BP24. Blocked until SP5b passes (D39). Escalate to opus for subtle debugging only if lost updates or deadlocks survive the version-row seeding.
 
 #### S1-PG: Postgres compose service (new, D37)
@@ -583,6 +584,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Remote key plus `coord.to` gives InvalidParams; `coord.*` metadata other than `coord.to` from a client is dropped.
   - A held task is not returned to any recipient through the service until released; the originator sees `INPUT_REQUIRED` plus the hold marker and a constant status message.
   - `interrupted_task_timeout` does not auto-release a held task.
+  - Exactly one audit row per transition (handed over from S1-OBS, `audit-events.md` section 2): against the real state machine and the Postgres service, a normal transition leaves one `state_transition` row naming the actor, and a forced audit-insert failure leaves the task state and version unchanged and no row. This replaces the skipped placeholder `test_transition_and_its_audit_row_commit_together_against_postgres` in `tests/test_audit.py`.
 
 #### S1-A2A: `/a2a/v1`, Agent Card, push configuration
 - Goal: a compliant A2A 1.0.1 surface for the 11 operations, honest about what is on.
@@ -779,6 +781,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - `/healthz` returning only `{"ok":true}`.
 - Gates: S1-SEC (its canary test over log, audit and wake capture depends on this stream) and S1-GATE.
 - Acceptance: canary test with a secret key and a body string yields zero hits in audit rows, log output and the healthcheck; one sampled-count row per window rather than one per failed request; every state transition has exactly one audit row naming its actor.
+  - Split (written by the S1-OBS builder in repair round 1, 2026-11-14; **ratified by the user on 2026-11-15, decision Z6** in `s1-remaining-plan.md` section 6): S1-OBS shows the writer half (one append per `state_transition` call, actor required, a failed append reaches the caller). "The transition and its row commit together" needs the state machine, so it is an exit test of **S1-STATE** (its acceptance list, last bullet), using the `audit` table S1-STORE built. S1-STATE also adds the transaction-joining `append_audit` [design: session argument, unit-of-work object or bound `AuditLog`]. S1-OBS counts as done on its writer half; the end-to-end half stays open and unverified until S1-STATE passes it, and S1-SEC and S1-GATE cannot pass without it. See `audit-events.md` section 2.
 
 #### S1-TEST: test strategy, TCK and end-to-end
 - Goal: one place that owns how the system is tested at each level.

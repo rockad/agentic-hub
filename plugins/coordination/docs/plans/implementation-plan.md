@@ -781,7 +781,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - `/healthz` returning only `{"ok":true}`.
 - Gates: S1-SEC (its canary test over log, audit and wake capture depends on this stream) and S1-GATE.
 - Acceptance: canary test with a secret key and a body string yields zero hits in audit rows, log output and the healthcheck; one sampled-count row per window rather than one per failed request; every state transition has exactly one audit row naming its actor.
-  - Split (S1-OBS repair round 1, 2026-11-14): S1-OBS shows the writer half (one append per `state_transition` call, actor required, a failed append reaches the caller). "The transition and its row commit together" needs the state machine and the `audit` table, so it is an exit test of S1-STATE and S1-STORE; see `audit-events.md` section 2.
+  - Split (S1-OBS repair round 1, 2026-11-14) **[proposal: written by the S1-OBS builder, not in the decision tables, awaiting ratification by the user or orchestrator; until ratified, and until S1-STORE and S1-STATE pass the handed-over bullets, the end-to-end half of the acceptance above stays open and unverified]**: S1-OBS shows the writer half (one append per `state_transition` call, actor required, a failed append reaches the caller). "The transition and its row commit together" needs the state machine and the `audit` table, so it is an exit test of S1-STATE and S1-STORE; see `audit-events.md` section 2.
 
 #### S1-TEST: test strategy, TCK and end-to-end
 - Goal: one place that owns how the system is tested at each level.

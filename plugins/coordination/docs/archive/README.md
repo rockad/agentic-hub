@@ -7,3 +7,4 @@ These files are superseded history. They are kept unchanged, apart from fixed li
 - `2026-11-03-multi-agent-coordination-alignment.md`: an alignment note from before DDR-004 replaced the file-channel and ACP design.
 - `agents-bridge-AGENTS.md` and `agents-bridge-README.md`: the rules and README of the retired `agents-bridge` repository. They describe ACP and a zero-daemon core, both superseded.
 - `paf-trial-protocol-obsolete.md`: the phone-a-friend trial protocol. The tool was removed on 2026-11-03 and the trial never ran.
+- `master-tasklist-through-2026-11-14.md`: the full text of the old master tasklist, replaced on 2026-11-15 by the new [`../plans/master-tasklist.md`](../plans/master-tasklist.md); its decision records now live in the master plan.

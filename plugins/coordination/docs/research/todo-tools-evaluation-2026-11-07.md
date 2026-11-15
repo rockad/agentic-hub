@@ -35,7 +35,7 @@ Nothing here was installed or run.
 
 ### coordination (this plugin)
 
-- Planning is complete and the S0 spikes are mostly done (verified, [`master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md) section 4).
+- Planning is complete and the S0 spikes are mostly done (verified, [`master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/master-tasklist-through-2026-11-14.md) section 4).
   - SP1 `asyncRewake` wake passes.
   - SP2 Claude half passes with spec changes.
   - SP5 a2a-python on SQLite passes with four wrappers.

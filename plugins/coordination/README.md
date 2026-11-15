@@ -7,7 +7,7 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 - **S1 has started; planning-only is lifted for S1** (the user's go, 2026-11-11). The S0 spikes are done and the S1 entry gate is satisfied.
 - **S1-SCAF is delivered:** `plugin.json`, `docker-compose.yml` (service `coordination` only), and `servers/coordination/` with the Dockerfile, `pyproject.toml`, `uv.lock`, the module skeleton (config, typed protocols, `/healthz`, an `a2a-coord` entry point) and tests. The Postgres service, the dump sidecar and every endpoint beyond `/healthz` are later S1 streams. No hook script exists yet.
 - Branch: `feat/coordination` in the `agentic-hub` repository.
-- Decisions of 2026-11-04 and 2026-11-05 are recorded in the plans under [`docs/plans/`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/). Start with the consolidated plan.
+- Decisions of 2026-11-04 and 2026-11-05 are recorded in the master plan, [`docs/plans/master-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md) (section 11), and in full in the archived consolidated plan. Start with the doc map, [`docs/README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/README.md).
   - 13 binding decisions from the `/clarify` session.
   - 12 more on 2026-11-05 (decisions 25 to 36): spike host changes under "borrow and put back", agy hooks in the user-level `~/.gemini/config/hooks.json`, the agy inbox instruction through `SessionStart` `injectSteps` (the installer never writes an `AGENTS.md`), hook scripts under `~/.local/share/a2a-coord/<version>/bin/`, card routing and discovery (a path per card plus a public front-desk card; member cards need an API key), strict `A2A-Version`, Claude key delivery from `~/.config/a2a-coord/api-key`, streaming and push deferred, and the go-live importer built during S2 and S3 under one final gate.
   - 11 more (decisions 14 to 24) on 2026-11-04: go-live after S3, admin access inside the container, one harness installer, per-machine API keys with a Tailscale identity check, per-peer remote keys, human-only quarantine release, the Cloudflare Tunnel on <storage-host> as the public front door, research clones deleted, a 60 s cap on blocking `SendMessage`, production on <storage-host> (a portable image; dev and spikes on <workstation>), and service-issued API keys that never enter chezmoi-managed files.
@@ -112,15 +112,16 @@ All links are absolute `file://` links.
 
 ### Start here
 
-- [`docs/plans/pickup-handoff.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/pickup-handoff.md): for a new session (Antigravity or another Claude Code session) taking over: state, next actions in order, process and repository rules.
-- [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md): the canonical plan: DDR-001 to DDR-004, the 36 decisions of 2026-11-04 and 2026-11-05 (13 from `/clarify`, 11 later on 2026-11-04, 12 on 2026-11-05), and the S0-S3 roadmap.
+- [`docs/README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/README.md): the doc map. Two live planning documents, everything else is reference or archive.
+- [`docs/plans/master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md): for a new session (Antigravity or another Claude Code session) taking over: how to pick up, status, milestones, todo, open items.
+- [`docs/plans/master-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md): the whole plan: workstreams and acceptance, decision records DDR-001 to DDR-004, the decision rounds, waves and the workflow process.
 - [`docs/research/a2a-mcp-wake-audit-2026-11-04.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/a2a-mcp-wake-audit-2026-11-04.md): synthesis of the third-party audit, wake mechanisms and cognitive-engine fit.
 
 ### Plans
 
-- [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md)
-- [`docs/plans/master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md)
-- [`docs/plans/master-plan.md#9-go-live-migration`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md#9-go-live-migration): one-time import of the frozen channel files into the store, then deletion.
+- [`docs/plans/master-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md): the plan; section 9 is the go-live migration (one-time import of the frozen channel files into the store, then deletion) and section 10 the git history rewrite.
+- [`docs/plans/master-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-tasklist.md): status and todo.
+- Archive: [`docs/archive/consolidated-bridge-v2-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/consolidated-bridge-v2-plan.md) (the old canonical plan; the full text of decisions D1 to D40 and the risks), [`docs/archive/master-tasklist-through-2026-11-14.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/master-tasklist-through-2026-11-14.md) (the old tasklist).
 - [`docs/archive/claude-a2a-server-tasklist.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/claude-a2a-server-tasklist.md)
 - [`docs/archive/2026-11-03-multi-agent-coordination-alignment.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/2026-11-03-multi-agent-coordination-alignment.md)
 

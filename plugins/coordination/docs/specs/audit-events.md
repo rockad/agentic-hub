@@ -6,31 +6,31 @@ Labels: **spec** is written in `server-api.md`. **[design]** is a choice S1-OBS 
 
 ## 1. What is in the code
 
-- `coordination/audit/`: the event types, the writer, the storage interface it needs and an in-memory test double.
+- `coordination/audit/`: the event types, the writer, the storage interface it needs, an in-memory test double and (S1-STATE) `audit/sql.py`, the `audit` table writer with its transaction-joining variant (section 2).
 - `coordination/logging/`: JSON-lines logging, credential scrubbing, and the `Authorization` redaction middleware.
 - `coordination/app.py`: the middleware, `POST /status` (off unless `A2A_STATUS_ENABLED=1`) and `/healthz`.
 - `coordination/backup_status.py`: `status_fields`, the `dump_age_h` field of the `/status` response.
 
-## 2. The audit table is not created here
+## 2. The audit table, and how a row joins a transaction
 
-S1-STORE owns the `audit` table and the migration. S1-OBS adds no table and no migration.
+S1-STORE owns the `audit` table and the migration. S1-OBS added no table and no migration. S1-STATE (decision Z6, 2026-11-15) added the writer that puts a row on a database transaction, and no table.
 
-- The writer talks to the `AuditStore` protocol in `coordination/audit/protocol.py`: one method, `append_audit(row)`.
-- `store/protocol.py` is outside the S1-OBS file scope, so the protocol is declared in the audit package. **Dependency for S1-STORE:** its store (or an adapter) must provide `append_audit`, writing the columns `at`, `actor`, `event`, `subject`, `detail_json` of spec 1.3. `AuditRow.detail_json()` gives the last one.
-- **Dependency for S1-STATE:** "exactly one audit row per state transition" holds only if the transition and its row commit together. `append_audit` alone does not give that. A transaction-scoped variant is a decision for S1-STORE and S1-STATE [design]; the writer does not need it.
+- The writer (`AuditLog`) builds validated rows. `AuditStore` in `coordination/audit/protocol.py` is the one-method interface `append_audit(row)`; `coordination.audit.sql.SqlAuditStore` implements it over the `audit` table, in its own transaction, for the events that do not ride on a task write (registration, wake sent, key lifecycle, a guess-counter trip).
+- **The transaction-joining variant [design, chosen by S1-STATE]:** `coordination.audit.sql.insert_audit(tx, row)` writes one row on a connection or session the caller already holds, and `SqlAuditStore.append_audit_in(tx, row)` (the `TransactionalAuditStore` protocol) is the same call as a method. It opens and closes no transaction of its own. There is no unit-of-work object and no `AuditLog` bound to a transaction: the writer only builds rows (`AuditLog.state_transition_row`, `hold_entered_row`, `hold_released_row`, `hold_denied_row`, which write nothing), and the store writes them.
+- **Who writes a transition's row:** `CoordTaskStore.transition(..., audit=builder)` and `CoordTaskStore.create(..., audit_rows=...)` (`store/task_store.py`). One database transaction holds the version compare-and-swap, the task row, the `task_index` change and the audit rows. If any of them fails, all of them roll back. The service layer (`coordination/service/service.py`) is the only caller that passes rows.
+- The creation of a task is a transition from nothing: its row has `from_state` null and is written in the creating transaction. A follow-up message that changes no state writes no `state_transition` row. A transition that also enters or leaves a hold writes a second row in the same transaction (`hold_entered`, `hold_released` or `hold_denied`, actor the human at the admin socket for the last two).
 
 ### Acceptance "every state transition has exactly one audit row naming its actor": the split
 
-The plan's S1-OBS acceptance line has two halves. Only the first can be shown in this stream.
+The plan's S1-OBS acceptance line has two halves.
 
 | half | what it shows | where it is shown | status |
 | --- | --- | --- | --- |
-| OBS half | `AuditLog.state_transition` makes exactly one append per call, requires and records the actor, refuses unknown states, and lets a failed append reach the caller: no swallow, no buffer, no retry, no stray row | `tests/test_audit.py`: `test_one_state_transition_call_makes_exactly_one_append`, `test_state_transition_names_its_actor_and_is_one_row_each`, `test_failed_transition_append_leaves_no_row_and_is_never_retried_behind_the_caller`, `test_store_failure_propagates` | tested against the in-memory double only |
-| end-to-end half | the transition and its audit row commit in one transaction, against the real state machine and the Postgres test container: a failed audit insert leaves the task state and version unchanged and no row; a normal transition leaves exactly one row naming the actor | not in this stream: it needs S1-STATE and the `audit` table from S1-STORE | **handed over**, unverified; a skipped placeholder test marks it (`test_transition_and_its_audit_row_commit_together_against_postgres`) |
+| OBS half | `AuditLog.state_transition` makes exactly one append per call, requires and records the actor, refuses unknown states, and lets a failed append reach the caller: no swallow, no buffer, no retry, no stray row | `tests/test_audit.py`: `test_one_state_transition_call_makes_exactly_one_append`, `test_state_transition_names_its_actor_and_is_one_row_each`, `test_failed_transition_append_leaves_no_row_and_is_never_retried_behind_the_caller`, `test_store_failure_propagates` | tested against the in-memory double |
+| end-to-end half (S1-STATE, Z6) | the transition and its audit row commit in one transaction, against the real state machine and the Postgres test container: a failed audit insert leaves the task state, version and index unchanged and no row; a normal transition leaves exactly one row naming the actor | `tests/test_audit.py`: `test_transition_and_its_audit_row_commit_together_against_postgres` (replaces the skipped placeholder of the same name), `test_a_forced_audit_insert_failure_rolls_back_state_version_and_index_with_no_row` (a real database error from the INSERT), `test_an_audit_insert_that_raises_anything_leaves_nothing_behind`, `test_a_failed_audit_insert_on_creation_leaves_no_task_version_or_index_row`, `test_sql_audit_store_appends_alone_and_inside_a_transaction`; the audit chain per task is also checked after every step of the random-sequence property test, `tests/test_service_property.py` | tested against Postgres, see the S1-STATE report for the run |
 
-- The end-to-end half is an exit test of S1-STATE (decision Z6, 2026-11-15; see its acceptance list in `master-plan.md`), using the `audit` table S1-STORE already built. It is a gap in how the acceptance list was assigned, not a defect found in S1-OBS.
-- S1-OBS does not claim the guarantee. What S1-OBS promises is narrower: given a store whose `append_audit` joins the caller's transaction, the writer adds nothing that would break atomicity.
-- Owned by S1-STATE [design] (Z6): how `append_audit` joins the transaction (a connection or session argument, a unit-of-work object, or an `AuditLog` bound to the current transaction). S1-OBS does not choose. S1-STORE (merged) provides the table only, not a transaction-joining append.
+- The end-to-end half is an exit test of S1-STATE (decision Z6, 2026-11-15; see its acceptance list in `master-plan.md`), built on the `audit` table S1-STORE created. It closes a gap in how the acceptance list was assigned, not a defect found in S1-OBS. S1-SEC and S1-GATE depend on it.
+- Not covered by this guarantee: events that do not ride on a task write are appended by `SqlAuditStore.append_audit` in their own transaction. A crash between such an event's cause (for example a registration) and its row can lose the row. Those events are not state transitions, and no stream has claimed an atomic guarantee for them.
 
 ## 3. Event types
 
@@ -106,7 +106,6 @@ Spec 3.6. `POST /status` is registered only when `A2A_STATUS_ENABLED=1` (default
 
 ## 10. Not verified
 
-- The audit writer against a real Postgres `audit` table: the table does not exist yet (S1-STORE). Tested against the in-memory double only.
-- "Transition and audit row commit together" against the real state machine and Postgres (section 2, end-to-end half): not shown here, handed over to S1-STATE and S1-STORE.
+- The audit writer against the real Postgres `audit` table and "transition and audit row commit together" against the real state machine (section 2, end-to-end half): written in S1-STATE on branch `feat/coordination-state` and run there against the pinned Postgres image; not on `main` until that branch merges.
 - The `/status` scope check, because S1-AUTH does not exist yet.
 - Behaviour behind the Docker image: the unit tests and one scratch uvicorn run on the workstation were run; the container image was not rebuilt for this stream.

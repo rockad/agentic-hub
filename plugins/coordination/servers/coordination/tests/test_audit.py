@@ -245,18 +245,155 @@ def test_one_state_transition_call_makes_exactly_one_append(log, store):
     assert len(store.rows) == 1
 
 
-@pytest.mark.skip(
-    reason=(
-        "Acceptance 3b end to end needs S1-STATE (state machine) and S1-STORE (audit table, "
-        "transaction scope); neither exists in this stream. Handed over as an exit test of "
-        "S1-STATE and S1-STORE: see docs/specs/audit-events.md section 2."
+# Acceptance 3b, the atomic half (decision Z6, S1-STATE): against the real state machine and the
+# Postgres container. The service builds the audit rows, the store writes them in the same
+# transaction as the task, its version and its index row. See docs/specs/audit-events.md section 2.
+
+
+def _real_service_actor_case(config, break_insert):
+    """Run one `SUBMITTED -> WORKING` by H_A1 with the audit insert broken by `break_insert(env)`
+    (which returns a context manager), and report what is stored afterwards."""
+    from service_helpers import CARD_A, CARD_B, H_A1, H_B1, local, msg, service_env, to_meta
+
+    async def go():
+        async with service_env(config) as env:
+            await env.add_session(H_A1)
+            task = await env.service.send_message(local(CARD_B, H_B1), CARD_A, msg("work"), metadata=to_meta(H_A1))
+            before = await env.store.get(task.id)
+            index_before = await env.store.get_index(task.id)
+            rows_before = await env.transitions_of(task.id)
+            error = None
+            with break_insert(env):
+                try:
+                    await env.service.respond(local(CARD_A, H_A1), task.id, "working")
+                except Exception as exc:  # noqa: BLE001 - the point is what it left behind
+                    error = exc
+            after = await env.store.get(task.id)
+            return (
+                error, before, after, index_before, await env.store.get_index(task.id),
+                rows_before, await env.transitions_of(task.id), await env.store.check_integrity(),
+            )
+
+    return run(go())
+
+
+def test_transition_and_its_audit_row_commit_together_against_postgres(config):
+    """A normal transition leaves exactly one `state_transition` row naming the actor, and moves
+    the task, its version and its index together."""
+    import contextlib
+
+    error, before, after, ix_before, ix_after, rows_before, rows_after, integrity = _real_service_actor_case(
+        config, lambda env: contextlib.nullcontext()
     )
-)
-def test_transition_and_its_audit_row_commit_together_against_postgres():
-    """Placeholder, not a passing test. Intended shape for S1-STATE: against the real state
-    machine and the Postgres test container, force the audit insert to fail mid-transition and
-    assert the task state and version are unchanged and no audit row exists; then run a normal
-    transition and assert exactly one `state_transition` row naming the actor."""
+    assert error is None
+    assert after.task.status.state != before.task.status.state and int(after.version._value) == int(before.version._value) + 1
+    assert rows_after[len(rows_before):] == [
+        ("TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "claude-code@box/one~aaaaaaa1")  # exactly one, naming the actor
+    ]
+    assert len(rows_after) == len(rows_before) + 1
+    assert ix_after.next_offer_at is None and integrity.ok
+
+
+def test_a_forced_audit_insert_failure_rolls_back_state_version_and_index_with_no_row(config):
+    """The audit insert fails INSIDE the transaction, after the task and index writes were issued:
+    the task state, version and index are as they were and no row was written."""
+    import contextlib
+
+    def break_with_a_database_error(env):
+        # Valid for the audit rules (256 characters is the limit) but one too long for the
+        # `audit.actor` column (255): a real database error raised by the INSERT itself.
+        real = env.audit_log.state_transition_row
+
+        def too_long(**kw):
+            return real(**{**kw, "actor": "a" * 256})
+
+        env.audit_log.state_transition_row = too_long
+        return contextlib.nullcontext()
+
+    error, before, after, ix_before, ix_after, rows_before, rows_after, integrity = _real_service_actor_case(
+        config, break_with_a_database_error
+    )
+    import sqlalchemy as sa
+
+    assert isinstance(error, sa.exc.DBAPIError) and "value too long" in str(error.orig)
+    assert after.task.status.state == before.task.status.state  # state unchanged
+    assert after.version == before.version  # version unchanged
+    assert ix_after == ix_before  # index unchanged (the task's offer window, claim and expiry)
+    assert rows_after == rows_before  # no row for the failed transition
+    assert integrity.ok
+
+
+def test_an_audit_insert_that_raises_anything_leaves_nothing_behind(config, monkeypatch):
+    import contextlib
+
+    import coordination.store.task_store as task_store
+
+    def break_the_writer(env):
+        async def boom(tx, row):
+            raise RuntimeError("audit writer down")
+
+        monkeypatch.setattr(task_store, "insert_audit", boom)
+        return contextlib.nullcontext()
+
+    error, before, after, ix_before, ix_after, rows_before, rows_after, integrity = _real_service_actor_case(
+        config, break_the_writer
+    )
+    assert isinstance(error, RuntimeError)
+    assert after.task.status.state == before.task.status.state and after.version == before.version
+    assert ix_after == ix_before and rows_after == rows_before and integrity.ok
+
+
+def test_a_failed_audit_insert_on_creation_leaves_no_task_version_or_index_row(config):
+    """Creation is a transition from nothing: its row rides in the creating transaction too."""
+    import sqlalchemy as sa
+
+    from coordination.audit import make_row
+    from coordination.store.task_store import IndexEntry
+    from service_helpers import service_env
+    from store_helpers import new_task
+
+    async def go():
+        async with service_env(config) as env:
+            bad = make_row(env.clock.now(), AuditEvent.STATE_TRANSITION, "a" * 256, "t1", task_id="t1", from_state=None, to_state="TASK_STATE_SUBMITTED")
+            with pytest.raises(sa.exc.DBAPIError):
+                await env.store.create(
+                    new_task(task_id="t1"), IndexEntry(from_principal="k", origin="local"), audit_rows=[bad]
+                )
+            return await env.store.get("t1"), await env.store.get_index("t1"), await env.store.check_integrity(), await env.audit_rows()
+
+    stored, index, integrity, rows = run(go())
+    assert stored is None and index is None and integrity.ok and rows == []
+
+
+def test_sql_audit_store_appends_alone_and_inside_a_transaction(config):
+    import sqlalchemy as sa
+
+    from coordination.audit import SqlAuditStore, TransactionalAuditStore
+    from service_helpers import service_env
+
+    async def go():
+        async with service_env(config) as env:
+            store = SqlAuditStore(env.engine)
+            assert isinstance(store, TransactionalAuditStore)
+            log = AuditLog(store, env.clock)
+            await log.registration(actor="k1", handle="h1", card_id="c@x")  # own transaction
+            row = log.hold_entered_row(actor="k1", task_id="t1", origin="remote")
+            with pytest.raises(RuntimeError):
+                async with env.engine.begin() as conn:  # joined: rolled back with the caller's work
+                    await store.append_audit_in(conn, row)
+                    raise RuntimeError("caller fails after the audit insert")
+            async with env.engine.begin() as conn:  # joined: committed with the caller's work
+                await store.append_audit_in(conn, row)
+            rows = await env.audit_rows()
+            return rows
+
+    rows = run(go())
+    assert [(r.event, r.actor, r.subject) for r in rows] == [
+        ("registration", "k1", "h1"),
+        ("hold_entered", "k1", "t1"),
+    ]
+    assert rows[0].detail_json == {"card_id": "c@x"} and isinstance(rows[0].at, datetime)
+    assert sa is not None
 
 
 # sampled auth failures -------------------------------------------------------------------

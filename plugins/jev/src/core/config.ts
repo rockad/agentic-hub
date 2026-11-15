@@ -289,7 +289,7 @@ export function normalizeTier(rawTier: string): CognitiveTier {
   if (t === 'free' || t === 'openrouter_free' || t.includes('free')) return 'free';
   if (t === 'cheap' || t === 'flash_lite' || t.includes('haiku') || t.includes('lite') || t.includes('cheap')) return 'cheap';
   if (t === 'deep' || t === 'pro' || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t.includes('deep') || t === 'pro' || /(?:^|[-_/:])pro(?:$|[-_/:])/.test(t)) return 'deep';
-  if (t === 'standard' || t === 'flash' || t.includes('sonnet') || t.includes('standard') || t.includes('flash')) return 'standard';
+  if (t === 'standard' || t === 'flash' || t.includes('sonnet') || t.includes('hydrogen') || t.includes('standard') || t.includes('flash')) return 'standard';
   return 'standard';
 }
 

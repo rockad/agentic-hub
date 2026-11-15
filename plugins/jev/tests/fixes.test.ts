@@ -169,6 +169,36 @@ describe('readQuotaView', () => {
     expect(view.weekly).toBe(0.92);
     expect(view.strategy).toBe('normal');
   });
+
+  it('uses gemini-5h and gemini-weekly fallback when Hydrogen is activeModel without dedicated bucket', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.85, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.75, reset_at: resetAt }
+    }, 'Gemini 4 Hydrogen (Medium)');
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.fiveHour).toBe(0.85);
+    expect(view.weekly).toBe(0.75);
+    expect(view.strategy).toBe('normal');
+  });
+
+  it('uses dedicated hydrogen weekly bucket when present and Hydrogen is activeModel', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+    const resetAt = Math.floor(Date.now() / 1000) + 3600;
+    writeQuotaState(home, {
+      'gemini-5h': { remaining_fraction: 0.90, reset_at: resetAt },
+      'gemini-weekly': { remaining_fraction: 0.15, reset_at: resetAt },
+      'gemini-hydrogen-weekly': { remaining_fraction: 0.95, reset_at: resetAt }
+    }, 'Gemini 4 Hydrogen (Medium)');
+
+    const view = quotaViewUnderHome(home);
+
+    expect(view.weekly).toBe(0.95);
+    expect(view.strategy).toBe('normal');
+  });
 });
 
 describe('defaultEffortForSubagent keyword matching', () => {

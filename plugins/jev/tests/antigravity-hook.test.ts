@@ -253,7 +253,13 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       'Use Claude Opus for this',
       'manual pro approval granted',
       'use deep reasoning',
-      'Do not rush, use deep reasoning'
+      'Do not rush, use deep reasoning',
+      'run an argon subagent',
+      'use argon coordinator',
+      'spawn an argon agent',
+      'select the argon model',
+      'use gemini argon coordinator',
+      'use gemini argon subagent'
     ]) {
       it(`still treats "${prompt}" as an explicit override`, () => {
         const d = overrides(prompt);
@@ -267,6 +273,26 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
       expect(d.decision).toBe('deny');
       expect(d.elevation).toBe('denied');
       expect(d.reason).toContain('[jev-elevate:claude-opus-5-5]');
+    });
+
+    it('"run an argon subagent" must not approve a Claude Opus request', () => {
+      const d = overrides('run an argon subagent', undefined, 'claude-opus-5-5');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:claude-opus-5-5]');
+    });
+
+    it('"Use Claude Opus for this" must not approve a Gemini Argon request', () => {
+      const d = overrides('Use Claude Opus for this', undefined, 'gemini-argon');
+      expect(d.decision).toBe('deny');
+      expect(d.elevation).toBe('denied');
+      expect(d.reason).toContain('[jev-elevate:gemini-argon]');
+    });
+
+    it('"run an argon subagent" approves a Gemini Argon request', () => {
+      const d = overrides('run an argon subagent', undefined, 'gemini-argon');
+      expect(d.decision).toBe('allow');
+      expect(d.elevation).toBe('instructed');
     });
 
     it('"Use Claude Opus for this" approves a Claude Opus request', () => {

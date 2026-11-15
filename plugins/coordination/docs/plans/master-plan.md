@@ -15,7 +15,7 @@ This is the whole plan: one of the two live planning documents (the other is [`m
 9. [Go-live migration](#9-go-live-migration) (folded from `go-live-migration.md`)
 10. [Git history rewrite](#10-git-history-rewrite) (folded from `history-rewrite-plan.md`)
 11. [Decision records](#11-decision-records) (DDR-001 to DDR-004)
-12. [Decision rounds](#12-decision-rounds) (Y1 to Y10, Z1 to Z9, and the earlier rounds in short form)
+12. [Decision rounds](#12-decision-rounds) (Y1 to Y10, Z1 to Z15, and the earlier rounds in short form)
 13. [Waves and workflow process](#13-waves-and-workflow-process)
 
 Status (2026-11-11; first written 2026-11-09; the status text in this paragraph is kept as written on that date, S1 has been running since the user's go of 2026-11-11 and the live status is in [`master-tasklist.md`](master-tasklist.md)): **PLANNING ONLY until the S1 kickoff starts.** SP5b passed on 2026-11-10 and satisfied the S1 storage gate (round-4 C1); SP3 passed and SP4 was recorded (2026-11-10 and 2026-11-11), so the overall S1 entry gate is **satisfied (2026-11-11)** and the user approved the S1 kickoff (Y10); see section 12.1 of this plan and the status in `master-tasklist.md`. Nothing here is built. This file turns the accepted DDR-004 (40 binding decisions: 25 to 36 of 2026-11-05 closing the former section 6 items, 37 to 40 of 2026-11-09, which also reverse D4's starting engine to Postgres and decide the S3 listener of D20; plus the round-2 decisions R1 to R8 and the round-3 decisions R9 to R14 of the same day, which refine D20, D37, D38 and D39, and the round-4 decisions X1 to X5 of 2026-11-10, which refine or replace R9, R10, R11 and R13; in this file they are written "round-4 X1" to "round-4 X5" so they do not collide with risk ids) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
@@ -570,7 +570,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Socket `/run/a2a/admin.sock` on tmpfs, mode 0600, no TCP fallback.
   - Commands: `key create|list|rotate|revoke`, `review` (list, show, release, deny), `status`, `card check`, `db init-dump-role` (round-4 X2; a host command, idempotent, see S1-PG: it feeds `psql` in the Postgres container over stdin with `docker compose exec -T` and does not use the admin socket), `expose check` (S3-EXPOSE-CHECK); `admin-apply` is added by GL-IMPORT.
   - TTY rules: `key create`, `key rotate`, `review show|release|deny` refuse without a TTY on stdin and stdout; the confirmation is read from `/dev/tty`, refused when an agent-session marker (`CLAUDE*`, agy variables, `CI`) is set; typed phrase `release <last 6 chars of the task id>`; no batch form, no `--yes`, no release-all, no skip flag.
-  - `key create` options: `--scope`, `--agent`, `--tailnet-node` (required at S2 and S3), `--tailnet-login` **[proposal]**, `--cards` for `remote-peer`, `--expires` (required; ceilings 365/90/90 days **[proposal]**); rotation with `--grace` (default 24 h); revoke closes parked listeners and MCP sessions of that key at once.
+  - `key create` options: `--scope`, `--agent`, `--tailnet-node` (required at S2 and S3), `--tailnet-login` (not built in S1; waits for S2-TS, decision Z14), `--cards` for `remote-peer`, `--expires` (required; ceilings 365/90/90 days at `s1`/`s2`/`s3`, ratified by Z14); rotation with `--grace` (default 24 h); revoke closes parked listeners and MCP sessions of that key at once.
 - Acceptance:
   - Inside the container only the HTTP listener is open (port 8120): no `/admin` route (404) and no admin scope exists.
   - `docker compose exec -T coordination a2a-coord key create ...` (no TTY) refuses; with `-it` it prints the secret once; `key list` never prints a secret.
@@ -646,7 +646,7 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
   - Result frame test: a body containing ANSI escapes, a 100 KiB part and text that claims approval comes back stripped, truncated, flagged and inside `untrusted: true`; the notice is byte-identical to the source constant.
   - `a2a_inbox` never lists held tasks; it reports only the held count; each listed task increments `offer_count`.
   - `a2a_respond` rules: `working` on `SUBMITTED` confirms; any other state confirms and moves; `canceled` and `auth_required` not offered; non-bound caller refused.
-  - `a2a_send` to own handle refused; `wait_seconds` caps at 240.
+  - `a2a_send` to own handle refused; `wait_seconds` caps at `A2A_MAX_WAIT_S` (default 50; the text said 240 before decision Z15, 2026-11-15).
   - `a2a_wait` default 30 s and maximum are inside the effective tool timeout recorded by SP2 C8 and A7 (BP8).
   - `a2a_send` with `wait_seconds` at its maximum is also inside that effective tool timeout (BP8); if the measured limit is lower, both caps are lowered and the test uses the lowered value.
 
@@ -2020,18 +2020,24 @@ Final, like 12.1. The user decided these on 2026-11-14 (sixth clarify round).
 
 Open at the time: the agent count for W4b (decided on 2026-11-15 as Z8, 12.3).
 
-### 12.3 Round of 2026-11-15 (Z6 to Z9)
+### 12.3 Round of 2026-11-15 (Z6 to Z15)
 
-Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 merged on 2026-11-15); Z7 to Z9 in the open-items round of the same day.
+Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 merged on 2026-11-15); Z7 to Z9 in the open-items round of the same day; Z10 to Z15 in the W4b /clarify round of the same day.
 
 | # | Question | Decision |
 | --- | --- | --- |
 | Z6 | S1-OBS acceptance 3b ("every state transition has exactly one audit row naming its actor") | Ratify the split. OBS keeps the writer half (done, merged). The atomic half (transition and its audit row commit in one transaction; a failed audit insert leaves state and version unchanged and no row) is an exit test of S1-STATE, on the `audit` table STORE built. S1-STATE adds the transaction-joining `append_audit` [design]. S1-SEC and S1-GATE cannot pass without it. |
 | Z7 | Secret files for a real stack run | The user provides the database password and `dump_ro` secret files at W6 (INST and GATE); never before. |
-| Z8 | W4b agent count | One stream at a time, each branching from the previous merge. Proposed order (critical path first): MCP, A2A, ADMIN [not yet confirmed]. |
+| Z8 | W4b agent count | One stream at a time. Order confirmed by the user on 2026-11-15 (Z10 to Z12): MCP, then A2A, then ADMIN. |
 | Z9 | Jev PRs #54, #55, #58 | Left alone; not part of this work. |
+| Z10 | Who runs W4b and when (the main account had 4 percent weekly quota left until 2026-11-20 15:00) | Another Claude account or Antigravity runs W4b now, from the handoff in `master-tasklist.md` section 0.7; the main account reviews and merges. The first task of that session is the independent check of S1-STATE. |
+| Z11 | W4b branching and merge flow | Stacked branches, merged in order: MCP branches from merged `main` (after AUTH and STATE), A2A from the MCP branch, ADMIN from the A2A branch; PRs target `main` in that order and each rebases after the one before it merges. Merge only on the user's word per PR. |
+| Z12 | W4b verification depth | Full pipeline (build, independent check, up to two repairs, main-session review) for MCP and A2A; lean for ADMIN (build plus main-session re-run; S1-SEC reviews it at W6). |
+| Z13 | S1-A2A front-desk [proposal] items | Build only the decided parts plus a rejection: a generic public root card, per-member authenticated cards, and a root `SendMessage` rejected with an error pointing to the member card path. No member listing through an extension field and no `metadata.target` routing; discovery is designed in S3-CARD and S3-PEER. |
+| Z14 | S1-ADMIN key-create [proposal] items | Ratify the `--expires` ceilings (365 days at `s1`, 90 at `s2` and `s3`; a larger value is refused). `--tailnet-node` stays. `--tailnet-login` is not built in S1; it waits for the real identity source (S2-TS). |
+| Z15 | S1-MCP wait cap (plan text said 240, the config table says 50) | The spec table decides: `a2a_wait` and `a2a_send` `wait_seconds` are capped by `A2A_MAX_WAIT_S` (default 50, verified fit from SP2 C8 and A7), not 240. The S1-MCP acceptance text is corrected. |
 
-The only question left open after this round was the W4b order confirmation (Z8; tracked in `master-tasklist.md`).
+No question is open after this round.
 
 ### 12.4 Earlier rounds in short form (2026-11-09 and 2026-11-10)
 
@@ -2060,7 +2066,7 @@ Folded on 2026-11-15 from the S1 plan drafts (`s1-remaining-plan.md` sections 2 
 
 - **W3a**: STORE and OBS in two worktrees. STORE goes first because the schema and the migration directory are the shared hot spot (`app.py`, `pyproject.toml`, `uv.lock`, migrations). TEST-skel runs in the main tree beside it (decision Z1).
 - **W4a**: AUTH and STATE, two worktrees in parallel (different modules). They start only after STORE is merged.
-- **W4b**: MCP, A2A and ADMIN, one stream at a time, each branching from the previous merge (decision Z8). It starts after AUTH and STATE are merged. The proposed order is MCP, A2A, ADMIN (critical path first); the user has not confirmed it [not yet confirmed].
+- **W4b**: MCP, A2A and ADMIN, one stream at a time (decision Z8), in the order MCP, A2A, ADMIN (confirmed, Z8 and Z10 to Z12), on stacked branches merged in order (Z11), run by another account or Antigravity (Z10). It starts after AUTH and STATE are merged (the independent check of STATE comes first). Verification: full for MCP and A2A, lean for ADMIN (Z12).
 - **W5a**: ID, then WAKE (sequential, same session surface).
 - **W5b**: CLAUDE and AGY in parallel (own files, no worktree). The user's live checks follow.
 - **W6**: INST, DOC, the SEC suite and the full TEST; then the opus review of SEC; then GATE.

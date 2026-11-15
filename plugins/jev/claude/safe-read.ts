@@ -42,3 +42,51 @@ export function readRegularFile(file: string, maxBytes: number): RegularRead {
     }
   }
 }
+
+export type RegularTailRead =
+  | { kind: 'ok'; text: string; size: number; truncated: boolean }
+  | { kind: 'not-regular' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Read up to `maxBytes` from the TAIL (end) of a regular file without ever blocking.
+ * Stat first to require a regular file, open with O_RDONLY | O_NONBLOCK, fstat descriptor.
+ * Reads at most `maxBytes` from the end of the file.
+ * Returns `truncated: true` if the file is larger than `maxBytes` (so the window begins after byte 0).
+ */
+export function readRegularFileTail(file: string, maxBytes: number): RegularTailRead {
+  let fd: number | null = null;
+  try {
+    if (!fs.statSync(file).isFile()) return { kind: 'not-regular' };
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return { kind: 'not-regular' };
+    if (stat.size === 0) return { kind: 'ok', text: '', size: 0, truncated: false };
+
+    const start = Math.max(0, stat.size - maxBytes);
+    const length = stat.size - start;
+    const buf = Buffer.alloc(length);
+    let done = 0;
+    while (done < length) {
+      const n = fs.readSync(fd, buf, done, length - done, start + done);
+      if (n <= 0) break;
+      done += n;
+    }
+    return {
+      kind: 'ok',
+      text: buf.subarray(0, done).toString('utf8'),
+      size: done,
+      truncated: start > 0
+    };
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // nothing to do
+      }
+    }
+  }
+}

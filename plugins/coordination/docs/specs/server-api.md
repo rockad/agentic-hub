@@ -540,6 +540,7 @@ When `A2A_PUSH_ENABLED=1`:
 - Transport: MCP streamable HTTP (`POST` for messages, optional `GET` for the server stream, `DELETE` to end a session). Same server as lookup's pattern; agy already reaches lookup at `http://127.0.0.1:8100/mcp` through its `serverUrl` entry (agy's documented key is `url`; `serverUrl` is the accepted legacy key) [D5].
 - Auth: local-harness API key only. A remote-peer or status-client API key gets `403` here [D11].
 - Implementation [design, unverified]: the official `mcp` Python SDK's streamable-HTTP app mounted into the same Starlette application, behind the same middleware. Compatibility with the `a2a-python` Starlette app is untested (spikes.md SP5 D12).
+  - As built (S1-MCP, 2026-11-16): the transport is written in `coordination/mcp/server.py` and mounted as one `Route`, with no `mcp` SDK in the runtime image; the three SP5 D12 findings below are lines of that file. See [mcp.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/mcp.md).
 - Stateful sessions are required. The server issues `Mcp-Session-Id` at `initialize` and keeps `mcp_session_id -> (key_id, handle)` in memory. The recall server runs `FASTMCP_STATELESS_HTTP=true` [verified, memory plugin compose]; this server must not.
 - Findings from SP5 D12 [verified, [results](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-05-sp5.md)] that the server must implement:
   - **Mount form.** Extract the routes of `mcp.streamable_http_app(streamable_http_path="/mcp", ...)` into the same Starlette route list as the A2A routes and enter `mcp.session_manager.run()` in the application lifespan. `Mount("/mcp", ...)` answered a 307 and then 404. The `mcp` app's own DNS-rebinding protection is switched off because our middleware does the Host and Origin checks.
@@ -690,6 +691,7 @@ Rules:
 - Only `text/plain` parts and `application/json` data parts are inlined. Raw bytes are summarised by media type and size. URLs are shown as strings and never fetched by the server.
 - The notice string is a constant in the server source. It is not configurable and not derived from message content.
 - The same structure is delivered as MCP `structuredContent` and as a JSON text block.
+- As built (S1-MCP): `origin` is carried per task, from the `coord` block the service stamped; the top-level `origin` is that value when all tasks share it, `mixed` when they differ and `none` when there is no task. `truncated: true` marks a cut part and the result, and `omitted_tasks` counts dropped tasks. Details in [mcp.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/mcp.md) section 5.
 
 ### 4.2 `a2a_hello` (session)
 
@@ -762,6 +764,7 @@ Notes:
   - Claude Code 2.1.319: **60 s** per call by default [verified, SP2 C8, [results](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-06-sp2-claude.md)]. Setting `MCP_TOOL_TIMEOUT` (milliseconds, the 300000 used in the test) raised it [verified, C8b]. A call that runs past 120 s is moved to the background: the model gets a "moved to the background as task ..." result, and the real result arrives later as a `<task-notification>` that starts a new turn on its own. That notification is lost if the session exits [verified].
   - agy 1.5.3: **180 s**, then agy sends `notifications/cancelled` and reports "timed out after 3m0s: context deadline exceeded"; the HTTP connection and the same `Mcp-Session-Id` are reused afterwards. `a2a_wait` at 30 s and 120 s returned 200; 240 s was cancelled at exactly 180.0 s [verified, SP2 A7, 2026-11-08, [results](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-08-sp2-agy.md) section 7; first observed on agy 1.5.1 in the 2026-11-05 session notes].
 - Consequence: `A2A_MAX_WAIT_S` defaults to **50** (inside the 60 s default of Claude Code). The installer may raise it only together with a matching `MCP_TOOL_TIMEOUT` for the server; never above 170 (agy's cap) without a separate per-harness limit. The earlier default of 240 was above both limits and is withdrawn.
+- As built (S1-MCP, decision Z15): a larger `timeout_seconds` or `wait_seconds` is capped to `A2A_MAX_WAIT_S`, not refused, and `tools/list` advertises the configured value as the `maximum`. The wait polls once a second; there is no change notifier yet ([mcp.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/mcp.md) section 6).
 
 ### 4.6 `a2a_peers` (read)
 

@@ -19,7 +19,8 @@ tenant. A tenant is a card id and contains `@`, which is legal in a path segment
 
 Success bodies are ProtoJSON with the media type `application/a2a+json`, as the SDK serves them.
 Errors are `{"error": {"code": <http status>, "status": ..., "message": ..., "details": [ErrorInfo]}}`
-with `application/json`. `A2A-Version: 1.0` is checked first, before the body is read (D33).
+with `application/a2a+json` too (A2A 1.0.1 section 11.1 and the 11.6 error example win over the older
+`application/problem+json` examples). `A2A-Version: 1.0` is checked first, before the body is read (D33).
 """
 
 from __future__ import annotations
@@ -60,7 +61,10 @@ class RestBinding:
     @staticmethod
     def _error(problem: E.A2AProblem) -> Response:
         headers = {"Cache-Control": "no-store", **problem.headers}
-        return JSONResponse(problem.rest_body(), status_code=problem.http_status, headers=headers)
+        # A2A 1.0.1 section 11.1: `application/a2a+json` for requests and responses, errors included.
+        return JSONResponse(
+            problem.rest_body(), status_code=problem.http_status, media_type=A2A_JSON, headers=headers
+        )
 
     @staticmethod
     def _ok(payload: dict[str, Any]) -> Response:

@@ -35,7 +35,7 @@ REST paths (as the SDK 1.3.0 routes them), each in a plain and a tenant-prefixed
 - `POST` and `GET /tasks/{id}/pushNotificationConfigs`, `GET` and `DELETE /tasks/{id}/pushNotificationConfigs/{push_id}`
 - `GET /extendedAgentCard`
 
-Success bodies are ProtoJSON with `application/a2a+json`, as the SDK serves them. REST errors are `{"error": {"code": <http>, "status": ..., "message": ..., "details": [ErrorInfo]}}`. JSON-RPC errors carry the same `ErrorInfo` in `data`.
+Success bodies are ProtoJSON with `application/a2a+json`, as the SDK serves them. REST errors are `{"error": {"code": <http>, "status": ..., "message": ..., "details": [ErrorInfo]}}` and use `application/a2a+json` as well: A2A 1.0.1 section 11.1 (SHOULD, for requests and responses) and the 11.6 error example win over the two older `application/problem+json` examples (decision of the TCK allowlist review, 2026-11-16). The server's own gates in front of the binding (the access-control middleware, the Agent Card routes) keep RFC 9457 `application/problem+json`, as does `/status`. JSON-RPC errors carry the same `ErrorInfo` in `data`.
 
 ## 3. The cards (spec 3.2, 8.5; D31 to D33, D35, Z13)
 

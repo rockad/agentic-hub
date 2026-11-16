@@ -224,7 +224,7 @@ def test_streaming_routes_answer_unsupported_operation(env):
     for method, path, body in calls:
         response = wire.rest(env.keys.agy, method, path, json_body=body)
         assert response.status_code == 400 and reason(response) == "UNSUPPORTED_OPERATION", (method, path)
-        assert response.headers["content-type"].startswith("application/json")  # an error, not an event stream
+        assert response.headers["content-type"].startswith("application/a2a+json")  # an error, not an event stream
     assert wire.rest(env.keys.agy, "GET", "/tasks").json()["totalSize"] == 1
 
 
@@ -268,6 +268,22 @@ def test_unknown_paths_and_wrong_methods(env):
     assert wire.rest(env.keys.agy, "PUT", "/tasks").status_code == 405
     assert wire.rest(env.keys.agy, "DELETE", "/tasks/x").status_code == 405
     assert wire.rest(env.keys.agy, "GET", "/message:send").status_code == 405
+
+
+def test_every_rest_error_is_application_a2a_json(env):
+    """A2A 1.0.1 section 11.1 and the 11.6 error example: `application/a2a+json` for responses,
+    errors included (Z16 review, 2026-11-16; the TCK's HTTP_JSON-SVC-001 checks it)."""
+    wire = env.wire()
+    errors = [
+        wire.rest(env.keys.agy, "GET", "/tasks", version="0.3"),  # VERSION_NOT_SUPPORTED
+        wire.rest(env.keys.agy, "POST", "/message:send", json_body={"message": {}}),  # InvalidParams
+        wire.rest(env.keys.agy, "GET", "/tasks/no-such-task"),  # TaskNotFound
+        wire.rest(env.keys.agy, "POST", "/message:stream", json_body={"message": text_message()}),  # unsupported
+    ]
+    for response in errors:
+        assert response.status_code >= 400, response.text[:200]
+        assert response.headers["content-type"].startswith("application/a2a+json"), response.status_code
+        assert "error" in response.json()
 
 
 def test_errors_are_never_cached_and_carry_no_internal_detail(env, monkeypatch):

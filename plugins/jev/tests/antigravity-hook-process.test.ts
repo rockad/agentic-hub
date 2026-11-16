@@ -387,4 +387,130 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(approvalsOf('c-outside-proc')).toEqual([]);
     expect(pre('c-outside-proc').decision).toBe('deny');
   });
+
+  it('includes numeric epoch alongside timestamp in antigravity_decisions.jsonl', () => {
+    const payload = {
+      conversationId: 'c-epoch',
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash' } }
+    };
+    run('pre-tool-use', payload);
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    expect(fs.existsSync(logFile)).toBe(true);
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(typeof last.epoch).toBe('number');
+    expect(last.epoch).toBeGreaterThan(1_700_000_000);
+    expect(typeof last.timestamp).toBe('string');
+  });
+
+  it('PostToolUse ask_question logs ask_answer line with exact required fields and outcome', () => {
+    // 1. Initial deny so elevation is expected
+    pre('c-ask-diag');
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const linesBefore = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').length : 0;
+
+    // 2. PostToolUse with Yes, once on stdin
+    const post = run('post-tool-use', answered('c-ask-diag', 'A1: (Recommended) Yes, once', { stepIdx: 5 }));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+
+    const linesAfter = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    expect(linesAfter.length).toBeGreaterThan(linesBefore);
+    const entry = JSON.parse(linesAfter[linesAfter.length - 1]);
+
+    expect(entry.event).toBe('ask_answer');
+    expect(entry.session_id).toBe('c-ask-diag');
+    expect(entry.stepIdx).toBe(5);
+    expect(entry.content_on_stdin).toBe(true);
+    expect(entry.marker_found).toBe(true);
+    expect(entry.row_found).toBe(true);
+    expect(entry.parsed).toEqual({ approved: true, scope: 'once' });
+    expect(entry.outcome).toBe('recorded');
+    expect(typeof entry.epoch).toBe('number');
+    expect(typeof entry.timestamp).toBe('string');
+  });
+
+  it('PostToolUse ask_question logs outcome: rejected when user selects No', () => {
+    pre('c-ask-rej');
+    run('post-tool-use', answered('c-ask-rej', 'A1: No, proceed on flash', { stepIdx: 2 }));
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+
+    expect(entry.event).toBe('ask_answer');
+    expect(entry.outcome).toBe('rejected');
+    expect(entry.parsed).toEqual({ approved: false, scope: null });
+  });
+
+  it('PostToolUse ask_question logs outcome: not_denied when user approves without prior denial', () => {
+    // No prior pre-tool-use deny for c-ask-notdenied
+    run('post-tool-use', answered('c-ask-notdenied', 'A1: Yes, once', { stepIdx: 2 }));
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+
+    expect(entry.event).toBe('ask_answer');
+    expect(entry.outcome).toBe('not_denied');
+  });
+
+  it('PostToolUse ask_question logs outcome: no_marker when questions array lacks elevation marker', () => {
+    const payload = {
+      conversationId: 'c-nomark',
+      toolCall: {
+        id: 'call_q',
+        name: 'ask_question',
+        args: { questions: ['What color is the sky?'] }
+      },
+      content: 'A1: Blue'
+    };
+    run('post-tool-use', payload);
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+
+    expect(entry.event).toBe('ask_answer');
+    expect(entry.outcome).toBe('no_marker');
+    expect(entry.marker_found).toBe(false);
+  });
+
+  it('PostToolUse invoke_subagent logs subagent_served with child conversation ID and served model', () => {
+    const childId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    // Create child transcript in simulated brain dir
+    const brainLogs = path.join(home, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+    fs.mkdirSync(brainLogs, { recursive: true });
+    fs.writeFileSync(
+      path.join(brainLogs, 'transcript_full.jsonl'),
+      '{"step_index":0,"model":"gemini-3.8-pro-preview","type":"MODEL","content":"hello"}\n'
+    );
+
+    const payload = {
+      conversationId: 'c-parent-session',
+      toolCall: {
+        id: 'call_sub',
+        name: 'invoke_subagent',
+        args: { TypeName: 'coder', Model: 'pro' }
+      },
+      content: `Subagent started. Conversation ID: ${childId}`
+    };
+
+    const res = run('post-tool-use', payload);
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.toString().trim()).toBe('{}');
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+
+    expect(entry.event).toBe('subagent_served');
+    expect(entry.harness).toBe('antigravity');
+    expect(entry.session_id).toBe('c-parent-session');
+    expect(entry.child_conversation_id).toBe(childId);
+    expect(entry.requested_model).toBe('pro');
+    expect(entry.served_model).toBe('gemini-3.8-pro-preview');
+  });
 });

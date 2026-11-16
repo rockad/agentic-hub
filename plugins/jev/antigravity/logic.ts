@@ -1,7 +1,17 @@
-import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { createHash } from 'node:crypto';
-import { isExplicitProOverride, modelTierRank, rankToTierName } from '../src/core/governance.js';
-import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
+import {
+  isExplicitProOverride,
+  modelTierRank,
+  rankToTierName,
+  isOrchestratorModel,
+  subagentCeilingRank,
+  poolForTier,
+  type QuotaView
+} from '../src/core/governance.js';
+import type { JevMode } from '../src/core/config.js';
+import { readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -42,6 +52,8 @@ export type AntigravityLogicDeps = {
   approvals?: ApprovalStore;
   sessionModelOverride?: string;
   elevationMode?: 'choice' | 'dialog' | 'clamp';
+  quotaView?: QuotaView;
+  mode?: JevMode;
   now?: () => number;
 };
 
@@ -135,6 +147,7 @@ export function buildElevationReason(opts: {
   requestedModel: string;
   sessionCeilingTier: string;
   taskSummary?: string;
+  isOrchestrator?: boolean;
 }): string {
   const q = buildElevationQuestion({
     typeName: opts.typeName,
@@ -143,12 +156,16 @@ export function buildElevationReason(opts: {
     taskSummary: opts.taskSummary
   });
 
+  const noAction = opts.isOrchestrator
+    ? `if No, re-invoke with '${opts.sessionCeilingTier}' or 'flash_lite'`
+    : `if No, re-invoke with '${opts.sessionCeilingTier}' (or inherit)`;
+
   return (
     `[jev] Subagent '${opts.typeName}' requested Model '${opts.requestedModel}', which exceeds session ceiling '${opts.sessionCeilingTier}', ` +
-    `and no approval covers it. Ask the user with ask_question: one question whose text starts with ` +
+    `and no approval covers it (note: Antigravity has so far served 'pro' subagents on flash). Ask the user with ask_question: one question whose text starts with ` +
     `'${ELEVATE_MARKER_PREFIX}${opts.requestedModel}]', with four options in this order: ` +
     `'${q.options[0]}', '${q.options[1]}', '${q.options[2]}', '${q.options[3]}'. ` +
-    `If the user approves, re-invoke with '${opts.requestedModel}'; if No, re-invoke with '${opts.sessionCeilingTier}' (or inherit); ` +
+    `If the user approves, re-invoke with '${opts.requestedModel}'; ${noAction}; ` +
     `do not ask in any other form.`
   );
 }
@@ -249,6 +266,36 @@ export function extractAskAnswer(
   return answers.get(questionIndex + 1) ?? null;
 }
 
+export async function pollForAskAnswer(
+  input: AntigravityHookInput | undefined,
+  questionIndex = 0,
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+): Promise<string | null> {
+  const maxWaitMs = opts?.maxWaitMs ?? 2000;
+  const pollIntervalMs = opts?.pollIntervalMs ?? 150;
+  const maxBytes = opts?.maxBytes;
+
+  let answer = extractAskAnswer(input, questionIndex, maxBytes);
+  if (answer !== null) return answer;
+
+  const contentOnStdin = typeof input?.content === 'string' && input.content.trim().length > 0;
+  if (contentOnStdin || !input?.transcriptPath || typeof input?.stepIdx !== 'number') {
+    return null;
+  }
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    const elapsed = Date.now() - startTime;
+    const remaining = maxWaitMs - elapsed;
+    if (remaining <= 0) break;
+    const delay = Math.min(pollIntervalMs, remaining);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    answer = extractAskAnswer(input, questionIndex, maxBytes);
+    if (answer !== null) return answer;
+  }
+  return null;
+}
+
 /** An answer text without its `A1:` prefix and its `(Recommended)` tag (a prefix as Antigravity writes it, or a suffix). */
 function answerLabel(answerText: string): string {
   return answerText
@@ -271,6 +318,158 @@ export function parseElevationAnswer(answerText?: string | null): { approved: bo
   return scope ? { approved: true, scope } : { approved: false };
 }
 
+export function pullElevationAnswerFromTranscript(
+  transcriptPath: string,
+  requestedModel: string,
+  deniedAtMs?: number
+): { approved: boolean; scope?: ApprovalScope } | null {
+  try {
+    const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
+    if (read.kind !== 'ok') return null;
+
+    let text = read.text;
+    if (read.truncated) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+    }
+
+    const lines = text.trim().split(/\r?\n/);
+    const steps: Array<Record<string, unknown>> = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj && typeof obj === 'object') {
+          steps.push(obj as Record<string, unknown>);
+        }
+      } catch {
+        // ignore unparseable line
+      }
+    }
+
+    const marker = `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`.toLowerCase();
+
+    type AskMatch = {
+      stepIndexInArray: number;
+      toolCallId?: string;
+      markerIndex: number;
+    };
+
+    let latestMatch: AskMatch | null = null;
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+
+      const rawTime =
+        typeof step.created_at === 'string'
+          ? step.created_at
+          : typeof step.createdAt === 'string'
+            ? step.createdAt
+            : null;
+      if (typeof deniedAtMs === 'number' && rawTime) {
+        const t = Date.parse(rawTime);
+        if (!Number.isNaN(t) && t < deniedAtMs - 5000) {
+          continue;
+        }
+      }
+
+      let matched = false;
+      let toolCallId: string | undefined;
+      let markerIndex = 0;
+
+      const toolCalls = Array.isArray(step.tool_calls)
+        ? step.tool_calls
+        : Array.isArray(step.toolCalls)
+          ? step.toolCalls
+          : null;
+
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          if (tc && typeof tc === 'object') {
+            const rec = tc as Record<string, unknown>;
+            if (rec.name === 'ask_question') {
+              const args = rec.args && typeof rec.args === 'object' ? (rec.args as Record<string, unknown>) : undefined;
+              const questions = args?.questions;
+              if (Array.isArray(questions)) {
+                questions.forEach((q, idx) => {
+                  const qText =
+                    typeof q === 'string'
+                      ? q
+                      : q && typeof q === 'object'
+                        ? (q as Record<string, unknown>).question
+                        : '';
+                  if (typeof qText === 'string' && qText.toLowerCase().includes(marker)) {
+                    matched = true;
+                    markerIndex = idx;
+                    if (typeof rec.id === 'string') toolCallId = rec.id;
+                  }
+                });
+              } else if (typeof questions === 'string' && questions.toLowerCase().includes(marker)) {
+                matched = true;
+                markerIndex = 0;
+                if (typeof rec.id === 'string') toolCallId = rec.id;
+              }
+            }
+          }
+        }
+      }
+
+      if (!matched && typeof step.content === 'string' && step.content.toLowerCase().includes(marker)) {
+        matched = true;
+        markerIndex = 0;
+        if (typeof step.toolCallId === 'string') toolCallId = step.toolCallId;
+        else if (typeof step.tool_call_id === 'string') toolCallId = step.tool_call_id;
+      }
+
+      if (matched) {
+        latestMatch = {
+          stepIndexInArray: i,
+          toolCallId,
+          markerIndex
+        };
+      }
+    }
+
+    if (!latestMatch) return null;
+
+    let genericStep: Record<string, unknown> | null = null;
+
+    if (latestMatch.toolCallId) {
+      for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
+        const step = steps[i];
+        const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
+        if (stepType === 'GENERIC') {
+          const stepToolId = step.toolCallId ?? step.tool_call_id;
+          if (stepToolId === latestMatch.toolCallId) {
+            genericStep = step;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!genericStep) {
+      for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
+        const step = steps[i];
+        const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
+        if (stepType === 'GENERIC') {
+          genericStep = step;
+          break;
+        }
+      }
+    }
+
+    if (!genericStep || typeof genericStep.content !== 'string') {
+      return null;
+    }
+
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, latestMatch.markerIndex);
+    return parseElevationAnswer(rawAnswer);
+  } catch {
+    return null;
+  }
+}
+
 export function evaluateAntigravitySubagentCall(
   input: AntigravityHookInput,
   deps: AntigravityLogicDeps = {}
@@ -283,17 +482,101 @@ export function evaluateAntigravitySubagentCall(
   const sessionId = input.conversationId || 'default-session';
   const nowMs = (deps.now ?? Date.now)();
   const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
-  const sessionCeilingRank = modelTierRank(sessionModel);
-  const sessionCeilingTier = rankToTierName(sessionCeilingRank);
+  const mode: JevMode = deps.mode ?? 'on';
 
   const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
 
-  // If Model is omitted or inherit, it resolves to session model (proved by control) -> nothing to decide (pass)
+  // 1. Reject openrouter_free and invalid model values
+  if (isExplicit && requestedModel) {
+    const reqLower = requestedModel.toLowerCase();
+    if (reqLower.includes('free') || reqLower.includes('openrouter')) {
+      return {
+        decision: 'deny',
+        reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.'
+      };
+    }
+    const isRecognized =
+      /^(?:flash_lite|flash-lite|flash|pro)$/i.test(reqLower) ||
+      /^(?:gemini|claude|hydrogen|argon)/i.test(reqLower);
+    if (!isRecognized) {
+      return {
+        decision: 'deny',
+        reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`
+      };
+    }
+  }
+
+  // 2. Orchestrator omitted/inherit rule
+  const isOrchestrator = isOrchestratorModel(sessionModel);
+  let effectiveTier: string;
+
+  if (!isExplicit || !requestedModel) {
+    if (isOrchestrator) {
+      return {
+        decision: 'deny',
+        reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
+      };
+    }
+    effectiveTier = rankToTierName(subagentCeilingRank(sessionModel));
+  } else {
+    effectiveTier = requestedModel;
+  }
+
+  // 3. Quota check (BEFORE any approval or override!)
+  if (deps.quotaView) {
+    const pool = poolForTier(deps.quotaView, effectiveTier);
+    let poolLabel = 'Gemini';
+    if (deps.quotaView.pools) {
+      if (pool === deps.quotaView.pools.frontier) {
+        const variant = deps.quotaView.variant || 'argon';
+        poolLabel = variant === 'argon' ? 'Argon (pools.frontier)' : 'Carbon (pools.frontier)';
+      } else {
+        poolLabel = 'Gemini (pools.execution)';
+      }
+    } else if (pool.pool === '3p') {
+      poolLabel = '3p';
+    }
+
+    const pct = typeof pool.min_remaining === 'number' ? ` (${Math.round(pool.min_remaining * 100)}% remaining)` : '';
+
+    if (mode === 'on') {
+      if (pool.strategy === 'free_only') {
+        return {
+          decision: 'deny',
+          reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
+        };
+      }
+      if (pool.strategy === 'conserve') {
+        if (modelTierRank(effectiveTier) > 1) {
+          return {
+            decision: 'deny',
+            reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
+          };
+        }
+      }
+    } else if (mode === 'on-demand') {
+      if ((pool.strategy === 'free_only' || pool.strategy === 'conserve') && modelTierRank(effectiveTier) > 1) {
+        return {
+          decision: 'ask',
+          reason: `[jev] ${poolLabel} quota is in ${pool.strategy}${pct}: subagent requested '${effectiveTier}'. Approve to proceed, or cancel to conserve quota.`
+        };
+      }
+      return { decision: 'pass' };
+    }
+  } else if (mode === 'on-demand') {
+    return { decision: 'pass' };
+  }
+
+  // If Model is omitted/inherit and passed Step 3 quota check on non-Orchestrator:
   if (!isExplicit || !requestedModel) {
     return { decision: 'pass' };
   }
 
+  // 4. Ceiling / Elevation
+  const sessionCeilingRank = subagentCeilingRank(sessionModel);
+  const sessionCeilingTier = rankToTierName(sessionCeilingRank);
   const requestedRank = modelTierRank(requestedModel);
+
   if (requestedRank <= sessionCeilingRank) {
     return { decision: 'pass' };
   }
@@ -353,11 +636,28 @@ export function evaluateAntigravitySubagentCall(
   // Choice mode (default):
   const count = deps.approvals?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   if (count <= 2) {
+    if (deps.approvals && input.transcriptPath && typeof deps.approvals.wasDeniedRecently === 'function') {
+      const deniedAtMs = deps.approvals.wasDeniedRecently(sessionId, requestedModel, nowMs);
+      if (typeof deniedAtMs === 'number') {
+        const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs);
+        if (pull?.approved && pull.scope) {
+          deps.approvals.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs });
+          deps.approvals.claim(sessionId, requestedModel, nowMs);
+          return {
+            decision: 'allow',
+            elevation: 'approved',
+            approvalScope: pull.scope
+          };
+        }
+      }
+    }
+
     deps.approvals?.deny(sessionId, requestedModel, nowMs);
     const reason = buildElevationReason({
       typeName,
       requestedModel,
-      sessionCeilingTier
+      sessionCeilingTier,
+      isOrchestrator
     });
     return {
       decision: 'deny',
@@ -374,4 +674,72 @@ export function evaluateAntigravitySubagentCall(
     elevation: 'asked',
     attemptCount: count
   };
+}
+
+export function extractChildConversationId(content?: string | null): string | null {
+  if (!content || typeof content !== 'string') return null;
+
+  const labelled = /(?:conversation_?id|conversation id|child_?conversation_?id|session_?id|session id)["':\s=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(content);
+  if (labelled) {
+    return labelled[1];
+  }
+
+  const uuid = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(content);
+  if (uuid) {
+    return uuid[1];
+  }
+
+  return null;
+}
+
+export function findServedModelFromTranscript(
+  childConvId: string,
+  homedir = os.homedir()
+): string | null {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(childConvId)) {
+    return null;
+  }
+  const brainDir = path.join(homedir, '.gemini', 'antigravity-cli', 'brain', childConvId);
+  const candidates = [
+    path.join(brainDir, '.system_generated', 'logs', 'transcript_full.jsonl'),
+    path.join(brainDir, '.system_generated', 'logs', 'transcript.jsonl'),
+    path.join(brainDir, 'transcript.jsonl')
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const read = readRegularFileTail(candidate, TRANSCRIPT_TAIL_WINDOW_BYTES);
+      if (read.kind !== 'ok') continue;
+      let text = read.text;
+      if (read.truncated) {
+        const firstNewline = text.indexOf('\n');
+        text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+      }
+      for (const line of text.trim().split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const step = JSON.parse(line);
+          if (step && typeof step === 'object') {
+            const m =
+              typeof step.model === 'string'
+                ? step.model
+                : typeof step.modelName === 'string'
+                  ? step.modelName
+                  : typeof step.model_name === 'string'
+                    ? step.model_name
+                    : null;
+            if (m && m.trim().length > 0) {
+              return m.trim();
+            }
+          }
+        } catch {
+          // ignore malformed line
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
 }

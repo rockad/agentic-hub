@@ -1,6 +1,17 @@
 {
   "jev-subagent-guard": {
     "enabled": true,
+    "PreInvocation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run ./antigravity/preflight.ts",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "invoke_subagent",
@@ -11,11 +22,21 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "run_command|write_file|edit_file|write_to_file|replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run ./antigravity/guards.ts",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "ask_question",
+        "matcher": "ask_question|invoke_subagent",
         "hooks": [
           {
             "type": "command",

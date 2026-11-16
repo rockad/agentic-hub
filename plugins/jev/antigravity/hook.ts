@@ -5,10 +5,12 @@ import * as path from 'node:path';
 import {
   readJevMode,
   readQuotaView,
+  writeAntigravitySessionModel,
   privateDir,
   privateFile,
   PRIVATE_FILE_MODE,
-  type JevMode
+  type JevMode,
+  type QuotaView
 } from '../src/shared.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
@@ -17,10 +19,15 @@ import {
   extractAskAnswer,
   extractSubagentModel,
   parseElevationAnswer,
+  pollForAskAnswer,
+  extractChildConversationId,
+  findServedModelFromTranscript,
+  TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
   type AntigravityHookInput
 } from './logic.js';
-import { createAntigravityApprovalStore } from './approvals.js';
+import { readRegularFileTail } from '../claude/safe-read.js';
+import { createAntigravityApprovalStore, type ApprovalScope } from './approvals.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -37,12 +44,67 @@ function appendDecisionLog(entry: Record<string, unknown>): void {
     const dir = getJevDir();
     privateDir(dir);
     const file = getDecisionsLogPath();
-    const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + '\n';
+    const line = JSON.stringify({
+      ...entry,
+      timestamp: new Date().toISOString(),
+      epoch: Math.floor(Date.now() / 1000)
+    }) + '\n';
     fs.appendFileSync(file, line, { mode: PRIVATE_FILE_MODE });
     privateFile(file);
   } catch {
     // fail open on logging failure
   }
+}
+
+function isTranscriptReadable(transcriptPath?: string): boolean {
+  if (!transcriptPath || typeof transcriptPath !== 'string') return false;
+  let fd: number | null = null;
+  try {
+    const st = fs.statSync(transcriptPath);
+    if (!st.isFile()) return false;
+    fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const fst = fs.fstatSync(fd);
+    return fst.isFile();
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function getStepContent(input: AntigravityHookInput): string | null {
+  if (typeof input.content === 'string' && input.content.length > 0) {
+    return input.content;
+  }
+  if (!input.transcriptPath || typeof input.stepIdx !== 'number') return null;
+  try {
+    const read = readRegularFileTail(input.transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
+    if (read.kind !== 'ok') return null;
+    let text = read.text;
+    if (read.truncated) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+    }
+    for (const line of text.trim().split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const step = JSON.parse(line);
+        if (step && typeof step === 'object' && step.step_index === input.stepIdx) {
+          if (typeof step.content === 'string') return step.content;
+          if (step.content && typeof step.content === 'object') return JSON.stringify(step.content);
+          if (typeof step.response === 'string') return step.response;
+          if (typeof step.result === 'string') return step.result;
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
 }
 
 /**
@@ -79,7 +141,7 @@ async function main() {
     }
 
     const mode: JevMode = await readJevMode('antigravity');
-    if (mode !== 'on') {
+    if (mode === 'off') {
       passThrough(event);
     }
 
@@ -90,59 +152,140 @@ async function main() {
       const toolName = input?.toolCall?.name;
       if (toolName === 'ask_question') {
         const conversationId = input.conversationId || 'default-session';
-        const questions = input.toolCall?.args?.questions;
-        let elevateModel: string | undefined;
-        // Which question carries the marker, so its own answer line (A1 = first question) is the one read.
-        let markerIndex = 0;
+        const contentOnStdin = typeof input.content === 'string' && input.content.trim().length > 0;
+        const transcriptReadable = isTranscriptReadable(input.transcriptPath);
 
-        if (Array.isArray(questions)) {
-          questions.forEach((q, index) => {
-            const qText = typeof q === 'string' ? q : q?.question;
-            if (typeof qText === 'string' && qText.includes(ELEVATE_MARKER_PREFIX)) {
-              const m = qText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
-              if (m) {
-                elevateModel = m[1].toLowerCase();
-                markerIndex = index;
+        let markerFound = false;
+        let rowFound = false;
+        let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
+        let outcome: 'recorded' | 'no_marker' | 'no_row' | 'rejected' | 'not_denied' | 'error' = 'error';
+
+        try {
+          const questions = input.toolCall?.args?.questions;
+          let elevateModel: string | undefined;
+          // Which question carries the marker, so its own answer line (A1 = first question) is the one read.
+          let markerIndex = 0;
+
+          if (Array.isArray(questions)) {
+            questions.forEach((q, index) => {
+              const qText = typeof q === 'string' ? q : (q && typeof q === 'object' ? (q as Record<string, unknown>).question : '');
+              if (typeof qText === 'string' && qText.includes(ELEVATE_MARKER_PREFIX)) {
+                const m = qText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
+                if (m) {
+                  elevateModel = m[1].toLowerCase();
+                  markerIndex = index;
+                }
               }
-            }
-          });
-        } else if (typeof questions === 'string' && questions.includes(ELEVATE_MARKER_PREFIX)) {
-          const m = questions.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
-          if (m) elevateModel = m[1].toLowerCase();
+            });
+          } else if (typeof questions === 'string' && questions.includes(ELEVATE_MARKER_PREFIX)) {
+            const m = questions.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
+            if (m) elevateModel = m[1].toLowerCase();
+          }
+
+          markerFound = typeof elevateModel === 'string';
+
+          // Bounded wait (~150 ms polls, <= 2 s) for the answer row if content is not on stdin and transcriptPath + stepIdx are given
+          const rawAnswer = await pollForAskAnswer(input, markerIndex);
+          rowFound = rawAnswer !== null;
+
+          const parsedResult = parseElevationAnswer(rawAnswer);
+          parsed = {
+            approved: parsedResult.approved,
+            scope: parsedResult.scope ?? null
+          };
+
+          if (!markerFound || !elevateModel) {
+            outcome = 'no_marker';
+          } else if (!rowFound) {
+            outcome = 'no_row';
+          } else if (!parsed.approved || !parsed.scope) {
+            outcome = 'rejected';
+          } else {
+            const recorded = approvals.record(conversationId, {
+              model: elevateModel,
+              scope: parsed.scope,
+              created_at: Date.now()
+            });
+            outcome = recorded ? 'recorded' : 'not_denied';
+          }
+        } catch {
+          outcome = 'error';
         }
 
-        // The model comes from the question's marker; the answer ONLY from the `content` field that carries the user's
-        // choice, matched against the prescribed labels exactly. Never the payload as a whole, never toolCall.args.
-        const parsed = parseElevationAnswer(extractAskAnswer(input, markerIndex));
-        const targetModel = elevateModel;
+        appendDecisionLog({
+          event: 'ask_answer',
+          session_id: conversationId,
+          stepIdx: input.stepIdx ?? null,
+          content_on_stdin: contentOnStdin,
+          transcript_readable: transcriptReadable,
+          marker_found: markerFound,
+          row_found: rowFound,
+          parsed,
+          outcome
+        });
 
-        if (parsed.approved && parsed.scope && targetModel) {
-          approvals.record(conversationId, {
-            model: targetModel,
-            scope: parsed.scope,
-            created_at: Date.now()
-          });
+        console.log('{}');
+        process.exit(0);
+      } else if (toolName === 'invoke_subagent') {
+        const conversationId = input.conversationId || null;
+        let contentToSearch = typeof input.content === 'string' ? input.content : '';
+        if (!contentToSearch && input.transcriptPath && typeof input.stepIdx === 'number') {
+          contentToSearch = getStepContent(input) ?? '';
         }
+        const childConvId = extractChildConversationId(contentToSearch);
+        const { requestedModel } = extractSubagentModel(input.toolCall?.args);
+        let servedModel: string | null = null;
+        if (childConvId) {
+          try {
+            servedModel = findServedModelFromTranscript(childConvId);
+          } catch {
+            // best-effort
+          }
+        }
+        appendDecisionLog({
+          event: 'subagent_served',
+          harness: 'antigravity',
+          session_id: conversationId,
+          child_conversation_id: childConvId || null,
+          requested_model: requestedModel || null,
+          served_model: servedModel || null
+        });
+
+        console.log('{}');
+        process.exit(0);
       }
       console.log('{}');
       process.exit(0);
     }
 
     // PreToolUse
+    const trimmedModel =
+      typeof input.modelName === 'string' && input.modelName.trim().length > 0
+        ? input.modelName.trim()
+        : undefined;
+
+    if (trimmedModel && input.conversationId) {
+      writeAntigravitySessionModel(input.conversationId, trimmedModel);
+    }
+
     let activeModel: string | undefined;
+    let quotaView: QuotaView | undefined;
     try {
-      const quotaView = await readQuotaView();
-      activeModel = ceilingModelForHarness('antigravity', quotaView?.active_model);
+      quotaView = await readQuotaView({ conversationId: input.conversationId });
+      const rawModel = trimmedModel || quotaView?.active_model;
+      activeModel = ceilingModelForHarness('antigravity', rawModel);
     } catch {
       // ignore
     }
-    if (!activeModel && input.modelName) {
-      activeModel = input.modelName;
+    if (!activeModel && trimmedModel) {
+      activeModel = ceilingModelForHarness('antigravity', trimmedModel);
     }
 
     const decision = evaluateAntigravitySubagentCall(input, {
       approvals,
-      sessionModelOverride: activeModel
+      sessionModelOverride: activeModel,
+      quotaView,
+      mode
     });
 
     const { requestedModel } = extractSubagentModel(input.toolCall?.args);

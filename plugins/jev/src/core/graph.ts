@@ -32,6 +32,7 @@ export interface BatchDispatchPlan {
   totalTasks: number;
   freeTierTasks: number;
   activeSessionModel: string;
+  activeModelSource?: string | null;
   maxConcurrentFreeWorkers: number;
   tasks: SubTask[];
   stages: SubTask[][];

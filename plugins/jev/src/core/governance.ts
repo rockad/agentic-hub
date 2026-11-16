@@ -14,6 +14,10 @@ import {
 import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
 import { getTracer } from '../tracing.js';
+import { privateDir, privateFile, PRIVATE_FILE_MODE } from './private-fs.js';
+import { safeSessionId } from '../../claude/logic.js';
+export { safeSessionId };
+import { readRegularFile } from '../../claude/safe-read.js';
 
 // ── Antigravity quota view ───────────────────────────────────────────────────
 export const QUOTA_STATE_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'quota-state.json');
@@ -133,6 +137,34 @@ export interface QuotaBucket {
 
 export type QuotaStrategy = 'normal' | 'conserve' | 'free_only' | 'unknown';
 
+export const ANTIGRAVITY_SESSION_TTL_SEC = 7200;
+
+export type AntigravitySessionRecord = {
+  conversationId: string;
+  model: string;
+  updated_at: number;
+};
+
+export type ActiveModelSource = 'argument' | 'env' | 'latest' | 'quota-state';
+
+export type OrchestratorVariant = 'argon' | 'carbon';
+
+export interface QuotaPoolView {
+  pool?: string;
+  five_hour: number | null;
+  weekly: number | null;
+  min_remaining: number | null;
+  strategy: QuotaStrategy;
+}
+
+export interface OrchestratorQuotaFields {
+  variant: OrchestratorVariant;
+  pools: {
+    execution: QuotaPoolView;
+    frontier: QuotaPoolView;
+  };
+}
+
 export interface QuotaView {
   source: string;
   schema: number;
@@ -140,13 +172,20 @@ export interface QuotaView {
   updated_at: number | null;
   plan_tier?: string;
   active_model?: string;
+  quota_state_active_model?: string;
+  activeModelSource?: ActiveModelSource;
   buckets: Record<string, QuotaBucket>;
   gemini: { five_hour: number | null; weekly: number | null; min_remaining: number | null };
   strategy: QuotaStrategy;
   thresholds: QuotaThresholds;
   geminiRemainingFraction: number | null;
   /** Pool backing the currently selected model (Gemini buckets for Gemini models, 3p buckets otherwise). */
-  active: { pool: 'gemini' | '3p'; five_hour: number | null; weekly: number | null; min_remaining: number | null; strategy: QuotaStrategy };
+  active: QuotaPoolView & { pool: 'gemini' | '3p' };
+  variant?: OrchestratorVariant;
+  pools?: {
+    execution: QuotaPoolView;
+    frontier: QuotaPoolView;
+  };
 }
 
 export function evaluatePoolStrategy(
@@ -191,16 +230,124 @@ export function normaliseBucket(nowSec: number, raw: any): QuotaBucket | null {
   };
 }
 
+export function getAntigravitySessionsDir(): string {
+  const jevDir = process.env.JEV_CONFIG_FILE
+    ? path.dirname(process.env.JEV_CONFIG_FILE)
+    : path.join(os.homedir(), '.config', 'jev');
+  return path.join(jevDir, 'antigravity-sessions');
+}
+
+const PRUNE_INTERVAL_SEC = 600; // 10 minutes
+
+export function pruneExpiredSessionModels(sessionsDir: string, nowSec: number, force = false): void {
+  try {
+    const stampFile = path.join(sessionsDir, '.prune-stamp');
+    if (!force) {
+      try {
+        if (fsSync.existsSync(stampFile)) {
+          const raw = fsSync.readFileSync(stampFile, 'utf8');
+          const lastPrune = Number(raw.trim());
+          if (!Number.isNaN(lastPrune) && nowSec - lastPrune < PRUNE_INTERVAL_SEC) {
+            return;
+          }
+        }
+      } catch {
+        // ignore read error and proceed
+      }
+    }
+
+    try {
+      fsSync.writeFileSync(stampFile, String(nowSec), { mode: PRIVATE_FILE_MODE });
+      privateFile(stampFile);
+    } catch {
+      // ignore
+    }
+
+    const entries = fsSync.readdirSync(sessionsDir);
+    for (const name of entries) {
+      if (!name.endsWith('.model.json')) continue;
+      const filePath = path.join(sessionsDir, name);
+      try {
+        const read = readRegularFile(filePath, 64 * 1024);
+        if (read.kind === 'ok') {
+          const parsed = JSON.parse(read.text);
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.updated_at === 'number' &&
+            nowSec - parsed.updated_at > ANTIGRAVITY_SESSION_TTL_SEC
+          ) {
+            fsSync.unlinkSync(filePath);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+export function writeAntigravitySessionModel(
+  conversationId: string,
+  model: string,
+  nowSec?: number,
+  overrideSessionsDir?: string
+): void {
+  const safeId = safeSessionId(conversationId);
+  if (!safeId || !model || typeof model !== 'string' || model.trim().length === 0) {
+    return;
+  }
+
+  const trimmedModel = model.trim();
+  const currentSec = typeof nowSec === 'number' ? nowSec : Math.floor(Date.now() / 1000);
+  const sessionsDir = overrideSessionsDir || getAntigravitySessionsDir();
+
+  try {
+    privateDir(sessionsDir);
+
+    const record: AntigravitySessionRecord = {
+      conversationId: safeId,
+      model: trimmedModel,
+      updated_at: currentSec
+    };
+    const content = JSON.stringify(record, null, 2) + '\n';
+
+    // 1. Write <sessionsDir>/<safeId>.model.json atomically
+    const modelFile = path.join(sessionsDir, `${safeId}.model.json`);
+    const tmp1 = `${modelFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fsSync.writeFileSync(tmp1, content, { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp1);
+    fsSync.renameSync(tmp1, modelFile);
+    privateFile(modelFile);
+
+    // 2. Write <sessionsDir>/latest.json atomically
+    const latestFile = path.join(sessionsDir, 'latest.json');
+    const tmp2 = `${latestFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fsSync.writeFileSync(tmp2, content, { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp2);
+    fsSync.renameSync(tmp2, latestFile);
+    privateFile(latestFile);
+
+    // 3. Best-effort pruning (only in writers, at most once per 10m)
+    pruneExpiredSessionModels(sessionsDir, currentSec);
+  } catch {
+    // best-effort; never crash the caller
+  }
+}
+
 /**
  * Read the multi-bucket quota state. Prefers schema v2, falls back to legacy single-bucket.
+ * Resolves active_model and activeModelSource with per-field precedence.
  */
-export async function readQuotaView(): Promise<QuotaView> {
+export async function readQuotaView(opts?: { conversationId?: string; overrideSessionsDir?: string }): Promise<QuotaView> {
   const nowSec = Math.floor(Date.now() / 1000);
   let source = 'none';
   let schema = 0;
   let updatedAt: number | null = null;
   let planTier: string | undefined;
-  let activeModel: string | undefined;
+  let rawActiveModel: string | undefined;
   let rawBuckets: Record<string, any> = {};
 
   const tryParse = (file: string): any | null => {
@@ -212,11 +359,12 @@ export async function readQuotaView(): Promise<QuotaView> {
     return null;
   };
 
-  const v2 = tryParse(QUOTA_STATE_FILE);
+  const quotaFile = process.env.JEV_QUOTA_STATE_FILE || QUOTA_STATE_FILE;
+  const v2 = tryParse(quotaFile);
   if (v2 && typeof v2 === 'object') {
     if (v2.buckets && typeof v2.buckets === 'object') {
-      source = QUOTA_STATE_FILE; schema = Number(v2.schema || 2); updatedAt = v2.updated_at ?? null;
-      planTier = v2.plan_tier; activeModel = v2.active_model; rawBuckets = v2.buckets;
+      source = quotaFile; schema = Number(v2.schema || 2); updatedAt = v2.updated_at ?? null;
+      planTier = v2.plan_tier; rawActiveModel = v2.active_model; rawBuckets = v2.buckets;
     } else if (typeof v2.remaining_fraction === 'number') {
       source = QUOTA_STATE_FILE; schema = 1; updatedAt = v2.updated_at ?? null;
       rawBuckets = { 'gemini-5h': v2 };
@@ -231,18 +379,171 @@ export async function readQuotaView(): Promise<QuotaView> {
     }
   }
 
+  // Resolve active_model and activeModelSource with per-field precedence
+  const sessionsDir = opts?.overrideSessionsDir || getAntigravitySessionsDir();
+  let activeModel: string | undefined = rawActiveModel;
+  let activeModelSource: ActiveModelSource = 'quota-state';
+
+  const readSessionFile = (fileName: string): AntigravitySessionRecord | null => {
+    const filePath = path.join(sessionsDir, fileName);
+    try {
+      const read = readRegularFile(filePath, 64 * 1024);
+      if (read.kind === 'ok') {
+        const parsed = JSON.parse(read.text);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.model === 'string' &&
+          parsed.model.trim().length > 0 &&
+          typeof parsed.updated_at === 'number'
+        ) {
+          return {
+            conversationId: typeof parsed.conversationId === 'string' ? parsed.conversationId : '',
+            model: parsed.model.trim(),
+            updated_at: parsed.updated_at
+          };
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  // 1. Argument conversationId
+  const safeId = opts?.conversationId ? safeSessionId(opts.conversationId) : null;
+  if (safeId) {
+    const rec = readSessionFile(`${safeId}.model.json`);
+    if (rec && nowSec - rec.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC) {
+      activeModel = rec.model;
+      activeModelSource = 'argument';
+    }
+  }
+
+  // 2. ANTIGRAVITY_CONVERSATION_ID ('env') - skipped until Live Check 7 confirms it
+
+  // 3. Otherwise latest.json
+  if (activeModelSource === 'quota-state') {
+    const rec = readSessionFile('latest.json');
+    if (rec && nowSec - rec.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC) {
+      activeModel = rec.model;
+      activeModelSource = 'latest';
+    }
+  }
+
+  // 4. Otherwise quota-state.json (activeModel remains rawActiveModel, activeModelSource is 'quota-state')
+
   const buckets: Record<string, QuotaBucket> = {};
   for (const [k, v] of Object.entries(rawBuckets)) {
     const b = normaliseBucket(nowSec, v);
     if (b) buckets[k] = b;
   }
 
-  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel));
+  const isOrchestrator = isOrchestratorModel(activeModel);
+  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel) && !isOrchestrator);
   const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
   const hydrogenWeeklyKey = Object.keys(buckets).find((k) => /hydrogen/i.test(k) && /week|7d/i.test(k));
   const hydrogenFiveKey = Object.keys(buckets).find((k) => /hydrogen/i.test(k) && /5h/i.test(k));
+
+  const thresholds = getQuotaThresholds();
+  const stale = updatedAt === null || nowSec - updatedAt > QUOTA_STALE_SECONDS;
+
+  if (isOrchestrator) {
+    let variant: OrchestratorVariant = 'argon';
+    const qm = rawActiveModel || '';
+    if (/orchestrator\s*\(\s*carbon\s*\)/i.test(qm) || /carbon/i.test(qm)) {
+      variant = 'carbon';
+    } else if (/orchestrator\s*\(\s*argon\s*\)/i.test(qm) || /argon/i.test(qm)) {
+      variant = 'argon';
+    } else if (activeModel && /carbon/i.test(activeModel)) {
+      variant = 'carbon';
+    } else if (planTier && /pro/i.test(planTier)) {
+      variant = 'argon';
+    } else {
+      let configVariant: string | undefined;
+      try {
+        const cfgFile = process.env.JEV_CONFIG_FILE || JEV_CONFIG_FILE;
+        if (fsSync.existsSync(cfgFile)) {
+          const cfg = JSON.parse(fsSync.readFileSync(cfgFile, 'utf8'));
+          configVariant = cfg.models?.orchestratorVariant;
+        }
+      } catch {}
+      if (configVariant && /carbon/i.test(configVariant)) {
+        variant = 'carbon';
+      } else {
+        variant = 'argon';
+      }
+    }
+
+    const execFive = buckets['gemini-5h']?.effective_remaining_fraction ?? null;
+    const execWeekly = buckets['gemini-weekly']?.effective_remaining_fraction ?? null;
+    const execCands = [execFive, execWeekly].filter((x): x is number => typeof x === 'number');
+    const execMin = execCands.length ? Math.min(...execCands) : null;
+    const execStrategy = evaluatePoolStrategy(execFive, execWeekly, thresholds);
+
+    const execPool: QuotaPoolView = {
+      pool: 'execution',
+      five_hour: execFive,
+      weekly: execWeekly,
+      min_remaining: execMin,
+      strategy: execStrategy
+    };
+
+    let frontierFive: number | null = null;
+    let frontierWeekly: number | null = null;
+    if (variant === 'argon') {
+      frontierFive = null;
+      frontierWeekly = buckets['gemini-argon-wtu-weekly']?.effective_remaining_fraction
+        ?? buckets[argonWeeklyKey]?.effective_remaining_fraction
+        ?? null;
+    } else {
+      frontierFive = null;
+      frontierWeekly = buckets['gemini-weekly']?.effective_remaining_fraction ?? null;
+    }
+    const frontierCands = [frontierFive, frontierWeekly].filter((x): x is number => typeof x === 'number');
+    const frontierMin = frontierCands.length ? Math.min(...frontierCands) : null;
+    const frontierStrategy = evaluatePoolStrategy(frontierFive, frontierWeekly, thresholds);
+
+    const frontierPool: QuotaPoolView = {
+      pool: 'frontier',
+      five_hour: frontierFive,
+      weekly: frontierWeekly,
+      min_remaining: frontierMin,
+      strategy: frontierStrategy
+    };
+
+    const orchestratorActive: QuotaPoolView & { pool: 'gemini' | '3p' } = {
+      pool: 'gemini',
+      five_hour: execFive,
+      weekly: execWeekly,
+      min_remaining: execMin,
+      strategy: execStrategy
+    };
+
+    return {
+      source,
+      schema,
+      stale,
+      updated_at: updatedAt,
+      plan_tier: planTier,
+      active_model: activeModel,
+      quota_state_active_model: rawActiveModel,
+      activeModelSource,
+      buckets,
+      gemini: { five_hour: execFive, weekly: execWeekly, min_remaining: execMin },
+      strategy: execStrategy,
+      thresholds,
+      geminiRemainingFraction: execMin,
+      active: orchestratorActive,
+      variant,
+      pools: {
+        execution: execPool,
+        frontier: frontierPool
+      }
+    };
+  }
 
   const geminiFive = (isArgonActive && argonFiveKey ? buckets[argonFiveKey]?.effective_remaining_fraction : undefined)
     ?? (isHydrogenActive && hydrogenFiveKey ? buckets[hydrogenFiveKey]?.effective_remaining_fraction : undefined)
@@ -261,7 +562,6 @@ export async function readQuotaView(): Promise<QuotaView> {
   const availablePools = [geminiMin, p3Min].filter((x): x is number => typeof x === 'number');
   const minRemaining = availablePools.length ? Math.max(...availablePools) : null;
 
-  const thresholds = getQuotaThresholds();
   const geminiStrategy = evaluatePoolStrategy(geminiFive, geminiWeekly, thresholds);
   const p3Strategy = evaluatePoolStrategy(p3Five, p3Weekly, thresholds);
 
@@ -274,8 +574,6 @@ export async function readQuotaView(): Promise<QuotaView> {
   } else if (p3Strategy !== 'unknown') {
     strategy = p3Strategy;
   }
-
-  const stale = updatedAt === null || nowSec - updatedAt > QUOTA_STALE_SECONDS;
 
   // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
   const isGeminiActive = !activeModel || /gemini|argon|hydrogen/i.test(activeModel) || p3Min === null;
@@ -290,6 +588,8 @@ export async function readQuotaView(): Promise<QuotaView> {
     updated_at: updatedAt,
     plan_tier: planTier,
     active_model: activeModel,
+    quota_state_active_model: rawActiveModel,
+    activeModelSource,
     buckets,
     gemini: { five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining },
     strategy,
@@ -313,6 +613,46 @@ export function quotaRecommendation(strategy: string): string {
 }
 
 // ── Model Tier Ranking & Clamping ────────────────────────────────────────────
+export function isOrchestratorModel(model?: string | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+  return /orchestrator/i.test(model);
+}
+
+export function subagentCeilingRank(sessionModel?: string | null): number {
+  if (isOrchestratorModel(sessionModel)) {
+    return 2; // flash
+  }
+  return modelTierRank(sessionModel ?? '');
+}
+
+const STRATEGY_SEVERITY: Record<QuotaStrategy, number> = {
+  free_only: 0,
+  conserve: 1,
+  normal: 2,
+  unknown: 3
+};
+
+export function comparePoolSeverity(a: QuotaPoolView, b: QuotaPoolView): QuotaPoolView {
+  const sevA = STRATEGY_SEVERITY[a.strategy] ?? 3;
+  const sevB = STRATEGY_SEVERITY[b.strategy] ?? 3;
+  if (sevA < sevB) return a;
+  if (sevB < sevA) return b;
+  const remA = typeof a.min_remaining === 'number' ? a.min_remaining : 1;
+  const remB = typeof b.min_remaining === 'number' ? b.min_remaining : 1;
+  return remA <= remB ? a : b;
+}
+
+export function poolForTier(view: QuotaView, tier: string): QuotaPoolView {
+  if (view.pools) {
+    const t = (tier || '').toLowerCase().trim();
+    if (t === 'pro' || t === 'judgement' || modelTierRank(t) >= 3) {
+      return comparePoolSeverity(view.pools.execution, view.pools.frontier);
+    }
+    return view.pools.execution;
+  }
+  return view.active;
+}
+
 export function modelTierRank(tierOrModel: string): number {
   const t = (tierOrModel || '').toLowerCase();
   if (t.includes('free') || t === 'openrouter_free') return 0;
@@ -436,7 +776,7 @@ export function clampTierToSessionCeiling(
   // Whole phrases with negation handling, shared with the Antigravity hook (a bare "argon" is not an override).
   const explicitProOverride = isExplicitProOverride(promptText, recommendedTier);
 
-  const ceilingRank = modelTierRank(activeModel);
+  const ceilingRank = subagentCeilingRank(activeModel);
   const ceilingTier = rankToTierName(ceilingRank);
   const recRank = modelTierRank(recommendedTier);
 
@@ -462,7 +802,7 @@ export interface QuotaClampResult {
   /** Set only when the tier is still `pro` in a low pool (mode "on-demand"): names the pool and what is left. */
   quotaWarning?: string;
   strategy: QuotaStrategy;
-  pool: 'gemini' | '3p';
+  pool: 'gemini' | '3p' | string;
 }
 
 /**
@@ -477,12 +817,13 @@ export interface QuotaClampResult {
  */
 export function applyLowQuotaClamp(
   tier: string,
-  quotaView: Pick<QuotaView, 'active'>,
+  quotaView: { active: QuotaPoolView } | Pick<QuotaView, 'active'>,
   mode: JevMode,
   editsFiles: boolean
 ): QuotaClampResult {
   const { pool, strategy, min_remaining } = quotaView.active;
-  const unchanged: QuotaClampResult = { tier, wasClampedByQuota: false, strategy, pool };
+  const poolName = pool || 'gemini';
+  const unchanged: QuotaClampResult = { tier, wasClampedByQuota: false, strategy, pool: poolName };
   if (mode === 'off' || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
 
   const rank = modelTierRank(tier);

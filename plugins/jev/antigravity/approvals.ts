@@ -18,10 +18,11 @@ export type ApprovalState = {
 };
 
 export type ApprovalStore = {
-  record: (sessionId: string, approval: Approval) => void;
+  record: (sessionId: string, approval: Approval) => boolean;
   deny: (sessionId: string, model: string, nowMs: number) => void;
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
+  wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
 };
 
 export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
@@ -46,9 +47,21 @@ export function noteDenied(state: ApprovalState, model: string, nowMs: number): 
   return { ...state, denied: { ...Object.fromEntries(kept), [model.toLowerCase()]: nowMs } };
 }
 
-export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+export function getRecentDenialTimestamp(state: ApprovalState, model: string, nowMs: number): number | null {
   const want = modelTierRank(model);
-  return Object.entries(state.denied ?? {}).some(([m, t]) => modelTierRank(m) >= want && nowMs - t <= DENIAL_WINDOW_MS);
+  let latest: number | null = null;
+  for (const [m, t] of Object.entries(state.denied ?? {})) {
+    if (modelTierRank(m) >= want && nowMs - t <= DENIAL_WINDOW_MS) {
+      if (latest === null || t > latest) {
+        latest = t;
+      }
+    }
+  }
+  return latest;
+}
+
+export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+  return getRecentDenialTimestamp(state, model, nowMs) !== null;
 }
 
 export function addApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState {
@@ -190,7 +203,11 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
     record: (sessionId, approval) =>
       withLock(sessionId, () => {
         const next = recordApproval(readState(sessionId), approval, approval.created_at);
-        if (next) writeState(sessionId, next);
+        if (next) {
+          writeState(sessionId, next);
+          return true;
+        }
+        return false;
       }),
     deny: (sessionId, model, nowMs) =>
       withLock(sessionId, () => {
@@ -209,6 +226,10 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         const { state, count } = bumpAttempts(readState(sessionId), promptKey, signature, nowMs, windowMs);
         writeState(sessionId, state);
         return count;
+      }),
+    wasDeniedRecently: (sessionId, model, nowMs) =>
+      withLock(sessionId, () => {
+        return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       })
   };
 }

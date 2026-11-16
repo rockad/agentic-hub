@@ -6,6 +6,10 @@ import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
   extractAskAnswer,
+  pollForAskAnswer,
+  pullElevationAnswerFromTranscript,
+  extractChildConversationId,
+  findServedModelFromTranscript,
   MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
   type AntigravityHookInput,
@@ -847,5 +851,209 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
   it('keeps a multi-line free-text answer whole, so it can never equal a label', () => {
     expect(extractAskAnswer({ content: 'Created At: x\nCompleted At: y\nA1: Yes,\nonce' }, 0)).toBe('Yes,\nonce');
     expect(parseElevationAnswer('A1: Yes,\nonce')).toEqual({ approved: false });
+  });
+});
+
+describe('ApprovalStore record return and wasDeniedRecently timestamp', () => {
+  let tmpDir = '';
+  let approvals: ApprovalStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-approvals-test-'));
+    approvals = createAntigravityApprovalStore(path.join(tmpDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('wasDeniedRecently returns null when no denial exists, and timestamp when denied', () => {
+    expect(approvals.wasDeniedRecently('s1', 'pro', 1000)).toBeNull();
+    approvals.deny('s1', 'pro', 2000);
+    expect(approvals.wasDeniedRecently('s1', 'pro', 2500)).toBe(2000);
+    // After denial window expires (15 min = 900,000 ms)
+    expect(approvals.wasDeniedRecently('s1', 'pro', 2000 + 16 * 60 * 1000)).toBeNull();
+  });
+
+  it('record returns false when not denied recently, and true when denied recently', () => {
+    // Attempt record without prior denial -> returns false
+    const ok1 = approvals.record('s1', { model: 'pro', scope: 'once', created_at: 1000 });
+    expect(ok1).toBe(false);
+
+    // Deny first -> record returns true
+    approvals.deny('s1', 'pro', 2000);
+    const ok2 = approvals.record('s1', { model: 'pro', scope: 'once', created_at: 2100 });
+    expect(ok2).toBe(true);
+  });
+});
+
+describe('pollForAskAnswer', () => {
+  let testDir = '';
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-poll-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('returns immediately if content is on stdin', async () => {
+    const input: AntigravityHookInput = {
+      content: 'A1: Yes, once'
+    };
+    const res = await pollForAskAnswer(input, 0, { maxWaitMs: 500, pollIntervalMs: 50 });
+    expect(res).toBe('Yes, once');
+  });
+
+  it('polls and finds answer written to transcriptPath after a short delay', async () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    fs.writeFileSync(transcriptFile, '{"step_index":0,"type":"USER_INPUT","content":"start"}\n');
+
+    const input: AntigravityHookInput = {
+      transcriptPath: transcriptFile,
+      stepIdx: 1
+    };
+
+    // In background, write stepIdx: 1 after 80ms
+    setTimeout(() => {
+      fs.appendFileSync(transcriptFile, '{"step_index":1,"type":"GENERIC","content":"A1: Yes, for this session"}\n');
+    }, 80);
+
+    const res = await pollForAskAnswer(input, 0, { maxWaitMs: 800, pollIntervalMs: 40 });
+    expect(res).toBe('Yes, for this session');
+  });
+
+  it('returns null if answer never appears within maxWaitMs', async () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    fs.writeFileSync(transcriptFile, '{"step_index":0,"type":"USER_INPUT","content":"start"}\n');
+
+    const input: AntigravityHookInput = {
+      transcriptPath: transcriptFile,
+      stepIdx: 1
+    };
+
+    const res = await pollForAskAnswer(input, 0, { maxWaitMs: 150, pollIntervalMs: 50 });
+    expect(res).toBeNull();
+  });
+});
+
+describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () => {
+  let testDir = '';
+  let approvals: ApprovalStore;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pull-fallback-test-'));
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('pulls elevation answer from transcript when ask_question has tool_calls with [jev-elevate:pro]', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const content =
+      '{"step_index":1,"type":"PLANNER_RESPONSE","created_at":"2026-11-16T12:00:00.000Z","tool_calls":[{"id":"ask_call_1","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow subagent?"]}}]}\n' +
+      '{"step_index":2,"type":"GENERIC","toolCallId":"ask_call_1","content":"Created At: ...\\nA1: Yes, once"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', Date.parse('2026-11-16T12:00:00.000Z'));
+    expect(pull).toEqual({ approved: true, scope: 'once' });
+  });
+
+  it('pulls elevation answer when marker is in step.content and next step is GENERIC', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const content =
+      '{"step_index":1,"type":"PLANNER_RESPONSE","content":"Calling ask_question with [jev-elevate:pro] Allow subagent?"}\n' +
+      '{"step_index":2,"type":"GENERIC","content":"A1: Yes, for the next 5 minutes"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro');
+    expect(pull).toEqual({ approved: true, scope: '5min' });
+  });
+
+  it('picks the latest ask_question when multiple exist and respects deniedAtMs tolerance', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const content =
+      '{"step_index":1,"created_at":"2026-11-16T10:00:00.000Z","type":"PLANNER_RESPONSE","content":"[jev-elevate:pro] Q1"}\n' +
+      '{"step_index":2,"type":"GENERIC","content":"A1: No, proceed on flash"}\n' +
+      '{"step_index":3,"created_at":"2026-11-16T11:00:00.000Z","type":"PLANNER_RESPONSE","content":"[jev-elevate:pro] Q2"}\n' +
+      '{"step_index":4,"type":"GENERIC","content":"A1: Yes, for this session"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    // If deniedAtMs is 10:55, it ignores step 1 (older than 10:55 - 5s) and matches step 3
+    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', Date.parse('2026-11-16T10:55:00.000Z'));
+    expect(pull).toEqual({ approved: true, scope: 'session' });
+  });
+
+  it('evaluateAntigravitySubagentCall automatically recovers via pull fallback before deny', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const nowMs = 1_000_000;
+    // 1. Initial denial occurred at nowMs - 5000
+    approvals.deny('s-pull', 'pro', nowMs - 5000);
+
+    // 2. Transcript contains the user answering Yes, once to elevation question
+    const content =
+      '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"call_q","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow expert?"]}}]}\n' +
+      '{"step_index":2,"type":"GENERIC","toolCallId":"call_q","content":"A1: Yes, once"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    // 3. Subagent is re-invoked without PostToolUse having recorded approval
+    const input: AntigravityHookInput = {
+      conversationId: 's-pull',
+      transcriptPath: transcriptFile,
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: {
+        id: 'call_sub',
+        name: 'invoke_subagent',
+        args: {
+          TypeName: 'expert',
+          Model: 'pro'
+        }
+      }
+    };
+
+    const decision = evaluateAntigravitySubagentCall(input, {
+      approvals,
+      sessionModelOverride: 'gemini-3.8-flash-low',
+      now: () => nowMs
+    });
+
+    expect(decision.decision).toBe('allow');
+    expect(decision.elevation).toBe('approved');
+    expect(decision.approvalScope).toBe('once');
+  });
+});
+
+describe('child conversation ID and served model extraction', () => {
+  it('extractChildConversationId parses various patterns', () => {
+    expect(extractChildConversationId('Conversation ID: 12345678-1234-1234-1234-123456789abc')).toBe('12345678-1234-1234-1234-123456789abc');
+    expect(extractChildConversationId('{"conversationId": "12345678-1234-1234-1234-123456789abc"}')).toBe('12345678-1234-1234-1234-123456789abc');
+    expect(extractChildConversationId('Session 12345678-1234-1234-1234-123456789abc completed')).toBe('12345678-1234-1234-1234-123456789abc');
+    expect(extractChildConversationId('No id here')).toBeNull();
+    expect(extractChildConversationId('')).toBeNull();
+  });
+
+  it('findServedModelFromTranscript finds model from child brain transcript', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-test-'));
+    try {
+      const childId = '12345678-1234-1234-1234-123456789abc';
+      const brainLogsDir = path.join(testHome, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+      fs.mkdirSync(brainLogsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(brainLogsDir, 'transcript_full.jsonl'),
+        '{"step_index":0,"type":"USER_INPUT","content":"start"}\n' +
+        '{"step_index":1,"type":"MODEL","model":"gemini-3.8-pro-preview","content":"hi"}\n'
+      );
+
+      const found = findServedModelFromTranscript(childId, testHome);
+      expect(found).toBe('gemini-3.8-pro-preview');
+
+      // Rejects invalid childId for safety
+      expect(findServedModelFromTranscript('../traversal', testHome)).toBeNull();
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
   });
 });

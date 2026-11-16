@@ -5,6 +5,7 @@ import {
   callJevDecision,
   callJevRouter,
   readQuotaView,
+  poolForTier,
   clampTierToSessionCeiling,
   modelTierRank,
   applyLowQuotaClamp,
@@ -30,7 +31,6 @@ import {
   loadJevConfigSync,
   normalizeTier,
   getHarnessModels,
-  type CognitiveTier,
   JEV_MODEL,
   FALLBACK_MODEL,
   JEV_INPUT_COST_PER_MILLION,
@@ -262,14 +262,15 @@ export function keepEditsOffFreeTier(tier: string, edits: boolean): string {
 export function quotaStepForHarness(
   harness: JevHarness,
   tier: string,
-  quotaView: Pick<QuotaView, 'active'>,
+  quotaView: QuotaView,
   mode: JevMode,
   edits: boolean
 ): QuotaClampResult {
+  const pool = poolForTier(quotaView, tier);
   if (harness === 'claude-code') {
-    return { tier, wasClampedByQuota: false, strategy: 'unknown', pool: quotaView.active.pool };
+    return { tier, wasClampedByQuota: false, strategy: 'unknown', pool: (pool.pool as any) || quotaView.active.pool };
   }
-  return applyLowQuotaClamp(tier, quotaView, mode, edits);
+  return applyLowQuotaClamp(tier, { active: pool }, mode, edits);
 }
 
 /**
@@ -463,7 +464,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     costFormatted: `$${costUsd.toFixed(6)}`
   };
 
-  const quotaView = await readQuotaView();
+  const quotaView = await readQuotaView({ conversationId: conversationId ?? undefined });
   recommendedSubagent = resolveEditCapableSubagent(harness, recommendedSubagent, task);
   // Outside Claude Code a read-only persona (research, knowledge-researcher, Plan, Explore) never owns an editing task.
   if (!isClaude && editsFiles({ task })) recommendedSubagent = resolveEditCapablePersona(recommendedSubagent, subagentCriteria);
@@ -502,6 +503,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     executionTool,
     executionGuidance,
     sessionCeilingTier: ceilingClamping.ceilingTier,
+    activeModelSource: quotaView.activeModelSource ?? null,
     wasClampedByCeiling: ceilingClamping.wasClamped,
     ...(quotaStep.wasClampedByQuota ? { wasClampedByQuota: true, quotaStrategy: quotaStep.strategy, quotaPool: quotaStep.pool } : {}),
     ...(isPro && quotaStep.quotaWarning ? { quotaWarning: quotaStep.quotaWarning } : {}),
@@ -600,7 +602,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     throw new Error('jev_batch_dispatch requires a non-empty "tasks" array');
   }
 
-  const quotaView = await readQuotaView();
+  const quotaView = await readQuotaView({ conversationId: conversationId ?? undefined });
   const activeHarness = detectActiveHarness();
   const jevMode = await readJevMode(activeHarness);
   const isClaude = activeHarness === 'claude-code';
@@ -795,6 +797,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     totalTasks: plannedTasks.length,
     freeTierTasks: freeTierCount,
     activeSessionModel: (isClaude ? claudeModel : ceilingModelForHarness(activeHarness, quotaView.active_model)) || 'unknown',
+    activeModelSource: quotaView.activeModelSource ?? null,
     maxConcurrentFreeWorkers: concurrencyCap,
     tasks: plannedTasks,
     stages,

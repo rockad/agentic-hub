@@ -55,9 +55,8 @@ export const selectModelToolDefinition: Tool = {
 };
 
 export async function handleQuotaTool(args?: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  // Sanitized; recorded as `sessionId` only. It does not select a quota view: that needs the per-conversation session store.
   const conversationId = safeSessionId(((args || {}) as { conversationId?: unknown }).conversationId);
-  const view = await readQuotaView();
+  const view = await readQuotaView({ conversationId: conversationId ?? undefined });
   const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10);
   const result = {
     source: view.source,
@@ -65,6 +64,7 @@ export async function handleQuotaTool(args?: unknown): Promise<{ content: Array<
     stale: view.stale,
     planTier: view.plan_tier ?? null,
     activeModel: view.active_model ?? null,
+    activeModelSource: view.activeModelSource ?? null,
     updatedAt: view.updated_at,
     strategy: view.strategy,
     thresholds: view.thresholds,
@@ -115,7 +115,7 @@ export async function handleSelectModelTool(args: unknown): Promise<{ content: A
   }
 
   const cands = Array.isArray(candidates) && candidates.length ? candidates : DEFAULT_MODEL_CANDIDATES;
-  const strategy = quotaStrategy || (await readQuotaView()).strategy;
+  const strategy = quotaStrategy || (await readQuotaView({ conversationId: conversationId ?? undefined })).strategy;
   const selection = await selectModel(task, cands, strategy);
 
   await logTelemetry({

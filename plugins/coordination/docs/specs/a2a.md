@@ -104,7 +104,7 @@ JSON-RPC answers HTTP 200 for its errors except these 403 and 429, which 3.3 and
 ## 7. What could not be checked, and what is open
 
 - **The spec text.** The clone of `a2aproject/A2A` at `4735f48` was deleted (`docs/research` says so); this stream had no copy of `specification.md` and did not re-fetch it. Wire shapes (field names, enum names, method and REST path names, error codes) are those of the SDK 1.3.0 (`a2a.types.a2a_pb2`, `a2a.utils.errors`), which the repository pins and which implements 1.0.x. "Against the pinned commit" is therefore **[unverified] against the spec text**; it is [verified] against the SDK's generated types and its own client. The `.proto` shipped in the SDK was not diffed against `4735f48`.
-- **The TCK job exists as a test, but is not yet a CI workflow.** See section 8 for what runs and its result. The workflow file is `tests/tck/ci-job.proposed.yml`; moving it to `.github/workflows/` was outside this stream's scope, so until someone does, no CI run executes the TCK. The allowlist (`tests/tck/allowlist.yaml`) was reviewed by the user on 2026-11-16: the 12 remaining entries are `review: reviewed`; the other two entries of the first run were fixed (REST error media type) or made obsolete (camelCase `metadata.coord` keys, Z16) and removed.
+- **The TCK runs in CI as `.github/workflows/coordination-tck.yml`** (pull requests and pushes to `main` that touch `plugins/coordination/**`, and by hand). See section 8 for what runs and its result. [unverified] The workflow has not run on GitHub yet: nothing is pushed, and the cold build of the TCK environment (grpcio from source on Python 3.15) in a hosted runner has not been timed. The allowlist (`tests/tck/allowlist.yaml`) was reviewed by the user on 2026-11-16: the 12 remaining entries are `review: reviewed`; the other two entries of the first run were fixed (REST error media type) or made obsolete (camelCase `metadata.coord` keys, Z16) and removed.
 - **The `?agent=` selector, the member listing and `metadata.target`** are not built (Z13).
 - **Streaming** is not built (D35); the card says so.
 - **Push delivery** has no trigger (section 5).
@@ -120,7 +120,7 @@ What it is: the SDK's TCK (`a2aproject/a2a-tck`, pinned at `104a7b4`, which ship
 - `tck_support.py`: the allowlist parser and the gate. A failed test that is not listed blocks; a listed test that did not fail is stale and also blocks; a report with no test cases blocks; a malformed allowlist is refused.
 - `test_a2a_tck_gate.py`: the gate and the allowlist file tested offline (no TCK, no database).
 - `tck/allowlist.yaml`: the deviations, one exact test id each, with the decision it rests on and a reason.
-- `tck/ci-job.proposed.yml`: the GitHub workflow (clone the TCK at the pinned commit, `uv sync --python 3.15`, run the two test files with `A2A_TCK_REQUIRE=1`). Not active; see section 7.
+- `.github/workflows/coordination-tck.yml` (repository root): the GitHub workflow (clone the TCK at the pinned commit, `uv sync --python 3.15`, run the two test files with `A2A_TCK_REQUIRE=1`). `test_a2a_tck_gate.py` checks that it pins `TCK_COMMIT`, sets `A2A_TCK_REQUIRE=1` on the gate step, and has the triggers and `permissions: contents: read`.
 
 Why a front, and what it hides [verified by reading the TCK source and by the first run]:
 
@@ -143,6 +143,6 @@ Result of the run on 2026-11-16 (TCK `104a7b4`, Python 3.15.0b4, JSON-RPC and HT
 
 Running it by hand:
 
-- Python 3.15 is needed (the TCK requires `>=3.15`). Its lock has no 3.15 wheel for `grpcio`, so `uv sync --python 3.15` in the TCK checkout builds it from source (about 10 minutes on a 16-thread workstation, much longer in a constrained CI runner, so the proposed workflow caches the environment) [verified on the workstation].
+- Python 3.15 is needed (the TCK requires `>=3.15`). Its lock has no 3.15 wheel for `grpcio`, so `uv sync --python 3.15` in the TCK checkout builds it from source (about 10 minutes on a 16-thread workstation, much longer in a constrained CI runner, so the workflow caches the environment) [verified on the workstation].
 - `A2A_TCK_DIR=<checkout> A2A_TCK_REQUIRE=1 A2A_TEST_REQUIRE_DOCKER=1 uv run pytest tests/test_a2a_tck.py -s` in `servers/coordination`. The run takes about two minutes.
-- [unverified] The proposed GitHub workflow itself was not run (it is not in `.github`, and nothing was pushed).
+- [unverified] The GitHub workflow itself was not run on GitHub (nothing was pushed). Its YAML was parsed with `yq` and checked by `test_a2a_tck_gate.py`; the same commands it runs were run by hand (above).

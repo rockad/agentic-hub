@@ -118,11 +118,11 @@ def test_the_allowlist_file_in_the_repository_is_well_formed_and_matches_the_pin
 
 
 def _tck_workflow():
-    """The TCK workflow: the active one under .github/workflows/ once moved, else the proposal."""
-    here = ALLOWLIST_FILE.parent
-    repo_root = here.parents[5]
-    active = repo_root / ".github" / "workflows" / "coordination-tck.yml"
-    return active if active.is_file() else here / "ci-job.proposed.yml"
+    """The TCK workflow, `.github/workflows/coordination-tck.yml` at the repository root."""
+    repo_root = ALLOWLIST_FILE.parent.parents[5]
+    workflow = repo_root / ".github" / "workflows" / "coordination-tck.yml"
+    assert workflow.is_file(), f"{workflow} is missing"
+    return workflow
 
 
 def test_the_tck_workflow_pins_the_same_commit_and_makes_a_missing_tck_a_failure():
@@ -135,3 +135,15 @@ def test_the_tck_workflow_pins_the_same_commit_and_makes_a_missing_tck_a_failure
     gate_steps = [s for s in steps if "test_a2a_tck.py" in s.get("run", "")]
     assert gate_steps, "no step runs the TCK gate"
     assert gate_steps[0]["env"]["A2A_TCK_REQUIRE"] == "1", "a missing TCK must fail, not skip"
+
+
+def test_the_tck_workflow_runs_on_pull_requests_and_main_for_the_plugin_and_by_hand():
+    import yaml
+
+    workflow = yaml.safe_load(_tck_workflow().read_text())
+    triggers = workflow.get("on", workflow.get(True))  # YAML 1.1 reads a bare `on` as True
+    paths = ["plugins/coordination/**", ".github/workflows/coordination-tck.yml"]
+    assert triggers["pull_request"]["paths"] == paths
+    assert triggers["push"]["branches"] == ["main"] and triggers["push"]["paths"] == paths
+    assert "workflow_dispatch" in triggers
+    assert workflow["permissions"] == {"contents": "read"}

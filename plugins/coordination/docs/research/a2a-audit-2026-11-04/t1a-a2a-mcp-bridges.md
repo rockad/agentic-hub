@@ -6,8 +6,8 @@ Labels: verified = read in code (file:line cited); reported = README or comments
 
 Clone paths:
 
-- /tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/toshiotomikawa-a2a-bridge
-- /tmp/claude-1000/-home-<user>-projects-agents-bridge/98480dc1-8bea-40bd-bd24-5519ebd285d6/scratchpad/audit/mgcrea-mcp-a2a
+- /tmp/claude-1000/-home-<user>-projects-agents-bridge/00000000-0000-4000-8000-0000000000e1/scratchpad/audit/toshiotomikawa-a2a-bridge
+- /tmp/claude-1000/-home-<user>-projects-agents-bridge/00000000-0000-4000-8000-0000000000e1/scratchpad/audit/mgcrea-mcp-a2a
 
 Verdicts at a glance:
 

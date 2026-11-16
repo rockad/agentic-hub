@@ -69,7 +69,7 @@ Out of scope (all from plan or specs):
 - Tiers (user rule, Claude Code, CLAUDE.md "Claude Code subagent model rule"):
   - **sonnet** by default; pass `model` explicitly on every subagent call.
   - **opus** only for adversarial verification, design proposals and subtle debugging. Run `jev_judge` in parallel with each such escalation when Jev is available.
-  - One final verification gate per body of work on **opus** (the highest tier available on the Claude Pro plan; Fable is not in the subscription), per the user rule. FG at S3-GATE closes the server body of work and the go-live importer and retirement code together (D36; there is no separate go-live gate, section 4.5).
+  - One final verification gate per body of work on **opus** (the highest tier available in the subscription; Fable is not in the subscription), per the user rule. FG at S3-GATE closes the server body of work and the go-live importer and retirement code together (D36; there is no separate go-live gate, section 4.5).
   - Low-Quota Protocol: with Jev mode `on` and under 20% quota remaining, ask the user before any opus escalation.
   - Agy-side work runs in Antigravity, tier not applicable.
 - Size key: S is an upper bound of 6 h, M up to 18 h, L above. Hours are focused work including tests and user time (assumptions in section 8). They are estimates **[proposal]**, not measurements.
@@ -1493,7 +1493,7 @@ Quirks measured on 2026-11-04 `[verified]`. The parser must handle each without 
 - Begin and end timestamps differ by 30 seconds in 4 blocks (conversation 0e89deec, messages 15 to 18). Both are kept.
 - Begin timestamps are not monotonic once in the cognitive channel (12:54:49 after 12:55:00 on 2026-10-29). File order is the sequence; timestamps are data.
 - `reply-to` can list several message numbers (`...:4,5`, `...:8,9`, `...:12,13`).
-- `reply-to` can point into the other channel file. Examples: `claude:012hq2t73Akvdk6rcqPug6ea:8` and `antigravity:8343b610-...:26` are cited from the coordination channel but live in the cognitive channel.
+- `reply-to` can point into the other channel file. Examples: `claude:012hq2t73Akvdk6rcqPug6ea:8` and `antigravity:00000000-0000-4000-8000-0000000000f1:26` are cited from the coordination channel but live in the cognitive channel.
 - Message numbers have gaps: conversation 0e89deec has no 12 to 14 and no 25 to 28 in the files, and 317124a3 has no 16. Gaps are reported as information, not errors.
 - The pair (conversation, message number) is not unique across files: antigravity 0e89deec message 2 exists in both channels with different content. The idempotency key therefore includes the source file.
 - `to:` can contain several recipients, and some blocks address `all`.
@@ -1659,8 +1659,8 @@ Run artefacts live on the server volume under `/data/imports/<run_id>/`: `manife
 
 Per conversation:
 
-- Coordination channel: `012hq2t73Akvdk6rcqPug6ea` 3, `012hq2t9CJjJdCY9JySndAEj` 29, `01VA3JtCyASmfR8Q7Vcvehe7` 1, `0e89deec-98b6-48fc-8c5d-fd210899c0d1` 1, `8343b610-a41a-4ee9-a2e5-0f1dde92f456` 17.
-- Cognitive-engine channel, live: `012hq2t73Akvdk6rcqPug6ea` 13, `317124a3-9df0-4a5a-b6d0-df42be2cc6ea` 25, `0e89deec-98b6-48fc-8c5d-fd210899c0d1` 23, `8343b610-a41a-4ee9-a2e5-0f1dde92f456` 4.
+- Coordination channel: `012hq2t73Akvdk6rcqPug6ea` 3, `012hq2t9CJjJdCY9JySndAEj` 29, `01VA3JtCyASmfR8Q7Vcvehe7` 1, `00000000-0000-4000-8000-0000000000f2` 1, `00000000-0000-4000-8000-0000000000f1` 17.
+- Cognitive-engine channel, live: `012hq2t73Akvdk6rcqPug6ea` 13, `00000000-0000-4000-8000-0000000000f3` 25, `00000000-0000-4000-8000-0000000000f2` 23, `00000000-0000-4000-8000-0000000000f1` 4.
 
 First and last begin timestamps (file order):
 
@@ -2030,7 +2030,7 @@ Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 me
 | Z7 | Secret files for a real stack run | The user provides the database password and `dump_ro` secret files at W6 (INST and GATE); never before. |
 | Z8 | W4b agent count | One stream at a time. Order confirmed by the user on 2026-11-15 (Z10 to Z12): MCP, then A2A, then ADMIN. |
 | Z9 | Jev PRs #54, #55, #58 | Left alone; not part of this work. |
-| Z10 | Who runs W4b and when (the main account had 4 percent weekly quota left until 2026-11-20 15:00) | Another Claude account or Antigravity runs W4b now, from the handoff in `master-tasklist.md` section 0.7; the main account reviews and merges. The first task of that session is the independent check of S1-STATE. |
+| Z10 | Who runs W4b and when (the main account had almost no weekly quota left) | Another Claude account or Antigravity runs W4b now, from the handoff in `master-tasklist.md` section 0.7; the main account reviews and merges. The first task of that session is the independent check of S1-STATE. |
 | Z11 | W4b branching and merge flow | Stacked branches, merged in order: MCP branches from merged `main` (after AUTH and STATE), A2A from the MCP branch, ADMIN from the A2A branch; PRs target `main` in that order and each rebases after the one before it merges. Merge only on the user's word per PR. |
 | Z12 | W4b verification depth | Full pipeline (build, independent check, up to two repairs, main-session review) for MCP and A2A; lean for ADMIN (build plus main-session re-run; S1-SEC reviews it at W6). |
 | Z13 | S1-A2A front-desk [proposal] items | Build only the decided parts plus a rejection: a generic public root card, per-member authenticated cards, and a root `SendMessage` rejected with an error pointing to the member card path. No member listing through an extension field and no `metadata.target` routing; discovery is designed in S3-CARD and S3-PEER. |

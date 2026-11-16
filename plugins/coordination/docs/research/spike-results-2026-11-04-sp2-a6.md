@@ -114,7 +114,7 @@
         "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a3",
         "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a3",
         "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a3",
-        "progressToken": "dea9f3e3-cfe3-4e03-b076-19693ba64887:6"
+        "progressToken": "00000000-0000-4000-8000-0000000000c2:6"
       }
     }
     ```
@@ -183,7 +183,7 @@
           "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
-          "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1713"
+          "progressToken": "00000000-0000-4000-8000-0000000000c3:1713"
         },
         "name": "a2a_hello",
         "arguments": {"handle": "test-current-session"}
@@ -196,7 +196,7 @@
           "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
-          "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1719"
+          "progressToken": "00000000-0000-4000-8000-0000000000c3:1719"
         },
         "name": "a2a_hello",
         "arguments": {"handle": "call-2"}
@@ -209,7 +209,7 @@
           "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
-          "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1722"
+          "progressToken": "00000000-0000-4000-8000-0000000000c3:1722"
         },
         "name": "a2a_hello",
         "arguments": {"handle": "call-3"}
@@ -226,8 +226,8 @@
       - `Mcp-Session-Id`: `stub-session-12345`
       - `conversation_id`: `00000000-0000-4000-8000-0000000000a5`
     - **Session B (Parallel Background Invocation)**:
-      - `Mcp-Session-Id`: `5f12d118-c70f-495b-a1ab-9a2b81c03e9b`
-      - `conversation_id`: `5f12d118-c70f-495b-a1ab-9a2b81c03e9b`
+      - `Mcp-Session-Id`: `00000000-0000-4000-8000-0000000000c1`
+      - `conversation_id`: `00000000-0000-4000-8000-0000000000c1`
   - **Result**: Each distinct conversation transmits its own unique `conversation_id` in `_meta`.
 - **Conversation Resume Stability**: **[VERIFIED - OBSERVED IN SESSION]**
   - Session identity was maintained continuously as `00000000-0000-4000-8000-0000000000a5` across all turns, prompt continuations, and daemon restart events.
@@ -269,7 +269,7 @@ Review of sections 1 to 5. Sections 1 to 5 are unchanged. Labels: verified (obse
 
 - **Q3, environment-variable interpolation: verified on the wire.** agy sent `Bearer ${A2A_TOKEN}` and `Bearer $A2A_TOKEN` literally (section 5.1). No expansion. The earlier "reported, live confirmation pending" status is closed.
 - **Q5, presence of `conversation_id`: verified for presence.** `_meta["antigravity.google/conversation_id"]` was present on 3 of 3 `tools/call` requests and absent on `tools/list` and the notifications (section 5.2). It is attached to `tools/call` only.
-- **Distinctness across conversations: plausible, not demonstrated.** The comparison in section 5.2 used a "parallel background invocation" whose `Mcp-Session-Id` (`5f12d118-...`) differed from session A's (`stub-session-12345`) and equals its own `conversation_id`. That looks like a test artifact or a separate process, not a second conversation in the same agy process. So "two conversations in one agy process share one `Mcp-Session-Id`" is not shown by this run (section 1.5's process-scope claim rests on the Language Server architecture, not on a two-conversation wire comparison), and per-conversation distinctness of `conversation_id` inside one process is still unproven.
+- **Distinctness across conversations: plausible, not demonstrated.** The comparison in section 5.2 used a "parallel background invocation" whose `Mcp-Session-Id` (`00000000-0000-4000-8000-0000000000c1`) differed from session A's (`stub-session-12345`) and equals its own `conversation_id`. That looks like a test artifact or a separate process, not a second conversation in the same agy process. So "two conversations in one agy process share one `Mcp-Session-Id`" is not shown by this run (section 1.5's process-scope claim rests on the Language Server architecture, not on a two-conversation wire comparison), and per-conversation distinctness of `conversation_id` inside one process is still unproven.
 - **Resume stability: partly verified.** Section 5.2 shows the same conversation continuing across turns and a daemon restart. There is no wire evidence for stability across an agy restart and resume of that conversation, followed by a tool call.
 - **Follow-up checks, moved into SP2 A4** (`spikes.md`): same process, two conversations, compare `Mcp-Session-Id` and `conversation_id` on each `tools/call`; then restart agy, resume one conversation, call a tool, compare `conversation_id` with the earlier one.
 - **Update:** the process-scope of `Mcp-Session-Id`, distinctness, resume stability and the sub-invocation ids above are confirmed on the wire in [sp2-a4](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-results-2026-11-04-sp2-a4.md) (T1 to T4).

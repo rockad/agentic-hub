@@ -82,7 +82,7 @@ Under Section 12 of A2A, we define the **A2A Local File Binding** (`https://a2a-
 ```
 ~/.agents/
 ├── roster/                      # Agent Cards
-│   ├── agy-8343b610.card.json
+│   ├── agy-00000000.card.json
 │   └── claude-012hq2t9.card.json
 ├── contexts/                    # Contexts & Task State
 │   └── <context-id>/

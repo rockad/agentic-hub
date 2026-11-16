@@ -28,7 +28,7 @@
 | **T1: Same process, two conversations: distinct `conversation_id`?** | Conversation X carried `00000000-0000-4000-8000-0000000000a4`, Conversation Y carried `00000000-0000-4000-8000-0000000000a6`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T2: Two separate agy processes: different PID?** | Process 1 ran as PID `863339`; Process 2 ran as PID `901400`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T2: Two separate agy processes: different `Mcp-Session-Id`?** | Process 1 held `1be9c46c-fc43-4a63-95b2-0d3fd21a3172`; Process 2 held `3012c346-9c75-46c7-ad67-92d7f80b1db5`. | **[VERIFIED - OBSERVED ON WIRE]** |
-| **T2: Two separate agy processes: different `conversation_id`?** | Process 1 held `68681258-...` and `95477319-...`; Process 2 held `00000000-0000-4000-8000-0000000000a1`. | **[VERIFIED - OBSERVED ON WIRE]** |
+| **T2: Two separate agy processes: different `conversation_id`?** | Process 1 held `00000000-0000-4000-8000-0000000000a4` and `00000000-0000-4000-8000-0000000000a6`; Process 2 held `00000000-0000-4000-8000-0000000000a1`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T3: Restart & resume: identical `conversation_id`?** | `conversation_id` was identical (`00000000-0000-4000-8000-0000000000a4`) before shutdown and after resume. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T3: Restart & resume: identical `root_conversation_id`?** | `root_conversation_id` was identical (`00000000-0000-4000-8000-0000000000a4`) across restart and resume. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T3: Restart & resume: new `Mcp-Session-Id`?** | Fresh random UUID (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172`) issued on new `initialize` replacing old (`ff89a6ce-...`). | **[VERIFIED - OBSERVED ON WIRE]** |
@@ -99,7 +99,7 @@
 - **Verdict on T2**:
   - **Different PID?** **[VERIFIED - OBSERVED ON WIRE]**: YES (PID `863339` vs PID `901400`).
   - **Different `Mcp-Session-Id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172` vs `3012c346-9c75-46c7-ad67-92d7f80b1db5`).
-  - **Different `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a1` vs `68681258-...` / `95477319-...`).
+  - **Different `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a1` vs `00000000-0000-4000-8000-0000000000a4` / `00000000-0000-4000-8000-0000000000a6`).
 
 ---
 
@@ -553,10 +553,10 @@ if __name__ == "__main__":
 
 Review of sections 1 to 4, which are unchanged.
 
-- **Verdict: the results are solid.** The evidence is raw NDJSON from a stub that issues a fresh `Mcp-Session-Id` per `initialize`. PIDs 863339 (the resumed conversation 68681258) and 901400 (the separate process) were still live when Claude Code checked, consistent with the report.
+- **Verdict: the results are solid.** The evidence is raw NDJSON from a stub that issues a fresh `Mcp-Session-Id` per `initialize`. PIDs 863339 (the resumed conversation 00000000-0000-4000-8000-0000000000a4) and 901400 (the separate process) were still live when Claude Code checked, consistent with the report.
 - **T1 (same process, `/clear`):** one `Mcp-Session-Id` shared across two conversations in one agy process, with different `conversation_id` values. `Mcp-Session-Id` is therefore process-scoped on the wire, which also confirms the section 1.5 claim of the A6 results file. [verified]
 - **T2 (separate processes):** each process has its own `Mcp-Session-Id` and `conversation_id`. [verified]
 - **T3 (exit and resume):** after a full exit (`DELETE /mcp` seen) and `agy --conversation <id>`, `conversation_id` and `root_conversation_id` are identical, with a new `Mcp-Session-Id` and a new PID. [verified]
-  - Minor caveat: the T3 pre-restart row is taken from a subagent call. Its `conversation_id` was the subagent's (`1d67c7e0-...`); the `68681258-...` shown there is the root id. Stability is still demonstrated, because the resume used `agy --conversation 68681258-...` and the post-resume calls carried exactly that `conversation_id`.
+  - Minor caveat: the T3 pre-restart row is taken from a subagent call. Its `conversation_id` was the subagent's (`00000000-0000-4000-8000-0000000000a7`); the `00000000-0000-4000-8000-0000000000a4` shown there is the root id. Stability is still demonstrated, because the resume used `agy --conversation 00000000-0000-4000-8000-0000000000a4` and the post-resume calls carried exactly that `conversation_id`.
 - **T4 (subagent):** the subagent's calls carry its own `conversation_id`, plus `root_conversation_id` and `parent_conversation_id` equal to the parent's. [verified]
 - **Consequence for the design:** the agy handle binds to `conversation_id` (not to `Mcp-Session-Id`), background or sub-invocations group under the parent by `root_conversation_id`, and `parent_conversation_id` is recorded. `/clear` in agy starts a new conversation, so it gets a new handle. SP2 A1 and A4 are answered for agy.

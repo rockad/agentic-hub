@@ -47,7 +47,7 @@ Do user-level agy plugin tools run when signed in, and why did they fail on 2026
 - **Setup:** Fresh agy session in `~/scratch/a2a-spikes/sp2-agy-a8b` answering read-only questions from `a8b-operator-brief.md`.
 - **Log lines (verified, `cli-20261108_225446.log`):**
   - `I1109 11:02:46.821682 ... token refreshed, new expiry=2026-11-09 12:02:45.821617462 +0200`
-  - `I1109 11:31:43.278098 ... Full redraw completed (RerenderAll) for conversation 39d358e6-0da9-401e-aa97-53fff652c376`
+  - `I1109 11:31:43.278098 ... Full redraw completed (RerenderAll) for conversation 00000000-0000-4000-8000-0000000000d1`
   - `I1109 12:00:25.519179 ... CLI program exited, shutting down`
 - **Pass / Fail:** **PASS** (baseline captured; answers provided; no files touched).
 

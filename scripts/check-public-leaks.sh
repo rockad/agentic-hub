@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Public-repo leak guard: this repository is public, so machine- and owner-specific
 # identifiers must not be committed. Fails on:
-#   - absolute home paths of real users: /home/<name>/ or /Users/<name>/
+#   - absolute home paths of real users: /home/<name>/, /Users/<name>/ or C:\Users\<name>
 #     (placeholders such as /home/user, /Users/user, /home/runner are fine)
 #   - agent transcript paths that embed a real conversation id: brain/<uuid>
+#   - full conversation ids passed to `--conversation` or written as conversation id / conversationId
 #     (synthetic ids that start with 00000000- are fine)
-#   - the owner's subscription plan tier ("Google AI Pro" / "Google AI Ultra")
+#   - the owner's subscription plan tier ("Google AI Pro/Ultra", "Claude Pro/Max")
 #   - the owner's personal email handle and surname
 # Justified exceptions go in scripts/public-leaks-allow.txt, one "path:matched-text"
 # entry per line (see that file). Requires: rg (ripgrep). Portable across macOS and Linux.
+# An rg runtime or regex error fails the guard (it never passes silently).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +24,12 @@ PLACEHOLDER_HOMES="user runner appuser x youruser Public"
 
 cd "$ROOT"
 
-RG_COMMON=(--no-heading --line-number --with-filename --only-matching --hidden
+RG_COMMON=(--no-heading --line-number --with-filename --only-matching --hidden --null
   -g '!.git' -g '!**/node_modules/**'
   -g '!scripts/check-public-leaks.sh' -g '!scripts/public-leaks-allow.txt')
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
 
 errors=0
 
@@ -39,28 +44,66 @@ report() { # file line match reason
   errors=$((errors + 1))
 }
 
-# 1. Absolute home paths of real users.
-while IFS=: read -r file line match; do
-  name="${match#/*/}"
-  case " $PLACEHOLDER_HOMES " in *" $name "*) continue ;; esac
-  report "$file" "$line" "$match" "real home path; use ~/ or /home/user"
-done < <(rg "${RG_COMMON[@]}" -e '(/home|/Users)/[A-Za-z0-9._-]+' . | sed 's#^\./##' || true)
+# scan <reason> <skip-fn> <rg args...>: run rg, fail hard on an rg error (exit 2), and
+# report every match for which <skip-fn> (a function taking the matched text) is false.
+# rg --null prints "<path>\0<line>:<match>\n", so file names containing ':' parse correctly.
+scan() {
+  local reason="$1" skip="$2" rc=0 file rest line match
+  shift 2
+  rg "${RG_COMMON[@]}" "$@" . > "$TMP" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "error: rg failed (exit $rc) while scanning for: $reason" >&2
+    exit 2
+  fi
+  while IFS= read -r -d '' file && IFS= read -r rest; do
+    file="${file#./}"
+    line="${rest%%:*}"
+    match="${rest#*:}"
+    if [ -n "$skip" ] && "$skip" "$match"; then continue; fi
+    report "$file" "$line" "$match" "$reason"
+  done < "$TMP"
+}
+
+skip_placeholder_home() { # matched text of check 1
+  local name="$1"
+  case "$name" in
+    /home/*|/Users/*) name="${name#/*/}" ;;
+    *) name="${name##*[Uu]sers\\}" ;;
+  esac
+  case " $PLACEHOLDER_HOMES " in *" $name "*) return 0 ;; esac
+  return 1
+}
+
+skip_synthetic_uuid() { # matched text of checks 2 and 3: skip ids starting 00000000-
+  local m="$1"
+  [[ "$m" =~ [0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || return 1
+  case "${BASH_REMATCH[0]}" in 00000000-*) return 0 ;; esac
+  return 1
+}
+
+UUID='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+
+# 1. Absolute home paths of real users (POSIX and Windows forms).
+scan "real home path; use ~/ or /home/user" skip_placeholder_home \
+  -e '(/home|/Users)/[A-Za-z0-9._-]+' \
+  -e '[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+'
 
 # 2. Transcript paths that embed a real conversation id.
-while IFS=: read -r file line match; do
-  case "${match#brain/}" in 00000000-*) continue ;; esac
-  report "$file" "$line" "$match" "real conversation id; use 00000000-0000-4000-8000-... style ids"
-done < <(rg "${RG_COMMON[@]}" -e 'brain/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' . | sed 's#^\./##' || true)
+scan "real conversation id; use 00000000-0000-4000-8000-... style ids" skip_synthetic_uuid \
+  -e "brain/$UUID"
 
-# 3. Owner's plan tier.
-while IFS=: read -r file line match; do
-  report "$file" "$line" "$match" "plan tier; say 'Google AI subscription' instead"
-done < <(rg "${RG_COMMON[@]}" -i -e 'google ai (pro|ultra)' . | sed 's#^\./##' || true)
+# 3. Full conversation ids: `--conversation <uuid>`, `conversation_id: <uuid>`, `conversationId="<uuid>"`.
+scan "real conversation id; use 00000000-0000-4000-8000-... style ids" skip_synthetic_uuid \
+  -i -e "--conversation[ =]+$UUID" \
+  -e "conversation[ _-]?id[\"'\`]?[ \t]*[:=]?[ \t]*[\"'\`]?$UUID"
 
-# 4. Owner's personal email handle and surname (the GitHub slug "rockad/..." is fine).
-while IFS=: read -r file line match; do
-  report "$file" "$line" "$match" "owner identity"
-done < <(rg "${RG_COMMON[@]}" -i -e '[A-Za-z0-9._-]*rockad@[A-Za-z0-9.-]+' -e 'akorolev' . | sed 's#^\./##' || true)
+# 4. Owner's plan tier.
+scan "plan tier; say 'Google AI subscription' or 'Claude subscription' instead" "" \
+  -i -e 'google ai (pro|ultra)' -e 'claude (pro|max)( plan| account| subscription)?\b'
+
+# 5. Owner's personal email handle and surname (the GitHub slug "rockad/..." is fine).
+scan "owner identity" "" \
+  -i -e '[A-Za-z0-9._-]*rockad@[A-Za-z0-9.-]+' -e 'akorolev'
 
 if [ "$errors" -gt 0 ]; then
   echo "Public leak check failed with $errors finding(s). Fix them, or add a justified entry to scripts/public-leaks-allow.txt." >&2

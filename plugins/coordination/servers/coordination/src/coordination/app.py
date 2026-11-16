@@ -36,7 +36,15 @@ S1-A2A adds, here:
   (public), `/agents/<card>/.well-known/agent-card.json` (any valid key), and the 11 operations
   over the same service layer `/mcp` uses. Routes are only added when `create_app` is given an
   `a2a` endpoint; `main` builds one in `build_server_app`, which also writes the cards file into
-  the `cards` table when the app starts (the service layer reads that table)."""
+  the `cards` table when the app starts (the service layer reads that table).
+
+S1-ADMIN adds, here (wiring only; the admin plane is `coordination.admin`):
+
+- the admin socket (`A2A_ADMIN_SOCKET`, mode 0600, an `AF_UNIX` listener and nothing else). It is
+  not an HTTP route and has no scope: `create_app` takes an `admin` server only to keep it on
+  `app.state.admin`, where S1-WAKE reaches `admin.hooks` to register what a key revocation must
+  close. `main` builds it in `build_server_app`, whose lifespan starts and stops it. A socket that
+  cannot be opened stops the server from starting."""
 
 from __future__ import annotations
 
@@ -52,6 +60,7 @@ from starlette.routing import Route
 from starlette.types import Lifespan
 
 from coordination.a2a import A2AEndpoint
+from coordination.admin.server import AdminServer
 from coordination.audit import AuditLog
 from coordination.auth.middleware import (
     AccessControlMiddleware,
@@ -133,6 +142,7 @@ def create_app(
     identity_source: IdentitySource | None = None,
     mcp: McpEndpoint | None = None,
     a2a: A2AEndpoint | None = None,
+    admin: AdminServer | None = None,
     lifespan: Lifespan[Starlette] | None = None,
 ) -> Starlette:
     config = config if config is not None else load()
@@ -170,6 +180,7 @@ def create_app(
     app.state.status_authorizer = status_authorizer
     app.state.a2a = a2a
     app.state.mcp = mcp  # S1-ADMIN reaches `mcp.sessions.drop_key` through it when it revokes a key
+    app.state.admin = admin  # not a route: the Unix socket, started by `build_server_app`'s lifespan
     return app
 
 
@@ -178,8 +189,9 @@ def build_server_app(config: Config) -> Starlette:
     but `/healthz` and the public root card is authenticated. The engine connects on first use
     and is disposed when the app shuts down."""
     from coordination.a2a import build_a2a, load_cards_or_empty, sync_cards
+    from coordination.admin.keystore import SqlKeyAdminStore
+    from coordination.admin.wiring import build_admin
     from coordination.audit import SqlAuditStore
-    from coordination.auth.store import SqlApiKeyStore
     from coordination.mcp import build_endpoint
     from coordination.service import CoordinationService, Directory, ServiceSettings
     from coordination.store.engine import make_engine
@@ -194,20 +206,29 @@ def build_server_app(config: Config) -> Starlette:
     mcp = build_endpoint(config, service, engine, clock, audit=audit)
     cards = load_cards_or_empty(config.cards_file)
     a2a = build_a2a(config, service, task_store, directory, engine, clock, registry=cards)
+    keys = SqlKeyAdminStore(engine)  # the S1-AUTH store, plus list and rotate for the admin commands
+    admin = build_admin(config, clock, engine, service, task_store, audit, directory, cards, keys=keys, mcp=mcp)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        started = False
         try:
             # The service layer reads the `cards` table to decide whether a card exists; the cards
             # file is its source (spec 1.3). Written here, not at import, so building the app
             # never touches the database.
             await sync_cards(engine, cards)
+            # The admin socket opens only after the cards are in the table, because `key create`
+            # checks them. If it cannot open, the exception stops the server: no fallback.
+            await admin.start()
+            started = True
             yield
         finally:
+            if started:
+                await admin.stop()
             await engine.dispose()
 
     return create_app(
-        config, clock=clock, audit=audit, key_store=SqlApiKeyStore(engine), mcp=mcp, a2a=a2a, lifespan=lifespan
+        config, clock=clock, audit=audit, key_store=keys, mcp=mcp, a2a=a2a, admin=admin, lifespan=lifespan
     )
 
 

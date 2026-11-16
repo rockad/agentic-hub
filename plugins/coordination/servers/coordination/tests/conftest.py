@@ -200,3 +200,16 @@ def config(pg_db: Callable[..., Config]) -> Config:
 def run(coro):
     """Run a coroutine to completion (the suite has no pytest-asyncio; asyncpg binds to a loop)."""
     return asyncio.run(coro)
+
+
+@pytest.fixture
+def sock_dir() -> Iterator[Path]:
+    """A short directory for a Unix socket. `AF_UNIX` paths are limited to about 108 bytes and
+    pytest's own temp paths can be longer, so this is made under the system temp directory."""
+    import tempfile
+
+    path = Path(tempfile.mkdtemp(prefix="a2a-adm-"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)

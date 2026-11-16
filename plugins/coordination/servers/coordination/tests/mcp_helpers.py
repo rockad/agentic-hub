@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -173,7 +174,11 @@ def peer_caller(allowed: tuple[str, ...] = (CARD_CLAUDE,), peer: str = "peer1") 
 
 def make_env(pg_db, **config_overrides: Any) -> McpEnv:
     """A migrated database with cards, a key of every kind, and the service on it."""
-    config = pg_db(**{"allow_writes": True, "allowed_hosts": (HOST,), **config_overrides})
+    # S1-ADMIN: `build_server_app` opens the admin socket when the app starts and the server does not
+    # start without it, so a test that serves the real app needs a path it may write (the default,
+    # /run/a2a, exists only in the container). A short one: AF_UNIX paths are limited to ~108 bytes.
+    socket_path = f"{tempfile.gettempdir()}/a2a-t-{uuid.uuid4().hex[:10]}.sock"
+    config = pg_db(**{"allow_writes": True, "allowed_hosts": (HOST,), "admin_socket": socket_path, **config_overrides})
     engine = null_pool_engine(config)
     run(schema.migrate_all(engine))
     clock = FixedClock()

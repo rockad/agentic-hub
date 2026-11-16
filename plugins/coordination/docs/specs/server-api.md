@@ -1225,6 +1225,8 @@ Credentials are service-issued API keys, like Claude API keys.
 
 ### 8.3 CLI
 
+As built (S1-ADMIN, 2026-11-16): [`admin.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/admin.md) records the socket, the commands, the choices made where this section is silent (the `deny` phrase, `card check`, the rotation rule, the `status` fields) and the hand-run terminal steps. `expose check` and `admin-apply` are not built yet.
+
 `a2a-coord` admin commands run inside the container (`docker compose exec -it coordination a2a-coord ...`) and talk to the admin socket (3.7) [D15]. Commands [D11 for the first three groups]:
 
 | command | effect |

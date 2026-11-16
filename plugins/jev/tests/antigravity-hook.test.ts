@@ -1028,9 +1028,9 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
 
 describe('child conversation ID and served model extraction', () => {
   it('extractChildConversationId parses various patterns', () => {
-    expect(extractChildConversationId('Conversation ID: 12345678-1234-1234-1234-123456789abc')).toBe('12345678-1234-1234-1234-123456789abc');
-    expect(extractChildConversationId('{"conversationId": "12345678-1234-1234-1234-123456789abc"}')).toBe('12345678-1234-1234-1234-123456789abc');
-    expect(extractChildConversationId('Session 12345678-1234-1234-1234-123456789abc completed')).toBe('12345678-1234-1234-1234-123456789abc');
+    expect(extractChildConversationId('Conversation ID: 00000000-0000-4000-8000-0000000000c9')).toBe('00000000-0000-4000-8000-0000000000c9');
+    expect(extractChildConversationId('{"conversationId": "00000000-0000-4000-8000-0000000000c9"}')).toBe('00000000-0000-4000-8000-0000000000c9');
+    expect(extractChildConversationId('Session 00000000-0000-4000-8000-0000000000c9 completed')).toBe('00000000-0000-4000-8000-0000000000c9');
     expect(extractChildConversationId('No id here')).toBeNull();
     expect(extractChildConversationId('')).toBeNull();
   });
@@ -1077,7 +1077,7 @@ describe('child conversation ID and served model extraction', () => {
   it('findServedModelFromTranscript finds model from child brain transcript', () => {
     const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-test-'));
     try {
-      const childId = '12345678-1234-1234-1234-123456789abc';
+      const childId = '00000000-0000-4000-8000-0000000000c9';
       const brainLogsDir = path.join(testHome, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
       fs.mkdirSync(brainLogsDir, { recursive: true });
       fs.writeFileSync(

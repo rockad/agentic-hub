@@ -201,7 +201,7 @@ describe('antigravity preflight hook', () => {
     console.log = (msg: string) => { stdout += msg; };
     try {
       await runPreflight(JSON.stringify({
-        conversationId: '12345678-1234-1234-1234-123456789abc',
+        conversationId: '00000000-0000-4000-8000-0000000000c9',
         modelName: 'Orchestrator (Argon)',
         lastUserInput: 'fix bug'
       }));
@@ -215,7 +215,7 @@ describe('antigravity preflight hook', () => {
     expect(msg).toContain('ORCHESTRATOR ENFORCEMENT');
     expect(msg).toContain('ARGON EXHAUSTED WARNING');
     expect(msg).toContain('Gemini 4 Hydrogen');
-    expect(msg).toContain('12345678-1234-1234-1234-123456789abc');
+    expect(msg).toContain('00000000-0000-4000-8000-0000000000c9');
   });
 
   it('privacy: logs taskHash and taskLen, never raw task text or tool: jev_dispatch on PreInvocation lines', async () => {

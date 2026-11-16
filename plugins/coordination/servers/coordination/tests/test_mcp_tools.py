@@ -24,6 +24,7 @@ from mcp_helpers import (
     peer_caller,
 )
 
+from coordination.auth.keys import parse_key
 from coordination.mcp import frame as F
 from coordination.store.task_store import IndexEntry
 
@@ -714,7 +715,9 @@ def test_no_tool_leaks_a_secret_or_a_key_to_the_audit_or_the_results(env):
     ]
     blob = " ".join(r.text for r in results) + json.dumps([dict(r._mapping, detail_json=r.detail_json) for r in env.audit_rows()], default=str)
     for token in (env.keys.claude, env.keys.agy, env.keys.peer):
-        assert token not in blob and token.rsplit("_", 1)[-1] not in blob
+        # The secret is base64url and may itself contain "_", so take it from the parser, not
+        # from the last "_" (that once yielded a one-character tail found anywhere in the blob).
+        assert token not in blob and parse_key(token).secret not in blob
 
 
 def test_a_handle_held_by_another_session_is_refused_never_suffixed(env):

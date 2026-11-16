@@ -28,7 +28,15 @@ S1-MCP adds, here:
   always served. `main` builds one over the service layer (`build_server_app`);
 - the wiring `build_server_app` needed for that: the SQL audit store (so the service and the
   middleware write the `audit` table, which S1-AUTH's doc listed as not wired) and the S1-STATE
-  `CoordinationService`. The service's TTL sweep loop is not started here: neither stream owns it."""
+  `CoordinationService`. The service's TTL sweep loop is not started here: neither stream owns it.
+
+S1-A2A adds, here:
+
+- `/a2a/v1` (JSON-RPC and REST) and the Agent Cards (`coordination.a2a`): the root front-desk card
+  (public), `/agents/<card>/.well-known/agent-card.json` (any valid key), and the 11 operations
+  over the same service layer `/mcp` uses. Routes are only added when `create_app` is given an
+  `a2a` endpoint; `main` builds one in `build_server_app`, which also writes the cards file into
+  the `cards` table when the app starts (the service layer reads that table)."""
 
 from __future__ import annotations
 
@@ -43,6 +51,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import Lifespan
 
+from coordination.a2a import A2AEndpoint
 from coordination.audit import AuditLog
 from coordination.auth.middleware import (
     AccessControlMiddleware,
@@ -123,6 +132,7 @@ def create_app(
     rate_limiter: RateLimiter | None = None,
     identity_source: IdentitySource | None = None,
     mcp: McpEndpoint | None = None,
+    a2a: A2AEndpoint | None = None,
     lifespan: Lifespan[Starlette] | None = None,
 ) -> Starlette:
     config = config if config is not None else load()
@@ -134,6 +144,8 @@ def create_app(
         # The ASGI app of `/mcp` as a route, not a `Mount`: a `Mount("/mcp")` answered 307 and then
         # 404 in the SP5 D12 spike. The scope check (`local-harness` only) is in the middleware.
         routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
+    if a2a is not None:
+        routes.extend(a2a.routes())
     # First in the list = outermost: the redaction runs before every other layer, the access
     # control included, so the access control only ever sees the masked header and the Credential.
     middleware = [Middleware(AuthorizationRedactionMiddleware)]
@@ -156,6 +168,7 @@ def create_app(
     app.state.clock = clock
     app.state.audit = audit  # None until a store that implements append_audit is wired in
     app.state.status_authorizer = status_authorizer
+    app.state.a2a = a2a
     app.state.mcp = mcp  # S1-ADMIN reaches `mcp.sessions.drop_key` through it when it revokes a key
     return app
 
@@ -164,6 +177,7 @@ def build_server_app(config: Config) -> Starlette:
     """The app `main` serves: `create_app` with the Postgres-backed key store, so every request
     but `/healthz` and the public root card is authenticated. The engine connects on first use
     and is disposed when the app shuts down."""
+    from coordination.a2a import build_a2a, load_cards_or_empty, sync_cards
     from coordination.audit import SqlAuditStore
     from coordination.auth.store import SqlApiKeyStore
     from coordination.mcp import build_endpoint
@@ -174,20 +188,26 @@ def build_server_app(config: Config) -> Starlette:
     engine = make_engine(config)
     clock = SystemClock()
     audit = AuditLog(SqlAuditStore(engine), clock)
-    service = CoordinationService(
-        CoordTaskStore(engine, clock=clock), Directory(engine), audit, clock, ServiceSettings.from_config(config)
-    )
+    task_store = CoordTaskStore(engine, clock=clock)
+    directory = Directory(engine)
+    service = CoordinationService(task_store, directory, audit, clock, ServiceSettings.from_config(config))
     mcp = build_endpoint(config, service, engine, clock, audit=audit)
+    cards = load_cards_or_empty(config.cards_file)
+    a2a = build_a2a(config, service, task_store, directory, engine, clock, registry=cards)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         try:
+            # The service layer reads the `cards` table to decide whether a card exists; the cards
+            # file is its source (spec 1.3). Written here, not at import, so building the app
+            # never touches the database.
+            await sync_cards(engine, cards)
             yield
         finally:
             await engine.dispose()
 
     return create_app(
-        config, clock=clock, audit=audit, key_store=SqlApiKeyStore(engine), mcp=mcp, lifespan=lifespan
+        config, clock=clock, audit=audit, key_store=SqlApiKeyStore(engine), mcp=mcp, a2a=a2a, lifespan=lifespan
     )
 
 

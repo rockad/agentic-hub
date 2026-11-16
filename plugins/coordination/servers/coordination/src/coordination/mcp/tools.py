@@ -667,7 +667,7 @@ class McpTools:
             "context_id": task.context_id,
             "state": pb.TaskState.Name(task.status.state),
             "delivery": block.get("delivery"),
-            "recipient_listening": bool(block.get("recipient_listening", False)),
+            "recipient_listening": bool(block.get("recipientListening", False)),
         }
         return out
 

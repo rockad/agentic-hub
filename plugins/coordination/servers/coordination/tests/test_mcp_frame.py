@@ -83,7 +83,7 @@ def text_task(parts: list[str], *, task_id: str = "t1", origin: str = "local", s
     message = task.history.add(message_id="m1", role=pb.Role.ROLE_USER)
     for text in parts:
         message.parts.add(text=text)
-    task.metadata.update({"coord": {"origin": origin, "from": sender, "created_at": "2026-11-16T10:00:00+00:00"}})
+    task.metadata.update({"coord": {"origin": origin, "from": sender, "createdAt": "2026-11-16T10:00:00+00:00"}})
     return task
 
 

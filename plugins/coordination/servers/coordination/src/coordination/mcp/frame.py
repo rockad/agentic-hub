@@ -153,13 +153,19 @@ def task_to_dict(
         out["kind"] = item.kind
         out["addressed_to"] = item.addressed_to
         out["offer_count"] = item.offer_count
-    received = item.received_at if item is not None else block.get("created_at")
+    received = item.received_at if item is not None else block.get("createdAt")
     out["received_at"] = received
-    expires = item.expires_at.isoformat() if item is not None and item.expires_at else block.get("expires_at")
+    expires = item.expires_at.isoformat() if item is not None and item.expires_at else block.get("expiresAt")
     out["expires_at"] = expires
-    for key in ("delivery", "recipient_listening", "hold", "orphaned"):
-        if block.get(key) is not None:
-            out[key] = block[key]
+    # the coord block is camelCase (Z16); the MCP output keeps its snake_case contract
+    for block_key, out_key in (
+        ("delivery", "delivery"),
+        ("recipientListening", "recipient_listening"),
+        ("hold", "hold"),
+        ("orphaned", "orphaned"),
+    ):
+        if block.get(block_key) is not None:
+            out[out_key] = block[block_key]
     out["origin"] = origin_of(task)
     out["messages"] = [message_to_dict(m) for m in history]
     if artifacts:

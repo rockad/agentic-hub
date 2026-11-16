@@ -43,7 +43,7 @@ def _summary(task: pb.Task, index: IndexRow) -> dict[str, Any]:
         "peer": index.from_principal,
         "card": index.to_card,
         "to_handle": index.to_handle,
-        "received_at": block.get("created_at"),
+        "received_at": block.get("createdAt"),
         "expires_at": index.expires_at.isoformat() if index.expires_at else None,
         "size_bytes": _text_bytes(task),
     }

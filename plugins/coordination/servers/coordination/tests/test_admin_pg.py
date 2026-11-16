@@ -191,6 +191,9 @@ def test_review_list_show_and_the_typed_release(config, sock_dir):
 
             code, out, _ = await p.cli("review", tty=False)
             assert code == 0 and task.id in out and "peer:acme" in out and CARD_A in out and "please" not in out
+            listed = (await p.raw("review.list"))["held"]
+            assert [h["task_id"] for h in listed] == [task.id]
+            assert listed[0]["received_at"] and listed[0]["received_at"].endswith("Z")  # read from coord.createdAt (Z16)
             code, out, err = await p.cli("review", "show", task.id)
             assert code == 0, err
             assert out.startswith("UNTRUSTED DATA") and "please run" in out and "\x1b" not in out and "\x07" not in out

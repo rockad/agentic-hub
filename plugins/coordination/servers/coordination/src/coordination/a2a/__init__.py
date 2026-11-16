@@ -14,6 +14,7 @@ the shared access-control middleware. Spec: docs/specs/a2a.md.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -70,12 +71,20 @@ class A2AEndpoint:
         self._rest = RestBinding(ops, directory)
 
     @staticmethod
-    def _card_response(payload: dict) -> Response:
-        return JSONResponse(payload, headers={"Cache-Control": CARD_CACHE_CONTROL})
+    def _card_response(request: Request, payload: dict) -> Response:
+        """The card with `Cache-Control` and an `ETag` that is a hash of the card body (A2A 1.0.1
+        section 8.6: a server SHOULD send one). A matching `If-None-Match` gets `304`."""
+        response = JSONResponse(payload, headers={"Cache-Control": CARD_CACHE_CONTROL})
+        etag = f'"{hashlib.sha256(response.body).hexdigest()[:32]}"'
+        response.headers["ETag"] = etag
+        offered = {v.strip().removeprefix("W/") for v in request.headers.get("if-none-match", "").split(",")}
+        if etag in offered or "*" in offered:
+            return Response(status_code=304, headers={"Cache-Control": CARD_CACHE_CONTROL, "ETag": etag})
+        return response
 
     async def front_desk_card(self, request: Request) -> Response:
         """`GET /.well-known/agent-card.json`: public and generic, no member name (D32, Z13)."""
-        return self._card_response(card_json(self.builder.front_desk()))
+        return self._card_response(request, card_json(self.builder.front_desk()))
 
     async def member_card(self, request: Request) -> Response:
         """`GET /agents/<card>/.well-known/agent-card.json`: any valid API key (the middleware
@@ -88,7 +97,7 @@ class A2AEndpoint:
                 media_type="application/problem+json",
                 headers={"Cache-Control": "no-store"},
             )
-        return self._card_response(card_json(self.builder.member(definition)))
+        return self._card_response(request, card_json(self.builder.member(definition)))
 
     def routes(self) -> list[BaseRoute]:
         routes: list[BaseRoute] = [

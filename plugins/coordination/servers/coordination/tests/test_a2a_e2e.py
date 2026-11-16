@@ -8,8 +8,8 @@ This is interoperability evidence, not a spec conformance run: the SDK client is
 that defines the wire types, so it agrees with the server on field names by construction. What it
 does show is that a standard client can start from the member card URL, follow the card to the
 interface URL and tenant, send, read, list, cancel and be refused, over JSON-RPC and over REST,
-with the version header and the bearer key the card declares. The TCK is not run here (see
-docs/specs/a2a.md).
+with the version header and the bearer key the card declares. The TCK is run in
+test_a2a_tck.py (see docs/specs/a2a.md section 8).
 """
 
 from __future__ import annotations

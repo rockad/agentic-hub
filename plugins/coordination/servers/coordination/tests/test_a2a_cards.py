@@ -248,3 +248,28 @@ def test_extended_card_gives_a_local_key_its_live_sessions_and_a_peer_none(pg_db
     assert denied["code"] == -32010
     front = wire.error(env.keys.claude, "GetExtendedAgentCard", {})
     assert front["code"] == -32602 and "front desk" in front["message"]
+
+
+def test_cards_carry_an_etag_and_a_matching_if_none_match_gets_304(pg_db):
+    """A2A 1.0.1 section 8.6: a server SHOULD send an ETag; the TCK (CARD-CACHE-002) asks for it."""
+    env = make_a2a_env(pg_db, public_url="https://a2a.example")
+    wire = env.wire()
+    member = f"/agents/{CARD_CLAUDE}/.well-known/agent-card.json"
+    for path, token in (("/.well-known/agent-card.json", None), (member, env.keys.claude)):
+        first = wire.card(path, token)
+        etag = first.headers["etag"]
+        assert first.status_code == 200 and etag.startswith('"') and etag.endswith('"')
+        assert wire.card(path, token).headers["etag"] == etag  # the same card, the same tag
+        headers = {**wire.headers(token, version=None), "If-None-Match": etag}
+        same = wire.http.get(path, headers=headers)
+        assert same.status_code == 304 and same.content == b"" and same.headers["etag"] == etag
+        assert same.headers["cache-control"] == "max-age=60"
+        weak = wire.http.get(path, headers={**headers, "If-None-Match": f"W/{etag}"})
+        assert weak.status_code == 304
+        stale = wire.http.get(path, headers={**headers, "If-None-Match": '"0000"'})
+        assert stale.status_code == 200 and stale.headers["etag"] == etag
+    other = wire.card(f"/agents/{CARD_AGY}/.well-known/agent-card.json", env.keys.claude)
+    assert other.headers["etag"] != wire.card(member, env.keys.claude).headers["etag"]  # another card
+    # A card that does not exist gets no tag and no 304.
+    gone = wire.http.get("/agents/nobody@nowhere/.well-known/agent-card.json", headers={**wire.headers(env.keys.claude, version=None), "If-None-Match": "*"})
+    assert gone.status_code == 404 and "etag" not in gone.headers

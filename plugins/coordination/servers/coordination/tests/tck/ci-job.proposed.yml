@@ -1,0 +1,73 @@
+# The A2A TCK job for CI, as a ready-to-use workflow. It is NOT active: `.github/` is outside the
+# S1-A2A stream's scope, so the file sits here. To switch it on, the main session (or the user)
+# runs
+#
+#   git mv plugins/coordination/servers/coordination/tests/tck/ci-job.proposed.yml .github/workflows/coordination-tck.yml
+#
+# What it does: checks out the TCK at the pinned commit, builds the TCK's own environment on Python
+# 3.15 (the TCK requires >=3.15 and its lock has no 3.15 wheel for grpcio, so the first run builds
+# it from source, about 10 to 25 minutes; the cache below keeps the built environment), then runs
+# tests/test_a2a_tck.py with A2A_TCK_REQUIRE=1 so a missing TCK is a failure, not a skip.
+# A TCK failure that is not in tests/tck/allowlist.yaml blocks the job; so does an allowlist entry
+# that no longer fails. The allowlist is reviewed by the user (`review: reviewed`); until then the
+# entries say `proposed`.
+name: Coordination TCK
+
+on:
+  pull_request:
+    paths:
+      - "plugins/coordination/servers/coordination/**"
+      - ".github/workflows/coordination-tck.yml"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/coordination/servers/coordination/**"
+
+env:
+  # Keep in step with TCK_COMMIT in tests/tck_support.py and `tck_commit` in tests/tck/allowlist.yaml.
+  TCK_REPO: https://github.com/a2aproject/a2a-tck.git
+  TCK_COMMIT: 104a7b4
+
+jobs:
+  tck:
+    name: A2A TCK against the coordination server
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Check out the TCK at the pinned commit
+        run: |
+          git clone "$TCK_REPO" "$RUNNER_TEMP/a2a-tck"
+          git -C "$RUNNER_TEMP/a2a-tck" checkout "$TCK_COMMIT"
+
+      - name: Cache the TCK environment (grpcio is built from source on Python 3.15)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/a2a-tck/.venv
+            ~/.local/share/uv/python
+          key: tck-${{ env.TCK_COMMIT }}-py315-${{ runner.os }}
+
+      - name: Build the TCK environment
+        run: uv sync --python 3.15
+        working-directory: ${{ runner.temp }}/a2a-tck
+
+      - name: Run the TCK through the gate
+        run: uv run pytest tests/test_a2a_tck.py tests/test_a2a_tck_gate.py -v -s
+        working-directory: plugins/coordination/servers/coordination
+        env:
+          A2A_TCK_DIR: ${{ runner.temp }}/a2a-tck
+          A2A_TCK_REQUIRE: "1"
+          A2A_TEST_REQUIRE_DOCKER: "1"
+
+      - name: Keep the TCK reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a2a-tck-reports
+          path: ${{ runner.temp }}/a2a-tck/reports/

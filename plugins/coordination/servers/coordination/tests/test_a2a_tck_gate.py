@@ -115,3 +115,23 @@ def test_the_allowlist_file_in_the_repository_is_well_formed_and_matches_the_pin
     assert listed.tck_commit == TCK_COMMIT
     for d in listed.entries:
         assert "::" in d.test, f"{d.test}: a test id is classname::name"
+
+
+def _tck_workflow():
+    """The TCK workflow: the active one under .github/workflows/ once moved, else the proposal."""
+    here = ALLOWLIST_FILE.parent
+    repo_root = here.parents[5]
+    active = repo_root / ".github" / "workflows" / "coordination-tck.yml"
+    return active if active.is_file() else here / "ci-job.proposed.yml"
+
+
+def test_the_tck_workflow_pins_the_same_commit_and_makes_a_missing_tck_a_failure():
+    import yaml
+
+    path = _tck_workflow()
+    workflow = yaml.safe_load(path.read_text())
+    assert workflow["env"]["TCK_COMMIT"] == TCK_COMMIT, f"{path.name} pins another TCK commit"
+    steps = workflow["jobs"]["tck"]["steps"]
+    gate_steps = [s for s in steps if "test_a2a_tck.py" in s.get("run", "")]
+    assert gate_steps, "no step runs the TCK gate"
+    assert gate_steps[0]["env"]["A2A_TCK_REQUIRE"] == "1", "a missing TCK must fail, not skip"

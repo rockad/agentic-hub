@@ -15,7 +15,7 @@ This is the whole plan: one of the two live planning documents (the other is [`m
 9. [Go-live migration](#9-go-live-migration) (folded from `go-live-migration.md`)
 10. [Git history rewrite](#10-git-history-rewrite) (folded from `history-rewrite-plan.md`)
 11. [Decision records](#11-decision-records) (DDR-001 to DDR-004)
-12. [Decision rounds](#12-decision-rounds) (Y1 to Y10, Z1 to Z15, and the earlier rounds in short form)
+12. [Decision rounds](#12-decision-rounds) (Y1 to Y10, Z1 to Z16, and the earlier rounds in short form)
 13. [Waves and workflow process](#13-waves-and-workflow-process)
 
 Status (2026-11-11; first written 2026-11-09; the status text in this paragraph is kept as written on that date, S1 has been running since the user's go of 2026-11-11 and the live status is in [`master-tasklist.md`](master-tasklist.md)): **PLANNING ONLY until the S1 kickoff starts.** SP5b passed on 2026-11-10 and satisfied the S1 storage gate (round-4 C1); SP3 passed and SP4 was recorded (2026-11-10 and 2026-11-11), so the overall S1 entry gate is **satisfied (2026-11-11)** and the user approved the S1 kickoff (Y10); see section 12.1 of this plan and the status in `master-tasklist.md`. Nothing here is built. This file turns the accepted DDR-004 (40 binding decisions: 25 to 36 of 2026-11-05 closing the former section 6 items, 37 to 40 of 2026-11-09, which also reverse D4's starting engine to Postgres and decide the S3 listener of D20; plus the round-2 decisions R1 to R8 and the round-3 decisions R9 to R14 of the same day, which refine D20, D37, D38 and D39, and the round-4 decisions X1 to X5 of 2026-11-10, which refine or replace R9, R10, R11 and R13; in this file they are written "round-4 X1" to "round-4 X5" so they do not collide with risk ids) and the specs into workstreams that can be started, parallelised and gated. It adds no decisions. Anything not already decided or specified is labelled **[proposal]**.
@@ -2020,7 +2020,7 @@ Final, like 12.1. The user decided these on 2026-11-14 (sixth clarify round).
 
 Open at the time: the agent count for W4b (decided on 2026-11-15 as Z8, 12.3).
 
-### 12.3 Round of 2026-11-15 (Z6 to Z15)
+### 12.3 Round of 2026-11-15 (Z6 to Z15) and Z16 (2026-11-16)
 
 Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 merged on 2026-11-15); Z7 to Z9 in the open-items round of the same day; Z10 to Z15 in the W4b /clarify round of the same day.
 
@@ -2036,6 +2036,7 @@ Final, like 12.1. Z6 was decided after W3a (S1-STORE PR #61 and S1-OBS PR #62 me
 | Z13 | S1-A2A front-desk [proposal] items | Build only the decided parts plus a rejection: a generic public root card, per-member authenticated cards, and a root `SendMessage` rejected with an error pointing to the member card path. No member listing through an extension field and no `metadata.target` routing; discovery is designed in S3-CARD and S3-PEER. |
 | Z14 | S1-ADMIN key-create [proposal] items | Ratify the `--expires` ceilings (365 days at `s1`, 90 at `s2` and `s3`; a larger value is refused). `--tailnet-node` stays. `--tailnet-login` is not built in S1; it waits for the real identity source (S2-TS). |
 | Z15 | S1-MCP wait cap (plan text said 240, the config table says 50) | The spec table decides: `a2a_wait` and `a2a_send` `wait_seconds` are capped by `A2A_MAX_WAIT_S` (default 50, verified fit from SP2 C8 and A7), not 240. The S1-MCP acceptance text is corrected. |
+| Z16 | S1-A2A TCK allowlist review (2026-11-16; the 14 proposed entries in `tests/tck/allowlist.yaml`) | Keys inside `Task.metadata.coord` are camelCase (`createdAt`, `recipientListening`, `expiresAt`), so the TCK camelCase check passes; MCP tool output keeps its snake_case contract. REST (HTTP+JSON) error responses use `application/a2a+json` (spec 11.1 and 11.6). The 10 parked-task entries (no artifacts, no direct Message reply) and the 2 `CORE-SEND-003` entries (a TCK defect: no `expected_error`, confirmed at `104a7b4`) are reviewed and accepted. The TCK CI job runs on changes under `plugins/coordination/`. An upstream issue for `CORE-SEND-003` is drafted; it is posted only on the user's word. |
 
 No question is open after this round.
 

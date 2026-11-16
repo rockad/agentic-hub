@@ -101,9 +101,12 @@ scan "real conversation id; use 00000000-0000-4000-8000-... style ids" skip_synt
 scan "plan tier; say 'Google AI subscription' or 'Claude subscription' instead" "" \
   -i -e 'google ai (pro|ultra)' -e 'claude (pro|max)( plan| account| subscription)?\b'
 
-# 5. Owner's personal email handle and surname (the GitHub slug "rockad/..." is fine).
-scan "owner identity" "" \
-  -i -e '[A-Za-z0-9._-]*rockad@[A-Za-z0-9.-]+' -e 'akorolev'
+# 5. Personal identifiers that must not themselves be published in this script:
+#    one regex per line in a local, untracked file (absent in CI, so this check is skipped there).
+PRIVATE_PATTERNS="${PUBLIC_LEAKS_PRIVATE_PATTERNS:-$HOME/.config/public-leaks/patterns.txt}"
+if [ -s "$PRIVATE_PATTERNS" ]; then
+  scan "personal identifier (local pattern list)" "" -i -f "$PRIVATE_PATTERNS"
+fi
 
 if [ "$errors" -gt 0 ]; then
   echo "Public leak check failed with $errors finding(s). Fix them, or add a justified entry to scripts/public-leaks-allow.txt." >&2

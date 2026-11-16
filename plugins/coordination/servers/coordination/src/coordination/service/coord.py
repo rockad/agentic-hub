@@ -12,11 +12,11 @@ Stored in the task (`Task.metadata.coord`):
 - `hold`: `quarantine` while held
 - `to`: the addressed handle, when the sender addressed one
 - `reason`: constant code once rejected (spec 5.3 table)
-- `created_at`: ISO 8601
+- `createdAt`: ISO 8601
 - `unread`: unread follow-up messages for the recipient (spec 6.4)
 
-Computed when a task is shown (`CoordinationService` views): `delivery`, `recipient_listening`,
-`expires_at`, `orphaned`. They are never stored, so they cannot go stale.
+Computed when a task is shown (`CoordinationService` views): `delivery`, `recipientListening`,
+`expiresAt`, `orphaned`. Keys are camelCase like the A2A protocol fields (decision Z16). They are never stored, so they cannot go stale.
 """
 
 from __future__ import annotations

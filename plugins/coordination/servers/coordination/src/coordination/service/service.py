@@ -243,7 +243,7 @@ class CoordinationService:
                 "hold": admission.hold,
                 "to": to if admission.state is not State.REJECTED else None,
                 "reason": admission.reason,
-                "created_at": now.isoformat(),
+                "createdAt": now.isoformat(),
             },
         )
 
@@ -492,7 +492,7 @@ class CoordinationService:
                     kind=kind,
                     addressed_to=index.addressing or "handle",
                     offer_count=index.offer_count,
-                    received_at=C.coord_get(task).get("created_at"),
+                    received_at=C.coord_get(task).get("createdAt"),
                     expires_at=index.expires_at,
                 )
             )
@@ -922,7 +922,7 @@ class CoordinationService:
 
     async def _view(self, task: pb.Task, index: IndexRow | None) -> pb.Task:
         """The task as a caller sees it: the stored task plus the computed `coord` fields
-        (`delivery`, `recipient_listening`, `expires_at`, `orphaned`); the internal follow-up
+        (`delivery`, `recipientListening`, `expiresAt`, `orphaned`); the internal follow-up
         counter is removed. An import task has no index row and is shown as stored."""
         out = pb.Task()
         out.CopyFrom(task)
@@ -947,8 +947,8 @@ class CoordinationService:
         C.coord_set(
             out,
             delivery=delivery,
-            recipient_listening=listening,
-            expires_at=index.expires_at.isoformat() if index.expires_at else None,
+            recipientListening=listening,
+            expiresAt=index.expires_at.isoformat() if index.expires_at else None,
             orphaned=True if orphaned else None,
         )
         return out

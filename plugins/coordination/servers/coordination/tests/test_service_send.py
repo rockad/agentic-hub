@@ -59,7 +59,7 @@ def test_local_card_send_queues_when_nobody_is_there(config):
     assert index.from_principal == CARD_B
     b = block(task)
     assert b["origin"] == "local" and b["delivery"] == "queued" and b["from"] == H_B1
-    assert b["recipient_listening"] is False
+    assert b["recipientListening"] is False
     assert rows == [(None, "TASK_STATE_SUBMITTED", H_B1)]
 
 
@@ -80,7 +80,7 @@ def test_card_send_goes_to_the_newest_listening_session_then_the_newest_active(c
 
     (a, l, q), listening, notified = run(go())
     assert a.to_handle == H_A2 and a.addressing == "card"
-    assert l.to_handle == H_A1 and block(listening)["recipient_listening"] is True
+    assert l.to_handle == H_A1 and block(listening)["recipientListening"] is True
     assert q.to_handle is None
     assert notified[:2] == [H_A2, H_A1]  # the wake machinery was told, without content
 

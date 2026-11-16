@@ -890,8 +890,8 @@ Input: `{"task_id": "uuid", "reason": "optional text, 1 KiB"}`. Output: the task
 | import record | `Task.metadata.coord.import` | provenance of a task imported from the frozen channel files (admin path only; fields in master-plan.md 9.6) |
 | hold marker | `Task.metadata.coord.hold` | `quarantine` while held; server-set |
 | delivery | `Task.metadata.coord.delivery` | `queued`, `offered`, `accepted` |
-| recipient listening | `Task.metadata.coord.recipient_listening` | boolean, so a sender sees "not listening" instead of silent waiting (switchboard badge idea [reported, t1b]) |
-| expiry | `Task.metadata.coord.expires_at` | ISO 8601 |
+| recipient listening | `Task.metadata.coord.recipientListening` | boolean, so a sender sees "not listening" instead of silent waiting (switchboard badge idea [reported, t1b]) |
+| expiry | `Task.metadata.coord.expiresAt` | ISO 8601 |
 | rejection reason | `Task.metadata.coord.reason` | constant codes: `not_allowed`, `denied_by_human`, `quarantine_expired`, `expired`, `recipient_declined`, `quota` |
 
 The `coord` key sits inside `metadata` Structs. The extension itself is declared in the card as an `AgentExtension` with a placeholder URI `urn:agentic-hub:coordination:v1` (not resolvable; open point 13), `required: false`. Clients that ignore it still see a valid A2A task.

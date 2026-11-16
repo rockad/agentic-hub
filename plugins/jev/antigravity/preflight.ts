@@ -80,11 +80,21 @@ function cleanUserInput(raw: string): string {
   return text.trim();
 }
 
-export function autoHealAgyMcp(mode: string): void {
+export type AutoHealDeps = {
+  /** Home directory; the default is HOME at call time (bun fixes os.homedir() at startup). */
+  home?: string;
+  /** Whether the `agy` CLI is on PATH. */
+  hasAgy?: () => boolean;
+  /** Runs `agy <args>`. */
+  runAgy?: (args: string[]) => void;
+};
+
+export function autoHealAgyMcp(mode: string, deps: AutoHealDeps = {}): void {
   try {
+    const home = deps.home ?? (process.env.HOME || os.homedir());
     const candidatePaths = [
-      path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json'),
-      path.join(os.homedir(), '.gemini', 'antigravity-cli', 'mcp_config.json')
+      path.join(home, '.gemini', 'config', 'mcp_config.json'),
+      path.join(home, '.gemini', 'antigravity-cli', 'mcp_config.json')
     ];
     let mcpConfigPath = '';
     for (const p of candidatePaths) {
@@ -96,25 +106,46 @@ export function autoHealAgyMcp(mode: string): void {
     if (!mcpConfigPath) return;
 
     // Check if agy is on PATH
-    try {
-      execSync('which agy 2>/dev/null || command -v agy 2>/dev/null', { stdio: 'ignore' });
-    } catch {
-      return;
-    }
+    const hasAgy =
+      deps.hasAgy ??
+      (() => {
+        try {
+          execSync('which agy 2>/dev/null || command -v agy 2>/dev/null', { stdio: 'ignore' });
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    if (!hasAgy()) return;
 
     const raw = JSON.parse(fsSync.readFileSync(mcpConfigPath, 'utf8'));
     const jevServer = raw?.mcpServers?.jev;
     const isDisabled = jevServer ? jevServer.disabled === true : true;
     const shouldBeDisabled = mode === 'off';
     if (isDisabled !== shouldBeDisabled) {
-      execFileSync('agy', ['mcp', shouldBeDisabled ? 'disable' : 'enable', 'jev'], { timeout: 1500, stdio: 'ignore' });
+      const args = ['mcp', shouldBeDisabled ? 'disable' : 'enable', 'jev'];
+      const runAgy =
+        deps.runAgy ??
+        ((a: string[]) => {
+          execFileSync('agy', a, { timeout: 1500, stdio: 'ignore' });
+        });
+      runAgy(args);
     }
   } catch {
     // fail-open
   }
 }
 
-export async function runPreflight(inputJson?: string): Promise<void> {
+export type PreflightDeps = {
+  /** MCP auto-heal; the only thing mode `off` runs. */
+  autoHeal?: (mode: string) => void;
+  /** The Decisions API call; stubbed in tests so no network is touched. */
+  callJev?: typeof callJev;
+};
+
+export async function runPreflight(inputJson?: string, deps: PreflightDeps = {}): Promise<void> {
+  const autoHeal = deps.autoHeal ?? ((m: string) => autoHealAgyMcp(m));
+  const callJevFn = deps.callJev ?? callJev;
   try {
     let hookInput: PreInvocationInput | null = null;
     if (inputJson && inputJson.trim().length > 0) {
@@ -136,7 +167,14 @@ export async function runPreflight(inputJson?: string): Promise<void> {
     const mode = await readJevMode('antigravity');
 
     // 2. Auto-heal agy MCP
-    autoHealAgyMcp(mode);
+    autoHeal(mode);
+
+    // Mode off: nothing else runs and nothing is written (no session model file, no quota read, no injection,
+    // no telemetry). The auto-heal above is the only side effect.
+    if (mode === 'off') {
+      console.log(JSON.stringify({}));
+      return;
+    }
 
     // 3. Persist live modelName
     if (modelName && modelName.trim().length > 0 && conversationId) {
@@ -157,32 +195,16 @@ export async function runPreflight(inputJson?: string): Promise<void> {
     const pct = (remaining * 100).toFixed(1);
     const poolLabel = routinePool.pool === '3p' ? `3p (${quota.active_model ?? 'non-Gemini'})` : 'Gemini';
 
-    // When mode is off: emit quota emergency/conserve if applicable, else exit 0
-    if (mode === 'off') {
-      if (poolStrategy === 'free_only') {
-        const msg = `[QUOTA EMERGENCY (Jev OFF): ${poolLabel} quota is critically low (<10% remaining: ${pct}%). Subagents are locked out. Use local CLI tools or run \`jev on\` to enable free-tier offloading via Jev.]`;
-        console.log(JSON.stringify({ injectSteps: [{ ephemeralMessage: msg }] }));
-        return;
-      }
-      if (poolStrategy === 'conserve') {
-        const msg = `[QUOTA CONSERVE (Jev OFF): ${poolLabel} quota is at or below conserve threshold (${pct}% remaining). Clamp all subagents strictly to Model: "flash_lite" (Pro tier is strictly prohibited). Run \`jev on\` if you want to enable free-tier offloading via Jev.]`;
-        console.log(JSON.stringify({ injectSteps: [{ ephemeralMessage: msg }] }));
-        return;
-      }
-      console.log(JSON.stringify({}));
-      return;
-    }
-
     // Directives
     const parts: string[] = [];
 
     // Quota directive
     if (poolStrategy === 'free_only') {
-      parts.push(`[QUOTA EMERGENCY: ${poolLabel} quota is critically low (<10% remaining: ${pct}%). Subagents are locked out. ALL generation, drafting, and boilerplate MUST be offloaded to free models via jev_execute_free or jev_agent_free.]`);
+      parts.push(`[QUOTA EMERGENCY: ${poolLabel} pool strategy is free_only (${pct}% remaining). Subagents are locked out. ALL generation, drafting, and boilerplate MUST be offloaded to free models via jev_execute_free or jev_agent_free.]`);
     } else if (poolStrategy === 'conserve') {
       const fivePct = routinePool.five_hour !== null && routinePool.five_hour !== undefined ? `${Math.round(routinePool.five_hour * 100)}%` : 'n/a';
       const weeklyPct = routinePool.weekly !== null && routinePool.weekly !== undefined ? `${Math.round(routinePool.weekly * 100)}%` : 'n/a';
-      parts.push(`[QUOTA CONSERVE: ${poolLabel} quota is limited (${pct}% remaining, 5h: ${fivePct}, weekly: ${weeklyPct}). All subagents are throttled strictly to Model: "flash_lite" (Pro tier prohibited). Offload routine generation, boilerplate, formatting, and draft text to free models via jev_execute_free or jev_agent_free.]`);
+      parts.push(`[QUOTA CONSERVE: ${poolLabel} pool strategy is conserve (${pct}% remaining, 5h: ${fivePct}, weekly: ${weeklyPct}). All subagents are throttled strictly to Model: "flash_lite" (Pro tier prohibited). Offload routine generation, boilerplate, formatting, and draft text to free models via jev_execute_free or jev_agent_free.]`);
     }
 
     // Argon-exhausted warning for Orchestrator
@@ -245,7 +267,7 @@ ${sessionHint}
 
           const dispatchData = await withTimeout(
             (signal) =>
-              callJev(
+              callJevFn(
                 `Task: ${cleanTask}\n\nQuota strategy for this machine: ${poolStrategy}.`,
                 questions,
                 signal

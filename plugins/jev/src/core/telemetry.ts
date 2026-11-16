@@ -4,11 +4,22 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fetchWithTimeout } from './client.js';
-import { PRIVATE_FILE_MODE, privateDir, privateFile } from './private-fs.js';
+import { PRIVATE_FILE_MODE, privateDir, privateFile, jevHomeDir } from './private-fs.js';
 
-export const JEV_TELEMETRY_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl');
-export const TELEMETRY_DIR = path.join(os.homedir(), '.gemini', 'antigravity-cli');
-export const TELEMETRY_FILE = path.join(TELEMETRY_DIR, 'jev_telemetry.jsonl');
+/** Directory of the Antigravity telemetry files, resolved from HOME at call time. */
+export function telemetryDir(): string {
+  return path.join(jevHomeDir(), '.gemini', 'antigravity-cli');
+}
+
+/** The file `logJevTelemetry` appends to: `JEV_TELEMETRY_FILE` when set, else under HOME. Resolved at call time. */
+export function jevTelemetryFile(): string {
+  return process.env.JEV_TELEMETRY_FILE || path.join(telemetryDir(), 'jev_telemetry.jsonl');
+}
+
+/** The file `logTelemetry` (MCP tools) appends to, resolved from HOME at call time. */
+export function telemetryFile(): string {
+  return path.join(telemetryDir(), 'jev_telemetry.jsonl');
+}
 
 export interface JevTelemetryEvent {
   timestamp?: string;
@@ -51,7 +62,7 @@ export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
       timestamp: entry.timestamp || new Date().toISOString(),
       ...entry
     };
-    await appendPrivate(JEV_TELEMETRY_FILE, JSON.stringify(payload) + '\n');
+    await appendPrivate(jevTelemetryFile(), JSON.stringify(payload) + '\n');
   } catch {
     // telemetry is best-effort
   }
@@ -69,7 +80,7 @@ export async function logTelemetry(entry: Record<string, unknown>): Promise<void
       harness: 'antigravity',
       ...entry
     };
-    await appendPrivate(TELEMETRY_FILE, JSON.stringify(payload) + '\n');
+    await appendPrivate(telemetryFile(), JSON.stringify(payload) + '\n');
   } catch {
     // Non-blocking telemetry
   }
@@ -124,7 +135,7 @@ export async function fetchRecallMemory(workspace = path.basename(process.cwd())
 
   for (const file of ['memory.json', 'handoff.json']) {
     try {
-      const filePath = path.join(os.homedir(), 'projects', workspace, '.agents', file);
+      const filePath = path.join(jevHomeDir(), 'projects', workspace, '.agents', file);
       if (fsSync.existsSync(filePath)) {
         const raw = fsSync.readFileSync(filePath, 'utf8');
         return JSON.parse(raw);

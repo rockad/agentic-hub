@@ -4,6 +4,7 @@
  * entry that already exists with looser modes (older releases wrote 0755 directories and 0644 files).
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 /** Mode of a directory Jev creates, and of one `privateDir` tightens: owner-only. */
 export const PRIVATE_DIR_MODE = 0o700;
@@ -27,4 +28,13 @@ export function privateFile(file: string): void {
   } catch {
     // best-effort
   }
+}
+
+/**
+ * The user's home directory, resolved at call time. bun fixes `os.homedir()` at startup, so a HOME assigned
+ * later (a test, a wrapper) is honoured first; paths built from this follow it, and a hermetic run never reaches
+ * the real home.
+ */
+export function jevHomeDir(): string {
+  return process.env.HOME || os.homedir();
 }

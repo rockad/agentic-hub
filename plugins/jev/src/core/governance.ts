@@ -14,13 +14,17 @@ import {
 import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
 import { getTracer } from '../tracing.js';
-import { privateDir, privateFile, PRIVATE_FILE_MODE } from './private-fs.js';
+import { privateDir, privateFile, PRIVATE_FILE_MODE, jevHomeDir } from './private-fs.js';
 import { safeSessionId } from '../../claude/logic.js';
 export { safeSessionId };
 import { readRegularFile } from '../../claude/safe-read.js';
 
 // ── Antigravity quota view ───────────────────────────────────────────────────
+/** Default quota-state path, fixed when the module loads. `readQuotaView` resolves `quotaStateFile()` at call time instead. */
 export const QUOTA_STATE_FILE = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'quota-state.json');
+export function quotaStateFile(): string {
+  return path.join(jevHomeDir(), '.gemini', 'antigravity-cli', 'quota-state.json');
+}
 export const QUOTA_LEGACY_FILE = '/tmp/antigravity-quota.json';
 
 export const DEFAULT_5H_NORMAL_MIN = 0.30;
@@ -233,7 +237,7 @@ export function normaliseBucket(nowSec: number, raw: any): QuotaBucket | null {
 export function getAntigravitySessionsDir(): string {
   const jevDir = process.env.JEV_CONFIG_FILE
     ? path.dirname(process.env.JEV_CONFIG_FILE)
-    : path.join(os.homedir(), '.config', 'jev');
+    : path.join(jevHomeDir(), '.config', 'jev');
   return path.join(jevDir, 'antigravity-sessions');
 }
 
@@ -265,8 +269,20 @@ export function pruneExpiredSessionModels(sessionsDir: string, nowSec: number, f
 
     const entries = fsSync.readdirSync(sessionsDir);
     for (const name of entries) {
-      if (!name.endsWith('.model.json')) continue;
       const filePath = path.join(sessionsDir, name);
+      if (name.endsWith('.write-guard.json')) {
+        // Write-guard streak files carry no model: expire them by their last write, with the same TTL.
+        try {
+          const st = fsSync.statSync(filePath);
+          if (st.isFile() && nowSec - st.mtimeMs / 1000 > ANTIGRAVITY_SESSION_TTL_SEC) {
+            fsSync.unlinkSync(filePath);
+          }
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      if (!name.endsWith('.model.json')) continue;
       try {
         const read = readRegularFile(filePath, 64 * 1024);
         if (read.kind === 'ok') {
@@ -359,14 +375,14 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     return null;
   };
 
-  const quotaFile = process.env.JEV_QUOTA_STATE_FILE || QUOTA_STATE_FILE;
+  const quotaFile = process.env.JEV_QUOTA_STATE_FILE || quotaStateFile();
   const v2 = tryParse(quotaFile);
   if (v2 && typeof v2 === 'object') {
     if (v2.buckets && typeof v2.buckets === 'object') {
       source = quotaFile; schema = Number(v2.schema || 2); updatedAt = v2.updated_at ?? null;
       planTier = v2.plan_tier; rawActiveModel = v2.active_model; rawBuckets = v2.buckets;
     } else if (typeof v2.remaining_fraction === 'number') {
-      source = QUOTA_STATE_FILE; schema = 1; updatedAt = v2.updated_at ?? null;
+      source = quotaFile; schema = 1; updatedAt = v2.updated_at ?? null;
       rawBuckets = { 'gemini-5h': v2 };
     }
   }
@@ -440,7 +456,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   }
 
   const isOrchestrator = isOrchestratorModel(activeModel);
-  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel) && !isOrchestrator);
+  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel));
   const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));

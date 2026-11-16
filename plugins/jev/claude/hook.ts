@@ -48,7 +48,7 @@ import {
   checkEgress,
   egressContextDirs,
   discoverWorkspaceAgents,
-  TELEMETRY_FILE,
+  jevTelemetryFile,
   PRIVATE_DIR_MODE,
   PRIVATE_FILE_MODE,
   privateDir,
@@ -1221,8 +1221,8 @@ function forgetTurn(sessionId: string | null): void {
  */
 function recentDispatch(windowMs: number): boolean {
   try {
-    if (!fs.existsSync(TELEMETRY_FILE)) return false;
-    return hasRecentDispatch(tailLines(TELEMETRY_FILE), Date.now(), windowMs);
+    if (!fs.existsSync(jevTelemetryFile())) return false;
+    return hasRecentDispatch(tailLines(jevTelemetryFile()), Date.now(), windowMs);
   } catch {
     return true;
   }

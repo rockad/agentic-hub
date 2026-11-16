@@ -7,6 +7,8 @@ import {
   parseEpoch,
   computeLastDispatchEpoch,
   isExemptPath,
+  hasConflictMarkers,
+  commitIncludesWorkingTree,
   type PreToolHookInput
 } from '../antigravity/guards.ts';
 import { clearConfigCacheForTesting } from '../src/core/config.ts';
@@ -176,7 +178,40 @@ describe('antigravity guards (guards.ts)', () => {
     return fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
   };
 
-  it('commit gate: a markdown "=======" line followed by text is not a conflict marker; a real conflict block is', async () => {
+  it('commit gate: a real Markdown setext heading ("=======" underline) is allowed', async () => {
+    const { dir, git } = makeRepo('setext-repo');
+    fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n=======\nBody text.\n\nSub\n---\nMore.\n');
+    git('add doc.md');
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m "docs"'))).decision).toBe('allow');
+    // The same text through the working-tree path is allowed too.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git add doc.md && git commit -m "docs"'))).decision).toBe('allow');
+  });
+
+  it('hasConflictMarkers: a lone separator is not enough; a block with opening or closing markers is', () => {
+    expect(hasConflictMarkers('+Heading\n+=======\n+Some text\n')).toBe(false);
+    expect(hasConflictMarkers('+<<<<<<< HEAD\n+ours\n+=======\n+theirs\n+>>>>>>> branch\n')).toBe(true);
+    expect(hasConflictMarkers('+x\n+=======\n+>>>>>>> branch\n')).toBe(true);
+    expect(hasConflictMarkers('-<<<<<<< HEAD\n+ok\n')).toBe(false);
+  });
+
+  it('commitIncludesWorkingTree: git global options with a value do not hide git add or commit -a', () => {
+    expect(commitIncludesWorkingTree('git -C repo add . && git commit -m x')).toBe(true);
+    expect(commitIncludesWorkingTree('git -c user.name=x add -A && git commit -m x')).toBe(true);
+    expect(commitIncludesWorkingTree('git -C repo commit -am x')).toBe(true);
+    expect(commitIncludesWorkingTree('git -C repo commit -m x')).toBe(false);
+  });
+
+  it('commit gate: "git -C dir add" on the same line widens the commit to the working tree', async () => {
+    const { dir, git } = makeRepo('dash-c-repo');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    git('add a.txt');
+    git('commit -m init');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n'); // NOT staged
+    const res = await evaluatePreToolGuards(commitInput(dir, `git -C ${dir} add . && git -C ${dir} commit -m "x"`));
+    expect(res.decision).toBe('deny');
+  });
+
+  it('commit gate: text that merely looks like markers is not blocked; a real conflict block is', async () => {
     const { dir, git } = makeRepo();
     fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n======= trailing text\n<<<<<<<< eight angle brackets\n=======-not-a-marker\n');
     git('add doc.md');

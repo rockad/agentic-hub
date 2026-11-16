@@ -25,6 +25,7 @@ export const QUOTA_STATE_FILE = path.join(os.homedir(), '.gemini', 'antigravity-
 export function quotaStateFile(): string {
   return path.join(jevHomeDir(), '.gemini', 'antigravity-cli', 'quota-state.json');
 }
+/** Legacy schema-1 quota fallback; `JEV_QUOTA_LEGACY_FILE` overrides it at call time so tests can isolate it. */
 export const QUOTA_LEGACY_FILE = '/tmp/antigravity-quota.json';
 
 export const DEFAULT_5H_NORMAL_MIN = 0.30;
@@ -388,9 +389,10 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   }
 
   if (schema === 0) {
-    const legacy = tryParse(QUOTA_LEGACY_FILE);
+    const legacyFile = process.env.JEV_QUOTA_LEGACY_FILE || QUOTA_LEGACY_FILE;
+    const legacy = tryParse(legacyFile);
     if (legacy && typeof legacy.remaining_fraction === 'number') {
-      source = QUOTA_LEGACY_FILE; schema = 1; updatedAt = legacy.updated_at ?? null;
+      source = legacyFile; schema = 1; updatedAt = legacy.updated_at ?? null;
       rawBuckets = { 'gemini-5h': legacy };
     }
   }

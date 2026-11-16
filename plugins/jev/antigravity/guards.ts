@@ -22,8 +22,22 @@ import {
 } from '../src/shared.js';
 import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
 
-/** Added conflict-marker lines only (a diff line starts with `+`); the `=======` separator must be the whole line. */
-export const CONFLICT_MARKER_RE = /^\+(<<<<<<< |=======$|>>>>>>> )/m;
+/** Added opening or closing conflict-marker lines only (a diff line starts with `+`). */
+export const CONFLICT_MARKER_RE = /^\+(<<<<<<< |>>>>>>> )/m;
+
+/**
+ * Whether an added-lines diff carries an unresolved merge conflict. A lone `=======` line is also a Markdown setext
+ * heading underline, so it is not a marker by itself: a conflict is reported only when the diff has an added
+ * `<<<<<<< ` or `>>>>>>> ` line (a real conflict block always has one, the separator alongside).
+ */
+export function hasConflictMarkers(diff: string): boolean {
+  return CONFLICT_MARKER_RE.test(diff);
+}
+
+/** `git` plus any global options, including options that take a value (`git -C repo add`). */
+const GIT_PREFIX = String.raw`\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*`;
+const GIT_COMMIT_RE = new RegExp(GIT_PREFIX + String.raw`commit\b`);
+const GIT_ADD_RE = new RegExp(GIT_PREFIX + String.raw`add\b`);
 
 const GIT_DIFF_TIMEOUT_MS = 3000;
 const GIT_DIFF_MAX_BUFFER = 16 * 1024 * 1024;
@@ -57,8 +71,8 @@ function appendGuardLog(entry: Record<string, unknown>): void {
  */
 export function commitIncludesWorkingTree(cmd: string): boolean {
   const unquoted = cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
-  if (/\bgit\s+(?:-\S+\s+)*add\b/.test(unquoted)) return true;
-  const m = /\bgit\s+commit\b([^;&|\n]*)/.exec(unquoted);
+  if (GIT_ADD_RE.test(unquoted)) return true;
+  const m = new RegExp(GIT_PREFIX + String.raw`commit\b([^;&|\n]*)`).exec(unquoted);
   if (!m) return false;
   const flags = m[1];
   return /(?:^|\s)--all(?=\s|=|$)/.test(flags) || /(?:^|\s)-[A-Za-z]*a[A-Za-z]*(?=\s|$)/.test(flags);
@@ -211,7 +225,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
   // 2. run_command commit gate
   if (toolName === 'run_command') {
     const cmd = String(args.CommandLine ?? args.command ?? '');
-    if (/\bgit\s+commit\b/.test(cmd)) {
+    if (GIT_COMMIT_RE.test(cmd)) {
       // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
       // so the diff is taken against HEAD instead of --cached.
       const includesWorkingTree = commitIncludesWorkingTree(cmd);
@@ -224,7 +238,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
           timeout: GIT_DIFF_TIMEOUT_MS,
           maxBuffer: GIT_DIFF_MAX_BUFFER
         });
-        if (CONFLICT_MARKER_RE.test(diff)) {
+        if (hasConflictMarkers(diff)) {
           return {
             decision: 'deny',
             reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the ${includesWorkingTree ? 'working-tree' : 'staged'} diff. Resolve conflicts before committing.`

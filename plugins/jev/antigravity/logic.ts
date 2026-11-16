@@ -516,7 +516,7 @@ export function evaluateAntigravitySubagentCall(
         // On-demand never denies after step 1: the native dialog lets the user decide.
         return {
           decision: 'ask',
-          reason: '[jev] Under Orchestrator, Model was omitted or inherit on invoke_subagent: the subagent would run on the session default. Approve to proceed, or cancel and re-invoke with Model "flash" or "flash_lite".'
+          reason: `[jev] Under Orchestrator, Model was omitted or inherit on invoke_subagent: the subagent would run on the session default (tier '${rankToTierName(modelTierRank(sessionModel ?? ''))}'), against a subagent ceiling of '${rankToTierName(subagentCeilingRank(sessionModel))}'. Approve to proceed, or cancel and re-invoke with Model "flash" or "flash_lite".`
         };
       }
       return {

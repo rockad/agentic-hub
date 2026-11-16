@@ -38,6 +38,22 @@ describe('readQuotaView source and call-time paths', () => {
     expect(view.source).toBe(file);
   });
 
+  it('JEV_QUOTA_LEGACY_FILE overrides the legacy fallback path at call time', async () => {
+    const legacy = path.join(dir, 'legacy-quota.json');
+    fs.writeFileSync(legacy, JSON.stringify({ remaining_fraction: 0.4, updated_at: Math.floor(Date.now() / 1000) }));
+    process.env.JEV_QUOTA_STATE_FILE = path.join(dir, 'missing-state.json');
+    const prev = process.env.JEV_QUOTA_LEGACY_FILE;
+    process.env.JEV_QUOTA_LEGACY_FILE = legacy;
+    try {
+      const view = await readQuotaView({ overrideSessionsDir: path.join(dir, 'sessions') });
+      expect(view.schema).toBe(1);
+      expect(view.source).toBe(legacy);
+    } finally {
+      if (prev === undefined) delete process.env.JEV_QUOTA_LEGACY_FILE;
+      else process.env.JEV_QUOTA_LEGACY_FILE = prev;
+    }
+  });
+
   it('the default quota path follows HOME at call time', () => {
     process.env.HOME = path.join(dir, 'home');
     expect(jevHomeDir()).toBe(path.join(dir, 'home'));

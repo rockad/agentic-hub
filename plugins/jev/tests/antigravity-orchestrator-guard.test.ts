@@ -451,7 +451,9 @@ describe('Item 4: invoke_subagent guard order', () => {
       const onDemand = evaluateAntigravitySubagentCall(input, { mode: 'on-demand', now: () => nowMs });
       expect(onDemand.decision).toBe('ask');
       expect(onDemand.reason).toContain('Orchestrator');
-      const on = evaluateAntigravitySubagentCall(input, { mode: 'on', now: () => nowMs });
+      expect(onDemand.reason).toContain("tier 'pro'");
+      expect(onDemand.reason).toContain("ceiling of 'flash'");
+      const on =evaluateAntigravitySubagentCall(input, { mode: 'on', now: () => nowMs });
       expect(on.decision).toBe('deny');
     }
   });

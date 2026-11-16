@@ -76,6 +76,17 @@ def test_send_message_with_the_tenant_in_the_path_and_in_the_body(env):
     assert wire.rest(env.keys.agy, "GET", "/tasks").json()["totalSize"] == 2
 
 
+def test_the_coord_timestamps_are_iso_8601_utc_with_a_z_suffix(env):
+    """A2A 1.0.1 section 5.6.1; the TCK's DM-SERIAL-003 checks `createdAt`."""
+    import re
+
+    z_form = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+    wire = env.wire()
+    task = send(wire, env.keys.agy).json()["task"]
+    for shown in (task, wire.rest(env.keys.agy, "GET", f"/tasks/{task['id']}").json()):
+        assert z_form.match(shown["metadata"]["coord"]["createdAt"]), shown["metadata"]["coord"]
+
+
 def test_a_conflicting_tenant_in_path_and_body_is_invalid_params(env):
     wire = env.wire()
     body = {"tenant": CARD_AGY, "message": text_message()}

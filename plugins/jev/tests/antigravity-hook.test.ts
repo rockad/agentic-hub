@@ -1035,6 +1035,45 @@ describe('child conversation ID and served model extraction', () => {
     expect(extractChildConversationId('')).toBeNull();
   });
 
+  it('extractChildConversationId never returns the parent id and prefers an explicit conversationId field', () => {
+    const parent = '00000000-0000-4000-8000-000000000001';
+    const child = '00000000-0000-4000-8000-000000000002';
+    // Only the parent mentioned: no child.
+    expect(extractChildConversationId(`parent ${parent}`, parent)).toBeNull();
+    expect(extractChildConversationId(`{"conversationId": "${parent}"}`, parent)).toBeNull();
+    // Parent first, child later: the child is returned.
+    expect(extractChildConversationId(`parent ${parent} spawned ${child}`, parent)).toBe(child);
+    // Explicit field wins over an earlier bare UUID.
+    expect(
+      extractChildConversationId(`ref 00000000-0000-4000-8000-000000000003 {"conversationId": "${child}"}`, parent)
+    ).toBe(child);
+    // Case-insensitive parent comparison.
+    expect(extractChildConversationId(`x ${parent.toUpperCase()}`, parent)).toBeNull();
+    // Without a parent the old behaviour holds.
+    expect(extractChildConversationId(`x ${parent}`)).toBe(parent);
+  });
+
+  it('findServedModelFromTranscript returns the model of the first row that has one, not one from the tail window', () => {
+    const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-first-'));
+    try {
+      const childId = '00000000-0000-4000-8000-000000000002';
+      const logs = path.join(testHome, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+      fs.mkdirSync(logs, { recursive: true });
+      // First model row, then more than 1 MiB of rows, then a different model at the very end.
+      const filler = JSON.stringify({ step_index: 9, type: 'TOOL', content: 'x'.repeat(900) }) + '\n';
+      fs.writeFileSync(
+        path.join(logs, 'transcript_full.jsonl'),
+        '{"step_index":0,"type":"MODEL","model":"first-model"}\n' +
+          filler.repeat(1400) +
+          '{"step_index":99,"type":"MODEL","model":"last-model"}\n'
+      );
+      expect(fs.statSync(path.join(logs, 'transcript_full.jsonl')).size).toBeGreaterThan(1024 * 1024);
+      expect(findServedModelFromTranscript(childId, testHome)).toBe('first-model');
+    } finally {
+      fs.rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
   it('findServedModelFromTranscript finds model from child brain transcript', () => {
     const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-test-'));
     try {

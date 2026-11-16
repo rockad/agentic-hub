@@ -16,7 +16,6 @@ import { taskFingerprint } from '../src/core/telemetry.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
-  extractAskAnswer,
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
@@ -158,7 +157,7 @@ async function main() {
         let markerFound = false;
         let rowFound = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
-        let outcome: 'recorded' | 'no_marker' | 'no_row' | 'rejected' | 'not_denied' | 'error' = 'error';
+        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'error' = 'error';
 
         try {
           const questions = input.toolCall?.args?.questions;
@@ -184,8 +183,9 @@ async function main() {
 
           markerFound = typeof elevateModel === 'string';
 
-          // Bounded wait (~150 ms polls, <= 2 s) for the answer row if content is not on stdin and transcriptPath + stepIdx are given
-          const rawAnswer = await pollForAskAnswer(input, markerIndex);
+          // Only an elevation question is worth waiting for: a bounded wait (~150 ms polls, <= 2 s) for the answer row
+          // when content is not on stdin and transcriptPath + stepIdx are given. Any other question returns at once.
+          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex) : null;
           rowFound = rawAnswer !== null;
 
           const parsedResult = parseElevationAnswer(rawAnswer);
@@ -195,7 +195,7 @@ async function main() {
           };
 
           if (!markerFound || !elevateModel) {
-            outcome = 'no_marker';
+            outcome = 'not_elevation';
           } else if (!rowFound) {
             outcome = 'no_row';
           } else if (!parsed.approved || !parsed.scope) {
@@ -232,7 +232,7 @@ async function main() {
         if (!contentToSearch && input.transcriptPath && typeof input.stepIdx === 'number') {
           contentToSearch = getStepContent(input) ?? '';
         }
-        const childConvId = extractChildConversationId(contentToSearch);
+        const childConvId = extractChildConversationId(contentToSearch, conversationId);
         const { requestedModel } = extractSubagentModel(input.toolCall?.args);
         let servedModel: string | null = null;
         if (childConvId) {

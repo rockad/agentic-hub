@@ -3,13 +3,9 @@
     "enabled": true,
     "PreInvocation": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun run ./antigravity/preflight.ts",
-            "timeout": 5
-          }
-        ]
+        "type": "command",
+        "command": "bun run ./antigravity/preflight.ts",
+        "timeout": 5
       }
     ],
     "PreToolUse": [

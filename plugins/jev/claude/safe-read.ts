@@ -90,3 +90,49 @@ export function readRegularFileTail(file: string, maxBytes: number): RegularTail
     }
   }
 }
+
+export type RegularHeadRead =
+  | { kind: 'ok'; text: string; size: number; truncated: boolean }
+  | { kind: 'not-regular' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Read up to `maxBytes` from the HEAD (start) of a regular file without ever blocking. Same protections as the tail
+ * reader. `truncated` is true when the file is larger than `maxBytes`, so the window ends before the end of the file
+ * and its last line may be partial.
+ */
+export function readRegularFileHead(file: string, maxBytes: number): RegularHeadRead {
+  let fd: number | null = null;
+  try {
+    if (!fs.statSync(file).isFile()) return { kind: 'not-regular' };
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return { kind: 'not-regular' };
+    if (stat.size === 0) return { kind: 'ok', text: '', size: 0, truncated: false };
+
+    const length = Math.min(stat.size, maxBytes);
+    const buf = Buffer.alloc(length);
+    let done = 0;
+    while (done < length) {
+      const n = fs.readSync(fd, buf, done, length - done, done);
+      if (n <= 0) break;
+      done += n;
+    }
+    return {
+      kind: 'ok',
+      text: buf.subarray(0, done).toString('utf8'),
+      size: done,
+      truncated: stat.size > maxBytes
+    };
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // nothing to do
+      }
+    }
+  }
+}

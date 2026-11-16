@@ -21,6 +21,21 @@ import {
   type ApprovalStore
 } from '../antigravity/approvals.ts';
 
+function healthyView(nowMs: number): QuotaView {
+  return {
+    source: 'test',
+    schema: 2,
+    stale: false,
+    updated_at: Math.floor(nowMs / 1000),
+    buckets: {},
+    gemini: { five_hour: 0.8, weekly: 0.8, min_remaining: 0.8 },
+    strategy: 'normal',
+    thresholds: { normal_min: 0.3, conserve_min: 0.1, five_hour_normal_min: 0.3, five_hour_conserve_min: 0.1, weekly_normal_min: 0.2, weekly_conserve_min: 0.1 },
+    geminiRemainingFraction: 0.8,
+    active: { pool: 'gemini', five_hour: 0.8, weekly: 0.8, min_remaining: 0.8, strategy: 'normal' }
+  };
+}
+
 describe('Item 3: Orchestrator pools and ceiling', () => {
   let tmpHome = '';
 
@@ -362,21 +377,93 @@ describe('Item 4: invoke_subagent guard order', () => {
     expect(resAsk.reason).toContain('conserve');
     expect(resAsk.reason).toContain('pro');
 
-    // Healthy quota in on-demand: passes through without elevation choice question!
-    const healthyQuotaView: QuotaView = {
-      ...conserveQuotaView,
-      gemini: { five_hour: 0.8, weekly: 0.8, min_remaining: 0.8 },
-      strategy: 'normal',
-      active: { pool: 'gemini', five_hour: 0.8, weekly: 0.8, min_remaining: 0.8, strategy: 'normal' }
-    };
-
-    const resPass = evaluateAntigravitySubagentCall(inputPro, {
+    // Healthy quota in on-demand: pro is still above the flash ceiling, so the native dialog asks (reason names the
+    // requested tier and the ceiling, not the quota). It is never the elevation choice question.
+    const resCeiling = evaluateAntigravitySubagentCall(inputPro, {
       approvals,
-      quotaView: healthyQuotaView,
+      quotaView: healthyView(nowMs),
       mode: 'on-demand',
       now: () => nowMs
     });
+    expect(resCeiling.decision).toBe('ask');
+    expect(resCeiling.reason).toContain("ceiling 'flash'");
+    expect(resCeiling.reason).not.toContain('jev-elevate');
+
+    // Healthy quota and a model within the ceiling passes.
+    const resPass = evaluateAntigravitySubagentCall(
+      { ...inputPro, toolCall: { id: 'call_f', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash' } } },
+      { approvals, quotaView: healthyView(nowMs), mode: 'on-demand', now: () => nowMs }
+    );
     expect(resPass.decision).toBe('pass');
+  });
+
+  it('on-demand above the ceiling asks (native dialog), records no approvals and counts no attempts', () => {
+    const nowMs = 1_000_000;
+    let recorded = 0;
+    let attempts = 0;
+    let denied = 0;
+    const spy: ApprovalStore = {
+      record: () => { recorded++; return true; },
+      deny: () => { denied++; },
+      claim: () => null,
+      attempt: () => { attempts++; return 1; },
+      wasDeniedRecently: () => null
+    };
+    const input: AntigravityHookInput = {
+      conversationId: 'c-ondemand-ceiling',
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { id: 'call_p', name: 'invoke_subagent', args: { TypeName: 'expert', Model: 'pro' } }
+    };
+    for (const quotaView of [undefined, healthyView(nowMs)]) {
+      const res = evaluateAntigravitySubagentCall(input, {
+        approvals: spy,
+        quotaView,
+        mode: 'on-demand',
+        now: () => nowMs
+      });
+      expect(res.decision).toBe('ask');
+      expect(res.reason).toContain("'pro'");
+      expect(res.reason).toContain("ceiling 'flash'");
+    }
+    expect(recorded).toBe(0);
+    expect(attempts).toBe(0);
+    expect(denied).toBe(0);
+
+    // At or below the ceiling still passes.
+    const atCeiling = evaluateAntigravitySubagentCall(
+      { ...input, toolCall: { id: 'c2', name: 'invoke_subagent', args: { TypeName: 'w', Model: 'flash' } } },
+      { approvals: spy, mode: 'on-demand', now: () => nowMs }
+    );
+    expect(atCeiling.decision).toBe('pass');
+  });
+
+  it('on-demand under Orchestrator with Model omitted or inherit asks (never denies); mode on still denies', () => {
+    const nowMs = 1_000_000;
+    const base = {
+      conversationId: 'c-ondemand-orch',
+      modelName: 'Orchestrator (Argon)'
+    };
+    for (const args of [{ TypeName: 'worker' }, { TypeName: 'worker', Model: 'inherit' }]) {
+      const input: AntigravityHookInput = {
+        ...base,
+        toolCall: { id: 'call_o', name: 'invoke_subagent', args }
+      };
+      const onDemand = evaluateAntigravitySubagentCall(input, { mode: 'on-demand', now: () => nowMs });
+      expect(onDemand.decision).toBe('ask');
+      expect(onDemand.reason).toContain('Orchestrator');
+      const on = evaluateAntigravitySubagentCall(input, { mode: 'on', now: () => nowMs });
+      expect(on.decision).toBe('deny');
+    }
+  });
+
+  it('on-demand never denies except for an invalid or openrouter_free model', () => {
+    const input = (model: string): AntigravityHookInput => ({
+      conversationId: 'c-ondemand-deny',
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { id: 'c', name: 'invoke_subagent', args: { TypeName: 'w', Model: model } }
+    });
+    expect(evaluateAntigravitySubagentCall(input('openrouter/free'), { mode: 'on-demand' }).decision).toBe('deny');
+    expect(evaluateAntigravitySubagentCall(input('bogus-tier'), { mode: 'on-demand' }).decision).toBe('deny');
   });
 
   it('Step 4: buildElevationReason adapts for Orchestrator', () => {

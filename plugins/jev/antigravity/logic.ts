@@ -11,7 +11,7 @@ import {
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
-import { readRegularFileTail } from '../claude/safe-read.js';
+import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -512,6 +512,13 @@ export function evaluateAntigravitySubagentCall(
 
   if (!isExplicit || !requestedModel) {
     if (isOrchestrator) {
+      if (mode === 'on-demand') {
+        // On-demand never denies after step 1: the native dialog lets the user decide.
+        return {
+          decision: 'ask',
+          reason: '[jev] Under Orchestrator, Model was omitted or inherit on invoke_subagent: the subagent would run on the session default. Approve to proceed, or cancel and re-invoke with Model "flash" or "flash_lite".'
+        };
+      }
       return {
         decision: 'deny',
         reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
@@ -561,10 +568,8 @@ export function evaluateAntigravitySubagentCall(
           reason: `[jev] ${poolLabel} quota is in ${pool.strategy}${pct}: subagent requested '${effectiveTier}'. Approve to proceed, or cancel to conserve quota.`
         };
       }
-      return { decision: 'pass' };
+      // Healthy pool: fall through to the ceiling check below (on-demand asks above the ceiling).
     }
-  } else if (mode === 'on-demand') {
-    return { decision: 'pass' };
   }
 
   // If Model is omitted/inherit and passed Step 3 quota check on non-Orchestrator:
@@ -584,6 +589,15 @@ export function evaluateAntigravitySubagentCall(
   // Requested model exceeds session ceiling: ELEVATION
   const args = input.toolCall?.args || {};
   const typeName = String(args.TypeName || args.Role || 'subagent');
+
+  // On-demand: the native dialog decides. No approvals are read or recorded and no attempt is counted.
+  if (mode === 'on-demand') {
+    return {
+      decision: 'ask',
+      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' (tier '${rankToTierName(requestedRank)}'), above the session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
+      elevation: 'asked'
+    };
+  }
 
   // Check explicit override in user prompt
   if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
@@ -676,27 +690,42 @@ export function evaluateAntigravitySubagentCall(
   };
 }
 
-export function extractChildConversationId(content?: string | null): string | null {
-  if (!content || typeof content !== 'string') return null;
+const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
-  const labelled = /(?:conversation_?id|conversation id|child_?conversation_?id|session_?id|session id)["':\s=]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(content);
-  if (labelled) {
-    return labelled[1];
+/**
+ * The child conversation id in an invoke_subagent tool result. Never returns `parentConversationId`: a result that
+ * mentions only the parent's own id yields null, so the served-model lookup can never read the parent's transcript.
+ * An id behind an explicit label (`conversationId`, `child_conversation_id`, ...) wins over a bare UUID.
+ */
+export function extractChildConversationId(content?: string | null, parentConversationId?: string | null): string | null {
+  if (!content || typeof content !== 'string') return null;
+  const parent = typeof parentConversationId === 'string' ? parentConversationId.toLowerCase() : null;
+  const isParent = (id: string) => parent !== null && id.toLowerCase() === parent;
+
+  const labelled = new RegExp(
+    `(?:conversation_?id|conversation id|child_?conversation_?id|session_?id|session id)["':\\s=]+(${UUID_SOURCE})`,
+    'gi'
+  );
+  for (const m of content.matchAll(labelled)) {
+    if (!isParent(m[1])) return m[1];
   }
 
-  const uuid = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(content);
-  if (uuid) {
-    return uuid[1];
+  for (const m of content.matchAll(new RegExp(`(${UUID_SOURCE})`, 'gi'))) {
+    if (!isParent(m[1])) return m[1];
   }
 
   return null;
 }
 
+/** Head window read for the served model: the first row that names a model is near the start of a transcript. */
+export const TRANSCRIPT_HEAD_WINDOW_BYTES = 256 * 1024;
+
+/** The model of the FIRST transcript row that carries one (bounded head read), or null. */
 export function findServedModelFromTranscript(
   childConvId: string,
   homedir = os.homedir()
 ): string | null {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(childConvId)) {
+  if (!new RegExp(`^${UUID_SOURCE}$`, 'i').test(childConvId)) {
     return null;
   }
   const brainDir = path.join(homedir, '.gemini', 'antigravity-cli', 'brain', childConvId);
@@ -708,14 +737,15 @@ export function findServedModelFromTranscript(
 
   for (const candidate of candidates) {
     try {
-      const read = readRegularFileTail(candidate, TRANSCRIPT_TAIL_WINDOW_BYTES);
+      const read = readRegularFileHead(candidate, TRANSCRIPT_HEAD_WINDOW_BYTES);
       if (read.kind !== 'ok') continue;
       let text = read.text;
       if (read.truncated) {
-        const firstNewline = text.indexOf('\n');
-        text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+        // The window ends mid-file: its last line may be partial.
+        const lastNewline = text.lastIndexOf('\n');
+        text = lastNewline === -1 ? '' : text.slice(0, lastNewline);
       }
-      for (const line of text.trim().split(/\r?\n/)) {
+      for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue;
         try {
           const step = JSON.parse(line);

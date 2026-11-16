@@ -457,7 +457,7 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(entry.outcome).toBe('not_denied');
   });
 
-  it('PostToolUse ask_question logs outcome: no_marker when questions array lacks elevation marker', () => {
+  it('PostToolUse ask_question logs outcome: not_elevation when questions array lacks elevation marker', () => {
     const payload = {
       conversationId: 'c-nomark',
       toolCall: {
@@ -474,8 +474,52 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     const entry = JSON.parse(lines[lines.length - 1]);
 
     expect(entry.event).toBe('ask_answer');
-    expect(entry.outcome).toBe('no_marker');
+    expect(entry.outcome).toBe('not_elevation');
     expect(entry.marker_found).toBe(false);
+  });
+
+  it('PostToolUse ask_question without the elevation marker does not poll for an answer (returns at once)', () => {
+    const transcriptPath = path.join(home, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, '{"step_index":0,"type":"USER_INPUT","content":"hi"}\n');
+    const payload = {
+      conversationId: 'c-nopoll',
+      transcriptPath,
+      stepIdx: 7, // no such row: a poll would wait the full 2 s
+      toolCall: { id: 'call_q', name: 'ask_question', args: { questions: [{ question: 'Which flavour?' }] } }
+    };
+    const started = Date.now();
+    const proc = run('post-tool-use', payload);
+    const elapsed = Date.now() - started;
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString().trim()).toBe('{}');
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.event).toBe('ask_answer');
+    expect(entry.outcome).toBe('not_elevation');
+    expect(entry.row_found).toBe(false);
+    // Process start-up dominates; a 2 s poll would push well past this bound.
+    expect(elapsed).toBeLessThan(1800);
+  });
+
+  it('PostToolUse invoke_subagent never takes the parent conversation id as the child id', () => {
+    const parentId = '00000000-0000-4000-8000-000000000001';
+    const parentLogs = path.join(home, '.gemini', 'antigravity-cli', 'brain', parentId, '.system_generated', 'logs');
+    fs.mkdirSync(parentLogs, { recursive: true });
+    fs.writeFileSync(path.join(parentLogs, 'transcript_full.jsonl'), '{"step_index":0,"model":"parent-model","type":"MODEL"}\n');
+    const payload = {
+      conversationId: parentId,
+      content: `Subagent finished for parent ${parentId}`,
+      toolCall: { id: 'call_s', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash' } }
+    };
+    run('post-tool-use', payload);
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+    expect(entry.event).toBe('subagent_served');
+    expect(entry.child_conversation_id).toBeNull();
+    expect(entry.served_model).toBeNull();
   });
 
   it('PostToolUse invoke_subagent logs subagent_served with child conversation ID and served model', () => {

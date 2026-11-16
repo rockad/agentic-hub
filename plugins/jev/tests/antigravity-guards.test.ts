@@ -6,6 +6,7 @@ import {
   evaluatePreToolGuards,
   parseEpoch,
   computeLastDispatchEpoch,
+  isExemptPath,
   type PreToolHookInput
 } from '../antigravity/guards.ts';
 import { clearConfigCacheForTesting } from '../src/core/config.ts';
@@ -147,6 +148,178 @@ describe('antigravity guards (guards.ts)', () => {
     const resCommit = await evaluatePreToolGuards(inputCommit);
     expect(resCommit.decision).toBe('deny');
     expect(resCommit.reason).toContain('merge conflict markers');
+  });
+
+  function makeRepo(name = 'git-repo'): { dir: string; git: (cmd: string) => string } {
+    const dir = path.join(tmpHome, name);
+    fs.mkdirSync(dir, { recursive: true });
+    const git = (cmd: string): string => {
+      const proc = Bun.spawnSync(['sh', '-c', `git ${cmd}`], { cwd: dir });
+      if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+      return proc.stdout.toString();
+    };
+    git('init');
+    git('config user.email "test@example.com"');
+    git('config user.name "Test"');
+    git('config commit.gpgsign false');
+    return { dir, git };
+  }
+
+  const commitInput = (cwd: string, CommandLine: string): PreToolHookInput => ({
+    cwd,
+    toolCall: { name: 'run_command', args: { CommandLine } }
+  });
+
+  const readDecisions = (): Array<Record<string, unknown>> => {
+    const f = path.join(jevConfigDir, 'antigravity_decisions.jsonl');
+    if (!fs.existsSync(f)) return [];
+    return fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  };
+
+  it('commit gate: a markdown "=======" line followed by text is not a conflict marker; a real conflict block is', async () => {
+    const { dir, git } = makeRepo();
+    fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n======= trailing text\n<<<<<<<< eight angle brackets\n=======-not-a-marker\n');
+    git('add doc.md');
+    const ok = await evaluatePreToolGuards(commitInput(dir, 'git commit -m "docs"'));
+    expect(ok.decision).toBe('allow');
+
+    // A removed (not added) conflict marker line does not count either.
+    git('commit -m init');
+    fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n');
+    git('add doc.md');
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m "x"'))).decision).toBe('allow');
+
+    // The full block, with the separator alone on its line, is blocked.
+    fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n');
+    git('add doc.md');
+    const bad = await evaluatePreToolGuards(commitInput(dir, 'git commit -m "x"'));
+    expect(bad.decision).toBe('deny');
+    expect(bad.reason).toContain('merge conflict markers');
+  });
+
+  it('commit gate: -a, --all and -am diff against HEAD, so unstaged conflict markers are blocked', async () => {
+    const { dir, git } = makeRepo();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    git('add a.txt');
+    git('commit -m init');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n'); // NOT staged
+
+    // Index-only commit: nothing staged, nothing to block.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m "x"'))).decision).toBe('allow');
+    // Working-tree forms: blocked.
+    for (const cmd of ['git commit -am "x"', 'git commit -a -m "x"', 'git commit --all -m "x"', 'git commit -qam "x"']) {
+      const res = await evaluatePreToolGuards(commitInput(dir, cmd));
+      expect(res.decision).toBe('deny');
+    }
+    // A same-line git add widens the commit too.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git add -A && git commit -m "x"'))).decision).toBe('deny');
+    // A message that merely contains " -a " does not.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m "document the -a flag"'))).decision).toBe('allow');
+    // --amend is not -a.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit --amend --no-edit'))).decision).toBe('allow');
+  });
+
+  it('commit gate: a git error passes through and logs commit_gate / git_error', async () => {
+    const notRepo = path.join(tmpHome, 'not-a-repo');
+    fs.mkdirSync(notRepo, { recursive: true });
+    const prevCeiling = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = tmpHome;
+    try {
+      const res = await evaluatePreToolGuards(commitInput(notRepo, 'git commit -m "x"'));
+      expect(res.decision).toBe('allow');
+    } finally {
+      if (prevCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prevCeiling;
+    }
+    const rows = readDecisions().filter((r) => r.event === 'commit_gate');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe('git_error');
+    expect(typeof rows[0].epoch).toBe('number');
+
+    // `git diff HEAD` in a repo with no commit is a git error as well (the -a path).
+    const { dir } = makeRepo('fresh-repo');
+    const res2 = await evaluatePreToolGuards(commitInput(dir, 'git commit -am "x"'));
+    expect(res2.decision).toBe('allow');
+    expect(readDecisions().filter((r) => r.event === 'commit_gate')).toHaveLength(2);
+  });
+
+  it('isExemptPath matches path segments, not substrings', () => {
+    const exempt = ['plans/', '/brain/', '.agents/memory/', '.agents/rules/'];
+    expect(isExemptPath('plans/rfc-1.md', exempt)).toBe(true);
+    expect(isExemptPath('docs/plans/rfc-1.md', exempt)).toBe(true);
+    expect(isExemptPath('/home/user/.gemini/antigravity-cli/brain/sess-1/notes.md', exempt)).toBe(true);
+    expect(isExemptPath('repo/.agents/memory/fact.md', exempt)).toBe(true);
+    expect(isExemptPath('src/xplans/a.md', exempt)).toBe(false);
+    expect(isExemptPath('src/plans-old/a.md', exempt)).toBe(false);
+    expect(isExemptPath('src/plans', exempt)).toBe(false); // a FILE named plans is not a plans/ directory
+    expect(isExemptPath('src/mybrain/a.md', exempt)).toBe(false);
+    expect(isExemptPath('x/.agents/memoryx/a.md', exempt)).toBe(false);
+    expect(isExemptPath('', exempt)).toBe(false);
+    expect(isExemptPath('docs\\plans\\a.md', exempt)).toBe(true);
+  });
+
+  it('write guard: substring look-alikes are counted, and an empty target path is never recorded', async () => {
+    const convId = 'c-seg';
+    const edit = (p: string) => ({
+      conversationId: convId,
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { name: 'edit_file', args: { Path: p } }
+    });
+    // Empty path: allowed, not recorded.
+    expect((await evaluatePreToolGuards(edit(''))).decision).toBe('allow');
+    const guardFile = path.join(sessionsDir, `${convId}.write-guard.json`);
+    expect(fs.existsSync(guardFile)).toBe(false);
+
+    // src/xplans/* is NOT exempt: it fills the 3-file streak.
+    for (const f of ['src/xplans/a.md', 'src/xplans/b.md', 'src/xplans/c.md']) {
+      expect((await evaluatePreToolGuards(edit(f))).decision).toBe('allow');
+    }
+    expect(JSON.parse(fs.readFileSync(guardFile, 'utf8')).files).toEqual(['src/xplans/a.md', 'src/xplans/b.md', 'src/xplans/c.md']);
+    expect((await evaluatePreToolGuards(edit('src/xplans/d.md'))).decision).toBe('deny');
+    // A real plans/ segment still passes.
+    expect((await evaluatePreToolGuards(edit('docs/plans/d.md'))).decision).toBe('allow');
+  });
+
+  it('write guard without a conversationId passes through, logs write_guard / no_conversation_id, and never writes default.write-guard.json', async () => {
+    const edit = (p: string) => ({
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { name: 'edit_file', args: { Path: p } }
+    });
+    // More files than the limit: still allowed, since no streak exists without a conversation.
+    for (const f of ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts']) {
+      expect((await evaluatePreToolGuards(edit(`src/${f}`))).decision).toBe('allow');
+    }
+    expect(fs.existsSync(path.join(sessionsDir, 'default.write-guard.json'))).toBe(false);
+    expect(fs.readdirSync(sessionsDir).filter((n) => n.endsWith('.write-guard.json'))).toEqual([]);
+    const rows = readDecisions().filter((r) => r.event === 'write_guard');
+    expect(rows).toHaveLength(5);
+    for (const r of rows) {
+      expect(r.outcome).toBe('no_conversation_id');
+      expect(typeof r.epoch).toBe('number');
+    }
+  });
+
+  it('writers prune *.write-guard.json older than 7200 s with the same stamp as the model files', async () => {
+    const stale = path.join(sessionsDir, 'c-stale.write-guard.json');
+    const fresh = path.join(sessionsDir, 'c-fresh.write-guard.json');
+    const staleModel = path.join(sessionsDir, 'c-stale.model.json');
+    fs.writeFileSync(stale, JSON.stringify({ last_dispatch_ts: 0, files: ['x'] }));
+    fs.writeFileSync(fresh, JSON.stringify({ last_dispatch_ts: 0, files: ['y'] }));
+    fs.writeFileSync(staleModel, JSON.stringify({ conversationId: 'c-stale', model: 'm', updated_at: 1000 }));
+    const old = new Date(Date.now() - 7300 * 1000);
+    fs.utimesSync(stale, old, old);
+
+    await evaluatePreToolGuards({
+      conversationId: 'c-pruner',
+      modelName: 'gemini-3.8-flash-low',
+      toolCall: { name: 'edit_file', args: { Path: 'src/p.ts' } }
+    });
+
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(staleModel)).toBe(false); // same mechanism: the model file is pruned in the same pass
+    expect(fs.existsSync(path.join(sessionsDir, '.prune-stamp'))).toBe(true);
+    expect(fs.existsSync(path.join(sessionsDir, 'c-pruner.write-guard.json'))).toBe(true);
   });
 
   it('multi-file write guard enforces 3-file limit on standard sessions and 6-file limit on Orchestrator', async () => {

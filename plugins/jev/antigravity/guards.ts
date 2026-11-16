@@ -4,7 +4,6 @@
  * Enforces commit quality gate and multi-file write transition gate.
  */
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as fsSync from 'node:fs';
 import { execSync } from 'node:child_process';
 import {
@@ -13,12 +12,79 @@ import {
   isOrchestratorModel,
   loadJevConfigSync,
   getAntigravitySessionsDir,
+  pruneExpiredSessionModels,
+  jevHomeDir,
+  jevTelemetryFile,
   privateFile,
   privateDir,
   PRIVATE_FILE_MODE,
   type AntigravitySessionRecord
 } from '../src/shared.js';
 import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
+
+/** Added conflict-marker lines only (a diff line starts with `+`); the `=======` separator must be the whole line. */
+export const CONFLICT_MARKER_RE = /^\+(<<<<<<< |=======$|>>>>>>> )/m;
+
+const GIT_DIFF_TIMEOUT_MS = 3000;
+const GIT_DIFF_MAX_BUFFER = 16 * 1024 * 1024;
+
+function jevConfigDir(): string {
+  return process.env.JEV_CONFIG_FILE
+    ? path.dirname(process.env.JEV_CONFIG_FILE)
+    : path.join(jevHomeDir(), '.config', 'jev');
+}
+
+/** One line in antigravity_decisions.jsonl; never throws. */
+function appendGuardLog(entry: Record<string, unknown>): void {
+  try {
+    const dir = jevConfigDir();
+    privateDir(dir);
+    const file = path.join(dir, 'antigravity_decisions.jsonl');
+    fsSync.appendFileSync(file, JSON.stringify({ ...entry, epoch: Math.floor(Date.now() / 1000) }) + '\n', {
+      mode: PRIVATE_FILE_MODE
+    });
+    privateFile(file);
+  } catch {
+    // logging is best-effort
+  }
+}
+
+/**
+ * Whether a `git commit` command line commits the working tree, not just the index: `-a`, `--all`, `-am` (any short
+ * flag cluster containing `a`), or the same command line also runs `git add`. Quoted strings are dropped first so a
+ * commit message such as "fix -a flag" is not read as a flag, and only the `git commit ...` segment (up to the next
+ * command separator) is searched for flags.
+ */
+export function commitIncludesWorkingTree(cmd: string): boolean {
+  const unquoted = cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+  if (/\bgit\s+(?:-\S+\s+)*add\b/.test(unquoted)) return true;
+  const m = /\bgit\s+commit\b([^;&|\n]*)/.exec(unquoted);
+  if (!m) return false;
+  const flags = m[1];
+  return /(?:^|\s)--all(?=\s|=|$)/.test(flags) || /(?:^|\s)-[A-Za-z]*a[A-Za-z]*(?=\s|$)/.test(flags);
+}
+
+/**
+ * Whether `targetPath` falls under an exempt path. A pattern is matched as path SEGMENTS: `plans/` exempts
+ * `plans/x.md` and `a/plans/x.md` but not `src/xplans/x.md`. A pattern with a trailing slash matches directory
+ * segments only (not the file name). Backslashes count as separators.
+ */
+export function isExemptPath(targetPath: string, exemptPaths: string[]): boolean {
+  const segs = targetPath.replace(/\\/g, '/').split('/').filter((s) => s.length > 0);
+  if (segs.length === 0) return false;
+  for (const raw of exemptPaths) {
+    if (typeof raw !== 'string') continue;
+    const pat = raw.replace(/\\/g, '/');
+    const dirOnly = pat.endsWith('/');
+    const want = pat.split('/').filter((s) => s.length > 0);
+    if (want.length === 0) continue;
+    const hay = dirOnly ? segs.slice(0, -1) : segs;
+    for (let i = 0; i + want.length <= hay.length; i++) {
+      if (want.every((w, j) => hay[i + j] === w)) return true;
+    }
+  }
+  return false;
+}
 
 export interface PreToolHookInput {
   conversationId?: string;
@@ -146,17 +212,27 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
   if (toolName === 'run_command') {
     const cmd = String(args.CommandLine ?? args.command ?? '');
     if (/\bgit\s+commit\b/.test(cmd)) {
+      // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
+      // so the diff is taken against HEAD instead of --cached.
+      const includesWorkingTree = commitIncludesWorkingTree(cmd);
       try {
         const cwd = input.cwd || process.cwd();
-        const diff = execSync('git diff --cached', { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-        if (/^\+?(<<<<<<<|=======|>>>>>>>)/m.test(diff)) {
+        const diff = execSync(includesWorkingTree ? 'git diff HEAD' : 'git diff --cached', {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: GIT_DIFF_TIMEOUT_MS,
+          maxBuffer: GIT_DIFF_MAX_BUFFER
+        });
+        if (CONFLICT_MARKER_RE.test(diff)) {
           return {
             decision: 'deny',
-            reason: '[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in staged diff. Resolve conflicts before committing.'
+            reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the ${includesWorkingTree ? 'working-tree' : 'staged'} diff. Resolve conflicts before committing.`
           };
         }
       } catch {
-        // fail-open on git diff error
+        // Fail open on any git error (no repository, no HEAD yet, timeout, oversized diff), and leave a trace.
+        appendGuardLog({ event: 'commit_gate', outcome: 'git_error' });
       }
     }
     return { decision: 'allow' };
@@ -171,19 +247,29 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
     const cfg = loadJevConfigSync();
     const writeGuardCfg = cfg.harnesses?.antigravity?.writeGuard;
     const exemptPaths = writeGuardCfg?.exemptPaths || ['plans/', '/brain/', '.agents/memory/', '.agents/rules/'];
-    if (exemptPaths.some((p) => targetPath.includes(p))) {
+    if (isExemptPath(targetPath, exemptPaths)) {
+      return { decision: 'allow' };
+    }
+
+    // No target path: nothing to count (an empty string is never recorded as a file).
+    if (targetPath.trim().length === 0) {
       return { decision: 'allow' };
     }
 
     const rawConvId = input.conversationId || input.sessionId || '';
     const convId = safeSessionId(rawConvId) || '';
 
-    const nowSec = Math.floor(Date.now() / 1000);
-    const jevDir = process.env.JEV_CONFIG_FILE
-      ? path.dirname(process.env.JEV_CONFIG_FILE)
-      : path.join(os.homedir(), '.config', 'jev');
+    // No conversation id: there is no per-session streak to keep (a shared `default` file would mix sessions), so
+    // pass through and leave one trace line.
+    if (!convId) {
+      appendGuardLog({ event: 'write_guard', outcome: 'no_conversation_id' });
+      return { decision: 'allow' };
+    }
 
-    const telemetryFile = process.env.JEV_TELEMETRY_FILE || path.join(os.homedir(), '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const jevDir = jevConfigDir();
+
+    const telemetryFile = jevTelemetryFile();
     const decisionsFile = path.join(jevDir, 'antigravity_decisions.jsonl');
 
     const lastDispatchEpoch = computeLastDispatchEpoch(convId, telemetryFile, decisionsFile);
@@ -196,7 +282,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
     // Detect Orchestrator
     const sessionsDir = getAntigravitySessionsDir();
     let isOrchestrator = isOrchestratorModel(input.modelName);
-    if (!isOrchestrator && convId) {
+    if (!isOrchestrator) {
       const sessionFile = path.join(sessionsDir, `${convId}.model.json`);
       try {
         const read = readRegularFile(sessionFile, 64 * 1024);
@@ -229,7 +315,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
     const limit = isOrchestrator ? maxFilesOrchestrator : maxFiles;
 
     // Track files in session write guard file
-    const guardFile = path.join(sessionsDir, `${convId || 'default'}.write-guard.json`);
+    const guardFile = path.join(sessionsDir, `${convId}.write-guard.json`);
     let guardData: { last_dispatch_ts: number; files: string[] } = {
       last_dispatch_ts: 0,
       files: []
@@ -277,6 +363,8 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
     guardData.files.push(targetPath);
     try {
       privateDir(sessionsDir);
+      // Same throttled prune (and stamp) as the *.model.json files: stale streak files do not pile up.
+      pruneExpiredSessionModels(sessionsDir, nowSec);
       const tmpFile = `${guardFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
       fsSync.writeFileSync(tmpFile, JSON.stringify(guardData, null, 2) + '\n', { mode: PRIVATE_FILE_MODE });
       privateFile(tmpFile);

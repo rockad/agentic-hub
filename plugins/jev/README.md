@@ -21,7 +21,7 @@ Jev acts as three things in a single layer:
 2. **Free-Tier Offloading Engine:** Diverts boilerplate work (summaries, linting, formatting, commits) to free-tier models (`openrouter/free`), resulting in **$0.00 cost** and **0 quota consumption** for routine operations.
 3. **Quality Gate Validator:** Runs sub-second micro-evaluations (`jev_judge`) to verify output quality before it reaches the user or is committed to source control.
 
-**Primary Value Proposition:** It protects your paid subscription quota (specifically **Google AI Pro Gemini**), preventing wasted credits on routine tasks while accelerating agent loops through parallelized, cheaper execution.
+**Primary Value Proposition:** It protects your paid subscription quota (specifically your **Google AI subscription** Gemini quota), preventing wasted credits on routine tasks while accelerating agent loops through parallelized, cheaper execution.
 
 ---
 

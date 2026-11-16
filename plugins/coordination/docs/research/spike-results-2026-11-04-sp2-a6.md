@@ -111,9 +111,9 @@
         "handle": "spike-test-handle"
       },
       "_meta": {
-        "antigravity.google/conversation_id": "1fbc4b34-23f6-471b-bbec-07b8943a39a6",
-        "antigravity.google/root_conversation_id": "1fbc4b34-23f6-471b-bbec-07b8943a39a6",
-        "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/1fbc4b34-23f6-471b-bbec-07b8943a39a6",
+        "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a3",
+        "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a3",
+        "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a3",
         "progressToken": "dea9f3e3-cfe3-4e03-b076-19693ba64887:6"
       }
     }
@@ -175,14 +175,14 @@
 ### 5.2 Live `conversation_id` in `_meta` Verification (Q5)
 
 - **Presence on Every `tools/call`**: **[VERIFIED - OBSERVED ON WIRE]**
-  - Executed three successive `tools/call` invocations from the active session (`8343b610-a41a-4ee9-a2e5-0f1dde92f456`):
+  - Executed three successive `tools/call` invocations from the active session (`00000000-0000-4000-8000-0000000000a5`):
     - **Call 1 (`handle="test-current-session"`)**:
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1713"
         },
         "name": "a2a_hello",
@@ -193,9 +193,9 @@
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1719"
         },
         "name": "a2a_hello",
@@ -206,9 +206,9 @@
       ```json
       "params": {
         "_meta": {
-          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
-          "antigravity.google/root_conversation_id": "8343b610-a41a-4ee9-a2e5-0f1dde92f456",
+          "antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a5",
+          "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a5",
           "progressToken": "1d2e4742-40a1-41a7-af70-d231367eb76b:1722"
         },
         "name": "a2a_hello",
@@ -224,13 +224,13 @@
   - Wire comparison between two independent sessions communicating with the same stub:
     - **Session A (Main Interactive Conversation)**:
       - `Mcp-Session-Id`: `stub-session-12345`
-      - `conversation_id`: `8343b610-a41a-4ee9-a2e5-0f1dde92f456`
+      - `conversation_id`: `00000000-0000-4000-8000-0000000000a5`
     - **Session B (Parallel Background Invocation)**:
       - `Mcp-Session-Id`: `5f12d118-c70f-495b-a1ab-9a2b81c03e9b`
       - `conversation_id`: `5f12d118-c70f-495b-a1ab-9a2b81c03e9b`
   - **Result**: Each distinct conversation transmits its own unique `conversation_id` in `_meta`.
 - **Conversation Resume Stability**: **[VERIFIED - OBSERVED IN SESSION]**
-  - Session identity was maintained continuously as `8343b610-a41a-4ee9-a2e5-0f1dde92f456` across all turns, prompt continuations, and daemon restart events.
+  - Session identity was maintained continuously as `00000000-0000-4000-8000-0000000000a5` across all turns, prompt continuations, and daemon restart events.
 
 ---
 

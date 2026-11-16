@@ -133,7 +133,7 @@ In the shadow run, both candidate plugins shared the directory name `coordinatio
 - **Keyring Token Expiry:**
   - In each run, `cli.log` recorded `keyringAuth: loaded token, expiry=...` with an expiration timestamp approximately one hour ahead of launch time (verified).
 - **Dependency on Live Sign-in:**
-  - **Unverified**. All successful tool calls occurred while authenticated via keyring OAuth (`samrockad@gmail.com`). Whether unauthenticated or offline sessions can execute local/loopback MCP tools was not tested in this run.
+  - **Unverified**. All successful tool calls occurred while authenticated via keyring OAuth (a personal Google account). Whether unauthenticated or offline sessions can execute local/loopback MCP tools was not tested in this run.
 
 ---
 

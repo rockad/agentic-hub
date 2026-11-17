@@ -355,7 +355,8 @@ export function pullElevationAnswerFromTranscript(
       markerIndex: number;
     };
 
-    let latestMatch: AskMatch | null = null;
+    let latestToolMatch: AskMatch | null = null;
+    let latestProseMatch: AskMatch | null = null;
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -373,7 +374,8 @@ export function pullElevationAnswerFromTranscript(
         }
       }
 
-      let matched = false;
+      let matchedTool = false;
+      let matchedProse = false;
       let toolCallId: string | undefined;
       let markerIndex = 0;
 
@@ -399,13 +401,13 @@ export function pullElevationAnswerFromTranscript(
                         ? (q as Record<string, unknown>).question
                         : '';
                   if (typeof qText === 'string' && qText.toLowerCase().includes(marker)) {
-                    matched = true;
+                    matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
                   }
                 });
               } else if (typeof questions === 'string' && questions.toLowerCase().includes(marker)) {
-                matched = true;
+                matchedTool = true;
                 markerIndex = 0;
                 if (typeof rec.id === 'string') toolCallId = rec.id;
               }
@@ -417,20 +419,26 @@ export function pullElevationAnswerFromTranscript(
       const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
       const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
       if (
-        !matched &&
+        !matchedTool &&
         (stepType === 'PLANNER_RESPONSE' || stepType === '') &&
         !hasToolCalls &&
         typeof step.content === 'string' &&
         step.content.toLowerCase().includes(marker)
       ) {
-        matched = true;
+        matchedProse = true;
         markerIndex = 0;
         if (typeof step.toolCallId === 'string') toolCallId = step.toolCallId;
         else if (typeof step.tool_call_id === 'string') toolCallId = step.tool_call_id;
       }
 
-      if (matched) {
-        latestMatch = {
+      if (matchedTool) {
+        latestToolMatch = {
+          stepIndexInArray: i,
+          toolCallId,
+          markerIndex
+        };
+      } else if (matchedProse) {
+        latestProseMatch = {
           stepIndexInArray: i,
           toolCallId,
           markerIndex
@@ -438,6 +446,7 @@ export function pullElevationAnswerFromTranscript(
       }
     }
 
+    const latestMatch = latestToolMatch ?? latestProseMatch;
     if (!latestMatch) return null;
 
     let genericStep: Record<string, unknown> | null = null;

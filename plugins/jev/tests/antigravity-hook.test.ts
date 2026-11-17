@@ -1035,7 +1035,8 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
       '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n' +
       '{"step_index":3,"type":"EPHEMERAL_MESSAGE","content":"[JEV MODE: ON]"}\n' +
       '{"step_index":4,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"tail log"}}]}\n' +
-      '{"step_index":5,"type":"GENERIC","content":"{\\"reason\\":\\"[jev] Ask with [jev-elevate:pro]\\"}"}\n';
+      '{"step_index":5,"type":"GENERIC","content":"{\\"reason\\":\\"[jev] Ask with [jev-elevate:pro]\\"}"}\n' +
+      '{"step_index":6,"type":"PLANNER_RESPONSE","content":"Explaining [jev-elevate:pro] in prose"}\n';
     fs.writeFileSync(transcriptFile, content);
 
     const decision = evaluateAntigravitySubagentCall(

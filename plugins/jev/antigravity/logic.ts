@@ -414,7 +414,15 @@ export function pullElevationAnswerFromTranscript(
         }
       }
 
-      if (!matched && typeof step.content === 'string' && step.content.toLowerCase().includes(marker)) {
+      const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
+      const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+      if (
+        !matched &&
+        (stepType === 'PLANNER_RESPONSE' || stepType === '') &&
+        !hasToolCalls &&
+        typeof step.content === 'string' &&
+        step.content.toLowerCase().includes(marker)
+      ) {
         matched = true;
         markerIndex = 0;
         if (typeof step.toolCallId === 'string') toolCallId = step.toolCallId;

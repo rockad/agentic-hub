@@ -1024,6 +1024,38 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
     expect(decision.elevation).toBe('approved');
     expect(decision.approvalScope).toBe('once');
   });
+
+  it('ignores intervening GENERIC tool output or deny messages containing [jev-elevate:pro]', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const nowMs = 1_000_000;
+    approvals.deny('s-pull-generic', 'pro', nowMs - 5000);
+
+    const content =
+      '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"[jev-elevate:pro] Allow subagent?"}]}}]}\n' +
+      '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n' +
+      '{"step_index":3,"type":"EPHEMERAL_MESSAGE","content":"[JEV MODE: ON]"}\n' +
+      '{"step_index":4,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"tail log"}}]}\n' +
+      '{"step_index":5,"type":"GENERIC","content":"{\\"reason\\":\\"[jev] Ask with [jev-elevate:pro]\\"}"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    const decision = evaluateAntigravitySubagentCall(
+      {
+        conversationId: 's-pull-generic',
+        transcriptPath: transcriptFile,
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'call_sub', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'pro' } }
+      },
+      {
+        approvals,
+        sessionModelOverride: 'gemini-3.8-flash-low',
+        now: () => nowMs
+      }
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(decision.elevation).toBe('approved');
+    expect(decision.approvalScope).toBe('once');
+  });
 });
 
 describe('child conversation ID and served model extraction', () => {

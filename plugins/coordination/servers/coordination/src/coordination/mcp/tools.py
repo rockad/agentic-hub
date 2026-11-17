@@ -46,13 +46,13 @@ from coordination.mcp.frame import (
     render_text,
     task_to_dict,
 )
+from coordination.identity import IdentityError, IdentityService
+from coordination.identity.handles import AGY_PARENT_KEY
 from coordination.mcp.sessions import (
     AGY_CONVERSATION_KEY,
     AGY_ROOT_KEY,
-    HandleCollision,
     McpSession,
     SessionRegistry,
-    build_handle,
     is_agy_card,
     valid_session_id,
 )
@@ -321,15 +321,24 @@ class McpTools:
         *,
         audit: AuditLog | None = None,
         listeners: ListenerView | None = None,
+        identity: IdentityService | None = None,
         sleep: Sleep = asyncio.sleep,
         poll_s: float = WAIT_POLL_S,
     ) -> None:
         self._config = config
         self._service = service
-        self._registry = registry
         self._clock = clock
         self._audit = audit
         self._listeners: ListenerView = listeners if listeners is not None else NoListeners()
+        # Registration and the agy conversation binding are S1-ID's (`coordination.identity`); the
+        # tools call into it so the HTTP routes and the tools cannot drift. `registry` is the same
+        # `SessionRegistry` S1-MCP built, extended by S1-ID.
+        self._identity = (
+            identity
+            if identity is not None
+            else IdentityService(registry, clock, audit=audit, listeners=listeners, pending=service.pending_count)
+        )
+        self._registry = self._identity.registry
         self._sleep = sleep
         self._poll_s = poll_s
         self._specs = {s.name: s for s in catalogue(config.max_wait_s) if config.allow_writes or not s.write}
@@ -344,6 +353,11 @@ class McpTools:
             "a2a_respond": self._respond,
             "a2a_cancel": self._cancel,
         }
+
+    @property
+    def identity(self) -> IdentityService:
+        """The `IdentityService` the tools register and bind through (shared with `/sessions`)."""
+        return self._identity
 
     def listing(self) -> list[dict[str, Any]]:
         """`tools/list`: six tools, or nine with writes on."""
@@ -373,6 +387,8 @@ class McpTools:
             return fail(exc.code, exc.message)
         except ServiceError as exc:
             return fail(exc.code, str(exc) or exc.code)
+        except IdentityError as exc:  # `session_ended`, `handle_collision`: constant codes and messages
+            return fail(exc.code, exc.message)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - nothing from a failure goes back to the caller
@@ -409,51 +425,33 @@ class McpTools:
             raise ToolError("session_ended", "That session has ended.")
         return session.handle
 
-    def _conversation(self, ctx: CallContext) -> tuple[str | None, str | None]:
-        """(conversation id, root conversation id) of an agy call. Only ever read for a
-        `local-harness` key of an `antigravity@` card, which `_caller` has checked; any other card
-        gets (None, None) whatever `_meta` says."""
+    def _conversation(self, ctx: CallContext) -> tuple[str | None, str | None, str | None]:
+        """(conversation id, root conversation id, parent conversation id) of an agy call. Only ever
+        read for a `local-harness` key of an `antigravity@` card, which `_caller` has checked; any
+        other scope or card gets all None whatever `_meta` says. Each id is shape-checked here and
+        used only within the key's own card (`IdentityService` scopes every lookup to it)."""
         if not is_agy_card(ctx.principal.card_id) or ctx.principal.scope != LOCAL_HARNESS:
-            return None, None
-        return valid_session_id(ctx.meta.get(AGY_CONVERSATION_KEY)), valid_session_id(ctx.meta.get(AGY_ROOT_KEY))
+            return None, None, None
+        return (
+            valid_session_id(ctx.meta.get(AGY_CONVERSATION_KEY)),
+            valid_session_id(ctx.meta.get(AGY_ROOT_KEY)),
+            valid_session_id(ctx.meta.get(AGY_PARENT_KEY)),
+        )
 
-    async def _agy_handle(self, card_id: str, key_id: str, conv: str, root: str | None) -> str:
-        """The handle of an agy conversation (spec 5.4.1). Known conversation: its handle. A
-        sub-invocation (root differs) groups under the root's handle; an unseen conversation
-        registers on this first call (D30). `<sid8>~<sid8>` because the service's handle grammar
-        needs the suffix and the unnamed form is open in the spec (3.5, [design])."""
-        session = await self._registry.by_harness_session(card_id, conv)
-        if session is None:
-            top = root if root is not None and root != conv else conv
-            if top != conv:
-                session = await self._registry.by_harness_session(card_id, top)
-            if session is None:
-                session = await self._register(card_id, key_id, top, "")
-        if session.ended:
-            raise ToolError("session_ended", "That session has ended.")
-        return session.handle
-
-    async def _register(self, card_id: str, key_id: str, harness_session_id: str, name_hint: str):
-        handle = build_handle(card_id, name_hint, harness_session_id)
-        try:
-            session, created = await self._registry.register(card_id, harness_session_id, handle)
-        except HandleCollision:
-            raise ToolError("handle_collision", "Another session already holds that handle.") from None
-        if created and self._audit is not None:
-            try:
-                await self._audit.registration(actor=key_id, handle=session.handle, card_id=card_id)
-            except Exception as exc:  # noqa: BLE001 - the registration stands; only its log line failed
-                log.warning("registration audit failed", extra={"fields": {"error": type(exc).__name__}})
-        return session
+    async def _agy_handle(self, card_id: str, key_id: str, conv: str, root: str | None, parent: str | None) -> str:
+        """The handle of an agy conversation (spec 5.4.1), through `IdentityService`: a known
+        conversation, a sub-invocation grouped under its root (with its parent recorded), or an
+        unseen conversation registered on this first call (D30)."""
+        return (await self._identity.resolve_conversation(card_id, key_id, conv, root, parent)).handle
 
     async def _handle(self, ctx: CallContext, args: Mapping[str, Any]) -> str:
         """The calling session's handle, or the constant not-bound error."""
         card = ctx.principal.card_id
         self._caller(ctx, None)  # scope and card check
         assert card is not None
-        conv, root = self._conversation(ctx)
+        conv, root, parent = self._conversation(ctx)
         if conv is not None:
-            handle = await self._agy_handle(card, ctx.principal.key_id, conv, root)
+            handle = await self._agy_handle(card, ctx.principal.key_id, conv, root, parent)
         elif ctx.session.handle is not None and not is_agy_card(card):
             handle = await self._checked_handle(card, ctx.session.handle)
         elif "handle" in args:
@@ -473,7 +471,7 @@ class McpTools:
         card = ctx.principal.card_id
         assert card is not None
         key_id = ctx.principal.key_id
-        conv, root = self._conversation(ctx)
+        conv, root, parent = self._conversation(ctx)
         if is_agy_card(card):
             # agy binds by conversation id on every call; hello only confirms (spec 5.4.1). The
             # `handle` and `name` the model passes are not used for agy identity.
@@ -482,17 +480,15 @@ class McpTools:
                     "no_conversation_id",
                     "This client binds by conversation id and this call carried none.",
                 )
-            handle = await self._agy_handle(card, key_id, conv, root)
+            handle = await self._agy_handle(card, key_id, conv, root, parent)
         elif "handle" in args:
             handle = await self._checked_handle(card, args["handle"])
             ctx.session.handle = handle
         else:
             # `name` mode: register a session whose id is this Mcp-Session-Id (spec 4.2), so the
             # sid8 of the handle comes from it; the handle is built by the server.
-            session = await self._register(card, key_id, ctx.session.session_id, args["name"])
-            if session.ended:
-                raise ToolError("session_ended", "That session has ended.")
-            handle = session.handle
+            registration = await self._identity.register(card, key_id, ctx.session.session_id, args["name"])
+            handle = registration.session.handle
             ctx.session.handle = handle
         await self._registry.touch(handle)
         pending, held = await self._counts(handle, card)

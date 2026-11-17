@@ -606,6 +606,8 @@ Rules [design]:
 
 Errors: `400` invalid body, `401`, `403`, `429`.
 
+- As built (S1-ID, 2026-11-18): the three routes, the registry, aliases and liveness are in `coordination/identity/`; see [identity.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/identity.md). Additions to this section, all [design]: errors carry an extra `code` member and `404 unknown_handle`, `409 handle_collision` and `409 session_ended` join the list; `GET /sessions` also returns `aliases` and takes `handle`, `card`, `include_ended` and `limit`; bodies are strict (an unknown field is `400`); `harness_version` is accepted and not stored. Built defaults for the two open questions: the unnamed session is `<card>/<sid8>~<sid8>` (reading B), and an ended session does not revive on a resumed registration (`409 session_ended`; one constant, `REVIVE_ENDED_SESSIONS`, flips it). The parked-listener `410` on end is a hook S1-WAKE registers (`app.state.identity.end_hooks`), tested here with a stub.
+
 ### 3.6 `POST /status` [D13]
 
 Specified now, built after S1 in the cognitive-engine adapter package, off by default (`A2A_STATUS_ENABLED=0`), enabled on the user's go.
@@ -947,6 +949,7 @@ Rule for agy sessions (unconditional; the identity checks passed):
 - `a2a_hello` for agy still exists, but it is a confirmation step (it returns the handle and the inbox count), not the binding.
 - **Never trust `conversation_id`, `root_conversation_id` or `parent_conversation_id` from an API key that is not `local-harness`.** The values are client-supplied. The server reads them only on requests that passed the `local-harness` scope check (and, at S2 and S3, the tailnet identity check), and only accepts ids that belong to the calling API key's card. A `remote-peer` or `status-client` request never has its `_meta` interpreted. Like all binding, this is an assertion by an API key holder, not authentication of a session (spikes.md SP2 Record).
 - The explicit `as_handle` argument on write tools is not needed for agy. It stays in the design as the fallback for clients that give no conversation id (3.4), if it exists there for other reasons.
+- As built (S1-ID, 2026-11-18): `parent_conversation_id` is recorded in the new table `session_conversations` (migration m0003) with the root id, one row per grouped sub-invocation, first sight wins; a later `SessionStart` name is stored in `session_aliases`. The agy `_meta` keys are read in one function (`McpTools._conversation`) and a static test pins that no other module mentions them. See [identity.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/identity.md) section 4.
 
 Claude Code is unchanged: the `a2a_hello(handle)` and `Mcp-Session-Id` path stays; the SP2 Claude half (C1 to C9) passed with the changes recorded in 3.4, 3.5, 4.5 and 7.1.
 

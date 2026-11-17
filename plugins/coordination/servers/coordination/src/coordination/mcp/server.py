@@ -40,6 +40,7 @@ from starlette.types import Receive, Scope, Send
 import coordination
 from coordination.auth.middleware import principal_from_scope
 from coordination.auth.records import LOCAL_HARNESS
+from coordination.identity import IdentityService
 from coordination.mcp.sessions import McpSession, McpSessions
 from coordination.mcp.tools import CallContext, McpTools
 
@@ -115,6 +116,11 @@ class McpEndpoint:
     def sessions(self) -> McpSessions:
         """The `Mcp-Session-Id` map, for the code that revokes keys (`drop_key`) and for tests."""
         return self._sessions
+
+    @property
+    def identity(self) -> IdentityService:
+        """The identity service the tools use; `/sessions` is built over the same one (S1-ID)."""
+        return self._tools.identity
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":

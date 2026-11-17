@@ -102,6 +102,37 @@ sessions = sa.Table(
     sa.UniqueConstraint("card_id", "harness_session_id", name="uq_sessions_card_hsid"),
 )
 
+#: A name a later `SessionStart` supplied for a session that already had a handle (spec 5.4.1, D30;
+#: S1-ID). The handle never changes; the alias is a second name for it. At most 8 per handle (the
+#: registry enforces it). Not a routing key: several sessions may carry the same alias.
+session_aliases = sa.Table(
+    "session_aliases",
+    metadata,
+    sa.Column("handle", sa.String(128), nullable=False),
+    sa.Column("alias", sa.String(48), nullable=False),
+    sa.Column("card_id", sa.String(80), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint("handle", "alias", name="pk_session_aliases"),
+)
+sa.Index("ix_session_aliases_card_alias", session_aliases.c.card_id, session_aliases.c.alias)
+
+#: An agy sub-invocation conversation (a subagent or a background invocation) grouped under its
+#: root's handle, with the root and parent ids the client reported, for provenance (spec 5.4.1;
+#: S1-ID). The ids are client-supplied assertions of a `local-harness` key holder and are matched
+#: only within the key's own card.
+session_conversations = sa.Table(
+    "session_conversations",
+    metadata,
+    sa.Column("card_id", sa.String(80), nullable=False),
+    sa.Column("conversation_id", sa.String(128), nullable=False),
+    sa.Column("handle", sa.String(128), nullable=False),
+    sa.Column("root_conversation_id", sa.String(128), nullable=True),
+    sa.Column("parent_conversation_id", sa.String(128), nullable=True),
+    sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint("card_id", "conversation_id", name="pk_session_conversations"),
+)
+sa.Index("ix_session_conversations_handle", session_conversations.c.handle)
+
 #: Wake budget and wake confirmation (spec 7.3, 7.5). Carries counts, never task content.
 wakes = sa.Table(
     "wakes",

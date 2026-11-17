@@ -94,7 +94,7 @@ class McpEnv:
 
         mcp = build_endpoint(
             self.config, self.service, self.engine, self.clock, audit=self.audit_log, sleep=sleep,
-            poll_s=kwargs.pop("poll_s", 1.0),
+            poll_s=kwargs.pop("poll_s", 1.0), listeners=kwargs.pop("listeners", None),
         )
         return create_app(
             self.config,
@@ -102,6 +102,7 @@ class McpEnv:
             audit=self.audit_log,
             key_store=SqlApiKeyStore(self.engine),
             mcp=mcp,
+            identity=mcp.identity,  # S1-ID: `/sessions` over the same service the tools use
             **kwargs,
         )
 

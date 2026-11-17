@@ -114,9 +114,22 @@ class AuditLog:
         self, *, actor: str, task_id: str, from_state: str | None, to_state: str
     ) -> AuditRow:
         """The one row for one transition. `actor` is who caused it; it is required."""
+        row = self.state_transition_row(
+            actor=actor, task_id=task_id, from_state=from_state, to_state=to_state
+        )
+        await self._store.append_audit(row)
+        return row
+
+    # Row builders. They validate and stamp a row but write nothing, so the state machine can hand
+    # the rows to `CoordTaskStore`, which writes them in the same transaction as the task (Z6).
+
+    def state_transition_row(
+        self, *, actor: str, task_id: str, from_state: str | None, to_state: str
+    ) -> AuditRow:
         if to_state not in TASK_STATES or (from_state is not None and from_state not in TASK_STATES):
             raise ValueError(f"unknown task state in transition {from_state!r} -> {to_state!r}")
-        return await self._write(
+        return make_row(
+            self._clock.now(),
             AuditEvent.STATE_TRANSITION,
             actor,
             task_id,
@@ -124,6 +137,15 @@ class AuditLog:
             from_state=from_state,
             to_state=to_state,
         )
+
+    def hold_entered_row(self, *, actor: str, task_id: str, origin: str) -> AuditRow:
+        return make_row(self._clock.now(), AuditEvent.HOLD_ENTERED, actor, task_id, origin=origin)
+
+    def hold_released_row(self, *, actor: str, task_id: str) -> AuditRow:
+        return make_row(self._clock.now(), AuditEvent.HOLD_RELEASED, actor, task_id)
+
+    def hold_denied_row(self, *, actor: str, task_id: str) -> AuditRow:
+        return make_row(self._clock.now(), AuditEvent.HOLD_DENIED, actor, task_id)
 
     async def handle_probe_limited(
         self, *, actor: str, key_id: str, window_count: int

@@ -295,15 +295,15 @@ def test_contention_beyond_the_attempt_limit_is_reported_not_swallowed(config):
                 interfered.append(1)
 
             interfered: list[int] = []
-            original = tight._versioned.save
+            original = tight._write_transition  # the one transaction of a transition
 
-            async def interfering_save(task, **kw):
+            async def interfering_write(*args, **kw):
                 if not interfered:
                     interfered.append(1)
                     await store.transition("hot", allowed_from={S.TASK_STATE_SUBMITTED}, mutate=set_state(S.TASK_STATE_WORKING))
-                return await original(task, **kw)
+                return await original(*args, **kw)
 
-            tight._versioned.save = interfering_save
+            tight._write_transition = interfering_write
             with pytest.raises(TransitionContention):
                 await tight.transition("hot", allowed_from={S.TASK_STATE_SUBMITTED, S.TASK_STATE_WORKING}, mutate=set_state(S.TASK_STATE_INPUT_REQUIRED))
             return (await store.get("hot")).task.status.state

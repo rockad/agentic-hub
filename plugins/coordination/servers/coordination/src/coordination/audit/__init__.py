@@ -15,7 +15,8 @@ from coordination.audit.log import (
     AuditLog,
 )
 from coordination.audit.memory import InMemoryAuditStore
-from coordination.audit.protocol import AuditStore
+from coordination.audit.protocol import AuditStore, TransactionalAuditStore
+from coordination.audit.sql import SqlAuditStore, insert_audit
 
 __all__ = [
     "DEFAULT_AUTH_FAILURE_WINDOW_S",
@@ -28,6 +29,9 @@ __all__ = [
     "AuditRow",
     "AuditStore",
     "InMemoryAuditStore",
+    "SqlAuditStore",
+    "TransactionalAuditStore",
+    "insert_audit",
     "make_row",
     "validate",
 ]

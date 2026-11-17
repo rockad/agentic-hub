@@ -31,7 +31,10 @@ import yaml
 
 from coordination.config import Config
 
-PLUGIN_DIR = Path(__file__).resolve().parents[3]
+# Inside the image build stage the tests live at /src/tests, which has no plugin root above it;
+# start_postgres() skips there (no docker) before it reads the compose file.
+_PARENTS = Path(__file__).resolve().parents
+PLUGIN_DIR = _PARENTS[3] if len(_PARENTS) > 3 else Path("/nonexistent")
 COMPOSE_FILE = PLUGIN_DIR / "docker-compose.yml"
 PG_USER = "coordination"  # the role compose's POSTGRES_USER creates; a superuser in the container
 

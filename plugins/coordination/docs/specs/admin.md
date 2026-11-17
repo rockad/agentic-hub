@@ -142,10 +142,18 @@ Run from the host that runs the stack, with the stack up. Use a throwaway `--age
 3. Make a held task: create a `remote-peer` key (`--scope remote-peer --agent <label> --cards <card> --expires 30d`), then send that peer's `SendMessage` to the card (key from a file with `curl -K -`).
 4. `docker compose exec -it coordination a2a-coord review` lists it with no body; `review show <task-id>` shows the body under the untrusted-data header.
 5. `review release <task-id>` and type something else: nothing happens. Type `release <last 6 characters>`: the task goes to `SUBMITTED` (`status` shows it under pending, `held` goes down). Try `deny` on a second held task with its own phrase.
-6. Whether `/dev/tty` opens inside `docker compose exec -it` is **[unverified]**: if step 5 says "no controlling terminal", report it; the typed-confirmation design needs it.
+6. Whether `/dev/tty` opens inside `docker compose exec -it`: **verified 2026-11-17**. The prompt appears there and the typed phrase is read.
 7. `key rotate <key-id>` prints a new secret once; both keys work until the grace ends. `key revoke <key-id>`: the next call with that key is `401`, and an open `/mcp` session of that key is gone.
 8. `docker compose exec coordination ls -l /run/a2a` shows `srw-------`; no port is published for the admin socket.
 9. `a2a-coord expose check` says it is not available and exits 2.
+
+**Hand run, 2026-11-17 (the user, rootless Docker, stage s1):** steps 1 to 9 all passed.
+- The marker refusal names the variable.
+- Two held tasks were made by a `remote-peer` key over REST.
+- `review` lists no body. `show` frames the body as untrusted data.
+- A wrong phrase leaves the task held; the exact phrase releases it (`status`: 1 submitted, 1 held). `deny` rejects with `denied_by_human`.
+- After `rotate`, both keys work during the grace, and the old key expires 24 h out. After `revoke`, the old key gets `401` and the new one still works.
+- Not exercised by hand: the revoke dropping an open `/mcp` session. No session was open (`closed: mcp 0`); the tests cover it.
 
 ## 12. Not done here
 

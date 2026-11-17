@@ -9,16 +9,16 @@ The full text of the old tasklist (decision records, workstream checklist, every
 ### 0.1 Start here (copy this into a new Antigravity or Claude Code session)
 
 ```
-You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way: streams S1-SCAF (PR #32, commit 11f7e0f), S1-PG (PR #37, cff63c9) and S1-BKP (PR #42, c3dd5ad) are merged (2026-11-11 and 2026-11-12), and S1-STORE (PR #61) and S1-OBS (PR #62) since 2026-11-15. Wave W4a (S1-AUTH and S1-STATE) was launched on 2026-11-15: S1-AUTH is built and in PR #65 (open, merge only on the user's word); S1-STATE is in PR #67 (open; its independent check passed and the main session re-ran the suite on the branch rebased onto main: 380 passed, 2 skipped). S1-MCP (wave W4b, first stream) is in PR #68, stacked on #65 and #67 (base branch stack/coordination-auth-state; 795 passed, 2 skipped, re-run by the main session). S1-A2A is in PR #69, stacked on #68 (`dc9e7bd`; 1010 passed, 3 skipped, re-run by the main session; TCK allowlist reviewed by the user and the TCK CI job enabled, decision Z16). S1-ADMIN is in PR #71, stacked on #69 (`676e220`; 1170 passed, 3 skipped, re-run by the main session; lean verification). W4b is complete; next wave W5a (ID, then WAKE). PR #70 fixes the Docker image build, broken on `main` since S1-STORE (conftest `parents[3]` at `/src/tests`). The docs were reorganised on 2026-11-15 into two live documents (commit 7db293c). The weekly Claude quota was nearly used up: section 0.7 says how to continue without the original session. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
+You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way. Ten of the 19 S1 streams are merged to main: SCAF (PR #32), PG (PR #37), BKP (PR #42), STORE (PR #61), OBS (PR #62), and on 2026-11-17 AUTH (PR #65), STATE (PR #67), MCP (PR #68), A2A (PR #69) and ADMIN (PR #71), together with the image-build fix (PR #70) and a CI job that builds and starts the image (PR #74). Waves W1 to W4b are complete. Wave W5a started on 2026-11-17: S1-ID is being built in worktree agentic-hub-wt-id (branch feat/coordination-id from main `503fb93`); S1-WAKE follows, stacked on feat/coordination-id (worktree agentic-hub-wt-wake, branch feat/coordination-wake). The docs were reorganised on 2026-11-15 into two live documents. Section 0.7 says how to continue without the original session. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
 1. Read plugins/coordination/AGENTS.md, docs/README.md, then this file, sections 1 to 5.
 2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status; gh pr list. Check every claim in a doc against its evidence file. The S1 entry gate is satisfied (2026-11-11, docs/research/spike-results-2026-11-10-sp3-sp4.md); the user approved the S1 kickoff on 2026-11-11 (Y10). The decision tables Y1 to Y10 and Z1 to Z9 are final (master-plan section 12).
-3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session) and never touch the worktrees of a running build (agentic-hub-wt-auth, agentic-hub-wt-state). Stage explicit paths only. Never push main, tag or release without the user's go.
-4. First action: read section 0.7 (resuming without the original session), then check where W4a (streams AUTH and STATE) stands (gh pr list; read-only git status and git log in the two worktrees). PRs #65 (AUTH), #67 (STATE) and #68 (MCP, stacked on them) are open: wait for the user's merge words, in that order; after #65 and #67 merge, retarget #68 to main and rebase it. Meanwhile continue with S1-A2A (section 0.7, W4b plan). The next wave is W4b (decisions Z8 and Z10 to Z15, master-plan 12.3): MCP, then A2A, then ADMIN, one stream at a time on stacked branches, full verification for MCP and A2A and lean for ADMIN; the exact brief is in section 0.7 ("W4b plan"). Nothing about W4b is open for the user except merge words. Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
+3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session) and never touch the worktrees of a running build (agentic-hub-wt-id, agentic-hub-wt-wake). Stage explicit paths only. Never push main, tag or release without the user's go.
+4. First action: read section 0.7 (resuming without the original session), then check where W5a stands (gh pr list; read-only git status and git log in the worktrees agentic-hub-wt-id and agentic-hub-wt-wake). S1-ID and S1-WAKE are built one after the other on stacked branches; open one PR per stream against the previous branch, retarget to main as each earlier one merges, and merge only on the user's word. The brief is in section 0.7 ("W5a brief"). Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
 5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
 6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
 8. When you finish a step: update sections 1 to 4 of this file (status, milestones, stream tables, todo), commit, then tell the user what changed and what is next. Docs updates go straight to main (user decision, 2026-11-15; no PR for docs); stream code goes one PR per stream.
-9. Quota rule (user, 2026-11-15): when a workflow finishes, or when the weekly quota reaches 3 percent remaining (statusline 7d gauge, `~/.cache/claude-quota.json` on <workstation>, or `jev_quota`), stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
+9. Quota rule (user): when a workflow finishes, or when the weekly quota nears its limit, stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
 ```
 
 ### 0.2 Read in this order
@@ -58,9 +58,9 @@ You are continuing the A2A coordination plugin work (repo agentic-hub, folder pl
 - A background Claude Code job has `CLAUDE_CODE_SESSION_ATTENDED=0`, which breaks the wake-listener tests; those need an attended session.
 - Listener owner pid is `$CLAUDE_PID`, not `$PPID`. Details are in `docs/research/spike-results-2026-11-05-sp1.md`.
 
-### 0.7 Resuming without the original session (state of 2026-11-15, 18:10 Europe/Helsinki)
+### 0.7 Resuming without the original session (state of 2026-11-17)
 
-Why this section exists: the main session that ran W3a and W4a may stop (quota). Anything not written here or in git is lost. Labels: [verified] was observed by the main session, [reported] comes from a build agent.
+Why this section exists: the main session that runs the waves may stop (quota). Anything not written here or in git is lost. Labels: [verified] was observed by the main session, [reported] comes from a build agent.
 
 How a wave runs (master-plan section 13), so another account or Antigravity can repeat it:
 
@@ -70,39 +70,61 @@ How a wave runs (master-plan section 13), so another account or Antigravity can 
   3. Repair: at most two rounds, only for failed criteria.
   4. Scope check: `git diff --name-only origin/main...HEAD` must stay inside the stream's files.
   5. Review by the main session: read the diff, re-run `A2A_TEST_REQUIRE_DOCKER=1 uv run pytest -q` in `plugins/coordination/servers/coordination` (Docker needed), push, open one PR per stream with caveats, no merge without the user's word.
-- Quota note: the 5-hour limit cut agents off twice on 2026-11-15 (a cut-off agent's work stays in its worktree; resume it with a prompt that says to inspect `git log`, `git status` and `git diff` first). With little quota left, run one stream at a time.
+- Quota note: a usage limit can cut an agent off (its work stays in its worktree; resume it with a prompt that says to inspect `git log`, `git status` and `git diff` first). With little quota left, run one stream at a time. The main session parks agent work when the weekly quota nears its limit (user rule).
 
-Where things are [verified 2026-11-15, 18:10]:
+Where things are [verified 2026-11-17]:
 
-- Merged to `main`: SCAF, PG, BKP, STORE, OBS, the docs (head `7db293c`). Suite on merged `main`: 313 passed, 3 skipped.
-- S1-AUTH: PR #65, branch `feat/coordination-auth`, commit `a0967d7`, worktree `agentic-hub-wt-auth`. 611 passed, 3 skipped, re-run by the main session. CI was pending at 18:09. The caveats and the two design calls to review are in the PR body (a bare `create_app` is unauthenticated; auth failures are not audited until the SQL audit store lands with STATE).
-- S1-STATE: PR #67, branch `feat/coordination-state` rebased onto main (head `cd2ed95`, two commits: the service layer and a repair so the loser of a claim race gets `already_claimed`), worktree `agentic-hub-wt-state`. The independent check passed every criterion (including the Z6 atomic test) and the main session re-ran the suite on the rebased branch: 380 passed, 2 skipped, the 3b placeholder no longer skipped [verified, 2026-11-16]. The rebase had one docs conflict in `docs/specs/audit-events.md` (kept STATE's as-built text). Touches only `docs/specs/` among the docs. Design (decision Z6, user chose "one transaction in the store"): `CoordTaskStore.transition` writes the task, its audit row and its `task_index` update in one database transaction (this also closes the crash window STORE documented); the skipped test `tests/test_audit.py::test_transition_and_its_audit_row_commit_together_against_postgres` becomes a real Postgres test (a normal transition leaves exactly one `state_transition` row naming the actor; a forced audit-insert failure leaves state, version and index unchanged and no row); the guess counter is left to S2-LISTEN; the service layer is a plain API and is not wired into `app.py`; migration number m0004 is reserved for STATE, m0003 for AUTH (AUTH used none).
-- Review checklist for STATE: run the full suite with Docker; confirm the placeholder test is no longer skipped; `git diff --stat origin/main...HEAD` shows nothing under `docs/plans` (an earlier stray edit to the old `implementation-plan.md`, now `master-plan.md`, must not land; drop it and move any content that is still valid into `master-plan.md` on `main`); check `docs/specs/audit-events.md` section 2 and the as-built note in `server-api.md` 1.3 match the code.
-- After AUTH and STATE are merged: update this file, then start W4b (below).
+- Merged to `main` on 2026-11-17, in this order (merge commits):
+  - PR #65 S1-AUTH, `eb09ad5`
+  - PR #67 S1-STATE, `0ea46ab`
+  - PR #70 image-build test fix, `df95c47`
+  - PR #68 S1-MCP, `552f00d`
+  - PR #69 S1-A2A, `7444c79`
+  - PR #71 S1-ADMIN, `86069be`
+  - PR #73 public-leak scrub plus the CI leak guard `scripts/check-public-leaks.sh` (Jev session's PR, not part of this plan), `30171b8`
+  - PR #74 image build, cards mount and an image CI job, `503fb93`
+- Earlier merges: SCAF (PR #32), PG (PR #37), BKP (PR #42), STORE (PR #61), OBS (PR #62). The Jev session's PRs #66 and #72 are not part of this plan.
+- Suite on the top of the stack before the merges: 1173 passed, 3 skipped [verified, main session]. CI on `main`: "Run Test Suites" passes on each merge commit [verified].
+- The stack branch `stack/coordination-auth-state` and all merged coordination branches and worktrees are deleted.
+- PR #74 (`fix(coordination): image build, cards mount, and an image CI job`) fixed three breaks that plain CI did not catch:
+  - Four AUTH and A2A tests indexed `Path(__file__).parents[N]` and broke the in-image test run. They now use the conftest `PLUGIN_DIR` and skip outside the repo.
+  - `docker-compose.yml` now mounts `${A2A_CONFIG_DIR:-./config}` read-only at `/config`. Before this the server could not read `/config/cards.yaml` and stopped at start-up.
+  - The dump image pinned `postgresql17-client=~17.11`, which Alpine no longer ships. The pin is now `=~17`.
+  - New workflow `.github/workflows/coordination-image.yml` builds both images, starts the stack with throwaway secrets and a one-card CI cards file, and checks `/healthz`, `a2a-coord status`, `card check` and the admin socket.
+  - Lesson: plain CI never built the image, so all three breaks passed CI. Keep the image job.
+- The S1-ADMIN hand run (`docs/specs/admin.md` section 11) was done by the user on 2026-11-17 and all steps passed, including `/dev/tty` under `docker compose exec -it` [verified]. Results are recorded in that section.
 
-W4b plan (decisions Z10 to Z15, 2026-11-15; the brief for the account or Antigravity session that runs it):
+W4a and W4b are done (decisions Z6 and Z10 to Z16). Short note of what was built, for the record:
 
-1. Done by the main session on 2026-11-15 and 2026-11-16: S1-STATE checked and in PR #67; S1-MCP built on an integration branch (main plus AUTH plus STATE, base branch `stack/coordination-auth-state`, worktree `agentic-hub-wt-mcp`) and in PR #68, stacked. S1-A2A built, checked and in PR #69 (stacked on #68, worktree `agentic-hub-wt-a2a`). S1-ADMIN built and in PR #71 (stacked on #69, worktree `agentic-hub-wt-admin`). W4b is complete; next is W5a (ID, then WAKE), not started. Open each PR against the previous branch (stacked, as #68) and retarget to main as the earlier ones merge.
-2. Branches (Z11): MCP `feat/coordination-mcp` from merged `main`; A2A `feat/coordination-a2a` from the MCP branch; ADMIN `feat/coordination-admin` from the A2A branch. One PR per stream targeting `main`, opened in that order, each rebased after the one before it merges. Merge only on the user's word.
-3. S1-MCP (full verification): deliverables and acceptance in master-plan section 4.2. `wait_seconds` is capped by `A2A_MAX_WAIT_S` (default 50), not 240 (Z15). Mount `/mcp` as a second ASGI app behind the shared AUTH middleware (SP5 D12). Use the STATE service layer API; do not reimplement task logic.
-4. S1-A2A (full verification): wire tests per operation against the pinned spec commit `4735f48`. Front desk (Z13): a generic public root card, per-member authenticated cards, and a root `SendMessage` rejected with an error pointing to the member card path; no member listing extension field, no `metadata.target` routing. Streaming and push stay off (`-32004`, `-32003`).
-5. S1-ADMIN (lean: build plus main-session re-run; SEC reviews it at W6): admin socket on tmpfs, mode 0600, no TCP; `a2a-coord key create|list|rotate|revoke`, `review`, `status`, `card check`, `db init-dump-role` (exists since S1-PG). `key create` requires `--expires` with ceilings 365 days at `s1` and 90 at `s2` and `s3`; no `--tailnet-login` (Z14). TTY rules and the human-only release path as in the plan. The user tests the TTY paths by hand.
-6. Per stream: scope = its own module plus `app.py` mounting, `config.py`, tests, `docs/specs/`; nothing under `docs/plans` (status goes in this file, committed to `main`). Migration numbers: m0005 and up, one per stream, in branch order (m0003 and m0004 were reserved for AUTH and STATE and are unused unless STATE added one: check `store/migrations/`).
-7. After each stream: update sections 0.1, 1, 3.2 and 4.2 of this file and commit to `main`. Next wave after W4b: W5a (ID, then WAKE), master-plan section 13.
-- Quota [reported by `~/.cache/claude-quota.json`]: on 2026-11-15 18:25 the weekly quota was 96 percent used and the main session stopped its agents; the weekly quota then reset (2 percent used at 23:44) and the main session built STATE's check and MCP overnight. On 2026-11-16 early morning the weekly figure was 14 percent used but the 5-hour figure was 82 percent, so the main session held S1-A2A until the 5-hour window drops (a cut-off agent leaves its work in its worktree; resume it by inspecting `git log`, `git status` and `git diff`). The next weekly reset is 2026-11-20 15:00. No agents were running at that point. No test containers were left behind [verified with `docker ps -a` on 2026-11-15].
+- S1-AUTH: authentication middleware, keys, cards file; no schema change.
+- S1-STATE: the task service layer; `CoordTaskStore.transition` writes the task, its audit row and its `task_index` update in one transaction (Z6), and the Z6 atomic test is a real Postgres test. It added no migration (m0003 and m0004 were reserved and are unused).
+- S1-MCP: `/mcp` as a second ASGI app behind the shared AUTH middleware; `wait_seconds` capped by `A2A_MAX_WAIT_S` (Z15).
+- S1-A2A: wire tests against the pinned spec commit `4735f48`; front desk per Z13; TCK allowlist reviewed by the user (Z16) and the TCK CI job enabled.
+- S1-ADMIN: admin socket and `a2a-coord key|review|status|card|db`; `key create` requires `--expires` (Z14).
+
+W5a brief (started 2026-11-17; the brief for the account or Antigravity session that runs it):
+
+1. S1-ID is being built by a Claude Code workflow in worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from main `503fb93`, with an independent check and up to two repair rounds. S1-WAKE follows, stacked on `feat/coordination-id` (worktree `agentic-hub-wt-wake`, branch `feat/coordination-wake`). Deliverables and acceptance: master-plan section 4.2.
+2. Migration numbers: S1-ID m0003 if it needs schema, S1-WAKE m0004. Only m0001 and m0002 exist; check `store/migrations/`.
+3. Open [design] questions S1-ID builds a conservative default for and reports: the unnamed-session form (`server-api` 3.5) and whether a resumed ended session revives. Do not treat the defaults as decided; they go to the user with the PR.
+4. Handed over from earlier streams: the rest of S1-ID, wake confirmation (S1-WAKE), parked-listener close on key revoke and the `status` listener and budget fields (S1-WAKE).
+5. Per stream: scope = its own module plus `app.py` mounting, `config.py`, tests, `docs/specs/`; nothing under `docs/plans` (status goes in this file, committed to `main`). One PR per stream, the WAKE PR opened against the ID branch and retargeted to `main` when ID merges. Merge only on the user's word.
+6. After each stream: update sections 0.1, 1, 3.2 and 4.2 of this file and commit to `main`. Next wave: W5b (CLAUDE and AGY, then the user's live checks), master-plan section 13.
 - Peers: `claude-cp` (Remote Control, built SCAF, PG and BKP; offline most of the time), `ce-research`, `jev-update`. Do not edit their branches. The scratch status file `~/scratch/a2a-spikes/s1-todo.md` on <workstation> is only an agent log; this file is the status.
 - Antigravity pickup: the user starts agy; a helper never drives or probes it (A8c, hooks and any live agy check are the user's). The session model is the ceiling for subagents; `pro` needs the user's approval.
 
-## 1. Status at a glance (as of 2026-11-16)
+## 1. Status at a glance (as of 2026-11-17)
 
 - Stage S0 (spikes) is closed for the S1 entry gate (2026-11-11). Open from it: A8c, and two attended tests that run inside S1.
-- Stage S1: five of the 19 streams are merged to `main` (SCAF, PG, BKP, STORE, OBS). The full suite on merged `main` gave 313 passed, 3 skipped [verified, main session, 2026-11-15].
-- Wave W4a (AUTH and STATE) was launched on 2026-11-15. S1-AUTH is in PR #65 (open; 611 passed, 3 skipped, re-run by the main session [verified]). S1-STATE is in PR #67 (checked, 380 passed, 2 skipped [verified]). Nothing from W4a is merged. S1-MCP (W4b, first) is in PR #68, stacked on #65 and #67 (795 passed, 2 skipped [verified]); client compatibility with Claude Code and agy is unverified (S1-GATE and the user's live checks). S1-A2A (W4b, second) is in PR #69, stacked on #68 (1007 passed, 3 skipped [verified]; independent check passed everything except the two TCK items, which need the user: the allowlist review and enabling the CI job). S1-ADMIN (W4b, third) is in PR #71, stacked on #69 (1170 passed, 3 skipped [verified]; lean). The image build on `main` was broken since S1-STORE; fix in PR #70 (image builds, 183 passed and 133 skipped in-image [verified]).
-- Quota: 30 percent of the weekly quota used on 2026-11-16 evening, next reset 2026-11-20 15:00 [reported by the quota file]; the main session parks at 65 percent used (user rule); see section 0.7.
-- Not started: TEST-skel (planned beside W3a, not done), the rest of S1 (W4b to W6), all of S2, S3, go-live and the later tracks.
+- Stage S1: 10 of the 19 streams are merged to `main`: SCAF, PG, BKP, STORE, OBS, AUTH, STATE, MCP, A2A and ADMIN. Counted against the streams table in section 3.2 (20 rows, the two S1-TEST rows being one stream); the image fix (PR #70, PR #74) is not a stream. Waves W1 to W4b are complete.
+- All of W4a and W4b merged on 2026-11-17 (PRs #65, #67, #70, #68, #69, #71, #73, #74; list and merge commits in section 0.7). Full suite on the top of the stack before the merges: 1173 passed, 3 skipped; CI "Run Test Suites" passes on each merge commit [verified, main session]. The new image CI job (PR #74) builds both images and starts the stack; plain CI had never built the image.
+- The S1-ADMIN hand run (`docs/specs/admin.md` section 11) passed on 2026-11-17, including `/dev/tty` under `docker compose exec -it` [verified, user]. Client compatibility of MCP with Claude Code and agy is still unverified (S1-GATE and the user's live checks).
+- The upstream TCK issue was not posted: both problems are already reported upstream (a2aproject/a2a-tck #202 and #273); the user added a +1 to each.
+- Wave W5a started on 2026-11-17: S1-ID is being built (worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from `503fb93`), S1-WAKE follows stacked on it. No PR yet.
+- Quota: the main session parks agent work when the weekly quota nears its limit (user rule); see section 0.7.
+- Not started: TEST-skel (planned beside W3a, not done), S1-CLAUDE to S1-GATE (W5b and W6), all of S2, S3, go-live and the later tracks.
 - Docs updates go straight to `main` from 2026-11-15 (user decision, no PR for docs); stream code goes one PR per stream, merged on the user's word.
-- W4b is decided (Z10 to Z15, 2026-11-15, /clarify round): another Claude account or Antigravity runs it from section 0.7; order MCP, A2A, ADMIN; stacked branches merged in order.
-- Open for the user: merge words (AUTH PR #65, STATE PR #67, then MCP PR #68, A2A PR #69, ADMIN PR #71, in that order; the image fix PR #70 is independent), the leak-scrub PR #73 (from the Jev session), whether to post the drafted upstream TCK issue (CORE-SEND-003 and HTTP_JSON-ERR-001), A8c in agy, the attended tests, and the user-only items in section 4. No design question is open for the agents.
+- Open for the user: merge words for the S1-ID and S1-WAKE PRs when they are opened, A8c in agy, the attended tests, the W5b and W6 live checks, the secret files at W6, and the user-only items in section 4.7. Two [design] questions are open for S1-ID and get a conservative default (section 0.7); no other design question is open for the agents.
 
 ## 2. Milestones
 
@@ -127,11 +149,12 @@ Done:
 | 2026-11-15 | S1-OBS merged | PR #62, `d09799f` |
 | 2026-11-15 | Z6 docs merged | PR #63, `2d9dd83` |
 | 2026-11-15 | Docs updates committed straight to `main` (user decision, no PR for docs) | `7f0cb6d` |
-| 2026-11-15 | Wave W4a (AUTH, STATE) launched and running | section 3.2 |
+| 2026-11-15 | Wave W4a (AUTH, STATE) launched | section 3.2 |
+| 2026-11-17 | W4a and W4b merged (AUTH, STATE, MCP, A2A, ADMIN); image build fixed and the image CI job added; ADMIN hand run passed | PRs #65, #67, #70, #68, #69, #71, #74; section 0.7 |
 
 Planned, in order (a sequence, not dates), with the gate condition of each:
 
-- **S1 remaining waves:** W4b (MCP, then A2A, then ADMIN, one at a time on stacked branches, Z8 and Z10 to Z15), W5a (ID, then WAKE), W5b (CLAUDE and AGY, then the user's live checks), W6 (INST, DOC, SEC, TEST full, opus review of SEC).
+- **S1 remaining waves:** W5a (ID, then WAKE; running), W5b (CLAUDE and AGY, then the user's live checks), W6 (INST, DOC, SEC, TEST full, opus review of SEC).
 - **S1 exit gate (S1-GATE), dev on <workstation>:** two-way task round trip, Claude idle wake, agy surfacing, API key refusal, quarantine end to end; the `asyncRewake` re-arm and GUI-launched Claude tests pass; a `pg_dump -Fc` backup restores into a scratch Postgres with equal counts; `dump_age_h` shows in `/status`; one opus final verification.
 - **S2 deploy and gate, production on <storage-host>:** API keys and scopes live, cross-host wake works, and the public-listener tests on the loopback 8121 listener pass (R8). S2-LISTEN and the S3-FUZZ run against it come before the S2 gate.
 - **S3 gate, public front door:** quarantine live, rate limits and fuzz pass, honest card, final extension URI, then the user's explicit go. Order after the gate: `a2a-coord expose check` (exit 0), the user flips `A2A_EXPOSURE_STAGE=s3` and restarts, then the user creates the tunnel route. The GL-IMPORT code must be finished before S3-GATE (D36).
@@ -171,13 +194,13 @@ Deliverables and acceptance of each stream are under its heading in [`master-pla
 | S1-STORE | done (W3a) | PR #61, `0397b6f` | S1-SCAF, S1-PG | 16-24 | critical path; owns the migration directory; caveats in section 5 |
 | S1-OBS | done, writer half (W3a) | PR #62, `d09799f` | S1-SCAF | 4-6 | acceptance 3b split (Z6); also owns `dump_age_h` in `/status` |
 | S1-TEST (skeleton) | not started | none | S1-SCAF | part of 14-22 | planned in the main tree beside W3a, not done; reuses the SP5 load driver |
-| S1-AUTH | built, PR open (W4a) | PR #65, `a0967d7` | S1-STORE schema | 10-16 | worktree `agentic-hub-wt-auth`; 611 passed, 3 skipped, re-run by the main session [verified]; checker 8 of 8; no schema change; not wired: production audit store (STATE), rate-limit numbers (S3-LIMITS), real tailnet identity source (S2-TS), key commands (ADMIN) [reported by its build agent] |
-| S1-STATE | built, PR open (W4a) | PR #67, `cd2ed95` | S1-STORE | 14-22 | worktree `agentic-hub-wt-state`; checker passed all; 380 passed, 2 skipped [verified]; Z6 atomic test is real and green |
-| S1-MCP | built, stacked PR open (W4b, first) | PR #68, `ffccea1` (base branch `stack/coordination-auth-state`) | S1-AUTH, S1-STATE | 12-18 | worktree `agentic-hub-wt-mcp`; checker 12 of 12; 795 passed, 2 skipped [verified]; client compatibility unverified; handed on: rest of S1-ID, wake confirmation (S1-WAKE), key-revoke session close (S1-ADMIN); details in the PR and `docs/specs/mcp.md` |
-| S1-A2A | built, stacked PR open (W4b, second) | PR #69, `dc9e7bd` (base `feat/coordination-mcp`) | S1-AUTH, S1-STATE | 16-24 | worktree `agentic-hub-wt-a2a`; 1010 passed, 3 skipped [verified]; TCK allowlist reviewed by the user (Z16, 2026-11-16): 13 entries, all reviewed; REST errors `application/a2a+json`; camelCase coord keys; TCK gate run by the main session: 263 cases, 97 passed, 13 failed (all allowed), 153 skipped, 0 blocking, 0 stale [verified]; TCK CI job `.github/workflows/coordination-tck.yml` (not yet run on GitHub); front-desk scope per Z13; details in the PR |
-| S1-ADMIN | built, stacked PR open (W4b, third) | PR #71, `efe9f9a` (base `feat/coordination-a2a`), worktree `agentic-hub-wt-admin`; 1173 passed, 3 skipped [verified, top of the stack after Z16]; handed to WAKE: parked-listener close on revoke and `status` listener and budget fields; `/dev/tty` under `docker compose exec -it` unverified | S1-AUTH, S1-STATE | 12-18 | admin socket, `a2a-coord`; the user tests TTY paths; branches from the A2A branch (Z11); lean verification (Z12); key-create scope per Z14 |
-| S1-ID | not started (W5a) | none | S1-MCP | 8-12 | identity, binding, `/sessions` |
-| S1-WAKE | not started (W5a, after ID) | none | S1-ID | 12-18 | wake, pending, budget |
+| S1-AUTH | done (W4a) | PR #65, merged 2026-11-17, `eb09ad5` | S1-STORE schema | 10-16 | checker 8 of 8; no schema change; not wired at merge: production audit store (done by STATE), rate-limit numbers (S3-LIMITS), real tailnet identity source (S2-TS) [reported by its build agent] |
+| S1-STATE | done (W4a) | PR #67, merged 2026-11-17, `0ea46ab` | S1-STORE | 14-22 | checker passed all; the Z6 atomic test is real and green [verified] |
+| S1-MCP | done (W4b) | PR #68, merged 2026-11-17, `552f00d` | S1-AUTH, S1-STATE | 12-18 | checker 12 of 12; client compatibility with Claude Code and agy unverified; handed on: rest of S1-ID, wake confirmation (S1-WAKE); details in `docs/specs/mcp.md` |
+| S1-A2A | done (W4b) | PR #69, merged 2026-11-17, `7444c79` | S1-AUTH, S1-STATE | 16-24 | TCK allowlist reviewed by the user (Z16): 13 entries; TCK gate: 263 cases, 97 passed, 13 failed (all allowed), 153 skipped, 0 blocking, 0 stale [verified]; TCK CI job `.github/workflows/coordination-tck.yml`; front-desk scope per Z13 |
+| S1-ADMIN | done (W4b) | PR #71, merged 2026-11-17, `86069be` | S1-AUTH, S1-STATE | 12-18 | admin socket, `a2a-coord`; lean verification (Z12); key-create scope per Z14; the user's hand run (`docs/specs/admin.md` section 11) passed on 2026-11-17, including `/dev/tty` under `docker compose exec -it` [verified]; handed to WAKE: parked-listener close on revoke and `status` listener and budget fields |
+| S1-ID | building (W5a) | none yet | S1-MCP | 8-12 | worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from `503fb93`; independent check and up to 2 repair rounds; identity, binding, `/sessions`; migration m0003 only if it needs schema; open [design]: unnamed-session form (api 3.5) and whether a resumed ended session revives (conservative default, reported) |
+| S1-WAKE | next (W5a, after ID) | none | S1-ID | 12-18 | worktree `agentic-hub-wt-wake`, branch `feat/coordination-wake`, stacked on `feat/coordination-id`; wake, pending, budget; migration m0004 if it needs schema |
 | S1-CLAUDE | not started (W5b) | none | S1-WAKE | 6-10 | hooks in `bin/` and `hooks/`; the user runs live checks |
 | S1-AGY | not started (W5b) | none | S1-ID, S1-WAKE | 6-10 | live checks by the user in own agy session; a helper never drives agy |
 | S1-INST | not started (W6) | none | S1-CLAUDE, S1-AGY, S1-ADMIN | 12-18 | the user runs it; the A8c result sets how the plugin is placed |
@@ -265,7 +288,7 @@ Off by default; contract in `docs/specs/status-client.md`. `status_runs` and `st
   - Separator check: `#` and `~` validated across URL query (`%23` for `#`), shell quoting, JSON and Postgres; verdict X1: `#` needs `%23` in URL queries, `~` adopted by user decision 2026-11-10.
 - SP5b follow-up (2026-11-10, non-gating, `docs/research/spike-results-2026-11-10-sp5b-followup.md`, Claude Code's check in its section 7): (a) PASS for the mechanism, (b) PASS, (c) cause UNVERIFIED. The agy-reported items without a saved log are carried as exit tests of S1-PG and S1-BKP (section 4).
 - The docs commits of 2026-11-10 on `main`: `db17ada` (`name#sid8` grammar, separator replaced by `~` in round 4, X1), `946f198` (SP5b pass; the message predates C1: SP5b satisfies the S1 storage gate only), `c17402b` (S1 design items; values replaced by X2 to X5), `3a2bea8` (handoff update; its gate wording and "settled" statements corrected by C1 and C5), `74f6c0e` (round-4 decisions X1 to X5 and corrections C1 to C5).
-- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP merged; no later stream had started; the lost `claude-cp` session left no code beyond these. State 2026-11-15: S1-STORE (PR #61) and S1-OBS (PR #62) merged; the main-session suite on merged `main` gave 313 passed, 3 skipped [verified].
+- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP merged; no later stream had started; the lost `claude-cp` session left no code beyond these. State 2026-11-15: S1-STORE (PR #61) and S1-OBS (PR #62) merged; the main-session suite on merged `main` gave 313 passed, 3 skipped [verified]. State 2026-11-17: AUTH, STATE, MCP, A2A and ADMIN merged, W5a running; see section 0.7.
 
 ## 4. Todo
 
@@ -286,11 +309,13 @@ Tick a box when it is done and say so in the commit that changes it. Items marke
 ### 4.2 S1: now running
 
 - [x] W3a done (STORE PR #61, OBS PR #62, both merged 2026-11-15)
-- [ ] W4a: AUTH (PR #65) and STATE (PR #67) built, checked and open, awaiting the user's merge words
-- [x] W4b built: MCP PR #68, A2A PR #69, ADMIN PR #71 (stacked, awaiting merge words for #65 and #67 first)
-- [ ] (user) Merge PR #70 (image build fix, independent of the stack)
+- [x] W4a merged 2026-11-17: AUTH PR #65 (`eb09ad5`), STATE PR #67 (`0ea46ab`)
+- [x] W4b merged 2026-11-17: MCP PR #68 (`552f00d`), A2A PR #69 (`7444c79`), ADMIN PR #71 (`86069be`)
+- [x] Image-build fix PR #70 (`df95c47`) and image CI job PR #74 (`503fb93`) merged 2026-11-17 (the Jev session's PR #73, `30171b8`, merged between them and is not part of this plan)
 - [x] (user) TCK allowlist reviewed and the TCK CI job enabled (Z16, 2026-11-16; PR #69)
-- [ ] (user) Post the drafted upstream issue on a2aproject/a2a-tck (CORE-SEND-003 sets no `expected_error`; HTTP_JSON-ERR-001 contradicts HTTP_JSON-SVC-001)? Draft kept by the main session
+- [x] (user) Upstream TCK issue: the draft was not posted, because both problems are already reported upstream (a2aproject/a2a-tck #202, CORE-SEND-003 has no `expected_error`, and #273, HTTP_JSON-ERR-001 versus SVC-001); the user added a +1 to each (2026-11-17)
+- [x] (user) S1-ADMIN hand run (`docs/specs/admin.md` section 11), all steps passed 2026-11-17
+- [ ] W5a: S1-ID building in `agentic-hub-wt-id` (branch `feat/coordination-id`), then S1-WAKE stacked on it; open one PR each
 - [ ] TEST-skel (planned beside W3a, not done; no dependency blocks it)
 
 Main-session steps after each workflow (no user needed):
@@ -302,10 +327,10 @@ Main-session steps after each workflow (no user needed):
 
 Waiting on the user:
 
-- [ ] (user) Merge word per stream PR (AUTH, STATE, then each later stream)
+- [ ] (user) Merge words for the S1-ID and S1-WAKE PRs, when they are opened
 - [x] W4b order MCP, A2A, ADMIN confirmed by the user on 2026-11-15 (Z8, Z10 to Z15)
 - [ ] (user) Provide the secret files (database password, `dump_ro` secret; mode 0600, outside the repo) at W6 (Z7); nothing earlier needs them
-- [ ] (user) ADMIN TTY paths, CLAUDE and AGY live checks, run the installer (W4b to W6)
+- [ ] (user) CLAUDE and AGY live checks (W5b), run the installer (W6); the ADMIN TTY paths are done (hand run 2026-11-17)
 - [x] Housekeeping checked 2026-11-15 [verified by the main session]: nothing left to prune in the agy trusted workspaces or the Claude project entry; the Obsidian bearer rotation was decided unnecessary by the user
 - [x] PR #58 (`feat/jev-antigravity-hook`) merged into `main` (commit `5ce432b`, 2026-11-15) [verified]
 - [x] PR #54 (`feat/jev-tool-validation`) retargeted to `main` (head `2fb323f`), all CI checks passing [verified]
@@ -316,15 +341,15 @@ Waiting on the user:
 
 Blocked until their dependencies merge:
 
-- [ ] W4b: MCP, then A2A, then ADMIN (after AUTH and STATE)
-- [ ] W5a: ID, then WAKE (after MCP)
+- [x] W4b: MCP, then A2A, then ADMIN (merged 2026-11-17)
+- [ ] W5a: ID, then WAKE (running, see above)
 - [ ] W5b: CLAUDE and AGY (after WAKE; AGY also after ID)
 - [ ] W6: INST, DOC, SEC suite, TEST full, opus review of SEC, then GATE
 - [ ] S1 exit gate (S1-GATE) passed: two-way task round trip, Claude idle wake, agy surfacing, API key refusal, quarantine end to end
 
 S1 items carried from the old tasklist (the stream that owns each is in brackets; acceptance is in master-plan section 4.2):
 
-- [ ] [STATE, then SEC and GATE] Z6 atomic exit test: a transition, its audit row and its `task_index` update commit in one transaction; a failed audit insert leaves state and version unchanged and no row
+- [ ] [STATE, then SEC and GATE] Z6 atomic exit test: a transition, its audit row and its `task_index` update commit in one transaction; a failed audit insert leaves state and version unchanged and no row. The STATE part is merged and the test is green [verified]; the box stays open for SEC and GATE
 - [ ] [MCP] Tool `a2a_runs`: read-only status, scoped to the caller (kept 2026-11-09, D-I)
 - [ ] [A2A, MCP, ID, WAKE] Endpoints `/mcp`, `/a2a/v1`, `/wake/listen`, `/sessions`, `/status`, Agent Card (contract in `docs/specs/server-api.md`)
 - [ ] [ID] Session handle grammar `name~sid8` (decisions 2026-11-09 and 2026-11-10, X1; `server-api` 3.5 and 5.1, evidence SP2 C6 pair 3): `register` and `a2a_hello(name=...)` build `<card-id>/<name>~<sid8>` on the server, `~` plus the first 8 hex characters of the session id always present; session-part regex `^[a-z0-9][a-z0-9._-]{0,38}~[0-9a-f]{8}$`; handle validation in `coord.to`, `a2a_hello(handle)` and the hook scripts' check of the returned handle; server-side uniqueness, a same-`<sid8>` collision rejected by a clear error [design]; the SessionStart text and the register call show the new form. Open [design]: the unnamed-session form (`server-api` 3.5, two readings)
@@ -426,7 +451,7 @@ S1 items carried from the old tasklist (the stream that owns each is in brackets
 - **Out of scope, observed in A8b:** `lookup` and `recall` time out at startup in every agy session and delay MCP startup by about 2 minutes (memory plugin setup, not this plugin).
 - **Issues #39 and #40** (memory plugin version bump, lookup package visibility) are unrelated to coordination and still open [verified with `gh issue list`, 2026-11-15].
 - **Jev PR stack (#58, #54, #55):** PR #58 (`feat/jev-antigravity-hook`) merged into `main` (`5ce432b`, 2026-11-15); PR #54 (`feat/jev-tool-validation`) retargeted to `main` with checks passing; PR #55 (`feat/jev-agent-guard-parity`) synced with #54 with checks passing. Housekeeping remaining: prune worktrees (`.claude/worktrees/ag-hook`, `.claude/worktrees/jev-install`), await user merge word for PR #54.
-- **Shared checkout.** `ce-research` switches branches in `~/projects/agentic-hub`; the worktrees of running builds (`agentic-hub-wt-auth`, `agentic-hub-wt-state`) must not be touched by another session. The STATE build edits plan, spec and audit docs in its own worktree [reported by `git status` in that worktree, 2026-11-15], so its PR will conflict with the 2026-11-15 docs reorganisation (the plan was renamed from `implementation-plan.md` to `master-plan.md`); rebase it onto the new names.
+- **Shared checkout.** `ce-research` switches branches in `~/projects/agentic-hub`. The coordination work uses its own worktrees (`agentic-hub-wt-<stream>`), removed after the stream merges; another session must not touch the worktree of a running build, and nobody commits in the shared checkout.
 - **Plan status text.** The status paragraph at the top of `master-plan.md` section 1 was written 2026-11-11 and is kept as written; this file is the live status.
 
 ## 6. Doc map

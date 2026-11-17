@@ -441,7 +441,7 @@ Unverified until an interactive session: that the assistant follows the prescrib
 
 Next: the batch schema (5.3 rubric, 5.4 kind and `needsEdit`, 5.11 tool output, `editsFiles`) as 2.3.9, after the stack merges.
 
-## 25. Verification results (2026-11-13, Claude Code 2.1.323, Claude Pro account)
+## 25. Verification results (2026-11-13, Claude Code 2.1.323, Claude subscription account)
 
 **Headless (reported by a Sonnet agent, tree = #46 branch, installed jev disabled; evidence from `modelUsage`, the decisions log and stream-json; about $1.45 spent).**
 

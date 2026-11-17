@@ -25,12 +25,12 @@
 | :--- | :--- | :--- |
 | **T1: Same process, two conversations: same PID?** | Process 1 executed both conversation X and conversation Y on PID `863339`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T1: Same process, two conversations: same `Mcp-Session-Id`?** | Both conversations X and Y inside PID `863339` shared identical `Mcp-Session-Id: 1be9c46c-fc43-4a63-95b2-0d3fd21a3172` over the persistent connection (port `43769`). | **[VERIFIED - OBSERVED ON WIRE]** |
-| **T1: Same process, two conversations: distinct `conversation_id`?** | Conversation X carried `68681258-2a80-4d31-81e3-0bd436e3658d`, Conversation Y carried `95477319-a4f3-4649-94c8-964789ba8df2`. | **[VERIFIED - OBSERVED ON WIRE]** |
+| **T1: Same process, two conversations: distinct `conversation_id`?** | Conversation X carried `00000000-0000-4000-8000-0000000000a4`, Conversation Y carried `00000000-0000-4000-8000-0000000000a6`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T2: Two separate agy processes: different PID?** | Process 1 ran as PID `863339`; Process 2 ran as PID `901400`. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T2: Two separate agy processes: different `Mcp-Session-Id`?** | Process 1 held `1be9c46c-fc43-4a63-95b2-0d3fd21a3172`; Process 2 held `3012c346-9c75-46c7-ad67-92d7f80b1db5`. | **[VERIFIED - OBSERVED ON WIRE]** |
-| **T2: Two separate agy processes: different `conversation_id`?** | Process 1 held `68681258-...` and `95477319-...`; Process 2 held `1ce0a972-2e71-4ca1-a0ec-20633765e43c`. | **[VERIFIED - OBSERVED ON WIRE]** |
-| **T3: Restart & resume: identical `conversation_id`?** | `conversation_id` was identical (`68681258-2a80-4d31-81e3-0bd436e3658d`) before shutdown and after resume. | **[VERIFIED - OBSERVED ON WIRE]** |
-| **T3: Restart & resume: identical `root_conversation_id`?** | `root_conversation_id` was identical (`68681258-2a80-4d31-81e3-0bd436e3658d`) across restart and resume. | **[VERIFIED - OBSERVED ON WIRE]** |
+| **T2: Two separate agy processes: different `conversation_id`?** | Process 1 held `00000000-0000-4000-8000-0000000000a4` and `00000000-0000-4000-8000-0000000000a6`; Process 2 held `00000000-0000-4000-8000-0000000000a1`. | **[VERIFIED - OBSERVED ON WIRE]** |
+| **T3: Restart & resume: identical `conversation_id`?** | `conversation_id` was identical (`00000000-0000-4000-8000-0000000000a4`) before shutdown and after resume. | **[VERIFIED - OBSERVED ON WIRE]** |
+| **T3: Restart & resume: identical `root_conversation_id`?** | `root_conversation_id` was identical (`00000000-0000-4000-8000-0000000000a4`) across restart and resume. | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T3: Restart & resume: new `Mcp-Session-Id`?** | Fresh random UUID (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172`) issued on new `initialize` replacing old (`ff89a6ce-...`). | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T3: Restart & resume: new PID?** | Resumed under new OS process PID `863339` (previously PID `684782`). | **[VERIFIED - OBSERVED ON WIRE]** |
 | **T4: Subagent correlation: `root_conversation_id` vs `conversation_id`?** | `root_conversation_id` equals root parent conversation X; `conversation_id` is the subagent's distinct ID. | **[VERIFIED - OBSERVED ON WIRE]** |
@@ -52,24 +52,24 @@
 
 | Conversation | agy PID | Source Port(s) | `Mcp-Session-Id` | `conversation_id` | `root_conversation_id` |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| X (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| X (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| Y (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `95477319-a4f3-4649-94c8-964789ba8df2` | `95477319-a4f3-4649-94c8-964789ba8df2` |
-| Y (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `95477319-a4f3-4649-94c8-964789ba8df2` | `95477319-a4f3-4649-94c8-964789ba8df2` |
+| X (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
+| X (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
+| Y (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a6` | `00000000-0000-4000-8000-0000000000a6` |
+| Y (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a6` | `00000000-0000-4000-8000-0000000000a6` |
 
 #### Raw NDJSON Excerpts (T1)
 
 ```json
-{"timestamp": "2026-11-04T21:14:38.288455+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:434"}}
-{"timestamp": "2026-11-04T21:14:42.554247+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:437"}}
-{"timestamp": "2026-11-04T21:16:03.677518+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/95477319-a4f3-4649-94c8-964789ba8df2", "antigravity.google/conversation_id": "95477319-a4f3-4649-94c8-964789ba8df2", "antigravity.google/root_conversation_id": "95477319-a4f3-4649-94c8-964789ba8df2", "progressToken": "cc587fb8-6334-403c-b3a7-5ea4194b638d:10"}}
-{"timestamp": "2026-11-04T21:16:03.715187+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/95477319-a4f3-4649-94c8-964789ba8df2", "antigravity.google/conversation_id": "95477319-a4f3-4649-94c8-964789ba8df2", "antigravity.google/root_conversation_id": "95477319-a4f3-4649-94c8-964789ba8df2", "progressToken": "cc587fb8-6334-403c-b3a7-5ea4194b638d:11"}}
+{"timestamp": "2026-11-04T21:14:38.288455+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a4", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:434"}}
+{"timestamp": "2026-11-04T21:14:42.554247+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a4", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:437"}}
+{"timestamp": "2026-11-04T21:16:03.677518+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a6", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a6", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a6", "progressToken": "cc587fb8-6334-403c-b3a7-5ea4194b638d:10"}}
+{"timestamp": "2026-11-04T21:16:03.715187+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a6", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a6", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a6", "progressToken": "cc587fb8-6334-403c-b3a7-5ea4194b638d:11"}}
 ```
 
 - **Verdict on T1**:
   - **Same PID?** **[VERIFIED - OBSERVED ON WIRE]**: YES (PID `863339`).
   - **Same `Mcp-Session-Id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172`).
-  - **Distinct `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`68681258-2a80-4d31-81e3-0bd436e3658d` vs `95477319-a4f3-4649-94c8-964789ba8df2`).
+  - **Distinct `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a4` vs `00000000-0000-4000-8000-0000000000a6`).
 
 ---
 
@@ -84,34 +84,34 @@
 
 | Conversation / Process | agy PID | Source Port(s) | `Mcp-Session-Id` | `conversation_id` | `root_conversation_id` |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| Process 1 (Conv X) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| Process 1 (Conv Y) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `95477319-a4f3-4649-94c8-964789ba8df2` | `95477319-a4f3-4649-94c8-964789ba8df2` |
-| Process 2 (Conv Z) | 901400 | 40817 | `3012c346-9c75-46c7-ad67-92d7f80b1db5` | `1ce0a972-2e71-4ca1-a0ec-20633765e43c` | `1ce0a972-2e71-4ca1-a0ec-20633765e43c` |
+| Process 1 (Conv X) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
+| Process 1 (Conv Y) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a6` | `00000000-0000-4000-8000-0000000000a6` |
+| Process 2 (Conv Z) | 901400 | 40817 | `3012c346-9c75-46c7-ad67-92d7f80b1db5` | `00000000-0000-4000-8000-0000000000a1` | `00000000-0000-4000-8000-0000000000a1` |
 
 #### Raw NDJSON Excerpts (T2 Process 2 Handshake & Tool Call)
 
 ```json
 {"timestamp": "2026-11-04T21:19:06.878825+00:00", "client_source_port": 40801, "agy_pid": 901400, "http_method": "POST", "jsonrpc_method": "server/discover", "mcp_session_id": null, "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"io.modelcontextprotocol/clientCapabilities": {"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true}}, "io.modelcontextprotocol/clientInfo": {"name": "antigravity-client", "version": "v1.0.0"}, "io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
 {"timestamp": "2026-11-04T21:19:06.892103+00:00", "client_source_port": 40801, "agy_pid": 901400, "http_method": "POST", "jsonrpc_method": "initialize", "mcp_session_id": "3012c346-9c75-46c7-ad67-92d7f80b1db5", "incoming_mcp_session_id": null, "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": null}
-{"timestamp": "2026-11-04T21:20:02.709031+00:00", "client_source_port": 40817, "agy_pid": 901400, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "3012c346-9c75-46c7-ad67-92d7f80b1db5", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/1ce0a972-2e71-4ca1-a0ec-20633765e43c", "antigravity.google/conversation_id": "1ce0a972-2e71-4ca1-a0ec-20633765e43c", "antigravity.google/root_conversation_id": "1ce0a972-2e71-4ca1-a0ec-20633765e43c", "progressToken": "4f85927c-738a-4a28-ad77-059a31c65378:6"}}
+{"timestamp": "2026-11-04T21:20:02.709031+00:00", "client_source_port": 40817, "agy_pid": 901400, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "3012c346-9c75-46c7-ad67-92d7f80b1db5", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a1", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a1", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a1", "progressToken": "4f85927c-738a-4a28-ad77-059a31c65378:6"}}
 ```
 
 - **Verdict on T2**:
   - **Different PID?** **[VERIFIED - OBSERVED ON WIRE]**: YES (PID `863339` vs PID `901400`).
   - **Different `Mcp-Session-Id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172` vs `3012c346-9c75-46c7-ad67-92d7f80b1db5`).
-  - **Different `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`1ce0a972-2e71-4ca1-a0ec-20633765e43c` vs `68681258-...` / `95477319-...`).
+  - **Different `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a1` vs `00000000-0000-4000-8000-0000000000a4` / `00000000-0000-4000-8000-0000000000a6`).
 
 ---
 
 ### T3: Restart and Resume
 
 - **Methodology**:
-  - Initial run executed under PID `684782` in Conversation X (`68681258-2a80-4d31-81e3-0bd436e3658d`).
+  - Initial run executed under PID `684782` in Conversation X (`00000000-0000-4000-8000-0000000000a4`).
   - User fully exited `agy`. Stub recorded HTTP `DELETE /mcp` from PID `684782` at `2026-11-04T21:12:21Z`.
   - Confirmed via `ss -tnp` and process table that no PID `684782` process remained.
   - User restarted and resumed via:
     ```bash
-    agy --project doppelganger --conversation 68681258-2a80-4d31-81e3-0bd436e3658d
+    agy --project doppelganger --conversation 00000000-0000-4000-8000-0000000000a4
     ```
   - New process started under PID `863339`.
   - Stub issued fresh UUID `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` on new `initialize`.
@@ -121,22 +121,22 @@
 
 | Phase | agy PID | Source Port(s) | `Mcp-Session-Id` | `conversation_id` | `root_conversation_id` |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| Pre-Restart (Conv X) | 684782 | 41173 (subagent) | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `68681258-2a80-4d31-81e3-0bd436e3658d` (root) | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| Post-Resume (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| Post-Resume (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
+| Pre-Restart (Conv X) | 684782 | 41173 (subagent) | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `00000000-0000-4000-8000-0000000000a4` (root) | `00000000-0000-4000-8000-0000000000a4` |
+| Post-Resume (Call 1) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
+| Post-Resume (Call 2) | 863339 | 43769 | `1be9c46c-fc43-4a63-95b2-0d3fd21a3172` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
 
 #### Raw NDJSON Excerpts (T3 Clean Shutdown & Resumed Invocations)
 
 ```json
 {"timestamp": "2026-11-04T21:12:21.257914+00:00", "client_source_port": 43995, "agy_pid": 684782, "http_method": "DELETE", "jsonrpc_method": null, "mcp_session_id": "ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": null}
 {"timestamp": "2026-11-04T21:14:14.684993+00:00", "client_source_port": 42937, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "initialize", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "incoming_mcp_session_id": null, "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": null}
-{"timestamp": "2026-11-04T21:14:38.288455+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:434"}}
-{"timestamp": "2026-11-04T21:14:42.554247+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:437"}}
+{"timestamp": "2026-11-04T21:14:38.288455+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a4", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:434"}}
+{"timestamp": "2026-11-04T21:14:42.554247+00:00", "client_source_port": 43769, "agy_pid": 863339, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "1be9c46c-fc43-4a63-95b2-0d3fd21a3172", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a4", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "1cb92301-0303-4763-a1be-8a38989338c7:437"}}
 ```
 
 - **Verdict on T3**:
-  - **Identical `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`68681258-2a80-4d31-81e3-0bd436e3658d`).
-  - **Identical `root_conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`68681258-2a80-4d31-81e3-0bd436e3658d`).
+  - **Identical `conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a4`).
+  - **Identical `root_conversation_id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`00000000-0000-4000-8000-0000000000a4`).
   - **New `Mcp-Session-Id`?** **[VERIFIED - OBSERVED ON WIRE]**: YES (`1be9c46c-fc43-4a63-95b2-0d3fd21a3172` vs `ff89a6ce-...`).
   - **New PID?** **[VERIFIED - OBSERVED ON WIRE]**: YES (PID `863339` vs `684782`).
 
@@ -145,27 +145,27 @@
 ### T4: Sub-Invocations
 
 - **Methodology**:
-  - Spawned child subagent (`1d67c7e0-40c0-4804-bded-7ddc91e33376`) from parent conversation X (`68681258-2a80-4d31-81e3-0bd436e3658d`) inside PID `684782`.
+  - Spawned child subagent (`00000000-0000-4000-8000-0000000000a2`) from parent conversation X (`00000000-0000-4000-8000-0000000000a4`) inside PID `684782`.
   - Subagent executed two consecutive tool calls (`handle="subagent-test"`, `handle="subagent-call-2"`).
 
 #### T4 Results Table
 
 | Call | Method | Client Port | agy PID | `Mcp-Session-Id` | `conversation_id` | `root_conversation_id` | `parent_conversation_id` |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Call 1 | `tools/call` (`a2a_hello`) | 41173 | 684782 | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `1d67c7e0-40c0-4804-bded-7ddc91e33376` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
-| Call 2 | `tools/call` (`a2a_hello`) | 41173 | 684782 | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `1d67c7e0-40c0-4804-bded-7ddc91e33376` | `68681258-2a80-4d31-81e3-0bd436e3658d` | `68681258-2a80-4d31-81e3-0bd436e3658d` |
+| Call 1 | `tools/call` (`a2a_hello`) | 41173 | 684782 | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `00000000-0000-4000-8000-0000000000a2` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
+| Call 2 | `tools/call` (`a2a_hello`) | 41173 | 684782 | `ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a` | `00000000-0000-4000-8000-0000000000a2` | `00000000-0000-4000-8000-0000000000a4` | `00000000-0000-4000-8000-0000000000a4` |
 
 #### Raw NDJSON Excerpts (T4)
 
 ```json
-{"timestamp": "2026-11-04T21:06:12.133361+00:00", "client_source_port": 41173, "agy_pid": 684782, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/1d67c7e0-40c0-4804-bded-7ddc91e33376", "antigravity.google/conversation_id": "1d67c7e0-40c0-4804-bded-7ddc91e33376", "antigravity.google/parent_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "0f341f39-3970-49b9-8996-d0400b21a344:3"}}
-{"timestamp": "2026-11-04T21:07:38.163254+00:00", "client_source_port": 41173, "agy_pid": 684782, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/1d67c7e0-40c0-4804-bded-7ddc91e33376", "antigravity.google/conversation_id": "1d67c7e0-40c0-4804-bded-7ddc91e33376", "antigravity.google/parent_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "antigravity.google/root_conversation_id": "68681258-2a80-4d31-81e3-0bd436e3658d", "progressToken": "0f341f39-3970-49b9-8996-d0400b21a344:12"}}
+{"timestamp": "2026-11-04T21:06:12.133361+00:00", "client_source_port": 41173, "agy_pid": 684782, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a2", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a2", "antigravity.google/parent_conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "0f341f39-3970-49b9-8996-d0400b21a344:3"}}
+{"timestamp": "2026-11-04T21:07:38.163254+00:00", "client_source_port": 41173, "agy_pid": 684782, "http_method": "POST", "jsonrpc_method": "tools/call", "mcp_session_id": "ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a", "user_agent": "Go-http-client/1.1", "authorization_present": "yes", "params_meta": {"antigravity.google/artifacts_dir": "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a2", "antigravity.google/conversation_id": "00000000-0000-4000-8000-0000000000a2", "antigravity.google/parent_conversation_id": "00000000-0000-4000-8000-0000000000a4", "antigravity.google/root_conversation_id": "00000000-0000-4000-8000-0000000000a4", "progressToken": "0f341f39-3970-49b9-8996-d0400b21a344:12"}}
 ```
 
 - **Verdict on T4**:
-  - `root_conversation_id` matches parent Conversation X (`68681258-2a80-4d31-81e3-0bd436e3658d`).
-  - `parent_conversation_id` matches parent Conversation X (`68681258-2a80-4d31-81e3-0bd436e3658d`).
-  - `conversation_id` uniquely identifies the subagent (`1d67c7e0-40c0-4804-bded-7ddc91e33376`).
+  - `root_conversation_id` matches parent Conversation X (`00000000-0000-4000-8000-0000000000a4`).
+  - `parent_conversation_id` matches parent Conversation X (`00000000-0000-4000-8000-0000000000a4`).
+  - `conversation_id` uniquely identifies the subagent (`00000000-0000-4000-8000-0000000000a2`).
   - Both tool calls reuse the same process-level `Mcp-Session-Id` (`ff89a6ce-ebec-4f85-b9f7-ceca88d6e26a`).
 
 ---
@@ -212,7 +212,7 @@ from socketserver import ThreadingMixIn
 
 PORT = 18126
 BEARER_TOKEN = "spike-token"
-LOG_FILE = "~/.gemini/antigravity-cli/brain/68681258-2a80-4d31-81e3-0bd436e3658d/scratch/stub_requests.jsonl"
+LOG_FILE = "~/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-0000000000a4/scratch/stub_requests.jsonl"
 
 def lookup_pid(client_port):
     """Query ss -tnp to find PID associated with client port while connection is live."""
@@ -553,10 +553,10 @@ if __name__ == "__main__":
 
 Review of sections 1 to 4, which are unchanged.
 
-- **Verdict: the results are solid.** The evidence is raw NDJSON from a stub that issues a fresh `Mcp-Session-Id` per `initialize`. PIDs 863339 (the resumed conversation 68681258) and 901400 (the separate process) were still live when Claude Code checked, consistent with the report.
+- **Verdict: the results are solid.** The evidence is raw NDJSON from a stub that issues a fresh `Mcp-Session-Id` per `initialize`. PIDs 863339 (the resumed conversation 00000000-0000-4000-8000-0000000000a4) and 901400 (the separate process) were still live when Claude Code checked, consistent with the report.
 - **T1 (same process, `/clear`):** one `Mcp-Session-Id` shared across two conversations in one agy process, with different `conversation_id` values. `Mcp-Session-Id` is therefore process-scoped on the wire, which also confirms the section 1.5 claim of the A6 results file. [verified]
 - **T2 (separate processes):** each process has its own `Mcp-Session-Id` and `conversation_id`. [verified]
 - **T3 (exit and resume):** after a full exit (`DELETE /mcp` seen) and `agy --conversation <id>`, `conversation_id` and `root_conversation_id` are identical, with a new `Mcp-Session-Id` and a new PID. [verified]
-  - Minor caveat: the T3 pre-restart row is taken from a subagent call. Its `conversation_id` was the subagent's (`1d67c7e0-...`); the `68681258-...` shown there is the root id. Stability is still demonstrated, because the resume used `agy --conversation 68681258-...` and the post-resume calls carried exactly that `conversation_id`.
+  - Minor caveat: the T3 pre-restart row is taken from a subagent call. Its `conversation_id` was the subagent's (`00000000-0000-4000-8000-0000000000a7`); the `00000000-0000-4000-8000-0000000000a4` shown there is the root id. Stability is still demonstrated, because the resume used `agy --conversation 00000000-0000-4000-8000-0000000000a4` and the post-resume calls carried exactly that `conversation_id`.
 - **T4 (subagent):** the subagent's calls carry its own `conversation_id`, plus `root_conversation_id` and `parent_conversation_id` equal to the parent's. [verified]
 - **Consequence for the design:** the agy handle binds to `conversation_id` (not to `Mcp-Session-Id`), background or sub-invocations group under the parent by `root_conversation_id`, and `parent_conversation_id` is recorded. `/clear` in agy starts a new conversation, so it gets a new handle. SP2 A1 and A4 are answered for agy.

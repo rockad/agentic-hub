@@ -14,7 +14,7 @@ Purpose: let two live, interactive sessions (Claude Code and Antigravity) see wh
 
 ## 2. File contract
 
-- Location: `~/.agents/heartbeat/<harness>-<session8>.json`, for example `claude-012hq2t9.json`, `agy-8343b610.json`. One file per live session, never shared.
+- Location: `~/.agents/heartbeat/<harness>-<session8>.json`, for example `claude-012hq2t9.json`, `agy-00000000.json`. One file per live session, never shared.
 - Written atomically: write a temp file in the same directory, then `rename`. Readers never see a partial file.
 - Content (JSON, no secrets, no prompt or file contents):
 

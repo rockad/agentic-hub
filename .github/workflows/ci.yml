@@ -25,6 +25,11 @@ jobs:
       - name: Check Standalone Skills Are In Claude Marketplace
         run: bash scripts/check-skills-marketplace.sh
 
+      - name: Check Public Leaks
+        run: |
+          command -v rg >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ripgrep; }
+          bash scripts/check-public-leaks.sh
+
       - name: Test Jev Plugin
         run: |
           cd plugins/jev

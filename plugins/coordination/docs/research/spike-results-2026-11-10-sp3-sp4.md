@@ -49,7 +49,7 @@ Result: **PASS across all SP3 gate items (P1, P3, P4, P5); RECORDED across all S
 | **SP3 Gate** | P4 (Dedupe & Persistence) | **PASS** | Dedupe rule prevents re-announcement; announce sequence `[2,3,2]` on counts 2,2,3,0,2; stale-state bug fixed. | `pre-session2.jsonl`; transcript `60caa774` |
 | **SP3 Gate** | P5 (Failure Behavior) | **PASS** | All 6 failure modes fail open; model call proceeds; zero turn blocks; zero user errors; no orphans. | transcript logs; `notes-sp3-sp4.md` L51-L58 |
 | SP3 Record | P1b (System dedupe) | **RECORDED** | 5 of 5 trials passed; announced exactly once per turn with dedupe on. | `pre-session2.jsonl`; `stub-sp3.jsonl` |
-| SP3 Record | P1r (Resume) | **RECORDED** | Resume does not re-fire `SessionStart`; `PreInvocation` fires and announces pending mail. | transcript `3304b77d`; `session.log` |
+| SP3 Record | P1r (Resume) | **RECORDED** | Resume does not re-fire `SessionStart`; `PreInvocation` fires and announces pending mail. | transcript `00000000`; `session.log` |
 | SP3 Record | P2 (Frequency & Keys) | **RECORDED** | Hook fires once per no-tool turn; once per model call on tool turns; fires on first model call. | `pre-session2.jsonl` conv `70982c5b` |
 | SP3 Record | P6 (Default Timeout) | **RECORDED** | No `timeout` set: agy waited ~31.5 s; hook ran to completion (35 s, not killed); no orphan. | transcript `4886c5b0`; `pre-sp3-final.jsonl` |
 | SP3 Record | P7 (Wording) | **RECORDED** | Both ephemeral and system wording attributed to hooks/system; neither mistaken for user instruction. | transcripts `c18b924e`, `38f7bbaf` |
@@ -115,7 +115,7 @@ Result: **PASS across all SP3 gate items (P1, P3, P4, P5); RECORDED across all S
 | b2 | `41adf84f` | Announced once (inv 0 of 3) | 2 `SYSTEM_MESSAGE` | `19:29:41.229Z` (RID 235) | `antigravity@<workstation>/41adf84f` | "Helsinki." |
 | b3 | `7df44d0a` | Announced once (inv 0 of 10)| 2 `SYSTEM_MESSAGE` | `19:32:29.620Z` (RID 248) | `antigravity@<workstation>/7df44d0a` | "Helsinki." |
 | b4 | `1fd84d93` | Announced once (inv 0 of 3) | 2 `SYSTEM_MESSAGE` | `19:34:55.772Z` (RID 270) | `antigravity@<workstation>/1fd84d93` | "Helsinki." |
-| b5 | `3304b77d` | Announced once (inv 0 of 2) | 2 `SYSTEM_MESSAGE` | `19:37:19.349Z` (RID 285) | `antigravity@<workstation>/3304b77d` | "Helsinki." |
+| b5 | `00000000` | Announced once (inv 0 of 2) | 2 `SYSTEM_MESSAGE` | `19:37:19.349Z` (RID 285) | `antigravity@<workstation>/00000000` | "Helsinki." |
 
 - **Trial Count:** **5 of 5 passed**.
 - **Pass / Fail:** **PASS (RECORDED)**.
@@ -126,7 +126,7 @@ Result: **PASS across all SP3 gate items (P1, P3, P4, P5); RECORDED across all S
 ### P1r: Resume Across CLI Restarts
 
 - **Setup:**
-  - Resumed conversation `3304b77d` using `agy --conversation 3304b77d-303d-4f4b-ba64-ff30c4fa2f79` (**verified**).
+  - Resumed conversation `00000000` using `agy --conversation 00000000-0000-4000-8000-0000000000b1` (**verified**).
   - Pending set to 3; `hook-kind=ephemeral`, dedupe off (**verified**).
   - Prompt: "What is 2 plus 2? Answer with the number only." (**verified**).
 - **Observed Behavior:**
@@ -134,13 +134,13 @@ Result: **PASS across all SP3 gate items (P1, P3, P4, P5); RECORDED across all S
   - `SessionStart` does **not** re-fire upon resuming an existing conversation (**verified**).
   - `PreInvocation` fired immediately on the first model invocation of the resumed turn (4 times, announced `n=3`, **verified**).
   - `EPHEMERAL_MESSAGE` `[a2a] 3 pending. Call a2a_inbox.` was injected into the transcript (**verified**).
-  - Model called `a2a_inbox` on the wire at `19:39:47.387Z` (RID 298), bound to `antigravity@<workstation>/3304b77d`, and replied "4" (**verified**).
+  - Model called `a2a_inbox` on the wire at `19:39:47.387Z` (RID 298), bound to `antigravity@<workstation>/00000000`, and replied "4" (**verified**).
 
 #### Table: P1r Resume Trial
 
 | Conversation ID | SessionStart Re-fired | PreInvocation Fired | Wire Call (UTC) | Bound Handle | Model Reply |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `3304b77d` | **No** (0 calls) | **Yes** (4 invocations, announced) | `19:39:47.387Z` | `antigravity@<workstation>/3304b77d` | "4" |
+| `00000000` | **No** (0 calls) | **Yes** (4 invocations, announced) | `19:39:47.387Z` | `antigravity@<workstation>/00000000` | "4" |
 
 - **Pass / Fail:** **PASS (RECORDED)**.
 - **Decision Consequence:** Because `SessionStart` never fires on resume, `PreInvocation` is the only automated mechanism that alerts a resumed session to pending messages.

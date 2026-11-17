@@ -41,7 +41,7 @@ export const selectModelInputSchema = strictObject({
 
 export const quotaToolDefinition: Tool = {
   name: 'jev_quota',
-  description: 'Report the live Antigravity (Google AI Pro) quota view across all buckets (gemini-5h, gemini-weekly, 3p-5h, 3p-weekly), reset-aware, and return a spending strategy: "normal" | "conserve" | "free_only" | "unknown". Use it to decide whether to keep working on Gemini tiers or offload to openrouter/free. May be stale when Antigravity is closed.',
+  description: 'Report the live Antigravity subscription quota view across all buckets (gemini-5h, gemini-weekly, 3p-5h, 3p-weekly), reset-aware, and return a spending strategy: "normal" | "conserve" | "free_only" | "unknown". Use it to decide whether to keep working on Gemini tiers or offload to openrouter/free. May be stale when Antigravity is closed.',
   inputSchema: inputJsonSchema(quotaInputSchema)
 };
 

@@ -1,6 +1,6 @@
 {
-  "artifactDirectoryPath": "/tmp/brain/c748a0c1-c36b-4488-9904-887973f4e912",
-  "conversationId": "c748a0c1-c36b-4488-9904-887973f4e912",
+  "artifactDirectoryPath": "/tmp/brain/00000000-0000-4000-8000-000000000002",
+  "conversationId": "00000000-0000-4000-8000-000000000002",
   "cwd": "/tmp/agy-part1-ask",
   "error": "",
   "hookEventName": "PostToolUse",
@@ -25,7 +25,7 @@
     "id": "call_8476515359677723323",
     "name": "ask_question"
   },
-  "transcriptPath": "/tmp/brain/c748a0c1-c36b-4488-9904-887973f4e912/.system_generated/logs/transcript_full.jsonl",
+  "transcriptPath": "/tmp/brain/00000000-0000-4000-8000-000000000002/.system_generated/logs/transcript_full.jsonl",
   "workspacePaths": [
     "/tmp/agy-part1-ask"
   ]

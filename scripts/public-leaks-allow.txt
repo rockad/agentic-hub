@@ -1,0 +1,5 @@
+# Allowlist for scripts/check-public-leaks.sh. Keep this minimal and justify each entry.
+# Format, one per line: <repo-relative path>:<exact matched text>
+# Blank lines and lines starting with # are ignored.
+# Example (do not enable without a reason):
+#   docs/example.md:/home/someone

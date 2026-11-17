@@ -728,9 +728,10 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
     }
   });
 
-  it('reads answer from a real transcript over 1 MB when step is at the end (real check)', () => {
-    const realSource = '/home/rockad/.gemini/antigravity-cli/brain/06b5e0c4-25b4-4f5c-9308-c9b85e316c60/.system_generated/logs/transcript_full.jsonl';
-    if (!fs.existsSync(realSource)) return;
+  it('reads answer from a real transcript over 1 MB when step is at the end (real check, set JEV_REAL_TRANSCRIPT)', () => {
+    // Opt-in: point JEV_REAL_TRANSCRIPT at a real transcript_full.jsonl larger than 1 MB.
+    const realSource = process.env.JEV_REAL_TRANSCRIPT;
+    if (!realSource || !fs.existsSync(realSource)) return;
     const stat = fs.statSync(realSource);
     if (stat.size <= 1024 * 1024) return;
 

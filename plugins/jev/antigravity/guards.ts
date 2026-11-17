@@ -147,6 +147,42 @@ export function commitIncludesWorkingTree(cmd: string): boolean {
 }
 
 /**
+ * Resolve the target repository directory for a `git ... commit` command when `git -C <dir>` or a preceding
+ * `cd <dir>` targets a directory other than `baseCwd` (Antigravity sets `input.cwd` to the workspace root).
+ */
+export function resolveGitCwd(cmd: string, baseCwd: string): string {
+  const stripQuotes = (s: string) => {
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      return s.slice(1, -1);
+    }
+    return s;
+  };
+  const expandHome = (p: string) =>
+    p === '~' ? jevHomeDir() : p.startsWith('~/') ? path.join(jevHomeDir(), p.slice(2)) : p;
+
+  let resolved = baseCwd;
+  // Find the segment containing `git ... commit` (plus an optional `cd <dir>` right before it in the same command).
+  const cdBeforeGit = /\bcd\s+("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*git\b/g;
+  for (const m of cmd.matchAll(cdBeforeGit)) {
+    const dir = expandHome(stripQuotes(m[1]));
+    const candidate = path.resolve(resolved, dir);
+    if (fsSync.existsSync(candidate)) resolved = candidate;
+  }
+
+  const dashC = /\bgit\s+(?:(?!&&|\|\||;|\||\n)[^])*?-C\s+("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|]+)/g;
+  for (const m of cmd.matchAll(dashC)) {
+    // Only apply -C from git invocations that are commit or add
+    const seg = m[0];
+    if (/\bcommit\b|\badd\b/.test(seg) || /\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*-C\b/.test(seg)) {
+      const dir = expandHome(stripQuotes(m[1]));
+      const candidate = path.resolve(baseCwd, dir);
+      if (fsSync.existsSync(candidate)) resolved = candidate;
+    }
+  }
+  return resolved;
+}
+
+/**
  * Whether `targetPath` falls under an exempt path. A pattern is matched as path SEGMENTS: `plans/` exempts
  * `plans/x.md` and `a/plans/x.md` but not `src/xplans/x.md`. A pattern with a trailing slash matches directory
  * segments only (not the file name). Backslashes count as separators.
@@ -297,11 +333,13 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
       // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
       // so the diff is taken against HEAD instead of --cached.
       const includesWorkingTree = commitIncludesWorkingTree(cmd);
-      const cwd = input.cwd || process.cwd();
+      const cwd = resolveGitCwd(cmd, input.cwd || process.cwd());
       const deadline = Date.now() + GIT_DIFF_TIMEOUT_MS;
+      const sid = safeSessionId(input.conversationId || input.sessionId || '') || null;
       try {
         const diff = runGit([...PLAIN_DIFF_ARGS, includesWorkingTree ? 'HEAD' : '--cached'], cwd, GIT_DIFF_TIMEOUT_MS);
         if (hasConflictMarkers(diff)) {
+          appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: includesWorkingTree ? 'working_tree' : 'staged' });
           return {
             decision: 'deny',
             reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the ${includesWorkingTree ? 'working-tree' : 'staged'} diff. Resolve conflicts before committing.`
@@ -309,7 +347,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
         }
       } catch {
         // Fail open on any git error (no repository, no HEAD yet, timeout, oversized diff), and leave a trace.
-        appendGuardLog({ event: 'commit_gate', outcome: 'git_error' });
+        appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error' });
       }
       // The hook runs before the command, so a file the same line `git add`s may still be untracked, and no diff
       // shows untracked files: scan them directly. Runs even when the diff failed (a repository with no HEAD yet).
@@ -317,6 +355,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
         try {
           const scan = scanUntrackedForConflicts(cwd, deadline);
           if (scan.kind === 'conflict') {
+            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: 'untracked' });
             return {
               decision: 'deny',
               reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the untracked file ${scan.file}, which this command may add. Resolve conflicts before committing.`
@@ -448,6 +487,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
 
     // Check limit
     if (guardData.files.length >= limit) {
+      appendGuardLog({ event: 'write_guard', session_id: convId, outcome: 'deny', count: guardData.files.length, limit });
       return {
         decision: 'deny',
         reason: `[jev] Post-Approval Transition Gate: You are editing multiple files (>= ${limit}) without a recent jev_dispatch, jev_batch_dispatch, or subagent delegation in the last 15 minutes. Call jev_batch_dispatch (or jev_dispatch) and delegate parallel workstreams first.`

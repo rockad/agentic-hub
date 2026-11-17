@@ -256,6 +256,17 @@ describe('antigravity guards (guards.ts)', () => {
 
   const CONFLICT_BLOCK = 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n';
 
+  it('commit gate: resolves git -C and cd target directory when input.cwd is a different repo', async () => {
+    const { dir: cleanDir } = makeRepo('clean-ws');
+    const { dir: targetDir, git: targetGit } = makeRepo('dash-c-other-cwd');
+    fs.writeFileSync(path.join(targetDir, 'c.txt'), CONFLICT_BLOCK);
+    targetGit('add c.txt');
+    expect((await evaluatePreToolGuards(commitInput(cleanDir, `git -C ${targetDir} commit -m "x"`))).decision).toBe('deny');
+    expect((await evaluatePreToolGuards(commitInput(cleanDir, `cd ${targetDir} && git commit -m "x"`))).decision).toBe('deny');
+    const denyRows = readDecisions().filter((r) => r.event === 'commit_gate' && r.outcome === 'deny');
+    expect(denyRows.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('commit gate: color.ui = always in the git config does not hide staged markers', async () => {
     const { dir, git } = makeRepo('color-repo');
     git('config color.ui always');

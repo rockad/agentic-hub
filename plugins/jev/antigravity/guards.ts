@@ -5,7 +5,7 @@
  */
 import * as path from 'node:path';
 import * as fsSync from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
   readJevMode,
   safeSessionId,
@@ -20,7 +20,7 @@ import {
   PRIVATE_FILE_MODE,
   type AntigravitySessionRecord
 } from '../src/shared.js';
-import { readRegularFile, readRegularFileTail } from '../claude/safe-read.js';
+import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 
 /** Added opening or closing conflict-marker lines only (a diff line starts with `+`). */
 export const CONFLICT_MARKER_RE = /^\+(<<<<<<< |>>>>>>> )/m;
@@ -41,6 +41,65 @@ const GIT_ADD_RE = new RegExp(GIT_PREFIX + String.raw`add\b`);
 
 const GIT_DIFF_TIMEOUT_MS = 3000;
 const GIT_DIFF_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * Diff options that keep the output a plain unified diff whatever the user's git config says: `color.ui = always`
+ * would put an escape sequence before each `+`, `diff.external` / GIT_EXTERNAL_DIFF would replace the diff with an
+ * external program's output, and a textconv driver would rewrite the content.
+ */
+const PLAIN_DIFF_ARGS = ['--no-pager', 'diff', '--no-color', '--no-ext-diff', '--no-textconv'];
+
+/** Untracked-file scan limits (a `git add` on the same command line can stage files `git diff` never shows). */
+const UNTRACKED_MAX_FILES = 2000;
+const UNTRACKED_FILE_MAX_BYTES = 1024 * 1024;
+
+/** In a whole file (not a diff), an opening or closing conflict-marker line. */
+const FILE_CONFLICT_MARKER_RE = /^(<<<<<<< |>>>>>>> )/m;
+
+function runGit(args: string[], cwd: string, timeout: number): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: Math.max(1, timeout),
+    maxBuffer: GIT_DIFF_MAX_BUFFER
+  });
+}
+
+export type UntrackedScan =
+  | { kind: 'clean' }
+  | { kind: 'conflict'; file: string }
+  | { kind: 'limit'; reason: 'files' | 'bytes' | 'time' };
+
+/**
+ * Scan the repository's untracked, non-ignored files for conflict markers, bounded by file count, total bytes and
+ * the git timeout. Paths come from the repository root, so a command run in a subdirectory still sees `git add -A`'s
+ * whole scope. Symlinks, non-regular, binary (NUL in the first 8 KiB) and oversized files are skipped, matching what
+ * `git diff` would show as text. Throws on a git error (the caller fails open and logs).
+ */
+export function scanUntrackedForConflicts(cwd: string, deadline: number): UntrackedScan {
+  const top = runGit(['rev-parse', '--show-toplevel'], cwd, deadline - Date.now()).trim();
+  const listing = runGit(['ls-files', '--others', '--exclude-standard', '-z'], top, deadline - Date.now());
+  const files = listing.split('\0').filter((f) => f.length > 0);
+  if (files.length > UNTRACKED_MAX_FILES) return { kind: 'limit', reason: 'files' };
+  let total = 0;
+  for (const rel of files) {
+    if (Date.now() > deadline) return { kind: 'limit', reason: 'time' };
+    const abs = path.join(top, rel);
+    try {
+      if (!fsSync.lstatSync(abs).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const read = readRegularFileHead(abs, UNTRACKED_FILE_MAX_BYTES);
+    if (read.kind !== 'ok' || read.truncated) continue;
+    total += read.size;
+    if (total > GIT_DIFF_MAX_BUFFER) return { kind: 'limit', reason: 'bytes' };
+    if (read.text.slice(0, 8192).includes('\0')) continue;
+    if (FILE_CONFLICT_MARKER_RE.test(read.text)) return { kind: 'conflict', file: rel };
+  }
+  return { kind: 'clean' };
+}
 
 function jevConfigDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -69,8 +128,17 @@ function appendGuardLog(entry: Record<string, unknown>): void {
  * commit message such as "fix -a flag" is not read as a flag, and only the `git commit ...` segment (up to the next
  * command separator) is searched for flags.
  */
+function dropQuoted(cmd: string): string {
+  return cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+}
+
+/** Whether the command line also runs `git add` (quoted strings ignored). */
+export function commandRunsGitAdd(cmd: string): boolean {
+  return GIT_ADD_RE.test(dropQuoted(cmd));
+}
+
 export function commitIncludesWorkingTree(cmd: string): boolean {
-  const unquoted = cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+  const unquoted = dropQuoted(cmd);
   if (GIT_ADD_RE.test(unquoted)) return true;
   const m = new RegExp(GIT_PREFIX + String.raw`commit\b([^;&|\n]*)`).exec(unquoted);
   if (!m) return false;
@@ -229,15 +297,10 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
       // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
       // so the diff is taken against HEAD instead of --cached.
       const includesWorkingTree = commitIncludesWorkingTree(cmd);
+      const cwd = input.cwd || process.cwd();
+      const deadline = Date.now() + GIT_DIFF_TIMEOUT_MS;
       try {
-        const cwd = input.cwd || process.cwd();
-        const diff = execSync(includesWorkingTree ? 'git diff HEAD' : 'git diff --cached', {
-          cwd,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: GIT_DIFF_TIMEOUT_MS,
-          maxBuffer: GIT_DIFF_MAX_BUFFER
-        });
+        const diff = runGit([...PLAIN_DIFF_ARGS, includesWorkingTree ? 'HEAD' : '--cached'], cwd, GIT_DIFF_TIMEOUT_MS);
         if (hasConflictMarkers(diff)) {
           return {
             decision: 'deny',
@@ -247,6 +310,24 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
       } catch {
         // Fail open on any git error (no repository, no HEAD yet, timeout, oversized diff), and leave a trace.
         appendGuardLog({ event: 'commit_gate', outcome: 'git_error' });
+      }
+      // The hook runs before the command, so a file the same line `git add`s may still be untracked, and no diff
+      // shows untracked files: scan them directly. Runs even when the diff failed (a repository with no HEAD yet).
+      if (commandRunsGitAdd(cmd)) {
+        try {
+          const scan = scanUntrackedForConflicts(cwd, deadline);
+          if (scan.kind === 'conflict') {
+            return {
+              decision: 'deny',
+              reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the untracked file ${scan.file}, which this command may add. Resolve conflicts before committing.`
+            };
+          }
+          if (scan.kind === 'limit') {
+            appendGuardLog({ event: 'commit_gate', outcome: 'untracked_limit', reason: scan.reason });
+          }
+        } catch {
+          appendGuardLog({ event: 'commit_gate', outcome: 'git_error', stage: 'untracked' });
+        }
       }
     }
     return { decision: 'allow' };

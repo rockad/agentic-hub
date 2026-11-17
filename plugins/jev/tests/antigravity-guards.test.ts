@@ -254,6 +254,60 @@ describe('antigravity guards (guards.ts)', () => {
     expect((await evaluatePreToolGuards(commitInput(dir, 'git commit --amend --no-edit'))).decision).toBe('allow');
   });
 
+  const CONFLICT_BLOCK = 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n';
+
+  it('commit gate: color.ui = always in the git config does not hide staged markers', async () => {
+    const { dir, git } = makeRepo('color-repo');
+    git('config color.ui always');
+    git('config color.diff always');
+    fs.writeFileSync(path.join(dir, 'f.txt'), CONFLICT_BLOCK);
+    git('add f.txt');
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m x'))).decision).toBe('deny');
+  });
+
+  it('commit gate: diff.external and a textconv driver do not replace the diff', async () => {
+    const { dir, git } = makeRepo('extdiff-repo');
+    git('config diff.external true');
+    fs.writeFileSync(path.join(dir, 'f.txt'), CONFLICT_BLOCK);
+    git('add f.txt');
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -m x'))).decision).toBe('deny');
+
+    const { dir: dir2, git: git2 } = makeRepo('textconv-repo');
+    git2('config diff.blank.textconv "sh -c true"');
+    fs.writeFileSync(path.join(dir2, '.gitattributes'), '*.txt diff=blank\n');
+    fs.writeFileSync(path.join(dir2, 'f.txt'), CONFLICT_BLOCK);
+    git2('add .gitattributes f.txt');
+    expect((await evaluatePreToolGuards(commitInput(dir2, 'git commit -m x'))).decision).toBe('deny');
+  });
+
+  it('commit gate: a new untracked file added on the same line is scanned', async () => {
+    const { dir, git } = makeRepo('untracked-repo');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    git('add a.txt');
+    git('commit -m init');
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.writeFileSync(path.join(dir, 'sub', 'f.txt'), CONFLICT_BLOCK); // untracked
+
+    const res = await evaluatePreToolGuards(commitInput(dir, 'git add sub/f.txt && git commit -m x'));
+    expect(res.decision).toBe('deny');
+    expect(res.reason).toContain('sub/f.txt');
+    // Run from a subdirectory with `git add -A`: the scan still covers the whole repository.
+    fs.renameSync(path.join(dir, 'sub', 'f.txt'), path.join(dir, 'g.txt'));
+    expect((await evaluatePreToolGuards(commitInput(path.join(dir, 'sub'), 'git add -A && git commit -m x'))).decision).toBe('deny');
+    // Without a `git add`, an untracked file is not part of the commit.
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git commit -am x'))).decision).toBe('allow');
+    // Ignored files and a setext heading in an untracked file are not blocked.
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'g.txt\n');
+    fs.writeFileSync(path.join(dir, 'doc.md'), 'Title\n=======\nBody.\n');
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git add -A && git commit -m x'))).decision).toBe('allow');
+  });
+
+  it('commit gate: an untracked file in a repository with no commit yet is still scanned', async () => {
+    const { dir } = makeRepo('fresh-untracked-repo');
+    fs.writeFileSync(path.join(dir, 'f.txt'), CONFLICT_BLOCK);
+    expect((await evaluatePreToolGuards(commitInput(dir, 'git add f.txt && git commit -m x'))).decision).toBe('deny');
+  });
+
   it('commit gate: a git error passes through and logs commit_gate / git_error', async () => {
     const notRepo = path.join(tmpHome, 'not-a-repo');
     fs.mkdirSync(notRepo, { recursive: true });

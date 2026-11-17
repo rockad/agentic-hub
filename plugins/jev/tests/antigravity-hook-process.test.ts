@@ -557,4 +557,48 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(entry.requested_model).toBe('pro');
     expect(entry.served_model).toBe('gemini-3.8-pro-preview');
   });
+
+  it('defers and backfills subagent_served when PostToolUse runs before transcript rows flush', () => {
+    const parentId = '00000000-0000-4000-8000-000000000010';
+    const childId = 'b1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const parentTranscript = path.join(home, 'parent-transcript.jsonl');
+    fs.writeFileSync(parentTranscript, '{"step_index":0,"type":"USER_INPUT","content":"hi"}\n');
+
+    // PostToolUse runs before stepIdx 1 is flushed
+    const postRes = run('post-tool-use', {
+      conversationId: parentId,
+      stepIdx: 1,
+      transcriptPath: parentTranscript,
+      toolCall: { id: 'call_sub_1', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'pro' } }
+    });
+    expect(postRes.exitCode).toBe(0);
+
+    // Now parent transcript flushes step 1 and child transcript flushes its first model row
+    fs.appendFileSync(
+      parentTranscript,
+      JSON.stringify({ step_index: 1, type: 'GENERIC', content: `Created subagent ${childId}` }) + '\n'
+    );
+    const brainLogs = path.join(home, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+    fs.mkdirSync(brainLogs, { recursive: true });
+    fs.writeFileSync(
+      path.join(brainLogs, 'transcript_full.jsonl'),
+      '{"step_index":0,"type":"EPHEMERAL_MESSAGE","model":null}\n{"step_index":1,"type":"PLANNER_RESPONSE","model":"gemini-4-hydrogen-tiered-xhigh"}\n'
+    );
+
+    // Next hook invocation flushes the pending served entry
+    const nextRes = run('pre-tool-use', {
+      conversationId: parentId,
+      modelName: 'gemini-4-hydrogen-high',
+      toolCall: { id: 'call_sub_2', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'flash' } }
+    });
+    expect(nextRes.exitCode).toBe(0);
+
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const entries = fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const served = entries.find((e) => e.event === 'subagent_served' && e.child_conversation_id === childId);
+    expect(served).toBeDefined();
+    expect(served.served_model).toBe('gemini-4-hydrogen-tiered-xhigh');
+    expect(served.requested_model).toBe('pro');
+    expect(served.backfilled).toBe(true);
+  });
 });

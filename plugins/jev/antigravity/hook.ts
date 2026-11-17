@@ -21,6 +21,8 @@ import {
   pollForAskAnswer,
   extractChildConversationId,
   findServedModelFromTranscript,
+  recordPendingServed,
+  flushPendingServed,
   TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
   type AntigravityHookInput
@@ -146,6 +148,7 @@ async function main() {
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = createAntigravityApprovalStore(sessionsDir);
+    flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog);
 
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;
@@ -242,14 +245,25 @@ async function main() {
             // best-effort
           }
         }
-        appendDecisionLog({
-          event: 'subagent_served',
-          harness: 'antigravity',
-          session_id: conversationId,
-          child_conversation_id: childConvId || null,
-          requested_model: requestedModel || null,
-          served_model: servedModel || null
-        });
+        if ((childConvId && servedModel) || !conversationId || !input.transcriptPath || typeof input.stepIdx !== 'number') {
+          appendDecisionLog({
+            event: 'subagent_served',
+            harness: 'antigravity',
+            session_id: conversationId,
+            child_conversation_id: childConvId || null,
+            requested_model: requestedModel || null,
+            served_model: servedModel || null
+          });
+        } else {
+          recordPendingServed(sessionsDir, conversationId, {
+            stepIdx: input.stepIdx,
+            toolCallId: input.toolCall?.id,
+            requestedModel: requestedModel || null,
+            transcriptPath: input.transcriptPath,
+            childConvId: childConvId || null,
+            createdAt: Date.now()
+          });
+        }
 
         console.log('{}');
         process.exit(0);
@@ -309,7 +323,8 @@ async function main() {
       clamped_to: decision.clampedTo || null,
       reason: decision.reason || null,
       prompt_length: promptLength,
-      prompt_hash: promptHash
+      prompt_hash: promptHash,
+      ...(decision.pullFallback ? { pull_fallback: true } : {})
     });
 
     if (decision.decision === 'pass') {

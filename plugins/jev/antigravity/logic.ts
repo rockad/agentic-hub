@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -8,9 +9,11 @@ import {
   isOrchestratorModel,
   subagentCeilingRank,
   poolForTier,
+  safeSessionId,
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
+import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -46,6 +49,7 @@ export type AntigravityHookDecision = {
   approvalScope?: ApprovalScope;
   attemptCount?: number;
   clampedTo?: string;
+  pullFallback?: boolean;
 };
 
 export type AntigravityLogicDeps = {
@@ -677,7 +681,8 @@ export function evaluateAntigravitySubagentCall(
           return {
             decision: 'allow',
             elevation: 'approved',
-            approvalScope: pull.scope
+            approvalScope: pull.scope,
+            pullFallback: true
           };
         }
       }
@@ -789,4 +794,160 @@ export function findServedModelFromTranscript(
   }
 
   return null;
+}
+
+export type PendingServedRecord = {
+  stepIdx?: number;
+  toolCallId?: string;
+  requestedModel: string | null;
+  transcriptPath?: string;
+  childConvId?: string | null;
+  createdAt: number;
+};
+
+const PENDING_SERVED_TTL_MS = 3600 * 1000;
+const PENDING_SERVED_MAX_ITEMS = 20;
+
+export function readStepContentFromTranscript(
+  transcriptPath: string,
+  stepIdx?: number,
+  toolCallId?: string
+): string | null {
+  if (!transcriptPath || typeof stepIdx !== 'number') return null;
+  try {
+    const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
+    if (read.kind !== 'ok') return null;
+    let text = read.text;
+    if (read.truncated) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+    }
+    for (const line of text.trim().split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const step = JSON.parse(line);
+        if (step && typeof step === 'object' && step.step_index === stepIdx) {
+          const stepToolId = step.toolCallId ?? step.tool_call_id;
+          if (typeof stepToolId === 'string' && toolCallId && stepToolId !== toolCallId) {
+            continue;
+          }
+          if (typeof step.content === 'string') return step.content;
+          if (step.content && typeof step.content === 'object') return JSON.stringify(step.content);
+          if (typeof step.response === 'string') return step.response;
+          if (typeof step.result === 'string') return step.result;
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function pendingServedFile(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  if (!safe) return null;
+  return path.join(sessionsDir, `${safe}.pending-served.json`);
+}
+
+export function recordPendingServed(
+  sessionsDir: string,
+  sessionId: string,
+  entry: PendingServedRecord
+): void {
+  try {
+    const file = pendingServedFile(sessionsDir, sessionId);
+    if (!file) return;
+    privateDir(sessionsDir);
+    let existing: PendingServedRecord[] = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(raw)) existing = raw;
+    } catch {
+      // fresh
+    }
+    const now = entry.createdAt;
+    const kept = existing
+      .filter((e) => e && typeof e.createdAt === 'number' && now - e.createdAt <= PENDING_SERVED_TTL_MS)
+      .slice(-(PENDING_SERVED_MAX_ITEMS - 1));
+    kept.push(entry);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(kept) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp);
+    fs.renameSync(tmp, file);
+    privateFile(file);
+  } catch {
+    // best-effort
+  }
+}
+
+export function flushPendingServed(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  logFn: (entry: Record<string, unknown>) => void,
+  homedir = os.homedir(),
+  nowMs = Date.now()
+): void {
+  if (!sessionId) return;
+  const file = pendingServedFile(sessionsDir, sessionId);
+  if (!file) return;
+  try {
+    if (!fs.existsSync(file)) return;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    const remaining: PendingServedRecord[] = [];
+    let changed = false;
+
+    for (const item of raw as PendingServedRecord[]) {
+      if (!item || typeof item.createdAt !== 'number' || nowMs - item.createdAt > PENDING_SERVED_TTL_MS) {
+        changed = true;
+        continue;
+      }
+      let childConvId = item.childConvId ?? null;
+      if (!childConvId && item.transcriptPath) {
+        const content = readStepContentFromTranscript(item.transcriptPath, item.stepIdx, item.toolCallId);
+        if (content) {
+          childConvId = extractChildConversationId(content, sessionId);
+        }
+      }
+      let servedModel: string | null = null;
+      if (childConvId) {
+        servedModel = findServedModelFromTranscript(childConvId, homedir);
+      }
+      if (childConvId && servedModel) {
+        logFn({
+          event: 'subagent_served',
+          harness: 'antigravity',
+          session_id: sessionId,
+          child_conversation_id: childConvId,
+          requested_model: item.requestedModel ?? null,
+          served_model: servedModel,
+          backfilled: true
+        });
+        changed = true;
+      } else {
+        if (childConvId !== item.childConvId) {
+          item.childConvId = childConvId;
+          changed = true;
+        }
+        remaining.push(item);
+      }
+    }
+
+    if (changed) {
+      if (remaining.length === 0) {
+        fs.unlinkSync(file);
+      } else {
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(remaining) + '\n', { mode: PRIVATE_FILE_MODE });
+        privateFile(tmp);
+        fs.renameSync(tmp, file);
+        privateFile(file);
+      }
+    }
+  } catch {
+    // fail-open
+  }
 }

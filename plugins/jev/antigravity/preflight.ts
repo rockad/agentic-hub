@@ -20,8 +20,12 @@ import {
   taskFingerprint,
   fetchRecallMemory,
   safeSessionId,
+  privateDir,
+  privateFile,
+  PRIVATE_FILE_MODE,
   type QuotaView
 } from '../src/shared.js';
+import { flushPendingServed } from './logic.js';
 
 interface PreInvocationInput {
   conversationId?: string;
@@ -176,9 +180,29 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
       return;
     }
 
-    // 3. Persist live modelName
+    // 3. Persist live modelName & flush any deferred subagent_served entries
     if (modelName && modelName.trim().length > 0 && conversationId) {
       writeAntigravitySessionModel(conversationId, modelName.trim());
+    }
+    if (conversationId) {
+      const jevDir = process.env.JEV_CONFIG_FILE
+        ? path.dirname(process.env.JEV_CONFIG_FILE)
+        : path.join(os.homedir(), '.config', 'jev');
+      flushPendingServed(path.join(jevDir, 'antigravity-sessions'), conversationId, (entry) => {
+        try {
+          privateDir(jevDir);
+          const logFile = path.join(jevDir, 'antigravity_decisions.jsonl');
+          const line = JSON.stringify({
+            ...entry,
+            timestamp: new Date().toISOString(),
+            epoch: Math.floor(Date.now() / 1000)
+          }) + '\n';
+          fsSync.appendFileSync(logFile, line, { mode: PRIVATE_FILE_MODE });
+          privateFile(logFile);
+        } catch {
+          // fail open
+        }
+      });
     }
 
     // 4. Read quota view with conversationId

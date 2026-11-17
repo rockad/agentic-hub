@@ -11,8 +11,9 @@ FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0
 # tzdata makes TZ work (the nightly time is in the container's time zone). The client package
 # ships more tools than the sidecar needs; everything except pg_dump and pg_restore is removed
 # again, so what is installed is what the acceptance list names. The final line fails the build
-# if the client is not 17.x.
-RUN apk add --no-cache "postgresql17-client=~17.11" tzdata \
+# if the client is not 17.x. The pin is the major only: the Alpine repository keeps just the latest
+# 17.x patch, so a patch pin (=~17.11) stops building as soon as 17.12 ships.
+RUN apk add --no-cache "postgresql17-client=~17" tzdata \
  && find /usr/bin /usr/sbin /usr/libexec/postgresql17 \( -type f -o -type l \) \
       \( -name 'pg_*' -o -name 'psql' -o -name 'createdb' -o -name 'createuser' -o -name 'dropdb' \
          -o -name 'dropuser' -o -name 'clusterdb' -o -name 'reindexdb' -o -name 'vacuumdb' -o -name 'pgbench' \) \

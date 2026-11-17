@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Throwaway secrets
+      - name: Throwaway secrets and a CI card
         run: |
           echo "A2A_SECRETS_DIR=$RUNNER_TEMP/a2a-secrets" >> "$GITHUB_ENV"
           echo "A2A_UID=$(id -u)" >> "$GITHUB_ENV"
@@ -42,6 +42,10 @@ jobs:
           install -d -m 700 "$RUNNER_TEMP/a2a-secrets"
           (umask 077; openssl rand -hex 32 | tr -d '\n' > "$RUNNER_TEMP/a2a-secrets/a2a_db_password")
           (umask 077; openssl rand -hex 32 | tr -d '\n' > "$RUNNER_TEMP/a2a-secrets/pg_dump_password")
+          # One CI card: the repository's cards file is an empty placeholder, which card check reports.
+          echo "A2A_CONFIG_DIR=$RUNNER_TEMP/a2a-config" >> "$GITHUB_ENV"
+          install -d "$RUNNER_TEMP/a2a-config"
+          printf 'cards:\n  - name: ci@runner\n    description: CI smoke-test card.\n' > "$RUNNER_TEMP/a2a-config/cards.yaml"
 
       - name: Build the server image (runs the test suite inside the build)
         run: docker compose build coordination

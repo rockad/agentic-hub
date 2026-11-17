@@ -16,7 +16,7 @@ from a2a_helpers import (
     make_a2a_env,
 )
 from auth_helpers import make_config
-from conftest import run
+from conftest import PLUGIN_DIR, run
 
 from coordination.a2a import CardBuilder, CardsError, load_cards, parse_cards, sync_cards
 from coordination.a2a.cards import EXTENSION_URI, FRONT_DESK_NAME, card_json, deviation_sentence
@@ -162,10 +162,9 @@ def test_load_cards_reads_a_file_and_names_a_missing_one(tmp_path):
         load_cards(str(tmp_path / "missing.yaml"))
 
 
+@pytest.mark.skipif(not (PLUGIN_DIR / "config/cards.yaml").is_file(), reason="the config is outside the build context")
 def test_the_repository_cards_file_still_parses():
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parents[3] / "config" / "cards.yaml"
+    path = PLUGIN_DIR / "config" / "cards.yaml"
     assert load_cards(str(path)) is not None
 
 

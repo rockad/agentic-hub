@@ -8,6 +8,7 @@ empty or missing report blocks, and a malformed allowlist is refused instead of 
 from __future__ import annotations
 
 import pytest
+from conftest import PLUGIN_DIR
 from tck_support import (
     ALLOWLIST_FILE,
     TCK_COMMIT,
@@ -119,7 +120,9 @@ def test_the_allowlist_file_in_the_repository_is_well_formed_and_matches_the_pin
 
 def _tck_workflow():
     """The TCK workflow, `.github/workflows/coordination-tck.yml` at the repository root."""
-    repo_root = ALLOWLIST_FILE.parent.parents[5]
+    if not PLUGIN_DIR.is_dir():
+        pytest.skip("the repository is outside the build context")
+    repo_root = PLUGIN_DIR.parents[1]
     workflow = repo_root / ".github" / "workflows" / "coordination-tck.yml"
     assert workflow.is_file(), f"{workflow} is missing"
     return workflow

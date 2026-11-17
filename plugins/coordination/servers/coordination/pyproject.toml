@@ -26,6 +26,7 @@ a2a-coord = "coordination.cli:main"
 [dependency-groups]
 dev = [
     "httpx2>=2.16.0",  # Starlette's TestClient prefers it; httpx is deprecated there
+    "mcp>=2.3.0",  # S1-MCP: the official client, used only by tests/test_mcp_e2e.py; the server does not import it
     "pytest>=8.3",
 ]
 

@@ -1,0 +1,111 @@
+# Reviewed deviations from the A2A TCK (a2aproject/a2a-tck at the commit below).
+#
+# Rule (plan section 4.2, S1-A2A acceptance): a TCK failure that is not listed here blocks. A listed
+# test that does not fail also blocks (it is stale: remove it). Each entry is one exact test id
+# (JUnit `classname::name`, as the gate prints it), no wildcards.
+#
+# review: proposed  = written by the builder from a real run, not yet signed off.
+# review: reviewed  = the user has read the entry and accepts the deviation.
+# The user reviewed this list on 2026-11-16: all 13 entries are `reviewed`. Two entries of the first
+# run were removed because the cause was fixed, not allowed: the REST error media type (REST errors
+# are now `application/a2a+json`) and the snake_case `metadata.coord` keys (now camelCase, Z16). The
+# run after those fixes showed one more failure, HTTP_JSON-ERR-001, reviewed by the user the same day
+# (last entry, a TCK self-contradiction). A new entry starts as `proposed`. The gate does not read `review` as a pass or a fail; it keeps the state
+# visible (the TCK test prints how many entries are unreviewed).
+#
+# How the TCK is run, so the entries can be read: tests/test_a2a_tck.py serves the real app behind a
+# test-only front that adds the API key and the tenant and serves one member card at the root card
+# path (the TCK has no option for any of that). The blocking cap is 2 s in that run (production: 60 s,
+# decision 22), so the TCK's blocking sends return the parked task quickly.
+#
+# Not listed because they are skipped by the TCK, not failed (counts in docs/specs/a2a.md section 7):
+# streaming and push (cards declare both false, D35), gRPC (not served), and every test whose
+# precondition is a task that reaches COMPLETED or INPUT_REQUIRED (tasks are parked: nothing behind
+# the server runs them; this includes the effect of the 60 s blocking cap, D22). A skip is a coverage
+# gap, not a pass.
+tck_commit: "104a7b4"
+deviations:
+  # -- Tasks are parked, never executed: nothing behind the server produces results ------------------
+  - test: tests.compatibility.core_operations.test_artifacts.TestTextArtifact::test_task_has_text_artifact[jsonrpc]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: >-
+      DM-ART-001. The TCK expects the SUT to answer a prompt with a task that carries a text
+      artifact. Our server only parks a task for a live session; it never runs it, so the task has
+      no artifacts when it is returned. A real session may add artifacts later; the TCK cannot
+      drive that.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestTextArtifact::test_task_has_text_artifact[http_json]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001, as for the JSON-RPC entry above.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestFileArtifact::test_task_has_file_artifact[jsonrpc]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a file artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestFileArtifact::test_task_has_file_artifact[http_json]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a file artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestFileUrlArtifact::test_task_has_file_url_artifact[jsonrpc]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a file-URL artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestFileUrlArtifact::test_task_has_file_url_artifact[http_json]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a file-URL artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestDataArtifact::test_task_has_data_artifact[jsonrpc]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a data artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestDataArtifact::test_task_has_data_artifact[http_json]
+    decision: "AGENTS.md security invariants (tasks are parked, never auto-executed); server-api.md 3.3.2"
+    reason: DM-ART-001 for a data artifact; a parked task has no artifacts.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestMessageResponse::test_returns_message_with_text_part[jsonrpc]
+    decision: "server-api.md 3.3.2 (step 5: SendMessage returns the Task)"
+    reason: >-
+      DM-MSG-001. The TCK expects a direct Message reply to a prompt. SendMessage may return a Task
+      or a Message; ours always returns the Task it created, because no agent answers inline.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_artifacts.TestMessageResponse::test_returns_message_with_text_part[http_json]
+    decision: "server-api.md 3.3.2 (step 5: SendMessage returns the Task)"
+    reason: DM-MSG-001, as for the JSON-RPC entry above.
+    review: reviewed
+
+  # -- Defect in the TCK at this commit -----------------------------------------------------------------
+  - test: tests.compatibility.core_operations.test_requirements::test_must_requirement[CORE-SEND-003-jsonrpc]
+    decision: "TCK defect at 104a7b4 (requirement CORE-SEND-003 sets no expected_error); server-api.md 3.3.2"
+    reason: >-
+      The requirement says an unsupported part media type MUST give ContentTypeNotSupportedError,
+      but its definition in tck/requirements/core_operations.py sets no `expected_error`, so the
+      generic test treats any error response as "Operation failed". Our server returns -32005, the
+      error the requirement asks for, and the test reports that as the failure. Our own tests
+      cover the behaviour (tests/test_a2a_jsonrpc.py). The main session confirmed this TCK defect on
+      2026-11-16 (the requirement sets no `expected_error` at 104a7b4, also upstream HEAD that day;
+      `_validate_response` in tests/compatibility/core_operations/test_requirements.py then treats
+      any error as a failure). When the TCK is fixed this entry is reported stale and must be removed.
+    review: reviewed
+  - test: tests.compatibility.core_operations.test_requirements::test_must_requirement[CORE-SEND-003-http_json]
+    decision: "TCK defect at 104a7b4 (requirement CORE-SEND-003 sets no expected_error); server-api.md 3.3.2"
+    reason: >-
+      As for the JSON-RPC entry above; over REST our server answers 400 with the
+      ContentTypeNotSupported error. The main session confirmed the TCK defect on 2026-11-16:
+      in tck/requirements/core_operations.py at 104a7b4 (also upstream HEAD that day) CORE-SEND-003
+      sets no `expected_error`, so `_validate_response` in
+      tests/compatibility/core_operations/test_requirements.py treats any error as a failure.
+    review: reviewed
+
+  # -- Two TCK tests that contradict each other on the REST error media type -------------------------
+  - test: tests.compatibility.core_operations.test_error_handling.TestRestErrorStructure::test_error_uses_aip193_format
+    decision: "A2A 1.0.1 section 11.1 and the 11.6 error example (user review, 2026-11-16): REST errors are application/a2a+json"
+    reason: >-
+      HTTP_JSON-ERR-001 (MUST). Found by the first real run after the media type change; it was hidden
+      before, because the old `application/json` passed it. The test checks `"application/json" in
+      content-type`, which `application/a2a+json` can never satisfy, while the TCK's own
+      HTTP_JSON-SVC-001 test (SHOULD, test_problem_details.py) requires `application/a2a+json` for the
+      same response. At 104a7b4 no response passes both. The body is the AIP-193 `error` object the test
+      goes on to check. Reviewed by the user on 2026-11-16 (decision Z16): keep
+      `application/a2a+json` per the spec and accept this as a TCK defect (reported upstream with
+      CORE-SEND-003), rather than serve `application/json` and fail HTTP_JSON-SVC-001.
+    review: reviewed

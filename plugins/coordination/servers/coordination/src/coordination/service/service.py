@@ -243,7 +243,7 @@ class CoordinationService:
                 "hold": admission.hold,
                 "to": to if admission.state is not State.REJECTED else None,
                 "reason": admission.reason,
-                "createdAt": now.isoformat(),
+                "createdAt": C.iso_z(now),
             },
         )
 
@@ -948,7 +948,7 @@ class CoordinationService:
             out,
             delivery=delivery,
             recipientListening=listening,
-            expiresAt=index.expires_at.isoformat() if index.expires_at else None,
+            expiresAt=C.iso_z(index.expires_at) if index.expires_at else None,
             orphaned=True if orphaned else None,
         )
         return out

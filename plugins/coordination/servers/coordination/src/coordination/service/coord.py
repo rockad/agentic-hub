@@ -12,7 +12,7 @@ Stored in the task (`Task.metadata.coord`):
 - `hold`: `quarantine` while held
 - `to`: the addressed handle, when the sender addressed one
 - `reason`: constant code once rejected (spec 5.3 table)
-- `createdAt`: ISO 8601
+- `createdAt`: ISO 8601 in UTC with a `Z` suffix (`iso_z`)
 - `unread`: unread follow-up messages for the recipient (spec 6.4)
 
 Computed when a task is shown (`CoordinationService` views): `delivery`, `recipientListening`,
@@ -22,6 +22,7 @@ Computed when a task is shown (`CoordinationService` views): `delivery`, `recipi
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from google.protobuf import json_format
@@ -29,6 +30,12 @@ from google.protobuf import json_format
 from a2a.types import a2a_pb2 as pb
 
 KEY = "coord"
+
+
+def iso_z(moment: datetime) -> str:
+    """ISO 8601 in UTC with a `Z` suffix, the form A2A 1.0.1 section 5.6.1 asks for in a task
+    (`2026-11-16T10:00:00.123456Z`). The TCK's DM-SERIAL-003 checks it on `createdAt`."""
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 # Constant reason codes (spec 5.3).
 REASON_NOT_ALLOWED = "not_allowed"

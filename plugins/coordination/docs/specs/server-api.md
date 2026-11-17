@@ -422,6 +422,7 @@ Rules that always hold:
   - `capabilities.streaming` and `capabilities.pushNotifications` are `false`. Streaming and push are deferred until a real peer needs them [D35].
   - Interface URLs are built from `A2A_PUBLIC_URL`, never from the listener address (Docker Agent builds `http://` URLs behind HTTPS [verified]).
 - Caching: `Cache-Control: max-age=60`.
+- As built (S1-A2A, decision Z13 of 2026-11-15, 2026-11-16): the member listing extension field and routing by `metadata.target` of the [proposal] above are not built. A `SendMessage` to the front desk (no tenant) is rejected as `InvalidParams` with a pointer to `/agents/{card-id}/.well-known/agent-card.json`. Details in [a2a.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/a2a.md) section 3.
 - Full example in section 8.5.
 
 ### 3.3 `/a2a/v1`: A2A JSON-RPC and REST
@@ -441,6 +442,7 @@ Request rules:
 - `message_id` is the idempotency key. A repeated `message_id` in the same context returns the existing task instead of creating another [design].
 - Any `coord.*` metadata a client supplies, other than `coord.to`, is dropped. Server-set fields are authoritative (section 5.3).
 - No raw-RPC escape hatch exists (mgcrea's `a2a_request` pattern is not copied). The method set is closed to the 11 operations below.
+- As built (S1-A2A, 2026-11-16): the 11 operations, both bindings, the cards and push (off) are in `coordination/a2a/`. Three of our errors have no A2A number and use -32010 (`CardNotAllowed`), -32011 (quota, with `Retry-After`) and -32012 (forbidden). Push has no delivery trigger yet. The wire shapes were checked against the SDK 1.3.0. The A2A TCK (`104a7b4`) was run against the server behind a test-only front that adds the key and tenant: 97 passed, 13 failed (all on the allowlist `tests/tck/allowlist.yaml`, reviewed by the user on 2026-11-16, decision Z16), 153 skipped; the gate runs in CI as `.github/workflows/coordination-tck.yml`. See [a2a.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/a2a.md).
 
 #### 3.3.1 The 11 core operations
 

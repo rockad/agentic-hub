@@ -540,7 +540,7 @@ remain callable on request.
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's, when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
 | `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session). Prints nothing. |
 | `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, the third attempt opens the dialog); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
@@ -575,6 +575,12 @@ the hook needs it on every call.
    transcript cannot be stat-ed does the older rule apply: re-check at most once every 60 seconds. A `SessionStart`
    or `PostModelSwitch` event overwrites it and makes it authoritative again, and the learner puts such a record back
    if it lands while the learner is writing.
+4. A `SessionStart` payload that carries no `model` (a resume names only its `source`) marks the session's record
+   `stale: true` (written atomically, nothing else changes) instead of deleting it. A stale record never outranks the
+   transcript: whenever the transcript yields a model, the next call learns it (step 2) and the record becomes a
+   transcript-learned one. Until it does (a resumed session with no turn yet), the stale model stays the fallback, so
+   the elevation guard keeps working across a resume instead of passing every elevation. A payload that carries a model
+   overwrites the record as before.
 
 The transcript path is read only when it is a regular file that ends in `.jsonl` and whose real path is under
 `~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
@@ -960,16 +966,118 @@ mode never creates a marker and never returns `updatedInput`.
 Fail-open: a hook crash, invalid stdin or a timeout means no output, and the call runs unchanged (on the model it
 asked for).
 
-Not seen by the hook: an `Agent` call with no `model` whose agent definition has `model: opus` in its front matter.
-The hook only sees the tool input, so that call runs on opus with no dialog and no clamp.
+#### The model an `Agent` call will actually run on
+
+The hook does not rank only the `model` written on the call. `claude/agent-definitions.ts` (`resolveAgentModel`)
+works out the model the call will run on, in this order, and that model goes through the same choice flow as an
+explicit one (deny with the prescribed question, approvals, the attempt counter, the dialog backstop):
+
+1. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes`, `on`) with `CLAUDE_CODE_SUBAGENT_MODEL` set: that model
+   replaces the call's and the definition's (`model_source: "env-force"`). Forced with no model variable: the session model.
+2. The call's own `model` (`call`).
+3. The `model:` of the definition behind `subagent_type`, read from the project, user and plugin agent directories
+   as the Workflow guard reads them (`definition`). The lookup runs for every type, Claude Code's built-in names
+   (`general-purpose`, `Explore`, `Plan`, `statusline-setup`, `claude-code-guide`, `claude`) included, because a user or
+   project definition named like a built-in overrides it and keeps its own `model:`; a built-in name that no file
+   claims is "built-in, no model" and inherits the session model. Both guards share this rule
+   (`definitionOrBuiltin`). A custom type with no definition file passes, as before (Claude Code itself reports an
+   unknown agent).
+4. A `jev-ladder-<id>` name pin (`ladder`).
+5. `CLAUDE_CODE_SUBAGENT_MODEL` (`env`).
+6. Otherwise the session model (`inherit`), which passes.
+
+`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` applies to agents inside a Workflow only and is not applied to the `Agent`
+tool. The environment resolution is one function (`subagentModelCandidates`) shared with the Workflow guard. The hook
+process's environment is assumed to match Claude Code's; the FORCE details were read from the 2.1.321 binary by
+cognitive-engine and are version-bound.
+
+**How the type is matched.** As in Claude Code: the exact name first; when no agent has it, a normalised comparison
+(`NFKC`, lower case, white space, dashes and underscores removed) and a single match runs. So `Code_Reviewer`,
+`CODE REVIEWER` and `code-reviewer` are one agent, `explore` is `Explore.md` and `General-Purpose` is
+`general-purpose.md`, and the guard reads that file's `model:`. The comparison covers front matter names, file names
+(for a file with no `name:`) and the built-in types. Several different names that normalise alike (two files, or a file
+and a built-in) are ambiguous, and the call opens the permission dialog. An exact built-in name is the built-in, and a
+namespaced `plugin:agent` name only looks in that plugin. A call with no `subagent_type` (or an empty one) is
+`general-purpose`, so a project or user `general-purpose.md` with a `model:` above the session's applies to it. A type
+that no file matches, loosely or not, still passes (see "Sources the hook cannot see").
+
+**Plugin manifests.** An installed plugin's manifest `agents` field (`.claude-plugin/plugin.json`, else `plugin.json`:
+a path to an agent file or directory, or an array of them) is honoured; when it is set, the plugin's `agents/`
+directory is not read, as in Claude Code. Paths resolve inside the plugin directory only: an absolute path, a `..`
+traversal or a symlink that leaves the plugin is dropped, and a field with no usable path leaves `agents/` in place.
+
+**Sources the hook cannot see.** Agents defined only for a session are invisible to a hook: `--agents` on the command
+line, the SDK `initialize.agents`, managed policy agents, and plugins whose agents live at paths the installed-plugin
+registry does not reveal. A type that resolves to such an agent is indistinguishable from a type that does not exist, so
+a plain "not found" passes (it cannot ask: that would block every legitimate call to these agents). A model above the
+session's set in one of those agents is not caught by the Agent guard.
+
+The definition reader is cross-checked against Claude Code's own front matter pipeline (its block regex,
+`Bun.YAML.parse`, then its quoting fallback; a copy of 2.1.312's, by cognitive-engine): wherever the strict reader and
+that pipeline disagree on `name`, `model` or `effort` (a top-level flow mapping `{name: x, model: opus}`, a block
+indented as a whole, a tab-indented line, a `---` inside a value, CR-only line endings, a number where a string is
+expected, a `---` preceded by whitespace), that field is unreadable and the guard asks, where it used to read "no
+model". Another file that claims the agent through a name only Claude Code can read (a flow mapping, an indented block,
+`name: "\x68elper"`) makes the lookup ambiguous. Both guards use it. Without `Bun.YAML` only the strict reader runs,
+plus a conservative rule for lines the fallback could re-quote.
+
+A definition that decides the model but cannot be read (front matter the strict reader cannot establish, or two files
+claiming the name) opens the permission dialog with the reason, on every such call; it never denies, so it cannot loop.
+The deny and dialog reasons say where the model came from. Under `JEV_ELEVATION=clamp`, a forced model cannot be
+clamped (the environment overrides the rewritten `model`), so it asks. The decisions log carries `model_source`
+(`call`, `definition`, `env-force`, `ladder`, `env`, `inherit`) and never any definition text.
+
+**Effort (interim, narrow).** A literal `xhigh` or `max` on the call's `effort`, or on the `effort:` of the definition
+behind its `subagent_type`, opens the permission dialog (`effort_ask: true` in the log), with the Workflow guard's
+wording (`effortReason`). Dialog only: never the model choice flow and never a deny; when the same call also has a
+model verdict, that verdict goes first and the effort dialog follows on the retry. Unrecognised levels, non-string
+values and any comparison of a literal level with the session's effort are deliberately **not** checked on this path (cognitive-engine
+RFC 007 says do not build further), and the Workflow guard is unchanged. The model ceiling does not bound effort;
+the non-interim control is `maxEffortLevel: "high"` in the Claude Code settings.
+
+The Agent schema also accepts a relative `effort`, `"lower"` or `"higher"` (one step from the agent's normal effort).
+`"higher"` is evaluated when its base is known: the base is the definition's `effort:` when it sets a recognised one,
+else the session's effort from the hook input's `effort` field. The call asks (dialog, `effort_ask: true`) when one
+step up from that base is `xhigh` or `max`, so `"higher"` on a `high` (or higher) session asks and on `low` or
+`medium` passes. `"lower"` always passes. When the base is not available (the hook input carries no `effort`, or the
+level is not one of low, medium, high, xhigh, max) nothing is guessed and the call passes: relative values are not
+evaluated without a known base.
 
 Not verified here: the permission dialog itself (it is shown by Claude Code), whether the assistant follows the
-clamp note, and how an agent definition's own front-matter `model` or `CLAUDE_CODE_SUBAGENT_MODEL` interacts with
-the rewritten `model`.
+clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 
 ### Release notes
 
-- **next: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
+- **2.3.15: Agent guard reads definitions and environment** (Claude Code `Agent`/`Task` PreToolUse guard; Jev mode `on` only):
+  - The guard ranked only the `model` written on the call, so an agent definition with `model: opus`,
+    `CLAUDE_CODE_SUBAGENT_MODEL=opus`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` with an explicit haiku on the call all
+    passed with no question. It now resolves the model the call will run on (call, definition, ladder pin, environment,
+    session) and runs it through the unchanged choice flow. See "The model an `Agent` call will actually run on".
+  - The environment resolution is shared with the Workflow guard (`subagentModelCandidates` in
+    `claude/agent-definitions.ts`); `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` stays Workflow-only.
+  - An unreadable or ambiguous definition opens the permission dialog with the reason (never a deny).
+  - Behaviour change: a definition with a model above the session model, or an environment that sets one, now
+    triggers the elevation question where it passed silently before. Built-in types are not read from disk.
+  - New decisions-log field on an `Agent` call: `model_source`. Never any definition text.
+  - Interim narrow effort rule on the same path: a literal `xhigh` or `max` on the call or on its definition's
+    `effort:` asks (dialog only, `effort_ask: true`). `maxEffortLevel: "high"` in the Claude Code settings is the
+    non-interim control.
+  - Front matter reader hardening (both guards): the strict reader is cross-checked against Claude Code's own
+    pipeline; a disagreement makes the field unreadable (ask) instead of "no model". Closes three shapes read as no
+    model before: a top-level flow mapping, a block indented as a whole, a tab-indented `model:` line. A file that
+    claims the agent through a flow-mapping, indented or escape-encoded name makes the lookup ambiguous.
+    Behaviour change: CR-only line endings and a `---` after leading whitespace are now unreadable (ask).
+  - A `SessionStart` with no `model` (a resume) marks the session record `stale` instead of deleting it: the
+    transcript learner reads the last turn's model whenever the transcript has one, and the stale model stays the
+    fallback until then. Deleting it dropped the guard (no session model, every elevation passed) on a resume whose
+    transcript had no turn yet.
+  - Review fixes (same release): the guard now matches the `subagent_type` as Claude Code does (an exact name, else the
+    normalised name: `Code_Reviewer`, `CODE REVIEWER`, `explore`, `General-Purpose` read the file Claude Code would
+    run, several matches ask), a call with no `subagent_type` is looked up as `general-purpose`, and a plugin
+    manifest's `agents` paths are read (the `agents/` directory is skipped when the field is set). Agents defined
+    only for a session (`--agents`, SDK `initialize.agents`, managed policy) stay invisible to a hook; a plain
+    not-found still passes. A relative `effort: "higher"` asks when one step up from a known base (the definition's, else the session's effort) reaches xhigh; with no known base it is not guessed.
+- **2.3.14: strict tool-input validation** (the MCP server refuses a malformed call instead of defaulting it):
   - Found live: `jev_batch_dispatch` called with `description` for `task` and `dependsOn` for `dependencies`
     returned a plausible manifest with `task: ""`, `dependencies: []` and one stage. The server never checked
     arguments against the advertised schema, so a missing required field and any unknown key were accepted.
@@ -984,7 +1092,7 @@ the rewritten `model`.
     itself, a dependency on an id no task has, a dependency cycle (as a path). `jev_dispatch` with an empty `task`
     is now an `isError` result in the same form (wording unchanged). See "Tool input validation".
   - Tests: `tests/tool-contract.test.ts` drives every tool through the real server over an in-memory transport.
-- **next: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
+- **2.3.13: antigravity invoke_subagent guard** (Antigravity PreToolUse guard for `invoke_subagent`, additive; Jev mode `on` only):
   - An Antigravity `PreToolUse` hook on `invoke_subagent` and `PostToolUse` on `ask_question`, registered via plugin-root `hooks.json`.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).
   - Flat `args.Model` (and legacy `args.Subagents[].Model` array shape) are checked against the session ceiling.

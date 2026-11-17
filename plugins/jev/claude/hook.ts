@@ -87,7 +87,9 @@ import {
   isStatusTurn,
   parseDispatch,
   parseUserIntent,
+  pinnedLadderModel,
   preflightReminder,
+  safeTypeName,
   resolveClaudeSubagentCriteria,
   STAGE_PLAN_REMINDER,
   resolveModel,
@@ -105,6 +107,7 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
+import { agentEffortReason, relativeEffortReason, resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
   answerDowngrade,
@@ -134,7 +137,7 @@ import {
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
-import { createSessionModelLearner, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
+import { createSessionModelLearner, isAuthoritative, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 import { clip } from './agent-definitions.js';
 import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, type WorkflowResolver } from './workflow-guard.js';
 import { pruneWorkflowPins, recordWorkflowPostToolUse, writeWorkflowPin, type PostToolUseResult } from './workflow-pin.js';
@@ -423,7 +426,21 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // A Workflow carries no model of its own, so classifyElevation never sees it; the agents a Workflow launches never
   // pass through this hook, so its script is analysed instead (see the Workflow block below).
   const rankCtx = safely(() => deps.rankContext?.()) ?? null;
-  const elevation = tool === 'Workflow' ? null : classifyElevation(call, sessionModel, intent, rankCtx);
+  // The model an Agent/Task call will actually run on: the call's own, else its definition's, a ladder pin or the
+  // subagent-model environment (resolveAgentModel). An internal failure falls back to the call's own model alone.
+  const resolved: ResolvedAgentModel | null =
+    tool === 'Workflow'
+      ? null
+      : (safely(() => resolveAgentModel(call, input.cwd, deps.env ?? process.env, pinnedLadderModel(call.subagent_type, rankCtx))) ?? null);
+  const elevation =
+    tool === 'Workflow'
+      ? null
+      : resolved?.unreadable
+        ? null
+        : classifyElevation(resolved ? { ...call, model: resolved.model ?? 'inherit' } : call, sessionModel, intent, rankCtx);
+  if (elevation && resolved && resolved.source !== 'call' && resolved.source !== 'inherit') {
+    elevation.sourceNote = agentModelNote(resolved.source, call.subagent_type);
+  }
   // An elevating call (a model stronger than the session's, no instruction naming it) asks: a permission dialog
   // on every such call, as in 2.3.3. Opt-in clamp (env JEV_ELEVATION=clamp, no config key): the first one per
   // prompt runs on the session model (allow + updatedInput, no dialog) and only a repeat in the same prompt asks.
@@ -435,7 +452,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let clampSkipped: string | null = null;
   let approvalScope: string | null = null;
   let attemptCount: number | null = null;
-  const elevMode = elevationMode(deps.env ?? process.env);
+  // A forced model (CLAUDE_CODE_SUBAGENT_MODEL_FORCE) replaces whatever the clamp would set on the call: nothing to clamp, so it asks.
+  const elevModeEnv = elevationMode(deps.env ?? process.env);
+  const elevMode: ElevationMode = elevModeEnv === 'clamp' && resolved?.source === 'env-force' ? 'dialog' : elevModeEnv;
   // The attempt counter's key: the host's prompt id; without one, the stored turn (a hash of the prompt text, so two
   // prompts with the same text share it) plus the time that turn was stored, and without a turn the literal 'none'.
   // Only those two fallbacks (`windowMs` set) also expire after a quiet window.
@@ -490,6 +509,31 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     else {
       verdict = { decision: 'ask', reason: elevationAskReason(elevation, clampedEarlier) };
       elevationState = 'asked';
+    }
+  }
+
+  // A definition that decides the model but cannot be established (unreadable front matter, two files claiming the
+  // name): nothing to rank, so the permission dialog asks, every time (a deny here could only loop).
+  let logReason: string | null = null;
+  if (resolved?.unreadable && sessionModel) {
+    verdict = { decision: 'ask', reason: unreadableDefinitionReason(call.subagent_type, resolved.unreadable, sessionModel) };
+    elevationState = 'asked';
+    logReason = 'definition unreadable or ambiguous'; // the reader's text quotes the definition: it is shown to the user, never logged
+  }
+
+  // INTERIM effort rule (Agent/Task only): a literal xhigh or max on the call, or on its definition, opens the dialog.
+  // Dialog only, never the choice flow, never a deny; a model verdict above keeps priority (the ask follows on the retry).
+  let effortAsk = false;
+  if (resolved && !verdict) {
+    const definitionWhat = `agent definition "${safeTypeName(call.subagent_type)}"`;
+    // A relative effort ("higher") is one step from the agent's normal effort: its definition's, else the session's.
+    const relativeBase = resolved.definitionEffort !== undefined ? resolved.definitionEffort : readEffort(input.effort);
+    const reason = agentEffortReason(call.effort, 'Agent call') ?? agentEffortReason(resolved.definitionEffort, definitionWhat) ?? relativeEffortReason(call.effort, relativeBase, 'Agent call');
+    if (reason) {
+      verdict = { decision: 'ask', reason: `[jev] ${reason} Yes runs it as it is. No cancels the call and stops the turn.` };
+      elevationState = 'asked';
+      effortAsk = true;
+      clamp = null; // the dialog is stricter than a clamp: the clamp's allow must not hide it
     }
   }
 
@@ -568,7 +612,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     user_intent: state?.intent ?? null,
     sessionModel,
     session_model_source: sessionModelSource,
+    ...(resolved ? { model_source: resolved.source } : {}),
+    ...(effortAsk ? { effort_ask: true } : {}),
     reason:
+      logReason ??
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
@@ -599,6 +646,32 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       ...(reminder ? { additionalContext: reminder } : {})
     }
   };
+}
+
+/** The parenthesised note an elevation reason carries when the model is not the one written on the call. */
+function agentModelNote(source: ResolvedAgentModel['source'], subagentType: unknown): string {
+  switch (source) {
+    case 'definition':
+      return ` (the model: of the "${safeTypeName(subagentType)}" agent definition, not written on the call)`;
+    case 'ladder':
+      return ` (pinned by the name of the "${safeTypeName(subagentType)}" ladder definition, not written on the call)`;
+    case 'env-force':
+      return " (CLAUDE_CODE_SUBAGENT_MODEL_FORCE is on, so the subagent runs on CLAUDE_CODE_SUBAGENT_MODEL and the call's own model and definition are ignored)";
+    case 'env':
+      return ' (this is CLAUDE_CODE_SUBAGENT_MODEL, which applies because neither the call nor its definition sets a model)';
+    default:
+      return '';
+  }
+}
+
+/** The dialog text for a definition Jev cannot read: it cannot tell what model the agent runs on. */
+function unreadableDefinitionReason(subagentType: unknown, why: string, sessionModel: string): string {
+  const what = why.length > 300 ? `${why.slice(0, 300)}…` : why;
+  return (
+    `[jev] This delegation runs the agent "${safeTypeName(subagentType)}", whose definition is unreadable or ambiguous (${what}), ` +
+    `so the model it will run on cannot be checked against the session model "${sessionModel}". ` +
+    'Yes runs it as it is. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "name a model on the call" or "continue on the session model").'
+  );
 }
 
 /** The text a delegation is rated on: its description and the first 1000 characters of its prompt. Empty when it has neither. */
@@ -888,6 +961,21 @@ export function onModelKnown(input: HookInput): void {
   if (!sessionId || !model) return;
   writeSessionRecord(SESSIONS_DIR, sessionId, { model, updated_at: new Date().toISOString() });
   pruneOldSessions();
+}
+
+/**
+ * A SessionStart payload that carries no model (a resume names only its `source`): whatever record an earlier run of
+ * the session left is stale evidence, so it is marked `stale` (written atomically, nothing else changes) and the
+ * transcript learner reads the last turn's model instead whenever the transcript yields one (a record is otherwise
+ * authoritative and the transcript is never consulted). The record is NOT deleted: until the transcript has a turn
+ * the stale model is the fallback, so the elevation guard keeps working across a resume. Only the session record is touched.
+ */
+export function onSessionStartWithoutModel(input: HookInput): void {
+  const sessionId = safeSessionId(input.session_id);
+  if (!sessionId || input.to_model || input.model) return;
+  const rec = readSessionRecord(SESSIONS_DIR, sessionId);
+  if (!rec || !isAuthoritative(rec)) return; // none to mark, or a transcript-learned one the learner already re-checks
+  writeSessionRecord(SESSIONS_DIR, sessionId, { ...rec, stale: true });
 }
 
 function pruneOldSessions(): void {
@@ -1323,6 +1411,7 @@ async function main(event: string | undefined): Promise<void> {
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
   if (event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
+  if (event === 'session-start') safely(() => onSessionStartWithoutModel(input));
   if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
   if (event === 'session-start') maybeStartCatalogueRefresh();
   if (output) process.stdout.write(JSON.stringify(output));

@@ -383,6 +383,41 @@ describe('the learner (stored record, re-read when the transcript changed)', () 
     expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-opus-5-5' });
   });
 
+  it('a stale authoritative record (a model-less resume) is not authoritative: the transcript wins when it yields a model', () => {
+    writeSessionRecord(sessions, 's1', { model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString(), stale: true });
+    const f = transcript([assistant('claude-haiku-5-5')]);
+    const { l } = learner();
+
+    expect(l('s1', f)).toEqual({ model: 'claude-haiku-5-5', source: 'transcript' });
+
+    const rec = readSessionRecord(sessions, 's1')!;
+    expect(rec).toMatchObject({ model: 'claude-haiku-5-5', source: 'transcript' });
+    expect(rec.stale).toBeUndefined();
+  });
+
+  it('a stale record stays as the fallback, untouched, while the transcript yields nothing', () => {
+    writeSessionRecord(sessions, 's1', { model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString(), stale: true });
+    const f = transcript([user()]);
+    const { l, reads } = learner();
+
+    expect(l('s1', f)).toBeNull();
+    expect(l('s1', f)).toBeNull();
+
+    expect(reads.length).toBeGreaterThan(0);
+    expect(readSessionRecord(sessions, 's1')).toEqual({ model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString(), stale: true });
+  });
+
+  it('a fresh SessionStart written while a stale record is being replaced is restored, not clobbered', () => {
+    writeSessionRecord(sessions, 's1', { model: 'claude-opus-5-5', updated_at: new Date(T0).toISOString(), stale: true });
+    const f = transcript([assistant('claude-haiku-5-5')]);
+    const { l } = learner({ beforeWrite: () => writeSessionRecord(sessions, 's1', { model: 'claude-sonnet-5-5', updated_at: new Date(T0).toISOString() }) });
+
+    expect(l('s1', f)).toBeNull();
+
+    expect(readSessionRecord(sessions, 's1')).toMatchObject({ model: 'claude-sonnet-5-5' });
+    expect(readSessionRecord(sessions, 's1')!.source).toBeUndefined();
+  });
+
   it('fails open: a corrupt or missing transcript, an outside path and a failing reader are all null and write nothing', () => {
     const { l } = learner();
     expect(l('s1', transcript(['not json at all']))).toBeNull();

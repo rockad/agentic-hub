@@ -577,28 +577,30 @@ Question: when a Workflow script leaves an agent's model empty and an environmen
 
 Result: Claude Code applies all three variables to workflow agents, and the guard ranks the resulting model, not the written one, so none of them is a bypass. One correction to a first attempt: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is a flag (`1`, `true`, `yes`, `on`), not a model id; with `FORCE=opus` Claude Code ignored it and the agent ran on its written haiku, which the guard also logged as haiku. The hook sees the environment of the Claude Code process; an environment set only by a later process would not be seen. Approvals in the tests were seeded in the session's approvals file (the headless runs cannot answer a question).
 
-## 31. Status 2026-11-14: stack #48 to #55, Antigravity guard, validation, parity (latest)
+## 31. Status 2026-11-14 (evening): five PRs merged, three open (latest)
 
-**Open stack (merge commits, in this order; each PR's base is the one before it; Doc-Cr requested on each):** #48, #49, #51, #52, #53, #54, #55, then this plan (#50).
+**Merged to `main` by Doc-Cr (merge commits, 2026-11-14):** #48 (2.3.9), #49 (2.3.10), #51 (2.3.11), #52 (2.3.12), #53 (2.3.13, Antigravity `invoke_subagent` guard, first version). #50 (this plan, sections 27 to 31) merged by the owner.
+
+**Open (each PR's base is the previous one; merge commits in this order; Doc-Cr to review):**
 
 | PR | Version | Content | State |
 | --- | --- | --- | --- |
-| #48 to #52 | 2.3.9 to 2.3.12 | See section 28 | Doc-Cr round 2: resolved from the reviewer's side on all five |
-| #53 | 2.3.13 | Antigravity `invoke_subagent` PreToolUse guard (`plugins/jev/antigravity/`, root `hooks.json`, real payload fixtures): the Model is read from flat `args.Model` and `Subagents[]` prioritized by rank; omitted and `inherit` follow the session model; above the ceiling is denied with the prescribed Yes/No question; the PostToolUse recorder records an approval from `transcriptPath` at `stepIdx`; pass-through exits 0 with empty stdout | Verified live (sections 27 & 31); Round 5 findings A & B resolved, 1980 tests passing |
-| #54 | 2.3.14 | Strict zod validation per tool; `jev_batch_dispatch` semantic checks (blank or duplicate ids, unknown or self dependencies, cycles) with did-you-mean hints for unknown keys | No review yet |
-| #55 | 2.3.15 | Agent/Task guard parity: reads the definition model, `CLAUDE_CODE_SUBAGENT_MODEL` and its `_FORCE` flag, the ladder pin, a narrow interim ask for `xhigh` and `max` effort, a front-matter cross-check | Round 1: one open finding, see below |
+| #58 | 2.3.13 follow-up | Antigravity guard round 5, from the Antigravity session: `extractSubagentModel` judges the highest-ranked model of flat `Model`/`model` and every `Subagents[]` entry; `isExplicitProOverride` drops bare `argon`, widens the negation window to the clause and needs family and rank coverage; PreToolUse pass-through exits 0 with empty stdout; PostToolUse reads the answer from `transcriptPath` at `stepIdx`; real captured fixture | Verified live; 1980 tests; no review yet; one finding open, see below |
+| #54 | 2.3.14 | Strict zod validation per tool; `jev_batch_dispatch` semantic checks (blank or duplicate ids, unknown or self dependencies, cycles) with did-you-mean hints | Doc-Cr should-fix applied: SDK floor raised to `^1.23.0` (`adaf1cc`), because `zod-json-schema-compat` is missing from 1.6.1 to 1.22.0; Opus gate found nothing; re-review pending |
+| #55 | 2.3.15 | Agent/Task guard parity: definition model and effort, `CLAUDE_CODE_SUBAGENT_MODEL` and its `_FORCE` flag, ladder pin, interim effort rule, front-matter cross-check, plus the round-4 and round-5 fixes below, and the OTLP test stub | Doc-Cr round 4 resolved at `37f718c`; later commits re-review pending; 2298 tests |
 
-**Antigravity live control (verified, agy 1.5.8):** an omitted `Model` follows the session model (the three controls ran on the session's own model enum), so the guard treats omitted as the session model. A definition carries no model.
+**Highest-tier review gate on #53 to #55 (Opus 5.5, one gate, user approved 2026-11-14; verdict: #54 ship, #53 and #55 ship after fixes).** Findings and where they went:
 
-**Open review findings (2026-11-14, round 2 and 3):**
+- #55, fixed (`7b26c81`, `23727bb`, `b551d3d`): Claude Code matches an unmatched `subagent_type` by NFKC, lower-case, whitespace/dash/underscore-stripped comparison and runs a single match, so "Code_Reviewer" or "explore" ran an opus definition unseen (now matched the same way; several matches ask); a call with no `subagent_type` defaults to `general-purpose` (now looked up as such); a model-less resume deleted the session record and dropped the guard (now marked stale and kept as the fallback, the transcript wins); plugin manifest `agents` paths honoured; relative `effort: "higher"` evaluated against the session `effort.level`. Agents defined only for a session (`--agents`, SDK, managed policy) stay invisible to a hook (documented). Not run against a real Claude Code.
+- #53, fixed in #58: the `Subagents[]` and negation findings (A and B).
+- #54: no findings (`_meta` and progress tokens travel outside `arguments`).
 
-- #53 (resolved in `2cb8e5e`): `extractSubagentModel` checks flat and `Subagents[]` entries by highest rank; `isExplicitProOverride` dropped bare `argon`, expanded negation window to the clause level, and enforced model coverage; PreToolUse pass-through exits 0 with empty stdout (verified live: `{}` causes a denial); PostToolUse reads step content from `transcriptPath` at `stepIdx` (verified live: stdin carries `transcriptPath` and `stepIdx`, not `content`).
-- #55: a project or user definition named like a built-in type (`Explore`, `general-purpose`) overrides the built-in and keeps its own `model` (Claude Code docs). The Agent path skipped that lookup, the Workflow guard did not. Fix: look the definition up first for every type name, fall back to "built-in, no model" only when no file claims the name. This also makes the `resolveAgentModel` comment true: built-in types have no model only while no such file exists.
-- The docs confirm that a non-fork Agent call can carry an `effort` parameter, so the interim effort rule has something to read.
+**Earlier Doc-Cr rounds, all resolved:** #51 FIFO hang (`safe-read.ts` for every file read; fail-open kept and documented, `"onFailure": "block"` described as an opt-in Jev does not enable); #53 recorder approving from the options list (answer read only from the user's answer, exact labels); #53 substring override; #55 built-in-name bypass; #52 read-only persona guidance line; #48 and #49 wording. The Phase 4 tracing tests no longer reach a live collector (found by a peer session; `fetch` stubbed, `74b3833`).
 
-**Decisions kept:** the Workflow hook stays fail-open like every other Jev hook (README documents `"onFailure": "block"` on a separate Workflow entry as an opt-in that Jev does not enable). Hook output on pass-through paths in Antigravity exits 0 with empty stdout (verified live: printing `{}` is treated by Antigravity as a denial). PostToolUse prints `{}` as specified by `hooks.md`.
+**Antigravity facts established live (agy 1.5.8, by the Antigravity session):** an omitted `Model` follows the session model; a PreToolUse hook that prints `{}` is treated as a hard denial (`tool call denied by pre-tool hook:`), so pass-through prints nothing and exits 0 (this corrects the `{}` choice in the first version of #53); the PostToolUse stdin carries `transcriptPath` and `stepIdx` and no `content`, so the answer is read from the transcript step.
 
-**Still unverified:**
+**Open items:**
 
-- The live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
-- The model a Workflow agent actually ran on is never logged (no hook sees it).
+- #58: the transcript read in `extractAskAnswer` (`antigravity/logic.ts`) uses `existsSync` then `readFileSync` on a path taken from the hook's stdin: a FIFO or other non-regular file hangs the hook (the #51 class), and every `ask_question` PostToolUse reads the whole transcript. Wanted: stat first and require a regular file, non-blocking open, bounded read from the end of the file (or the step offset), tests with a FIFO and a large transcript; also check that the matched step really is the `ask_question` result of `toolCall.id`, not any step with that index. Comment posted on #58.
+- Merge #58, #54, #55 after Doc-Cr; then `git switch main && git pull` in the main checkout (detached on the 2.3.12 tip so the installed plugin runs the stack) and delete the worktrees.
+- Not verified: the live SessionStart resume payload shape; the Agent tool honouring `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; name matching and plugin manifest semantics against a real Claude Code; the model a Workflow agent actually ran on is never logged (no hook sees it).

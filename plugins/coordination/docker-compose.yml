@@ -66,6 +66,9 @@ services:
     volumes:
       - a2a-data:/data  # go-live import run artefacts only, not the database
       - a2a-backup-state:/var/lib/a2a-backup:ro  # the sidecar's last_ok file; the server only reads it
+      # cards.yaml (non-secret, A2A_CARDS_FILE=/config/cards.yaml). The repo's ./config holds an
+      # empty placeholder; point A2A_CONFIG_DIR at a host directory that holds the real cards file.
+      - ${A2A_CONFIG_DIR:-./config}:/config:ro
     read_only: true
     tmpfs:
       - /tmp

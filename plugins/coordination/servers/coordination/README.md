@@ -41,6 +41,8 @@ cd servers/coordination
 uv run a2a-coord db init-dump-role   # idempotent: fresh volume, existing volume, rotation
 ```
 
+The server reads the card definitions from `/config/cards.yaml`, mounted read-only from `${A2A_CONFIG_DIR:-./config}`. The repository's `config/cards.yaml` is an empty placeholder, so the server starts with no cards; set `A2A_CONFIG_DIR` to a host directory holding the real `cards.yaml` (format: `docs/specs/server-api.md` 1.5). A missing or invalid file stops the start.
+
 `init-dump-role` takes `--secrets-dir`, `--compose-file` and `-p/--project` (defaults: `A2A_SECRETS_DIR`, the plugin's `docker-compose.yml`, `coordination`). It feeds SQL to `psql` in the Postgres container over stdin (`docker compose exec -T`), so the `dump_ro` password is in no argv, no log and no environment. To rotate, put a new value in `pg_dump_password` and run it again.
 
 Who may read the secret file inside the container:

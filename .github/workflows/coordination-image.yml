@@ -1,0 +1,81 @@
+# The coordination images and a compose start-up smoke test.
+#
+# Why: the server image runs the test suite while it builds (servers/coordination/Dockerfile), with
+# only src/ and tests/ in the build context. A test that reaches for a repository file breaks that
+# build while the plain test job (ci.yml) stays green. The same holds for compose wiring: a missing
+# mount or secret only shows when the stack starts. This job builds both images and starts the stack.
+#
+# The database password is a throwaway generated in the runner's temp directory; it is never printed.
+name: Coordination image
+
+on:
+  pull_request:
+    paths:
+      - "plugins/coordination/**"
+      - ".github/workflows/coordination-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/coordination/**"
+      - ".github/workflows/coordination-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Build the coordination images and start the stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: plugins/coordination
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Throwaway secrets and a CI card
+        run: |
+          echo "A2A_SECRETS_DIR=$RUNNER_TEMP/a2a-secrets" >> "$GITHUB_ENV"
+          echo "A2A_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "A2A_GID=$(id -g)" >> "$GITHUB_ENV"
+          install -d -m 700 "$RUNNER_TEMP/a2a-secrets"
+          (umask 077; openssl rand -hex 32 | tr -d '\n' > "$RUNNER_TEMP/a2a-secrets/a2a_db_password")
+          (umask 077; openssl rand -hex 32 | tr -d '\n' > "$RUNNER_TEMP/a2a-secrets/pg_dump_password")
+          # One CI card: the repository's cards file is an empty placeholder, which card check reports.
+          echo "A2A_CONFIG_DIR=$RUNNER_TEMP/a2a-config" >> "$GITHUB_ENV"
+          install -d "$RUNNER_TEMP/a2a-config"
+          printf 'cards:\n  - name: ci@runner\n    description: CI smoke-test card.\n' > "$RUNNER_TEMP/a2a-config/cards.yaml"
+
+      - name: Build the server image (runs the test suite inside the build)
+        run: docker compose build coordination
+
+      - name: Build the dump sidecar image
+        run: docker compose --profile backup build dump
+
+      - name: Start the stack and wait for a healthy server
+        run: |
+          docker compose up -d
+          for i in $(seq 40); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q coordination)" 2>/dev/null || true)
+            [ "$status" = healthy ] && break
+            sleep 3
+          done
+          echo "server health: ${status:-none}"
+          [ "$status" = healthy ]
+
+      - name: Smoke checks
+        run: |
+          curl -fsS http://127.0.0.1:8120/healthz
+          echo
+          docker compose exec -T coordination a2a-coord status
+          docker compose exec -T coordination a2a-coord card check
+          docker compose exec -T coordination sh -c 'test -S /run/a2a/admin.sock'
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 100
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v

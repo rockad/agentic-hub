@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 import pytest
+from conftest import PLUGIN_DIR
 
 from coordination.auth.startup import cards_file_problem, public_hostname, startup_check
 from coordination.config import Config
@@ -189,10 +190,9 @@ def test_a_card_with_a_valid_id_passes(tmp_path):
     startup_check(env_for(path, "s1"), check_db=Recorder())
 
 
+@pytest.mark.skipif(not (PLUGIN_DIR / "config/cards.yaml").is_file(), reason="the config is outside the build context")
 def test_the_shipped_cards_file_passes():
-    from pathlib import Path
-
-    shipped = Path(__file__).resolve().parents[3] / "config" / "cards.yaml"
+    shipped = PLUGIN_DIR / "config" / "cards.yaml"
     assert cards_file_problem(str(shipped)) is None
 
 

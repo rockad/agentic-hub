@@ -1057,6 +1057,43 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
     expect(decision.elevation).toBe('approved');
     expect(decision.approvalScope).toBe('once');
   });
+
+  it('does not replay a consumed Yes-once pull fallback on a subsequent pro call', () => {
+    const transcriptFile = path.join(testDir, 'transcript.jsonl');
+    const nowMs = 1_000_000;
+    approvals.deny('s-no-replay', 'pro', nowMs - 5000);
+
+    const content =
+      '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"[jev-elevate:pro] Allow expert?"}]}}]}\n' +
+      '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n';
+    fs.writeFileSync(transcriptFile, content);
+
+    const first = evaluateAntigravitySubagentCall(
+      {
+        conversationId: 's-no-replay',
+        transcriptPath: transcriptFile,
+        modelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'turn 1',
+        toolCall: { id: 'call_sub_1', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'pro' } }
+      },
+      { approvals, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs }
+    );
+    expect(first.decision).toBe('allow');
+    expect(first.approvalScope).toBe('once');
+
+    // Subsequent pro call in the same session with a new prompt must deny, not replay the consumed once answer
+    const second = evaluateAntigravitySubagentCall(
+      {
+        conversationId: 's-no-replay',
+        transcriptPath: transcriptFile,
+        modelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'turn 2',
+        toolCall: { id: 'call_sub_2', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'pro' } }
+      },
+      { approvals, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs + 10_000 }
+    );
+    expect(second.decision).toBe('deny');
+  });
 });
 
 describe('child conversation ID and served model extraction', () => {

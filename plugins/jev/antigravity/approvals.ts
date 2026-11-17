@@ -69,7 +69,14 @@ export function addApproval(state: ApprovalState, approval: Approval, nowMs: num
 }
 
 export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
-  return wasDeniedRecently(state, approval.model, nowMs) ? addApproval(state, approval, nowMs) : null;
+  if (!wasDeniedRecently(state, approval.model, nowMs)) return null;
+  const want = modelTierRank(approval.model);
+  // Consume the matching denial(s) so a "once" answer in the transcript cannot be replayed on later calls.
+  const remainingDenied = Object.fromEntries(
+    Object.entries(state.denied ?? {}).filter(([m]) => modelTierRank(m) < want)
+  );
+  const next = addApproval(state, approval, nowMs);
+  return { ...next, denied: remainingDenied };
 }
 
 export function claimApproval(

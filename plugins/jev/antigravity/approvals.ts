@@ -441,21 +441,60 @@ export function claimAskDowngrade(
 }
 
 /**
- * Pure: record the user's answer. Every unanswered question of this conversation is closed by it (the answer does not name a
- * delegation), once: the pending entries are marked answered with the label and the answer's tool call id, so the same
- * answer read again, from the transcript or from a second hook run, finds nothing pending and records nothing. With no
- * pending question the state is returned unchanged and `recorded` is false: an answer nobody asked for covers no call.
+ * How long an unanswered question can still be answered. The 10-minute window (`expires_at`) decides when a question is
+ * asked again; a user can leave the dialog open longer than that, and their answer must still count, so an unanswered
+ * entry stays answerable (and is kept by every write) for this long from the time it was asked.
+ */
+export const DOWNGRADE_ANSWER_WINDOW_MS = 60 * 60 * 1000;
+
+/** How many characters of a delegation's signature the question marker carries: `[jev-downgrade:flash_lite:<sig8>]`. */
+export const DOWNGRADE_MARKER_SIG_CHARS = 8;
+
+const isPending = (e: DowngradeEntry): boolean => !e.answered && e.from === DOWNGRADE_ALIAS;
+
+/** Whether an unanswered entry has run out of its 10-minute window but can still be answered. */
+const isLatePending = (e: DowngradeEntry, nowMs: number): boolean =>
+  isPending(e) && e.expires_at <= nowMs && typeof e.asked_at === 'number' && e.asked_at + DOWNGRADE_ANSWER_WINDOW_MS > nowMs;
+
+/** The entries a write keeps: the live ones, plus the unanswered ones still inside their answer window. */
+function answerable(state: DowngradeState, nowMs: number): DowngradeEntry[] {
+  return state.entries.filter((e) => e.expires_at > nowMs || isLatePending(e, nowMs));
+}
+
+/** Pure: `next` with the late-but-answerable questions of `prev` put back (the shared helpers drop them after 10 minutes). */
+export function retainAnswerable(prev: DowngradeState, next: DowngradeState, nowMs: number): DowngradeState {
+  const kept = prev.entries.filter((e) => isLatePending(e, nowMs));
+  if (kept.length === 0) return next;
+  const have = new Set(next.entries.map((e) => `${e.signature}|${e.asked_at}`));
+  const entries = [...kept.filter((e) => !have.has(`${e.signature}|${e.asked_at}`)), ...next.entries].slice(-MAX_ENTRIES);
+  return { ...next, entries };
+}
+
+/**
+ * Pure: record the user's answer for ONE delegation, once.
+ *   `sig` (the first characters of a signature, from the marker `[jev-downgrade:flash_lite:<sig8>]`): the pending question
+ *   of that delegation is closed, and no other. An answer for a delegation nothing is pending for records nothing.
+ *   no `sig` (the plain marker): the OLDEST pending question is closed, and no other, so one answer can never decide
+ *   two delegations; the next answer closes the next one.
+ * The entry is marked answered with the label and the answer's tool call id, so the same answer read again finds nothing
+ * pending. With no matching pending question the state is returned unchanged and `recorded` is false: an answer nobody asked
+ * for covers no call. A question older than 10 minutes can still be answered (see `DOWNGRADE_ANSWER_WINDOW_MS`).
  */
 export function answerAskDowngrade(
   state: DowngradeState,
   choice: DowngradeChoice,
   askId: string | undefined,
-  nowMs: number
+  nowMs: number,
+  sig?: string | null
 ): { state: DowngradeState; recorded: boolean } {
-  const entries = live(state, nowMs);
-  if (!entries.some((e) => !e.answered && e.from === DOWNGRADE_ALIAS)) return { state, recorded: false };
+  const entries = answerable(state, nowMs);
+  const wanted = typeof sig === 'string' && sig ? sig.toLowerCase() : null;
+  const target = wanted
+    ? entries.filter((e) => isPending(e) && typeof e.signature === 'string' && e.signature.startsWith(wanted))
+    : entries.filter(isPending).slice(0, 1);
+  if (target.length === 0) return { state, recorded: false };
   const next = entries.map((e) =>
-    !e.answered && e.from === DOWNGRADE_ALIAS
+    target.includes(e)
       ? ({ ...e, answered: true, chosen: STORED_LABEL[choice], ...(askId ? { ask_id: askId } : {}), expires_at: nowMs + DOWNGRADE_TTL_MS } as AskEntry)
       : e
   );
@@ -473,17 +512,26 @@ export function answeredDowngradeChoice(state: DowngradeState, signature: string
   return hit.chosen === STORED_LABEL.yes ? 'yes' : hit.chosen === STORED_LABEL.keep ? 'keep' : hit.chosen === STORED_LABEL.off ? 'off' : null;
 }
 
-/** Pure: the unanswered question for `signature` (when it was asked, at which step), plus the ask ids already consumed. */
+/**
+ * Pure: the unanswered question for `signature` (when it was asked, at which step), plus the ask ids already consumed.
+ * `oldest` is true when no older question is pending: only then may a plain marker (no signature in it) answer this one.
+ */
 export function pendingDowngradeAsk(
   state: DowngradeState,
   signature: string,
   nowMs: number
-): { askedAt: number; askStep?: number; consumed: Set<string> } | null {
+): { askedAt: number; askStep?: number; consumed: Set<string>; oldest: boolean } | null {
   const entries = live(state, nowMs) as AskEntry[];
   const pending = entries.find((e) => !e.answered && e.signature === signature && typeof e.asked_at === 'number');
   if (!pending) return null;
   const consumed = new Set(entries.flatMap((e) => (typeof e.ask_id === 'string' ? [e.ask_id] : [])));
-  return { askedAt: pending.asked_at as number, ...(typeof pending.ask_step === 'number' ? { askStep: pending.ask_step } : {}), consumed };
+  const oldest = answerable(state, nowMs).find(isPending) === pending;
+  return {
+    askedAt: pending.asked_at as number,
+    ...(typeof pending.ask_step === 'number' ? { askStep: pending.ask_step } : {}),
+    consumed,
+    oldest
+  };
 }
 
 export type DowngradeStore = {
@@ -493,8 +541,8 @@ export type DowngradeStore = {
   remember: (sessionId: string, signature: string, rating: TierRating, nowMs: number) => void;
   /** Write the question down (atomically: one parallel caller is `first`). */
   claim: (sessionId: string, signature: string, nowMs: number, stepIdx?: number) => DowngradeClaim;
-  /** Record an answer once; false when no question was pending. */
-  answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number) => boolean;
+  /** Record an answer once, for the delegation named by `sig` (or the oldest pending one); false when no such question was pending. */
+  answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number, sig?: string | null) => boolean;
   choiceFor: (sessionId: string, signature: string, nowMs: number) => DowngradeChoice | null;
   pending: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof pendingDowngradeAsk>;
 };
@@ -533,16 +581,20 @@ export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeS
   return {
     peek: (sessionId, signature, nowMs) => peekDowngrade(read(sessionId), signature, nowMs),
     remember: (sessionId, signature, rating, nowMs) =>
-      locked(sessionId, () => write(sessionId, rememberRating(read(sessionId), signature, rating, nowMs))),
+      locked(sessionId, () => {
+        const prev = read(sessionId);
+        write(sessionId, retainAnswerable(prev, rememberRating(prev, signature, rating, nowMs), nowMs));
+      }),
     claim: (sessionId, signature, nowMs, stepIdx) =>
       locked(sessionId, () => {
-        const { state, result } = claimAskDowngrade(read(sessionId), signature, nowMs, stepIdx);
-        if (result === 'first') write(sessionId, state);
+        const prev = read(sessionId);
+        const { state, result } = claimAskDowngrade(prev, signature, nowMs, stepIdx);
+        if (result === 'first') write(sessionId, retainAnswerable(prev, state, nowMs));
         return result;
       }),
-    answer: (sessionId, choice, askId, nowMs) =>
+    answer: (sessionId, choice, askId, nowMs, sig) =>
       locked(sessionId, () => {
-        const { state, recorded } = answerAskDowngrade(read(sessionId), choice, askId, nowMs);
+        const { state, recorded } = answerAskDowngrade(read(sessionId), choice, askId, nowMs, sig);
         if (recorded) write(sessionId, state);
         return recorded;
       }),

@@ -89,7 +89,7 @@ describe('Antigravity downgrade: the hook process', () => {
     expect(first.exitCode).toBe(0);
     const out = JSON.parse(first.stdout.toString());
     expect(out.decision).toBe('deny');
-    expect(out.reason).toContain('[jev-downgrade:flash_lite]');
+    expect(out.reason).toContain(`[jev-downgrade:flash_lite:${SIGNATURE.slice(0, 8)}]`);
     expect(out.overwrite).toBeUndefined();
 
     const retry = run('pre-tool-use', invoke('flash'));
@@ -275,5 +275,96 @@ describe('Antigravity downgrade: the hook process', () => {
       expect(run('pre-tool-use', invoke('flash', { transcriptPath: file })).stdout.toString()).toBe('');
       expect(state().entries.every((e: any) => !e.answered)).toBe(true);
     });
+  });
+});
+
+describe('Antigravity downgrade: several delegations in one conversation (v2.3.17 review F1, F5)', () => {
+  const ARGS_B = { TypeName: 'self', Role: 'worker', Prompt: 'translate the readme' };
+  const SIG_B = downgradeSignature(ARGS_B);
+  const invokeB = () => ({ ...invoke('flash'), toolCall: { id: 'call_sub_b', name: 'invoke_subagent', args: { ...ARGS_B, Model: 'flash' } } });
+  const marker = (sig: string) => `[jev-downgrade:flash_lite:${sig.slice(0, 8)}]`;
+
+  function seedBoth() {
+    fs.mkdirSync(sessions(), { recursive: true });
+    const cheap = (signature: string) => ({ signature, choice: 'flash_lite', p: [0.03, 0.83, 0.14, 0], real: true, expires_at: Date.now() + 600_000 });
+    fs.writeFileSync(stateFile(), JSON.stringify({ entries: [], ratings: [cheap(SIGNATURE), cheap(SIG_B)] }));
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString()).decision).toBe('deny');
+    expect(JSON.parse(run('pre-tool-use', invokeB()).stdout.toString()).decision).toBe('deny');
+  }
+  const twoQuestions = (content: string, markers: [string, string]) =>
+    ({
+      conversationId: CONV,
+      stepIdx: 12,
+      toolCall: {
+        id: 'call_ask2',
+        name: 'ask_question',
+        args: { questions: [{ question: `${markers[0]} Run A?`, options: Object.values(DOWNGRADE_LABELS) }, { question: `${markers[1]} Run B?`, options: Object.values(DOWNGRADE_LABELS) }] }
+      },
+      content
+    });
+
+  it('one ask with a question per delegation: every answer is recorded for its own delegation (the questions in B, A order: B No, A Yes)', () => {
+    seedBoth();
+    const post = run('post-tool-use', twoQuestions(`A1: ${DOWNGRADE_LABELS.keep}\nA2: ${DOWNGRADE_LABELS.yes}`, [marker(SIG_B), marker(SIGNATURE)]));
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString())).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+    const retryB = run('pre-tool-use', invokeB());
+    expect(retryB.stdout.toString()).toBe('');
+    expect(logRows().filter((r) => r.event === 'agent_call').pop()!.downgrade).toBe('answered');
+    const row = logRows().find((r) => r.event === 'ask_answer')!;
+    expect(row.outcome).toBe('recorded');
+    expect(row.downgrade_questions).toBe(2);
+  });
+
+  it('two separate asks with opposite answers: the second answer is not dropped, the first does not leak', () => {
+    seedBoth();
+    const one = (id: string, sig: string, label: string) => ({
+      conversationId: CONV,
+      stepIdx: 12,
+      toolCall: { id, name: 'ask_question', args: { questions: [{ question: `${marker(sig)} Run it?`, options: Object.values(DOWNGRADE_LABELS) }] } },
+      content: `A1: ${label}`
+    });
+    // B is answered first: an answer is bound to its own delegation, not to the order of the questions
+    run('post-tool-use', one('ask_b', SIG_B, DOWNGRADE_LABELS.keep));
+    run('post-tool-use', one('ask_a', SIGNATURE, DOWNGRADE_LABELS.yes));
+    expect(logRows().filter((r) => r.event === 'ask_answer').map((r) => r.outcome)).toEqual(['recorded', 'recorded']);
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString()).overwrite).toEqual({ Model: 'flash_lite' });
+    expect(run('pre-tool-use', invokeB()).stdout.toString()).toBe('');
+  });
+
+  it('a plain-marker answer decides the oldest delegation only', () => {
+    seedBoth();
+    run('post-tool-use', askPost(`A1: ${DOWNGRADE_LABELS.yes}`));
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString()).overwrite).toEqual({ Model: 'flash_lite' });
+    // B was never answered: it passes as asked-once, and is not rewritten
+    const retryB = run('pre-tool-use', invokeB());
+    expect(retryB.stdout.toString()).toBe('');
+    expect(logRows().filter((r) => r.event === 'agent_call').pop()!.downgrade_skip).toBe('already-asked');
+  });
+
+  it('an ask that carries both an elevation and a downgrade marker is recorded by the elevation flow', () => {
+    seedRating([0.03, 0.83, 0.14, 0]);
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString()).decision).toBe('deny');
+    expect(JSON.parse(run('pre-tool-use', invoke('pro')).stdout.toString()).decision).toBe('deny');
+    const both = {
+      conversationId: CONV,
+      stepIdx: 12,
+      toolCall: {
+        id: 'call_both',
+        name: 'ask_question',
+        args: {
+          questions: [
+            { question: "[jev-elevate:pro] Allow subagent 'self' to run on pro?", options: ['Yes, once'] },
+            { question: `${marker(SIGNATURE)} Run it on flash_lite?`, options: Object.values(DOWNGRADE_LABELS) }
+          ]
+        }
+      },
+      content: `A1: Yes, once\nA2: ${DOWNGRADE_LABELS.yes}`
+    };
+    run('post-tool-use', both);
+    const row = logRows().find((r) => r.event === 'ask_answer')!;
+    expect(row.marker).toBeUndefined();
+    expect(row.outcome).toBe('recorded');
+    expect(state().entries.every((e: any) => !e.answered)).toBe(true);
   });
 });

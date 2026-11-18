@@ -32,7 +32,7 @@ import {
 } from './logic.js';
 import { readRegularFileTail } from '../claude/safe-read.js';
 import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
-import { applyAntigravityDowngrade, findDowngradeQuestion, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
+import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -180,22 +180,33 @@ async function main() {
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
         let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
 
-        // A downgrade question (`[jev-downgrade:flash_lite]`, text starts with the marker) is recorded by its own branch.
+        // A downgrade question (`[jev-downgrade:flash_lite:<sig8>]` or the plain marker, text starts with the marker) is
+        // recorded by its own branch, EVERY such question of the call (each answer line belongs to its own delegation).
         // An elevation marker wins when a call carries both: the elevation flow is the one that must never miss an answer.
-        const downgradeIndex = findDowngradeQuestion(input.toolCall?.args?.questions);
+        const downgradeQuestions = findDowngradeQuestions(input.toolCall?.args?.questions);
         const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
-        if (downgradeIndex !== null && !carriesElevation) {
+        if (downgradeQuestions.length > 0 && !carriesElevation) {
           let dRow = false;
           let dChoice: 'yes' | 'keep' | 'off' | null = null;
-          let dOutcome: 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error' = 'error';
+          type DowngradeOutcome = 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error';
+          let dOutcome: DowngradeOutcome = 'error';
           try {
-            const rawAnswer = await pollForAskAnswer(input, downgradeIndex);
-            dRow = rawAnswer !== null;
-            dChoice = parseDowngradeAnswer(rawAnswer);
-            if (!dRow) dOutcome = 'no_row';
-            else if (!dChoice) dOutcome = 'rejected';
-            else if (!conversationId) dOutcome = 'not_asked';
-            else dOutcome = downgrades.answer(conversationId, dChoice, input.toolCall?.id, Date.now()) ? 'recorded' : 'not_asked';
+            const results: Array<{ row: boolean; choice: 'yes' | 'keep' | 'off' | null; outcome: DowngradeOutcome }> = [];
+            for (const q of downgradeQuestions) {
+              const rawAnswer = await pollForAskAnswer(input, q.index);
+              const row = rawAnswer !== null;
+              const choice = parseDowngradeAnswer(rawAnswer);
+              let outcome: DowngradeOutcome;
+              if (!row) outcome = 'no_row';
+              else if (!choice) outcome = 'rejected';
+              else if (!conversationId) outcome = 'not_asked';
+              else outcome = downgrades.answer(conversationId, choice, input.toolCall?.id, Date.now(), q.sig) ? 'recorded' : 'not_asked';
+              results.push({ row, choice, outcome });
+            }
+            const shown = results.find((r) => r.outcome === 'recorded') ?? results[0];
+            dRow = results.some((r) => r.row);
+            dChoice = shown.choice;
+            dOutcome = shown.outcome;
           } catch {
             dOutcome = 'error';
           }
@@ -209,6 +220,7 @@ async function main() {
             marker_found: true,
             row_found: dRow,
             parsed: { choice: dChoice },
+            ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length } : {}),
             outcome: dOutcome
           });
           console.log('{}');

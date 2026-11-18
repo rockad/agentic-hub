@@ -18,12 +18,32 @@ import { downgradeMode, neededTier, parseTierRating, resolveMinProbability, SESS
 import { taskFingerprint } from '../src/core/telemetry.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { callJev } from '../src/core/client.js';
-import { DOWNGRADE_ALIAS, type DowngradeChoice, type DowngradeStore } from './approvals.js';
+import { DOWNGRADE_ALIAS, DOWNGRADE_MARKER_SIG_CHARS, type DowngradeChoice, type DowngradeStore } from './approvals.js';
 import { answerLabel, extractSubagentModel, pullAskAnswerFromTranscript, type AntigravityHookDecision, type AntigravityHookInput } from './logic.js';
 
-/** The marker the downgrade question starts with. */
+/**
+ * The plain marker the downgrade question starts with. The question Jev prescribes carries the delegation's short
+ * signature inside it (`[jev-downgrade:flash_lite:<sig8>]`, see `downgradeMarker`), so an answer is bound to ONE delegation;
+ * the plain form is still accepted and then answers only the oldest pending question.
+ */
 export const DOWNGRADE_MARKER = `[jev-downgrade:${DOWNGRADE_ALIAS}]`;
 export const DOWNGRADE_MARKER_PREFIX = '[jev-downgrade:';
+
+/** The marker of one delegation's question: `[jev-downgrade:flash_lite:<first 8 characters of its signature>]`. */
+export function downgradeMarker(signature: string): string {
+  return `${DOWNGRADE_MARKER_PREFIX}${DOWNGRADE_ALIAS}:${signature.slice(0, DOWNGRADE_MARKER_SIG_CHARS).toLowerCase()}]`;
+}
+
+const MARKER_AT_START = new RegExp(`^\\[jev-downgrade:${DOWNGRADE_ALIAS}(?::([0-9a-f]{${DOWNGRADE_MARKER_SIG_CHARS}}))?\\]`);
+
+/**
+ * Pure: the marker a question text STARTS with: `{ sig: null }` for the plain marker, `{ sig }` for the signed one, null
+ * when the text does not start with a downgrade marker (a question that merely mentions it does not count).
+ */
+export function parseDowngradeMarker(text: string): { sig: string | null } | null {
+  const m = MARKER_AT_START.exec(text.trim().toLowerCase());
+  return m ? { sig: m[1] ?? null } : null;
+}
 
 /** The three prescribed answers, in the order the question lists them. */
 export const DOWNGRADE_LABELS = {
@@ -70,13 +90,22 @@ export function downgradeSignature(args: Record<string, unknown> | undefined): s
  * The deny reason of the downgrade question. A PreToolUse `deny` does not stop the turn: the assistant gets this text,
  * keeps working and is told to ask the one prescribed question.
  */
-export function downgradeReason(opts: { typeName: unknown; inherited: boolean; neededTier: string; cumulative: number; real: boolean }): string {
+export function downgradeReason(opts: {
+  typeName: unknown;
+  inherited: boolean;
+  neededTier: string;
+  cumulative: number;
+  real: boolean;
+  /** The delegation's signature: the marker the question must start with then names it. Absent: the plain marker. */
+  signature?: string;
+}): string {
+  const marker = opts.signature ? downgradeMarker(opts.signature) : DOWNGRADE_MARKER;
   const type = safeText(opts.typeName) || 'subagent';
   const evidence = `Jev rates this ${opts.neededTier}${opts.neededTier === 'openrouter_free' ? '' : ' or cheaper'}${opts.real ? `, ${Math.round(opts.cumulative * 100)}%` : ''}`;
   const requested = opts.inherited ? 'no Model (it would run on flash, the session model)' : "Model 'flash'";
   return (
     `[jev] Subagent '${type}' was invoked with ${requested}, but ${evidence}, and the user did not ask for flash. ` +
-    `Ask the user with ask_question: one question whose text STARTS with the marker ${DOWNGRADE_MARKER} followed by a short question ` +
+    `Ask the user with ask_question: one question whose text STARTS with the marker ${marker} exactly as written, followed by a short question ` +
     `naming the subagent (${type}) and offering flash_lite for it, with exactly three options in this order: ` +
     `'${DOWNGRADE_LABELS.yes}', '${DOWNGRADE_LABELS.keep}', '${DOWNGRADE_LABELS.off}'. ` +
     `Then invoke the subagent again with Model 'flash_lite' on Yes, or with Model 'flash' on either No; do not stop and do not ask in any other form.`
@@ -105,16 +134,24 @@ export function questionText(q: unknown): string {
 }
 
 /**
- * The index of the question that starts with the downgrade marker, or null. A question that merely mentions the marker
- * further in does not count: the question is the one Jev prescribed, and it starts with it.
+ * Every question that starts with a downgrade marker, with its index (the answer line is `A<index + 1>`) and the signature
+ * prefix its marker carries (null for the plain marker). A question that merely mentions the marker further in does not
+ * count: the question is the one Jev prescribed, and it starts with it.
  */
-export function findDowngradeQuestion(questions: unknown): number | null {
-  const startsWithMarker = (t: string): boolean => t.trim().toLowerCase().startsWith(DOWNGRADE_MARKER);
+export function findDowngradeQuestions(questions: unknown): Array<{ index: number; sig: string | null }> {
   if (Array.isArray(questions)) {
-    const i = questions.findIndex((q) => startsWithMarker(questionText(q)));
-    return i === -1 ? null : i;
+    return questions.flatMap((q, index) => {
+      const m = parseDowngradeMarker(questionText(q));
+      return m ? [{ index, sig: m.sig }] : [];
+    });
   }
-  return typeof questions === 'string' && startsWithMarker(questions) ? 0 : null;
+  const m = typeof questions === 'string' ? parseDowngradeMarker(questions) : null;
+  return m ? [{ index: 0, sig: m.sig }] : [];
+}
+
+/** The index of the first question that starts with the downgrade marker, or null. */
+export function findDowngradeQuestion(questions: unknown): number | null {
+  return findDowngradeQuestions(questions)[0]?.index ?? null;
 }
 
 // ── The rating ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -261,13 +298,21 @@ export async function applyAntigravityDowngrade(
       // returns). Pull it from the transcript tail now; a question whose answer was recorded already never counts again.
       const pending = safely(() => store.pending(sessionId, signature, nowMs));
       if (pending && input.transcriptPath) {
+        // Only a question that starts with this delegation's own marker counts; the plain marker only while no older
+        // question is pending (the same rule the recorder uses), so one delegation never reads another's answer.
+        const sigPrefix = signature.slice(0, DOWNGRADE_MARKER_SIG_CHARS);
+        const ownQuestion = (text: string): boolean => {
+          const m = parseDowngradeMarker(text);
+          return !!m && (m.sig === null ? pending.oldest : m.sig === sigPrefix);
+        };
         const pulled = pullAskAnswerFromTranscript(input.transcriptPath, DOWNGRADE_MARKER, {
           deniedAtMs: pending.askedAt,
           afterStepIdx: pending.askStep,
-          excludeToolCallIds: pending.consumed
+          excludeToolCallIds: pending.consumed,
+          matches: ownQuestion
         });
         const choice = pulled ? parseDowngradeAnswer(pulled.raw) : null;
-        if (choice && safely(() => store.answer(sessionId, choice, pulled?.toolCallId, nowMs))) {
+        if (choice && safely(() => store.answer(sessionId, choice, pulled?.toolCallId, nowMs, sigPrefix))) {
           return byAnswer(safely(() => store.choiceFor(sessionId, signature, nowMs)) ?? choice, true);
         }
       }
@@ -324,7 +369,8 @@ export async function applyAntigravityDowngrade(
           inherited: !explicitFlash,
           neededTier: needed.tier,
           cumulative: needed.cumulative,
-          real: rating.real
+          real: rating.real,
+          signature
         })
       },
       log

@@ -46,7 +46,7 @@ describe('scripts/commit.ts with a model-proposed message', () => {
 
     const res = Bun.spawnSync(['bun', '--preload', stub, COMMIT_SCRIPT], {
       cwd: repo,
-      env: { PATH: process.env.PATH ?? '', HOME: home, OPENROUTER_API_KEY: 'sk-test-commit' },
+      env: { PATH: process.env.PATH ?? '', HOME: home, JEV_CACHE_FILE: path.join(home, 'cache.sqlite'), OPENROUTER_API_KEY: 'sk-test-commit' },
       stdout: 'pipe',
       stderr: 'pipe'
     });

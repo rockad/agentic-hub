@@ -11,8 +11,11 @@ import {
   DOWNGRADE_MARKER,
   applyAntigravityDowngrade,
   delegationTask,
+  downgradeMarker,
   downgradeSignature,
   findDowngradeQuestion,
+  findDowngradeQuestions,
+  parseDowngradeMarker,
   parseDowngradeAnswer,
   userNamedFlash,
   type DowngradeDeps
@@ -93,13 +96,23 @@ function transcript(rows: object[]): string {
   fs.writeFileSync(file, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
   return file;
 }
-const questionRow = (idx: number, id: string, at?: string) => ({
-  step_index: idx,
+const questionRow = (idx: number | undefined, id: string, at?: string, marker: string = DOWNGRADE_MARKER, text = `Run 'self' on flash_lite?`) => ({
+  ...(idx === undefined ? {} : { step_index: idx }),
   type: 'PLANNER_RESPONSE',
   ...(at ? { created_at: at } : {}),
-  tool_calls: [{ id, name: 'ask_question', args: { questions: [{ question: `${DOWNGRADE_MARKER} Run 'self' on flash_lite?`, options: Object.values(DOWNGRADE_LABELS) }] } }]
+  tool_calls: [{ id, name: 'ask_question', args: { questions: [{ question: `${marker} ${text}`, options: Object.values(DOWNGRADE_LABELS) }] } }]
 });
-const answerRow = (idx: number, id: string, label: string) => ({ step_index: idx, type: 'GENERIC', toolCallId: id, content: `Created At: x\nCompleted At: y\nA1: ${label}` });
+const answerRow = (idx: number | undefined, id: string, label: string) => ({
+  ...(idx === undefined ? {} : { step_index: idx }),
+  type: 'GENERIC',
+  toolCallId: id,
+  content: `Created At: x\nCompleted At: y\nA1: ${label}`
+});
+
+// Two different delegations (A is the default call, B another prompt), and the marker prefix each question carries.
+const A_ARGS = () => call({ Model: 'flash' }).toolCall!.args as Record<string, unknown>;
+const B_ARGS = () => call({ Model: 'flash', Prompt: 'translate the readme' }).toolCall!.args as Record<string, unknown>;
+const sig8 = (args: Record<string, unknown>) => downgradeSignature(args).slice(0, 8);
 
 describe('candidates and ordering with the v2.3.16 checks', () => {
   it('never turns a deny into an allow: a base deny is returned untouched and the router is not called', async () => {
@@ -193,7 +206,8 @@ describe('ask mode', () => {
     const r = await decide(call({ Model: 'flash' }), ask);
     expect(r.decision.decision).toBe('deny');
     const reason = r.decision.reason ?? '';
-    expect(reason).toContain('[jev-downgrade:flash_lite]');
+    expect(reason).toContain(downgradeMarker(downgradeSignature(call({ Model: 'flash' }).toolCall!.args)));
+    expect(reason).toMatch(/\[jev-downgrade:flash_lite:[0-9a-f]{8}\]/);
     expect(reason).toContain('ask_question');
     expect(reason).toContain(`'Yes, flash_lite', 'No, keep flash', 'No, and don't ask again this session'`);
     expect(r.log.downgrade).toBe('asked');
@@ -382,6 +396,190 @@ describe('ask mode', () => {
       expect((await decide(input, ask)).log.downgrade_pull).toBe(true);
       expect(store.answer('conv-dg', 'off', 'q_new', now)).toBe(false);
     });
+  });
+});
+
+describe('one answer decides one delegation (v2.3.17 review F1)', () => {
+  const a = () => call({ Model: 'flash' });
+  const b = () => call({ Model: 'flash', Prompt: 'translate the readme' });
+
+  async function askBoth() {
+    expect((await decide(a(), ask)).decision.decision).toBe('deny');
+    expect((await decide(b(), ask)).decision.decision).toBe('deny');
+  }
+
+  it('the prescribed reason names the delegation in the marker, a different one for each delegation', async () => {
+    const ra = await decide(a(), ask);
+    const rb = await decide(b(), ask);
+    expect(ra.decision.reason).toContain(`[jev-downgrade:flash_lite:${sig8(A_ARGS())}]`);
+    expect(rb.decision.reason).toContain(`[jev-downgrade:flash_lite:${sig8(B_ARGS())}]`);
+    expect(sig8(A_ARGS())).not.toBe(sig8(B_ARGS()));
+  });
+
+  it('opposite answers: A Yes, B "No, keep flash" -> A is rewritten, B is not (store)', async () => {
+    await askBoth();
+    expect(store.answer('conv-dg', 'yes', 'ask_1', now, sig8(A_ARGS()))).toBe(true);
+    expect(store.answer('conv-dg', 'keep', 'ask_1', now, sig8(B_ARGS()))).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBe('yes');
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBe('keep');
+    const ra = await decide(a(), ask);
+    expect(ra.decision).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+    const rb = await decide(b(), ask);
+    expect(rb.decision.decision).toBe('pass');
+    expect(rb.log.downgrade).toBe('answered');
+  });
+
+  it('a Yes for A leaves B pending: B is not rewritten and its own answer is still recorded afterwards', async () => {
+    await askBoth();
+    expect(store.answer('conv-dg', 'yes', 'ask_1', now, sig8(A_ARGS()))).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBeNull();
+    expect(store.pending('conv-dg', downgradeSignature(B_ARGS()), now)).not.toBeNull();
+    expect((await decide(b(), ask)).log.downgrade_skip).toBe('already-asked');
+  });
+
+  it('an answer for a delegation nothing is pending for records nothing', async () => {
+    await decide(a(), ask);
+    expect(store.answer('conv-dg', 'yes', 'ask_1', now, sig8(B_ARGS()))).toBe(false);
+    expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBeNull();
+  });
+
+  it('a plain marker (no signature) answers the OLDEST pending question only, the next answer the next one', async () => {
+    await askBoth();
+    expect(store.answer('conv-dg', 'yes', 'ask_1', now)).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBe('yes');
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBeNull();
+    expect(store.answer('conv-dg', 'keep', 'ask_2', now)).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBe('keep');
+    expect(store.answer('conv-dg', 'off', 'ask_3', now)).toBe(false);
+  });
+
+  it('the pull at PreToolUse never hands A\'s answer to B (signed markers)', async () => {
+    await askBoth();
+    const file = transcript([
+      questionRow(11, 'q_a', undefined, downgradeMarker(downgradeSignature(A_ARGS())), 'Run A?'),
+      answerRow(12, 'q_a', DOWNGRADE_LABELS.yes)
+    ]);
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.decision.decision).toBe('pass');
+    expect(rb.log.downgrade_skip).toBe('already-asked');
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBeNull();
+    const ra = await decide({ ...a(), transcriptPath: file }, ask);
+    expect(ra.decision).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+    expect(ra.log.downgrade_pull).toBe(true);
+  });
+
+  it('the pull with a plain marker answers the oldest pending delegation only', async () => {
+    await askBoth();
+    const file = transcript([questionRow(11, 'q_plain'), answerRow(12, 'q_plain', DOWNGRADE_LABELS.yes)]);
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.log.downgrade_skip).toBe('already-asked');
+    const ra = await decide({ ...a(), transcriptPath: file }, ask);
+    expect(ra.decision.decision).toBe('allow');
+  });
+
+  it('findDowngradeQuestions lists every marker question with its index and signature prefix', () => {
+    const sa = `[jev-downgrade:flash_lite:${sig8(A_ARGS())}]`;
+    const found = findDowngradeQuestions([{ question: `${sa} one` }, 'unrelated', { question: `${DOWNGRADE_MARKER} two` }, `  ${sa.toUpperCase()} three`]);
+    expect(found).toEqual([
+      { index: 0, sig: sig8(A_ARGS()) },
+      { index: 2, sig: null },
+      { index: 3, sig: sig8(A_ARGS()) }
+    ]);
+    expect(findDowngradeQuestions([{ question: '[jev-downgrade:flash_lite:xyz] bad signature' }, { question: '[jev-downgrade:flash_lite:abcdef012] 9 chars' }])).toEqual([]);
+    expect(parseDowngradeMarker('[jev-downgrade:flash_lite:0123abcd] x')).toEqual({ sig: '0123abcd' });
+    expect(parseDowngradeMarker('see [jev-downgrade:flash_lite] x')).toBeNull();
+  });
+});
+
+describe('an answer given late still counts (v2.3.17 review F2)', () => {
+  it('an answer 11 minutes after the question is recorded, for "No, and don\'t ask again" too', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    now += 11 * 60_000;
+    expect(store.answer('conv-dg', 'off', 'ask1', now)).toBe(true);
+    expect(store.peek('conv-dg', 'any', now).off).toBe(true);
+    const r = await decide(call({ Model: 'flash' }), ask);
+    expect(r.decision.decision).toBe('pass');
+    expect(r.log.downgrade_skip).toBe('session-off');
+  });
+
+  it('a late Yes is recorded and the retry is rewritten, not asked a second time', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    now += 11 * 60_000;
+    expect(store.answer('conv-dg', 'yes', 'ask1', now, sig8(A_ARGS()))).toBe(true);
+    const r = await decide(call({ Model: 'flash' }), ask);
+    expect(r.decision).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+  });
+
+  it('a write for another delegation in between does not drop the open question', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    now += 11 * 60_000;
+    expect((await decide(call({ Model: 'flash', Prompt: 'translate the readme' }), ask)).decision.decision).toBe('deny');
+    expect(store.answer('conv-dg', 'yes', 'ask1', now, sig8(A_ARGS()))).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBe('yes');
+  });
+
+  it('the question is still asked again after ten minutes, and a question older than an hour is no longer answerable', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    now += 11 * 60_000;
+    expect((await decide(call({ Model: 'flash' }), ask)).decision.decision).toBe('deny');
+    now += 61 * 60_000;
+    expect(store.answer('conv-dg', 'yes', 'ask2', now)).toBe(false);
+  });
+});
+
+describe('the answer guards (v2.3.17 review F4, F5)', () => {
+  it('a pulled question must START with the marker: a question that only mentions it is ignored', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    const mid = {
+      step_index: 11,
+      type: 'PLANNER_RESPONSE',
+      tool_calls: [{ id: 'q_mid', name: 'ask_question', args: { questions: [{ question: 'Quick check (Jev tag [jev-downgrade:flash_lite]): run on flash_lite?' }] } }]
+    };
+    const file = transcript([mid, answerRow(12, 'q_mid', DOWNGRADE_LABELS.yes)]);
+    const r = await decide(call({ Model: 'flash' }, { transcriptPath: file }), ask);
+    expect(r.decision.decision).toBe('pass');
+    expect(r.log.downgrade_skip).toBe('already-asked');
+  });
+
+  it('the tool call id of an answer already recorded is never applied again (no stepIdx, no timestamps, no step index)', async () => {
+    // A is answered Yes through PostToolUse (tool call old_q); B is asked with nothing but the id to tell the question apart
+    await decide(call({ Model: 'flash' }), ask);
+    expect(store.answer('conv-dg', 'yes', 'old_q', now, sig8(A_ARGS()))).toBe(true);
+    const b = call({ Model: 'flash', Prompt: 'translate the readme' }, { stepIdx: undefined });
+    expect((await decide(b, ask)).decision.decision).toBe('deny');
+    const file = transcript([questionRow(undefined, 'old_q'), answerRow(undefined, 'old_q', DOWNGRADE_LABELS.yes)]);
+    const r = await decide({ ...b, transcriptPath: file }, ask);
+    expect(r.decision.decision).toBe('pass');
+    expect(r.log.downgrade_skip).toBe('already-asked');
+    // control: a question with another id is taken
+    const fresh = transcript([questionRow(undefined, 'new_q'), answerRow(undefined, 'new_q', DOWNGRADE_LABELS.yes)]);
+    expect((await decide({ ...b, transcriptPath: fresh }, ask)).decision.decision).toBe('allow');
+  });
+
+  it('a question more than 5 s older than the denial is ignored when it has no step index', async () => {
+    await decide(call({ Model: 'flash' }, { stepIdx: undefined }), ask);
+    const old = transcript([
+      questionRow(undefined, 'q_old', new Date(T0 - 10_000).toISOString()),
+      answerRow(undefined, 'q_old', DOWNGRADE_LABELS.yes)
+    ]);
+    const r = await decide(call({ Model: 'flash' }, { stepIdx: undefined, transcriptPath: old }), ask);
+    expect(r.decision.decision).toBe('pass');
+    expect(r.log.downgrade_skip).toBe('already-asked');
+    // control: within 5 s of the denial it counts
+    const near = transcript([
+      questionRow(undefined, 'q_near', new Date(T0 - 2_000).toISOString()),
+      answerRow(undefined, 'q_near', DOWNGRADE_LABELS.yes)
+    ]);
+    expect((await decide(call({ Model: 'flash' }, { stepIdx: undefined, transcriptPath: near }), ask)).decision.decision).toBe('allow');
+  });
+
+  it('the answer closes the question with the tool call id of the ask (ask_id is written)', async () => {
+    await decide(call({ Model: 'flash' }), ask);
+    expect(store.answer('conv-dg', 'keep', 'ask_77', now, sig8(A_ARGS()))).toBe(true);
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'conv-dg.downgrade.json'), 'utf8'));
+    const entry = saved.entries.find((e: { answered: boolean }) => e.answered);
+    expect(entry.ask_id).toBe('ask_77');
+    expect(entry.chosen).toBe(DOWNGRADE_LABELS.keep);
   });
 });
 

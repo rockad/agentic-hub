@@ -14,11 +14,13 @@ let tmp = '';
 let home = '';
 let origHome: string | undefined;
 let origConfigFile: string | undefined;
+let origCacheFile: string | undefined;
 
 describe('In-process Mode Switching and Single Config Store', () => {
   beforeEach(() => {
     origHome = process.env.HOME;
     origConfigFile = process.env.JEV_CONFIG_FILE;
+    origCacheFile = process.env.JEV_CACHE_FILE;
 
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-mode-test-'));
     home = path.join(tmp, 'home');
@@ -36,6 +38,9 @@ describe('In-process Mode Switching and Single Config Store', () => {
 
     if (origConfigFile !== undefined) process.env.JEV_CONFIG_FILE = origConfigFile;
     else delete process.env.JEV_CONFIG_FILE;
+
+    if (origCacheFile !== undefined) process.env.JEV_CACHE_FILE = origCacheFile;
+    else delete process.env.JEV_CACHE_FILE;
 
     clearConfigCacheForTesting();
     fs.rmSync(tmp, { recursive: true, force: true });

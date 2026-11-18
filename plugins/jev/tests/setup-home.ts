@@ -49,6 +49,11 @@ for (const name of Object.keys(process.env)) {
   }
 }
 
+// The router's decision cache lives in a machine-wide file (/dev/shm/jev/cache.sqlite) unless JEV_CACHE_FILE says otherwise,
+// and a rating cached there by an earlier real run would answer a test's router call without a key. Point it inside the
+// temporary home, after the scrub above, so every test and every process a test spawns uses a private cache.
+process.env.JEV_CACHE_FILE = path.join(home, 'decision-cache.sqlite');
+
 // No test may start a real catalogue refresh: the SessionStart hook launches a detached refresh when the catalogue is
 // missing, and that refresh runs paid `claude -p` probes. Set after the scrub above, so every process a test spawns
 // inherits it. The one test that exercises the real trigger deletes it from its own env and points JEV_REFRESH_SCRIPT

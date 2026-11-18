@@ -357,6 +357,8 @@ export type PullAskOptions = {
   afterStepIdx?: number;
   /** Ignore a question whose tool call id is listed: its answer was already recorded once. */
   excludeToolCallIds?: ReadonlySet<string>;
+  /** Decides whether a question (or message) text is the one wanted, in place of "contains the marker text". */
+  matches?: (text: string) => boolean;
 };
 
 /**
@@ -397,6 +399,8 @@ export function pullAskAnswerFromTranscript(
     }
 
     const marker = markerText.toLowerCase();
+    // `matches` decides alone when given (the downgrade flow needs "starts with its own marker"); else the marker may be anywhere.
+    const questionMatches = (t: string): boolean => (opts.matches ? opts.matches(t) : t.toLowerCase().includes(marker));
 
     type AskMatch = {
       stepIndexInArray: number;
@@ -451,13 +455,13 @@ export function pullAskAnswerFromTranscript(
                       : q && typeof q === 'object'
                         ? (q as Record<string, unknown>).question
                         : '';
-                  if (typeof qText === 'string' && qText.toLowerCase().includes(marker)) {
+                  if (typeof qText === 'string' && questionMatches(qText)) {
                     matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
                   }
                 });
-              } else if (typeof questions === 'string' && questions.toLowerCase().includes(marker)) {
+              } else if (typeof questions === 'string' && questionMatches(questions)) {
                 matchedTool = true;
                 markerIndex = 0;
                 if (typeof rec.id === 'string') toolCallId = rec.id;
@@ -474,7 +478,7 @@ export function pullAskAnswerFromTranscript(
         (stepType === 'PLANNER_RESPONSE' || stepType === '') &&
         !hasToolCalls &&
         typeof step.content === 'string' &&
-        step.content.toLowerCase().includes(marker)
+        questionMatches(step.content)
       ) {
         matchedProse = true;
         markerIndex = 0;

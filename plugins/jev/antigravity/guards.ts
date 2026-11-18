@@ -143,8 +143,14 @@ function appendGuardLog(entry: Record<string, unknown>): void {
   }
 }
 
-/** One command of a command line: its words, and whether a single `|` connects it to the command before it. */
-type Segment = { words: string[]; pipe: boolean };
+/** What joins a command to its neighbour: `;` (also a newline), `&&`, `||`, a single `|` (`|&`), or a lone `&`. */
+type Joint = ';' | '&&' | '||' | '|' | '&';
+
+/**
+ * One command of a command line: its words, whether a single `|` connects it to the command before it (`pipe`), and
+ * the joints on either side (`before` is empty for the first command, `after` for the last).
+ */
+type Segment = { words: string[]; pipe: boolean; before?: Joint; after?: Joint };
 
 /**
  * Split a command line into segments (on `&&`, `||`, `;`, `|`, `|&`, a lone `&`, newline, outside quotes), each a list
@@ -158,16 +164,18 @@ function splitSegments(cmd: string): Segment[] {
   let cur = '';
   let inWord = false;
   let curPipe = false; // the segment being built follows a `|`
+  let curBefore: Joint | undefined; // the joint before the segment being built
   const endWord = () => {
     if (inWord) words.push(cur);
     cur = '';
     inWord = false;
   };
-  const endSegment = (nextIsPipe: boolean) => {
+  const endSegment = (joint?: Joint) => {
     endWord();
-    if (words.length > 0) segments.push({ words, pipe: curPipe });
+    if (words.length > 0) segments.push({ words, pipe: curPipe, ...(curBefore ? { before: curBefore } : {}), ...(joint ? { after: joint } : {}) });
     words = [];
-    curPipe = nextIsPipe;
+    curPipe = joint === '|';
+    curBefore = joint;
   };
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
@@ -193,20 +201,20 @@ function splitSegments(cmd: string): Segment[] {
       cur += cmd[i + 1];
       i++;
     } else if (ch === '&' && cmd[i + 1] === '&') {
-      endSegment(false);
+      endSegment('&&');
       i++;
     } else if (ch === '&' && !inWord && cmd[i - 1] !== '>' && cmd[i - 1] !== '<' && cmd[i + 1] !== '>') {
-      endSegment(false); // a lone `&` puts the command before it in the background: the next one is a new command
+      endSegment('&'); // a lone `&` puts the command before it in the background: the next one is a new command
     } else if (ch === '|') {
       if (cmd[i + 1] === '|') {
-        endSegment(false);
+        endSegment('||');
         i++;
       } else {
-        endSegment(true);
+        endSegment('|');
         if (cmd[i + 1] === '&') i++; // `|&`
       }
     } else if (ch === ';' || ch === '\n') {
-      endSegment(false);
+      endSegment(';');
     } else if (ch === ' ' || ch === '\t' || ch === '\r') {
       endWord();
     } else {
@@ -214,7 +222,7 @@ function splitSegments(cmd: string): Segment[] {
       cur += ch;
     }
   }
-  endSegment(false);
+  endSegment();
   return segments;
 }
 
@@ -478,7 +486,8 @@ function literalTextsOf(h: { words: string[]; i: number; head: string }): string
  * Command lines a shell segment of a pipeline reads from its input: the literal text of an `echo` / `printf` that
  * precedes it in the same pipeline (`echo 'git commit -m x' | sh`, also through other stages such as `tee`), and a
  * here-string (`sh <<< 'git commit'`). Empty for a segment that is not a shell reading standard input, so
- * `echo "git commit"` on its own, or piped into `cat`, stays data. Known gap: a heredoc body is not tied to its
+ * `echo "git commit"` on its own, or piped into `cat`, stays data. An echo is attached to the first shell after it only
+ * (a second shell in the pipeline reads the first one's output). Known gap: a heredoc body is not tied to its
  * shell, but its lines are separate commands of the line anyway, so they are walked as such.
  */
 function pipedShellTexts(segments: Segment[], idx: number): string[] {
@@ -491,8 +500,11 @@ function pipedShellTexts(segments: Segment[], idx: number): string[] {
     if (w === '<<<' && k + 1 < args.length) texts.push(args[k + 1]);
     else if (w.startsWith('<<<') && w.length > 3) texts.push(w.slice(3));
   });
+  // Walk back through the pipeline, but only to the previous shell reading standard input: that shell gets the text
+  // before it (or its own output), so each echo / printf is read once, by the first shell after it.
   for (let k = idx; k > 0 && segments[k].pipe; k--) {
     const prev = commandHead(segments[k - 1].words);
+    if (prev && shellReadsStdin(prev)) break;
     if (prev && (prev.head === 'echo' || prev.head === 'printf')) texts.push(...literalTextsOf(prev));
   }
   return texts;
@@ -794,7 +806,7 @@ function commitTargets(inv: GitInvocation, states: WalkState[], reasons: Set<str
   return out;
 }
 
-type Walk = { commits: CommitTarget[]; reasons: string[]; end: string };
+type Walk = { commits: CommitTarget[]; reasons: string[]; end: string; /** The states the line ends in. */ states: WalkState[] };
 
 /**
  * Where every `git ... commit` of a command line runs. Walks the segments with a set of possible shell states that
@@ -808,8 +820,13 @@ type Walk = { commits: CommitTarget[]; reasons: string[]; end: string };
  * - Every commit found is a target, not only the first: it applies its own `env -C` / `-C <dir>` in order, each
  *   relative to the previous as git does, plus `--git-dir` / `--work-tree` and `GIT_DIR` / `GIT_WORK_TREE`.
  * - `sh -c '...'`, `eval ...`, `$( ... )` bodies and text piped into a shell are walked the same way from the states
- *   they start in. A `cd` inside a `( ... )` subshell may have ended before the commit, so the states then also keep
- *   the ones without it. A `-C` on any other segment (an earlier `git add -C ...`) does not move a commit.
+ *   they start in. `eval` runs in the current shell, so where its text leaves the shell is where the line goes on;
+ *   `sh -c` and piped shells are child processes and do not move it.
+ * - A state change (`cd`, `pushd`, `popd`, `export`, an assignment) follows the shell: a backgrounded command (`&`) and a
+ *   non-last pipeline stage are subshells and change nothing; the last pipeline stage, a `( ... )` subshell and a
+ *   `cd` after `||` keep the states without it too; a `cd` after `&&` does too once the commit is reached any way
+ *   but `&&` straight after it (`false && cd dir; git commit`). The last three are reported as `pipeline` or
+ *   `conditional`. A `-C` on any other segment (an earlier `git add -C ...`) does not move a commit.
  * Without a commit, `end` is the first state's directory.
  */
 function walkCommandLine(cmd: string, starts: WalkState[], depth: number): Walk {
@@ -832,12 +849,40 @@ function walkCommandLine(cmd: string, starts: WalkState[], depth: number): Walk 
     for (const body of commandSubstitutions(cmd)) subWalks.push(walkCommandLine(body, starts, depth + 1));
   }
   let states = uniqueStates(starts);
+  // States from before a `cd` that follows `&&`: the commit only runs in them if it is reached some other way than
+  // by `&&` straight after the cd (`false && cd dir; git commit`).
+  let skipped: WalkState[] = [];
   const segments = splitSegments(cmd);
   for (let idx = 0; idx < segments.length; idx++) {
-    const raw = segments[idx].words;
+    const seg = segments[idx];
+    const raw = seg.words;
     const subshell = raw[0].startsWith('(');
+    if (skipped.length > 0 && seg.before !== '&&') {
+      states = uniqueStates([...states, ...skipped]);
+      skipped = [];
+      reasons.add('conditional');
+    }
+    /**
+     * A command that changes the shell's state (`cd`, `pushd`, `popd`, `export`, an assignment, `eval`), as the shell
+     * runs it: not at all when it is backgrounded (`&`) or a pipeline stage before the last (a subshell); next to the
+     * states before it when it is the last stage of a pipeline (zsh runs it in the current shell, bash in a subshell)
+     * or sits in `( ... )`, or follows `||`; and, after `&&`, as an extra way in only for what is not chained with
+     * `&&` straight after it.
+     */
     const merge = (next: WalkState[]) => {
-      states = uniqueStates(subshell ? [...next, ...states] : next);
+      if (seg.after === '&' || seg.after === '|') return;
+      if (seg.before === '|') {
+        reasons.add('pipeline');
+        states = uniqueStates([...next, ...states]);
+      } else if (seg.before === '||') {
+        reasons.add('conditional');
+        states = uniqueStates([...next, ...states]);
+      } else if (seg.before === '&&') {
+        skipped = uniqueStates([...skipped, ...states]);
+        states = uniqueStates(subshell ? [...next, ...states] : next);
+      } else {
+        states = uniqueStates(subshell ? [...next, ...states] : next);
+      }
     };
     const bare = bareAssignments(raw);
     if (bare) {
@@ -851,7 +896,11 @@ function walkCommandLine(cmd: string, starts: WalkState[], depth: number): Walk 
     if (nested !== null) texts.push(nested);
     if (depth < NESTED_MAX_DEPTH) texts.push(...pipedShellTexts(segments, idx));
     if (texts.length > 0) {
-      for (const text of texts) takeWalk(walkCommandLine(text, states, depth + 1));
+      const walks = texts.map((text) => walkCommandLine(text, states, depth + 1));
+      walks.forEach(takeWalk);
+      // `eval` runs in the current shell: where its text leaves the shell is where the line goes on. `sh -c` and a
+      // piped shell are child processes and leave it where it was.
+      if (h.head === 'eval' && nested !== null) merge(walks[0].states);
       continue;
     }
     const commit = gitInvocationsOfSegment(raw, depth).find((g) => g.subcommand === 'commit');
@@ -891,8 +940,12 @@ function walkCommandLine(cmd: string, starts: WalkState[], depth: number): Walk 
       );
     }
   }
+  if (skipped.length > 0) {
+    states = uniqueStates([...states, ...skipped]);
+    reasons.add('conditional');
+  }
   subWalks.forEach(takeWalk);
-  return { commits, reasons: [...commitReasons], end: states[0]?.cwd ?? starts[0].cwd };
+  return { commits, reasons: [...commitReasons], end: states[0]?.cwd ?? starts[0].cwd, states };
 }
 
 const initialState = (baseCwd: string): WalkState => ({ cwd: baseCwd, stack: [], vars: {} });

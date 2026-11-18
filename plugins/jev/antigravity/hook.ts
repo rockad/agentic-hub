@@ -202,7 +202,7 @@ async function main() {
             if (conversationId && typeof input.stepIdx === 'number') {
               for (const q of downgradeQuestions) {
                 try {
-                  if (downgrades.noteAnswerStep?.(conversationId, input.stepIdx, Date.now(), q.sig)) dStepRecorded = true;
+                  if (downgrades.noteAnswerStep?.(conversationId, input.stepIdx, Date.now(), q.sig, q.index)) dStepRecorded = true;
                 } catch {
                   // fail-open: the pull then reads a lone ask_question only
                 }

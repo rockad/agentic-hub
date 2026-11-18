@@ -429,7 +429,13 @@ type AskEntry = DowngradeEntry & {
    * tool call ids, and a tool that ran in parallel with the ask can put its own output row first.
    */
   answer_step?: number;
+  /** The question index (0 = A1) of this question inside that answer row, recorded with `answer_step`. */
+  answer_q?: number;
 };
+
+/** Whether an entry already carries `askId` as the key of the answer that closed it (one answer closes one entry). */
+const askIdConsumed = (entries: DowngradeEntry[], askId: string): boolean =>
+  (entries as AskEntry[]).some((e) => e.ask_id === askId);
 
 /** Pure: record the question for `signature` (a denial about to be sent). `first` when it was written, `asked`/`answered` when on record. */
 export function claimAskDowngrade(
@@ -498,6 +504,9 @@ export function answerAskDowngrade(
   sig?: string | null
 ): { state: DowngradeState; recorded: boolean } {
   const entries = answerable(state, nowMs);
+  // One answer, one delegation: an answer row (and question) that already closed an entry cannot close another, however
+  // many times its PostToolUse is delivered or in which order the pull and the recorder see it.
+  if (askId && askIdConsumed(entries, askId)) return { state, recorded: false };
   const wanted = typeof sig === 'string' && sig ? sig.toLowerCase() : null;
   const target = wanted
     ? entries.filter((e) => isPending(e) && typeof e.signature === 'string' && e.signature.startsWith(wanted))
@@ -523,16 +532,26 @@ export function noteAskAnswerStep(
   state: DowngradeState,
   stepIdx: number,
   nowMs: number,
-  sig?: string | null
+  sig?: string | null,
+  questionIndex?: number
 ): { state: DowngradeState; recorded: boolean } {
   if (!Number.isInteger(stepIdx) || stepIdx < 0) return { state, recorded: false };
+  if (questionIndex !== undefined && (!Number.isInteger(questionIndex) || questionIndex < 0)) return { state, recorded: false };
   const entries = answerable(state, nowMs) as AskEntry[];
+  // A row and question that already closed an entry are not recorded onto another one (a late PostToolUse, or a pull
+  // that consumed the row first, would otherwise move that row onto the next pending question).
+  if (askIdConsumed(entries, `step:${stepIdx}#${questionIndex ?? 0}`)) return { state, recorded: false };
   const wanted = typeof sig === 'string' && sig ? sig.toLowerCase() : null;
   const target = wanted
     ? entries.filter((e) => isPending(e) && typeof e.signature === 'string' && e.signature.startsWith(wanted))
     : entries.filter((e) => isPending(e) && typeof e.answer_step !== 'number').slice(0, 1);
   if (target.length === 0) return { state, recorded: false };
-  const next = entries.map((e) => (target.includes(e) ? ({ ...e, answer_step: stepIdx } as AskEntry) : e));
+  // The question index is stored only when the caller knows it; without it the pull reads the matched call's own line.
+  const next = entries.map((e) => {
+    if (!target.includes(e)) return e;
+    const { answer_q: _stale, ...rest } = e;
+    return { ...rest, answer_step: stepIdx, ...(questionIndex !== undefined ? { answer_q: questionIndex } : {}) } as AskEntry;
+  });
   return { state: { ...state, entries: next.slice(-MAX_ENTRIES) }, recorded: true };
 }
 
@@ -554,7 +573,7 @@ export function pendingDowngradeAsk(
   state: DowngradeState,
   signature: string,
   nowMs: number
-): { askedAt: number; askStep?: number; answerStep?: number; consumed: Set<string>; oldest: boolean } | null {
+): { askedAt: number; askStep?: number; answerStep?: number; answerQuestion?: number; consumed: Set<string>; oldest: boolean } | null {
   const entries = live(state, nowMs) as AskEntry[];
   const pending = entries.find((e) => !e.answered && e.signature === signature && typeof e.asked_at === 'number');
   if (!pending) return null;
@@ -564,6 +583,7 @@ export function pendingDowngradeAsk(
     askedAt: pending.asked_at as number,
     ...(typeof pending.ask_step === 'number' ? { askStep: pending.ask_step } : {}),
     ...(typeof pending.answer_step === 'number' ? { answerStep: pending.answer_step } : {}),
+    ...(typeof pending.answer_step === 'number' && typeof pending.answer_q === 'number' ? { answerQuestion: pending.answer_q } : {}),
     consumed,
     oldest
   };
@@ -579,7 +599,7 @@ export type DowngradeStore = {
   /** Record an answer once, for the delegation named by `sig` (or the oldest pending one); false when no such question was pending. */
   answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number, sig?: string | null) => boolean;
   /** Record the answer row's step_index against the pending question(s) of the ask (see `noteAskAnswerStep`); false when none is pending. */
-  noteAnswerStep?: (sessionId: string, stepIdx: number, nowMs: number, sig?: string | null) => boolean;
+  noteAnswerStep?: (sessionId: string, stepIdx: number, nowMs: number, sig?: string | null, questionIndex?: number) => boolean;
   choiceFor: (sessionId: string, signature: string, nowMs: number) => DowngradeChoice | null;
   pending: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof pendingDowngradeAsk>;
 };
@@ -635,9 +655,9 @@ export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeS
         if (recorded) write(sessionId, state);
         return recorded;
       }),
-    noteAnswerStep: (sessionId, stepIdx, nowMs, sig) =>
+    noteAnswerStep: (sessionId, stepIdx, nowMs, sig, questionIndex) =>
       locked(sessionId, () => {
-        const { state, recorded } = noteAskAnswerStep(read(sessionId), stepIdx, nowMs, sig);
+        const { state, recorded } = noteAskAnswerStep(read(sessionId), stepIdx, nowMs, sig, questionIndex);
         if (recorded) write(sessionId, state);
         return recorded;
       }),

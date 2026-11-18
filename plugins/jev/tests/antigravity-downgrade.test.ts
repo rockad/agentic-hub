@@ -419,8 +419,9 @@ describe('one answer decides one delegation (v2.3.17 review F1)', () => {
 
   it('opposite answers: A Yes, B "No, keep flash" -> A is rewritten, B is not (store)', async () => {
     await askBoth();
-    expect(store.answer('conv-dg', 'yes', 'ask_1', now, sig8(A_ARGS()))).toBe(true);
-    expect(store.answer('conv-dg', 'keep', 'ask_1', now, sig8(B_ARGS()))).toBe(true);
+    expect(store.answer('conv-dg', 'yes', 'ask_1#0', now, sig8(A_ARGS()))).toBe(true);
+    // One key per question, as the hook records them: the same key can never close two delegations.
+    expect(store.answer('conv-dg', 'keep', 'ask_1#1', now, sig8(B_ARGS()))).toBe(true);
     expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBe('yes');
     expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBe('keep');
     const ra = await decide(a(), ask);

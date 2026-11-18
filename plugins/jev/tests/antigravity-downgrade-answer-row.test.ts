@@ -294,3 +294,83 @@ describe('applyAntigravityDowngrade: id-less transcript, parallel tool output in
     expect(store.choiceFor('conv-dg', SIG_B, now)).toBeNull();
   });
 });
+
+// ── Review findings (F1, F3): one answer decides one delegation, and the recorded question index picks its line ───────
+describe('the downgrade store never lets one answer decide two delegations (F1)', () => {
+  const claim = (signature: string, at: number) => store.claim('s1', signature, at, 3);
+
+  it('answer() refuses an ask id that already closed another entry', () => {
+    claim(SIG_A, T0);
+    claim(SIG_B, T0 + 1);
+    expect(store.answer('s1', 'yes', 'step:6#0', T0 + 5, null)).toBe(true);
+    expect(store.answer('s1', 'yes', 'step:6#0', T0 + 6, null)).toBe(false);
+    expect(store.choiceFor('s1', SIG_A, T0 + 7)).toBe('yes');
+    expect(store.choiceFor('s1', SIG_B, T0 + 7)).toBeNull();
+    // Another row is a different answer: it closes the next pending question.
+    expect(store.answer('s1', 'keep', 'step:9#0', T0 + 8, null)).toBe(true);
+    expect(store.choiceFor('s1', SIG_B, T0 + 9)).toBe('keep');
+  });
+
+  it('answer() with no ask id (nothing to key on) is unchanged', () => {
+    claim(SIG_A, T0);
+    claim(SIG_B, T0 + 1);
+    expect(store.answer('s1', 'yes', undefined, T0 + 5, null)).toBe(true);
+    expect(store.answer('s1', 'yes', undefined, T0 + 6, null)).toBe(true);
+  });
+
+  it('noteAnswerStep() does not move a row that already answered a question onto the next pending one', () => {
+    claim(SIG_A, T0);
+    claim(SIG_B, T0 + 1);
+    expect(store.noteAnswerStep?.('s1', 7, T0 + 2, null, 0)).toBe(true);
+    expect(store.answer('s1', 'yes', 'step:7#0', T0 + 3, null)).toBe(true);
+    // A late PostToolUse for the same row and question: B must not inherit row 7.
+    expect(store.noteAnswerStep?.('s1', 7, T0 + 4, null, 0)).toBe(false);
+    expect(store.pending('s1', SIG_B, T0 + 5)?.answerStep).toBeUndefined();
+    // The second question of the same ask (index 1) is a different answer and is still recorded.
+    expect(store.noteAnswerStep?.('s1', 7, T0 + 6, null, 1)).toBe(true);
+    expect(store.pending('s1', SIG_B, T0 + 7)?.answerStep).toBe(7);
+  });
+
+  it('a signed late PostToolUse for an answered row and question records nothing either', () => {
+    claim(SIG_A, T0);
+    claim(SIG_B, T0 + 1);
+    expect(store.answer('s1', 'yes', 'step:7#0', T0 + 3, SIG_A.slice(0, 8))).toBe(true);
+    expect(store.noteAnswerStep?.('s1', 7, T0 + 4, SIG_B.slice(0, 8), 0)).toBe(false);
+  });
+});
+
+describe('the downgrade pull reads the recorded question index (F3)', () => {
+  const plainBoth = { matches: (t: string) => parseDowngradeMarker(t) !== null };
+  const askA = askCall('Deploy now?', `${DOWNGRADE_MARKER} A?`);
+  const askB = askCall(`${DOWNGRADE_MARKER} B?`);
+  const rowA = generic(7, `${HEADER}A1: ${YES}\nA2: ${KEEP}`);
+
+  it('the answer line is the recorded question\'s, not the first matching call\'s', () => {
+    const file = transcript(planner(5, [askB, askA]), generic(6, `${HEADER}A1: ${YES}`), rowA);
+    const wrong = pullAskAnswerFromTranscript(file, DOWNGRADE_MARKER, { ...plainBoth, answerStepIdx: 7 });
+    expect(wrong?.raw).toBe(YES);
+    const right = pullAskAnswerFromTranscript(file, DOWNGRADE_MARKER, { ...plainBoth, answerStepIdx: 7, answerQuestionIdx: 1 });
+    expect(right?.raw).toBe(KEEP);
+    expect(right?.questionIndex).toBe(1);
+    expect(right?.answerStep).toBe(7);
+  });
+
+  it('the store keeps the question index with the step', () => {
+    store.claim('s1', SIG_A, T0, 3);
+    expect(store.noteAnswerStep?.('s1', 7, T0 + 1, null, 1)).toBe(true);
+    expect(store.pending('s1', SIG_A, T0 + 2)?.answerStep).toBe(7);
+    expect(store.pending('s1', SIG_A, T0 + 2)?.answerQuestion).toBe(1);
+  });
+
+  it('through the decision: the delegation reads the line of the question PostToolUse saw', async () => {
+    expect((await decide(call(A_ARGS))).decision.decision).toBe('deny');
+    now += 30_000;
+    const file = transcript(planner(5, [askB, askA]), generic(6, `${HEADER}A1: ${YES}`), rowA);
+    expect(store.noteAnswerStep?.('conv-dg', 7, now, null, 1)).toBe(true);
+    const a = await decide(call(A_ARGS, { transcriptPath: file }));
+    // Line 2 of row 7 says No: the call passes as it is. Line 1 (Yes) would have downgraded it.
+    expect(a.decision.decision).toBe('pass');
+    expect(a.log.downgrade).toBe('answered');
+    expect(store.choiceFor('conv-dg', SIG_A, now)).toBe('keep');
+  });
+});

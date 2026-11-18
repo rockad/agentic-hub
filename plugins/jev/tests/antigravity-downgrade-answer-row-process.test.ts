@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { downgradeMarker, downgradeSignature, DOWNGRADE_LABELS } from '../antigravity/downgrade.ts';
+import { downgradeMarker, downgradeSignature, DOWNGRADE_LABELS, DOWNGRADE_MARKER } from '../antigravity/downgrade.ts';
 
 const HOOK = path.join(import.meta.dir, '..', 'antigravity', 'hook.ts');
 const CONV = 'conv-dg-row';
@@ -135,5 +135,38 @@ describe('Antigravity downgrade: the recorded answer row, through the hook proce
     run('post-tool-use', { ...askPost(), content: `A1: ${YES}` });
     expect(logRows().find((r) => r.event === 'ask_answer')!.outcome).toBe('recorded');
     expect(state().entries.find((e: any) => e.answered).ask_id).toBe('step:7#0');
+  });
+});
+
+describe('Antigravity downgrade: one answer decides one delegation, through the hook process (F1)', () => {
+  const B_ARGS = { TypeName: 'self', Role: 'worker', Prompt: 'translate the readme' };
+  const SIGNATURE_B = downgradeSignature(B_ARGS);
+  const invokeB = () => ({ ...invoke(), toolCall: { name: 'invoke_subagent', args: { ...B_ARGS, Model: 'flash' } } });
+  const plainPost = (content?: string) => ({
+    conversationId: CONV,
+    stepIdx: 7,
+    ...(content ? { content } : {}),
+    toolCall: { name: 'ask_question', args: { questions: [{ question: `${DOWNGRADE_MARKER} Run it on flash_lite?`, options: Object.values(DOWNGRADE_LABELS) }] } }
+  });
+
+  function askedBoth() {
+    fs.mkdirSync(sessions(), { recursive: true });
+    const rating = (signature: string) => ({ signature, choice: 'flash_lite', p: [0.03, 0.83, 0.14, 0], real: true, expires_at: Date.now() + 600_000 });
+    fs.writeFileSync(stateFile(), JSON.stringify({ entries: [], ratings: [rating(SIGNATURE), rating(SIGNATURE_B)] }));
+    expect(JSON.parse(run('pre-tool-use', invoke()).stdout.toString()).decision).toBe('deny');
+    expect(JSON.parse(run('pre-tool-use', invokeB()).stdout.toString()).decision).toBe('deny');
+  }
+
+  it('the same plain-marker PostToolUse delivered twice closes one delegation only', () => {
+    askedBoth();
+    run('post-tool-use', plainPost(`A1: ${YES}`));
+    run('post-tool-use', plainPost(`A1: ${YES}`));
+    const outcomes = logRows().filter((r) => r.event === 'ask_answer').map((r) => r.outcome);
+    expect(outcomes).toEqual(['recorded', 'not_asked']);
+    const answered = state().entries.filter((e: any) => e.answered);
+    expect(answered.map((e: any) => e.ask_id)).toEqual(['step:7#0']);
+    // The other delegation is still waiting for its own answer: it is not downgraded by the first one's.
+    const b = run('pre-tool-use', invokeB());
+    expect(b.stdout.toString()).toBe('');
   });
 });

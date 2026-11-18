@@ -313,7 +313,8 @@ export async function applyAntigravityDowngrade(
           excludeToolCallIds: pending.consumed,
           matches: ownQuestion,
           // The row PostToolUse recorded for this question; without it only a lone ask_question can be read.
-          answerStepIdx: pending.answerStep ?? null
+          answerStepIdx: pending.answerStep ?? null,
+          answerQuestionIdx: pending.answerQuestion ?? null
         });
         const choice = pulled ? parseDowngradeAnswer(pulled.raw) : null;
         const askId = pulled ? askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0, pulled.answerStep) : undefined;

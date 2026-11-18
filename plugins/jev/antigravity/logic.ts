@@ -332,16 +332,40 @@ export function parseElevationAnswer(answerText?: string | null): { approved: bo
  *    the question, and no other. A row that is not written yet is no answer.
  * 3. Neither: the first GENERIC row after the question, but only when the question was the planner step's single tool
  *    call. With several tool calls (run in parallel) the rows may come in completion order, so there is no answer.
+ *
+ * `answerQuestionIdx` is the question index PostToolUse saw for that row (default: the matched call's own). An answer
+ * whose key (`<id>#<q>` or `step:<step_index>#<q>`) is in `consumedKeys` already approved a run and is no answer.
  */
 export function pullElevationAnswerFromTranscript(
   transcriptPath: string,
   requestedModel: string,
   deniedAtMs?: number,
-  answerStepIdx?: number | null
+  answerStepIdx?: number | null,
+  answerQuestionIdx?: number | null,
+  consumedKeys: readonly string[] = []
 ): { approved: boolean; scope?: ApprovalScope } | null {
-  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, { deniedAtMs, answerStepIdx });
+  const r = pullElevationAnswerDetailed(transcriptPath, requestedModel, deniedAtMs, answerStepIdx, answerQuestionIdx, consumedKeys);
+  return r ? { approved: r.approved, ...(r.scope ? { scope: r.scope } : {}) } : null;
+}
+
+/** Like `pullElevationAnswerFromTranscript`, plus the consumption key of the answer row that was read (when it has one). */
+export function pullElevationAnswerDetailed(
+  transcriptPath: string,
+  requestedModel: string,
+  deniedAtMs?: number,
+  answerStepIdx?: number | null,
+  answerQuestionIdx?: number | null,
+  consumedKeys: readonly string[] = []
+): { approved: boolean; scope?: ApprovalScope; answerKey?: string } | null {
+  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, {
+    deniedAtMs,
+    answerStepIdx,
+    answerQuestionIdx,
+    ...(consumedKeys.length > 0 ? { excludeToolCallIds: new Set(consumedKeys) } : {})
+  });
   if (!pulled) return null;
-  return parseElevationAnswer(pulled.raw);
+  const answerKey = askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0, pulled.answerStep);
+  return { ...parseElevationAnswer(pulled.raw), ...(answerKey ? { answerKey } : {}) };
 }
 
 /** Bounds for `pullAskAnswerFromTranscript`: an older question never answers a newer denial. */
@@ -365,6 +389,12 @@ export type PullAskOptions = {
    * the first GENERIC row after it.
    */
   answerStepIdx?: number | null;
+  /**
+   * The question index PostToolUse recorded together with `answerStepIdx`: the answer line read from that row is this
+   * question's, whichever of several marker questions of the planner step matched. Ignored for a question with a tool
+   * call id (the id already names its own question).
+   */
+  answerQuestionIdx?: number | null;
 };
 
 /**
@@ -429,6 +459,10 @@ export function pullAskAnswerFromTranscript(
       return typeof row?.step_index === 'number' ? row.step_index : undefined;
     };
     const isConsumed = (key: string | undefined): boolean => key !== undefined && !!opts.excludeToolCallIds?.has(key);
+    // With a recorded row AND question, an id-less question is answered by that row's line, whichever matching question
+    // of the transcript it is: the key it is consumed under uses the recorded question index too.
+    const recordedQuestion =
+      typeof opts.answerStepIdx === 'number' && typeof opts.answerQuestionIdx === 'number' ? opts.answerQuestionIdx : undefined;
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -478,7 +512,8 @@ export function pullAskAnswerFromTranscript(
                         : '';
                   if (typeof qText === 'string' && questionMatches(qText)) {
                     const callId = typeof rec.id === 'string' ? rec.id : undefined;
-                    if (isConsumed(askAnswerKey(callId, idx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
+                    const keyIdx = callId ? idx : (recordedQuestion ?? idx);
+                    if (isConsumed(askAnswerKey(callId, keyIdx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
                     matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
@@ -515,7 +550,7 @@ export function pullAskAnswerFromTranscript(
         if (typeof opts.afterStepIdx === 'number' && stepIndex !== null && stepIndex <= opts.afterStepIdx) continue;
         if (toolCallId && opts.excludeToolCallIds?.has(toolCallId)) continue;
         // A prose match has no tool call: only a recorded row can say which answer it would read.
-        if (matchedProse && !toolCallId && isConsumed(askAnswerKey(undefined, 0, idlessAnswerStep(i, 0)))) continue;
+        if (matchedProse && !toolCallId && isConsumed(askAnswerKey(undefined, recordedQuestion ?? 0, idlessAnswerStep(i, 0)))) continue;
       }
 
       if (matchedTool) {
@@ -583,10 +618,13 @@ export function pullAskAnswerFromTranscript(
       return null;
     }
 
-    const rawAnswer = extractAskAnswer({ content: genericStep.content }, latestMatch.markerIndex);
+    // A row the recorded step named is read at the recorded question, not at the matched call's own.
+    const questionIndex =
+      !latestMatch.toolCallId && typeof opts.answerStepIdx === 'number' && recordedQuestion !== undefined ? recordedQuestion : latestMatch.markerIndex;
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex);
     return {
       raw: rawAnswer,
-      questionIndex: latestMatch.markerIndex,
+      questionIndex,
       ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId } : {}),
       ...(typeof genericStep.step_index === 'number' ? { answerStep: genericStep.step_index } : {})
     };
@@ -784,19 +822,38 @@ export function evaluateAntigravitySubagentCall(
       if (typeof deniedAtMs === 'number') {
         // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
         let answerStepIdx: number | null = null;
+        let answerQuestionIdx: number | null = null;
+        let consumedKeys: string[] = [];
         try {
           answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
+          answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
+          consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
         } catch {
+          // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
           answerStepIdx = null;
+          answerQuestionIdx = null;
+          consumedKeys = [];
         }
-        const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs, answerStepIdx);
+        const pull = pullElevationAnswerDetailed(
+          input.transcriptPath,
+          requestedModel,
+          deniedAtMs,
+          answerStepIdx,
+          answerQuestionIdx,
+          consumedKeys
+        );
         if (pull?.approved && pull.scope) {
           // Allow only when the approval was really stored (and then claimed): a failed record (a lock timeout
           // throws) would leave the denial in place and let the same answer be pulled again.
           let stored = false;
           let claimed = false;
           try {
-            stored = approvalStore.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs }) === true;
+            stored =
+              approvalStore.record(
+                sessionId,
+                { model: requestedModel, scope: pull.scope, created_at: nowMs },
+                pull.answerKey ? [pull.answerKey] : undefined
+              ) === true;
           } catch {
             stored = false;
             claimed = false;

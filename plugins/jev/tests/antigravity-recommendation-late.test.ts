@@ -202,6 +202,29 @@ describe('a row written before the pre-flight finished gets a late recommendatio
     expect(lateRows().length).toBe(2);
   });
 
+  it('invariant: a late row is written only for a pending row without a recommendation (one counted row per call)', async () => {
+    runHook(call('flash_lite', 'call_early', 3)); // before the pre-flight: pending
+    await preflight('flash');
+    runHook(call('flash_lite', 'call_after', 4)); // after: carries the recommendation itself
+    await preflight('flash'); // a repeated pre-flight must not add a row for either call
+
+    const byKey = new Map(agentCalls().map((r) => [r.callKey, r]));
+    expect(byKey.get('call_early')?.recommendationPending).toBe(true);
+    expect(byKey.get('call_after')?.modelRecommended).toBe('flash');
+    expect(byKey.get('call_after')?.recommendationPending).toBeUndefined();
+    expect(lateRows().map((r) => r.callKey)).toEqual(['call_early']);
+    // Dashboards count rows that carry modelRecommended: exactly one per call.
+    const counted = rows().filter(
+      (r) => (r.event === 'agent_call' || r.event === 'agent_call_recommendation') && r.modelRecommended
+    );
+    expect(counted.map((r) => r.callKey).sort()).toEqual(['call_after', 'call_early']);
+    for (const late of lateRows()) {
+      const original = byKey.get(late.callKey);
+      expect(original?.recommendationPending).toBe(true);
+      expect(original?.modelRecommended).toBeUndefined();
+    }
+  });
+
   it('a call of another turn gets no late row from this turn\'s pre-flight', async () => {
     runHook(call('flash_lite', 'call_other', 5, 'a completely different synthetic request'));
     await preflight('flash');

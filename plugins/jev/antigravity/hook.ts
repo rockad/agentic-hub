@@ -31,6 +31,11 @@ import {
   flushPendingServed,
   readAntigravityTurn,
   buildAntigravityTelemetryEvent,
+  antigravityCallKey,
+  claimTurnRecommendation,
+  pendingCallFromEvent,
+  cleanUserInput,
+  turnId,
   TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
   type AntigravityHookInput
@@ -503,10 +508,12 @@ async function main() {
     const promptLength = fingerprint.taskLen;
     const promptHash = promptLength > 0 ? fingerprint.taskHash : null;
 
+    const callKey = antigravityCallKey(input);
     appendDecisionLog({
       event: 'agent_call',
       harness: 'antigravity',
       session_id: input.conversationId || null,
+      call_key: callKey,
       tool_name: input.toolCall?.name || 'invoke_subagent',
       requested_model: requestedModel,
       session_model: activeModel || null,
@@ -523,23 +530,35 @@ async function main() {
     });
 
     if (input.toolCall?.name === 'invoke_subagent') {
-      const turnState = readAntigravityTurn(sessionsDir, input.conversationId);
-      trackTelemetry(
-        logJevTelemetry(
-          buildAntigravityTelemetryEvent({
-            kind: 'agent_call',
-            conversationId: input.conversationId,
-            inputModelName: input.modelName,
-            quotaView,
-            lastUserInput: input.lastUserInput,
-            toolName: 'invoke_subagent',
-            args: input.toolCall?.args,
-            turnState,
-            decision,
-            downgradeLog
-          })
-        )
-      );
+      const cleaned = cleanUserInput(input.lastUserInput || '');
+      const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+      const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>
+        buildAntigravityTelemetryEvent({
+          kind: 'agent_call',
+          conversationId: input.conversationId,
+          inputModelName: input.modelName,
+          quotaView,
+          lastUserInput: input.lastUserInput,
+          toolName: 'invoke_subagent',
+          args: input.toolCall?.args,
+          turnState,
+          decision,
+          downgradeLog,
+          callKey,
+          recommendationPending
+        });
+      let event = build(readAntigravityTurn(sessionsDir, input.conversationId), false);
+      // No recommendation for this turn yet. Only mode `on` runs the pre-flight that makes one, and it may still be running
+      // (hooks of one turn are not serialised): record the call under the turn lock, atomically with a re-check of the
+      // state, so the pre-flight can append a late `agent_call_recommendation` row when it finishes. Mark the row either way.
+      if (!event.recommendedTier && mode === 'on') {
+        const pendingEvent = build(null, true);
+        const claim = turn
+          ? claimTurnRecommendation(sessionsDir, input.conversationId, turn, pendingCallFromEvent(pendingEvent, callKey))
+          : { turnState: null, recorded: false };
+        event = claim.turnState ? build(claim.turnState, false) : pendingEvent;
+      }
+      trackTelemetry(logJevTelemetry(event));
     }
 
     await flushTelemetry();

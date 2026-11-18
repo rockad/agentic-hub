@@ -1365,6 +1365,155 @@ export function writeAntigravityTurn(
   }
 }
 
+/** How long a hook waits for the turn lock before it skips the turn-state update (fail open, never block the tool call). */
+export const TURN_LOCK_WAIT_MS = 500;
+/** The most calls one turn's pending list keeps (the newest win). */
+export const PENDING_RECOMMENDATION_MAX_CALLS = 20;
+/** A pending call older than this is dropped: the pre-flight is not coming for it. */
+export const PENDING_RECOMMENDATION_TTL_MS = 10 * 60_000;
+
+/**
+ * An `agent_call` that was written before its turn's recommendation existed. It holds what a late
+ * `agent_call_recommendation` row needs to stand alone (the decision and the models), never prompt text.
+ */
+export type PendingRecommendationCall = {
+  /** The same key the `agent_call` row carries as `callKey`. */
+  callKey: string;
+  /** Epoch ms the call was recorded. */
+  at: number;
+  decision: string;
+  requestedModel: string | null;
+  /** Absent on a denied call (it did not run). */
+  modelUsed?: string;
+  modelUsedSource?: ModelUsedSource;
+  toolName: string;
+  taskSummary?: string;
+  sessionModel: string | null;
+  sessionModelSource: string | null;
+};
+
+/** The lock that guards one conversation's turn state and its pending-call list (one lock for both, so check-and-record is atomic). */
+function turnLock(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  return safe ? path.join(sessionsDir, `${safe}.turn.lock`) : null;
+}
+
+function turnPendingFile(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  return safe ? path.join(sessionsDir, `${safe}.turn-pending.json`) : null;
+}
+
+function readPendingList(file: string): { turn: string; calls: PendingRecommendationCall[] } | null {
+  try {
+    const read = readRegularFile(file, 256 * 1024);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
+    if (!parsed || typeof parsed.turn !== 'string' || !Array.isArray(parsed.calls)) return null;
+    const calls = parsed.calls.filter(
+      (c: unknown): c is PendingRecommendationCall =>
+        !!c && typeof (c as PendingRecommendationCall).callKey === 'string' && typeof (c as PendingRecommendationCall).at === 'number'
+    );
+    return { turn: parsed.turn, calls };
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonAtomic(file: string, value: unknown): void {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value) + '\n', { mode: PRIVATE_FILE_MODE });
+  privateFile(tmp);
+  fs.renameSync(tmp, file);
+  privateFile(file);
+}
+
+/**
+ * The PreToolUse side of the recommendation join, atomic with the pre-flight's write. Under the turn lock: when the
+ * state already holds this turn's recommendation it is returned (and nothing is recorded); otherwise the call is put on
+ * the turn's pending list (bounded to {@link PENDING_RECOMMENDATION_MAX_CALLS}, expiring after
+ * {@link PENDING_RECOMMENDATION_TTL_MS}, replaced when another turn's list is there) so the pre-flight can write the late
+ * row. A lock timeout or any error skips the record (fail open): the caller still gets whatever an unlocked read found.
+ */
+export function claimTurnRecommendation(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  turn: string,
+  call: PendingRecommendationCall
+): { turnState: AntigravityTurnState | null; recorded: boolean } {
+  const matching = (s: AntigravityTurnState | null) => (s && s.turn === turn && s.recommendedTier ? s : null);
+  if (!sessionId) return { turnState: null, recorded: false };
+  const lock = turnLock(sessionsDir, sessionId);
+  const pendingFile = turnPendingFile(sessionsDir, sessionId);
+  if (!lock || !pendingFile) return { turnState: null, recorded: false };
+  try {
+    privateDir(sessionsDir);
+    const res = withDirLockOrSkip(
+      lock,
+      () => {
+        const state = matching(readAntigravityTurn(sessionsDir, sessionId));
+        if (state) return { turnState: state, recorded: false };
+        const existing = readPendingList(pendingFile);
+        const kept = (existing && existing.turn === turn ? existing.calls : [])
+          .filter((c) => call.at - c.at <= PENDING_RECOMMENDATION_TTL_MS && c.callKey !== call.callKey)
+          .slice(-(PENDING_RECOMMENDATION_MAX_CALLS - 1));
+        kept.push(call);
+        writeJsonAtomic(pendingFile, { turn, calls: kept });
+        return { turnState: null, recorded: true };
+      },
+      () => {
+        // lock busy: fall through to the unlocked read below
+      },
+      { waitMs: TURN_LOCK_WAIT_MS }
+    );
+    if (res) return res;
+  } catch {
+    // fail open
+  }
+  return { turnState: matching(readAntigravityTurn(sessionsDir, sessionId)), recorded: false };
+}
+
+/**
+ * The pre-flight side: store the turn's state (with its recommendation) and hand back, clearing them, the calls of the
+ * SAME turn that were written without one, so the caller can append a late row for each. Under the turn lock. A lock
+ * timeout writes the state unlocked and returns none (fail open: those calls keep `recommendationPending` and get no
+ * late row).
+ */
+export function commitAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  state: AntigravityTurnState
+): PendingRecommendationCall[] {
+  if (!sessionId) return [];
+  const lock = turnLock(sessionsDir, sessionId);
+  const file = turnStateFile(sessionsDir, sessionId);
+  const pendingFile = turnPendingFile(sessionsDir, sessionId);
+  if (!lock || !file || !pendingFile) return [];
+  try {
+    privateDir(sessionsDir);
+    const taken = withDirLockOrSkip(
+      lock,
+      () => {
+        writeJsonAtomic(file, state);
+        if (!state.recommendedTier) return [];
+        const existing = readPendingList(pendingFile);
+        if (!existing || existing.turn !== state.turn) return [];
+        fs.rmSync(pendingFile, { force: true });
+        const now = Date.now();
+        return existing.calls.filter((c) => now - c.at <= PENDING_RECOMMENDATION_TTL_MS);
+      },
+      () => {
+        // lock busy: written unlocked below
+      },
+      { waitMs: TURN_LOCK_WAIT_MS }
+    );
+    if (taken) return taken;
+  } catch {
+    // fall through to the plain write
+  }
+  writeAntigravityTurn(sessionsDir, sessionId, state);
+  return [];
+}
+
 export type AntigravityModelUsedSource = ModelUsedSource;
 
 export type AntigravityTelemetryInput =
@@ -1393,6 +1542,18 @@ export type AntigravityTelemetryInput =
       decision: AntigravityHookDecision;
       downgradeLog?: Record<string, unknown>;
       quotaStrategy?: string;
+      /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
+      callKey?: string;
+      /** Jev is on and the turn's recommendation was not known yet: the row says so, and a late row may follow. */
+      recommendationPending?: boolean;
+    }
+  | {
+      /** The late row the pre-flight appends for an `agent_call` written before the recommendation existed. */
+      kind: 'agent_call_recommendation';
+      conversationId?: string | null;
+      turn: string;
+      recommendedTier: string;
+      call: PendingRecommendationCall;
     }
   | {
       kind: 'subagent_served';
@@ -1428,6 +1589,29 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       modelRecommended: params.recommendedTier,
       ...(params.effort ? { effort: params.effort } : {}),
       ...(quotaStrategy ? { quotaStrategy } : {})
+    };
+  }
+
+  if (params.kind === 'agent_call_recommendation') {
+    const c = params.call;
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call_recommendation',
+      sessionId: params.conversationId ?? null,
+      turn: params.turn,
+      callKey: c.callKey,
+      toolName: c.toolName,
+      ...(c.taskSummary ? { taskSummary: c.taskSummary } : {}),
+      sessionModel: c.sessionModel,
+      sessionModelSource: c.sessionModelSource,
+      modelRecommended: params.recommendedTier,
+      recommendedTier: params.recommendedTier,
+      recommendationLate: true,
+      decision: c.decision,
+      requestedModel: c.requestedModel,
+      ...(c.modelUsed ? { modelUsed: c.modelUsed } : {}),
+      ...(c.modelUsed && c.modelUsedSource ? { modelUsedSource: c.modelUsedSource } : {})
     };
   }
 
@@ -1498,10 +1682,41 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       : {}),
     ...(modelUsed ? { modelUsed } : {}),
     ...(modelUsedSource ? { modelUsedSource } : {}),
+    ...(params.callKey ? { callKey: params.callKey } : {}),
+    ...(!matchedRecommendedTier && params.recommendationPending ? { recommendationPending: true } : {}),
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
     ...(downgrade ? { downgrade } : {}),
     ...(quotaStrategy ? { quotaStrategy } : {})
+  };
+}
+
+/**
+ * The key an `agent_call` row carries as `callKey`: the tool call id, else `step:<stepIdx>` (real transcripts often carry
+ * no tool call ids), else a one-off `call:<time>-<random>`. A late `agent_call_recommendation` row repeats it, so the two
+ * rows of one call are matched on this key and the `turn`.
+ */
+export function antigravityCallKey(input: Pick<AntigravityHookInput, 'toolCall' | 'stepIdx'>): string {
+  const id = input.toolCall?.id;
+  if (typeof id === 'string' && id.trim().length > 0) return id.trim().slice(0, 120);
+  if (typeof input.stepIdx === 'number' && Number.isFinite(input.stepIdx)) return `step:${input.stepIdx}`;
+  return `call:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** What a pending-recommendation entry keeps of an `agent_call` telemetry row (models and decision, no text). */
+export function pendingCallFromEvent(ev: JevTelemetryEvent, callKey: string, at: number = Date.now()): PendingRecommendationCall {
+  const s = (v: unknown, max = 200): string | undefined => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : undefined);
+  return {
+    callKey,
+    at,
+    decision: s(ev.decision as unknown, 20) ?? 'pass',
+    requestedModel: s(ev.requestedModel as unknown) ?? null,
+    ...(s(ev.modelUsed) ? { modelUsed: s(ev.modelUsed) } : {}),
+    ...(s(ev.modelUsed) && ev.modelUsedSource ? { modelUsedSource: ev.modelUsedSource } : {}),
+    toolName: s(ev.toolName as unknown, 60) ?? 'invoke_subagent',
+    ...(s(ev.taskSummary) ? { taskSummary: s(ev.taskSummary) } : {}),
+    sessionModel: s(ev.sessionModel) ?? null,
+    sessionModelSource: s(ev.sessionModelSource) ?? null
   };
 }

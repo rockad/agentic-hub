@@ -31,6 +31,7 @@ import {
   cleanUserInput,
   turnId,
   writeAntigravityTurn,
+  commitAntigravityTurn,
   buildAntigravityTelemetryEvent,
   flushPendingServed,
   type AntigravityTurnState
@@ -289,6 +290,7 @@ ${sessionHint}
             ? { turn: turnId(cleanTask), at: new Date().toISOString() }
             : null;
 
+        let stateWritten = false;
         if (shouldDispatch) {
           try {
             const questions = {
@@ -338,6 +340,11 @@ ${sessionHint}
                 at: new Date().toISOString()
               };
 
+              // The turn's state first (under the turn lock), so a call that arrives from now on finds the recommendation, then
+              // the PreInvocation row, then one late row for each call of this turn that was written before it existed.
+              const lateCalls = conversationId ? commitAntigravityTurn(sessionsDir, conversationId, turnStateToWrite) : [];
+              stateWritten = true;
+
               const { taskLen, taskHash } = taskFingerprint(cleanTask);
               await logJevTelemetry(
                 buildAntigravityTelemetryEvent({
@@ -354,6 +361,17 @@ ${sessionHint}
                   quotaStrategy: poolStrategy
                 })
               );
+              for (const call of lateCalls) {
+                await logJevTelemetry(
+                  buildAntigravityTelemetryEvent({
+                    kind: 'agent_call_recommendation',
+                    conversationId: safeId ?? null,
+                    turn: currentTurn,
+                    recommendedTier,
+                    call
+                  })
+                );
+              }
 
               const preflightLine = `[JEV PRE-FLIGHT] cost-tiered recommendation (quota=${poolStrategy}, model=${activeModel}): subagent="${recommendedSubagent}", tier="${recommendedTier}", effort="${effort}".`;
               modeDirective = `${preflightLine}\n\n${modeDirective}`;
@@ -363,7 +381,7 @@ ${sessionHint}
           }
         }
 
-        if (turnStateToWrite && conversationId) {
+        if (turnStateToWrite && conversationId && !stateWritten) {
           writeAntigravityTurn(sessionsDir, conversationId, turnStateToWrite);
         }
 

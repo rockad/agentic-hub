@@ -22,19 +22,36 @@ export type ApprovalState = {
    * position of the answer cannot be inferred when other tools ran in parallel with the question.
    */
   answerSteps?: Record<string, number>;
+  /** The question index (0 = A1) inside that answer row, per elevation model, recorded together with the step. */
+  answerQuestions?: Record<string, number>;
+  /**
+   * Answers that already produced an approval: `step:<step_index>#<questionIndex>` or `<toolCallId>#<questionIndex>`.
+   * A denial that arrives later must not be approved again from the same answer row (one answer, one approval).
+   */
+  consumedAnswers?: string[];
 };
 
 export type ApprovalStore = {
-  record: (sessionId: string, approval: Approval) => boolean;
+  /**
+   * Store an approval for a pending denial. `consumedKeys` name the answer rows it came from: when any of them is
+   * already consumed nothing is stored (false), otherwise they are remembered as consumed.
+   */
+  record: (sessionId: string, approval: Approval, consumedKeys?: string[]) => boolean;
   deny: (sessionId: string, model: string, nowMs: number) => void;
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
-  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number) => boolean;
+  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number) => boolean;
   /** The recorded answer row step_index for `model`, or null when none is recorded for a pending denial. */
   getAnswerStep?: (sessionId: string, model: string, nowMs: number) => number | null;
+  /** The recorded question index inside that row, or null when none is recorded for a pending denial. */
+  getAnswerQuestion?: (sessionId: string, model: string, nowMs: number) => number | null;
+  /** The answer keys already consumed by an approval in this session. */
+  getConsumedAnswers?: (sessionId: string) => string[];
 };
+
+export const CONSUMED_ANSWERS_CAP = 100;
 
 export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
 export const ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
@@ -57,16 +74,36 @@ export function noteDenied(state: ApprovalState, model: string, nowMs: number): 
   const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
   // A fresh denial starts a fresh question: an answer row recorded for an earlier denial must not be read for it.
   const { [model.toLowerCase()]: _stale, ...answerSteps } = state.answerSteps ?? {};
+  const { [model.toLowerCase()]: _staleQ, ...answerQuestions } = state.answerQuestions ?? {};
   const next: ApprovalState = { ...state, denied: { ...Object.fromEntries(kept), [model.toLowerCase()]: nowMs } };
   if (Object.keys(answerSteps).length > 0) next.answerSteps = answerSteps;
   else delete next.answerSteps;
+  if (Object.keys(answerQuestions).length > 0) next.answerQuestions = answerQuestions;
+  else delete next.answerQuestions;
   return next;
 }
 
-export function noteAnswerStep(state: ApprovalState, model: string, stepIdx: number, nowMs: number): ApprovalState | null {
+export function noteAnswerStep(
+  state: ApprovalState,
+  model: string,
+  stepIdx: number,
+  nowMs: number,
+  markerIndex = 0
+): ApprovalState | null {
   if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
+  if (!Number.isInteger(markerIndex) || markerIndex < 0) return null;
   if (!wasDeniedRecently(state, model, nowMs)) return null;
-  return { ...state, answerSteps: { ...(state.answerSteps ?? {}), [model.toLowerCase()]: stepIdx } };
+  return {
+    ...state,
+    answerSteps: { ...(state.answerSteps ?? {}), [model.toLowerCase()]: stepIdx },
+    answerQuestions: { ...(state.answerQuestions ?? {}), [model.toLowerCase()]: markerIndex }
+  };
+}
+
+export function getAnswerQuestion(state: ApprovalState, model: string, nowMs: number): number | null {
+  if (!wasDeniedRecently(state, model, nowMs)) return null;
+  const v = state.answerQuestions?.[model.toLowerCase()];
+  return typeof v === 'number' ? v : null;
 }
 
 export function getAnswerStep(state: ApprovalState, model: string, nowMs: number): number | null {
@@ -96,8 +133,16 @@ export function addApproval(state: ApprovalState, approval: Approval, nowMs: num
   return { ...state, approvals: [...state.approvals.filter((a) => approvalValid(a, nowMs)), approval] };
 }
 
-export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
+export function recordApproval(
+  state: ApprovalState,
+  approval: Approval,
+  nowMs: number,
+  consumedKeys: string[] = []
+): ApprovalState | null {
   if (!wasDeniedRecently(state, approval.model, nowMs)) return null;
+  // One answer, one approval: an answer row that already produced an approval cannot produce another.
+  const alreadyConsumed = state.consumedAnswers ?? [];
+  if (consumedKeys.some((k) => alreadyConsumed.includes(k))) return null;
   const want = modelTierRank(approval.model);
   // Consume the matching denial(s) so a "once" answer in the transcript cannot be replayed on later calls.
   const remainingDenied = Object.fromEntries(
@@ -106,9 +151,16 @@ export function recordApproval(state: ApprovalState, approval: Approval, nowMs: 
   const remainingSteps = Object.fromEntries(
     Object.entries(state.answerSteps ?? {}).filter(([m]) => modelTierRank(m) < want)
   );
+  const remainingQuestions = Object.fromEntries(
+    Object.entries(state.answerQuestions ?? {}).filter(([m]) => modelTierRank(m) < want)
+  );
   const next: ApprovalState = { ...addApproval(state, approval, nowMs), denied: remainingDenied };
   if (Object.keys(remainingSteps).length > 0) next.answerSteps = remainingSteps;
   else delete next.answerSteps;
+  if (Object.keys(remainingQuestions).length > 0) next.answerQuestions = remainingQuestions;
+  else delete next.answerQuestions;
+  const consumed = [...alreadyConsumed, ...consumedKeys.filter((k) => !alreadyConsumed.includes(k))];
+  if (consumed.length > 0) next.consumedAnswers = consumed.slice(-CONSUMED_ANSWERS_CAP);
   return next;
 }
 
@@ -188,11 +240,24 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
           )
         )
       : undefined;
+  const answerQuestions =
+    r.answerQuestions && typeof r.answerQuestions === 'object' && !Array.isArray(r.answerQuestions)
+      ? Object.fromEntries(
+          Object.entries(r.answerQuestions as Record<string, unknown>).filter(
+            (e): e is [string, number] => typeof e[1] === 'number' && Number.isInteger(e[1]) && e[1] >= 0
+          )
+        )
+      : undefined;
+  const consumedAnswers = Array.isArray(r.consumedAnswers)
+    ? r.consumedAnswers.filter((k): k is string => typeof k === 'string').slice(-CONSUMED_ANSWERS_CAP)
+    : undefined;
   return {
     approvals,
     ...(attempts ? { attempts } : {}),
     ...(denied ? { denied } : {}),
-    ...(answerSteps && Object.keys(answerSteps).length > 0 ? { answerSteps } : {})
+    ...(answerSteps && Object.keys(answerSteps).length > 0 ? { answerSteps } : {}),
+    ...(answerQuestions && Object.keys(answerQuestions).length > 0 ? { answerQuestions } : {}),
+    ...(consumedAnswers && consumedAnswers.length > 0 ? { consumedAnswers } : {})
   };
 }
 
@@ -226,11 +291,11 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
   }
 
   return {
-    record: (rawId, approval) => {
+    record: (rawId, approval, consumedKeys) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return false;
       return withLock(sessionId, () => {
-        const next = recordApproval(readState(sessionId), approval, approval.created_at);
+        const next = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys);
         if (next) {
           writeState(sessionId, next);
           return true;
@@ -272,11 +337,11 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       });
     },
-    noteAnswerStep: (rawId, model, stepIdx, nowMs) => {
+    noteAnswerStep: (rawId, model, stepIdx, nowMs, markerIndex) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return false;
       return withLock(sessionId, () => {
-        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs);
+        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs, markerIndex);
         if (!next) return false;
         writeState(sessionId, next);
         return true;
@@ -286,6 +351,16 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
       return withLock(sessionId, () => getAnswerStep(readState(sessionId), model, nowMs));
+    },
+    getAnswerQuestion: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLock(sessionId, () => getAnswerQuestion(readState(sessionId), model, nowMs));
+    },
+    getConsumedAnswers: (rawId) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return [];
+      return withLock(sessionId, () => readState(sessionId).consumedAnswers ?? []);
     }
   };
 }

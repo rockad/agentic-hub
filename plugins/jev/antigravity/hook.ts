@@ -204,7 +204,7 @@ async function main() {
           // that row (real transcripts carry no tool call ids, and parallel tool calls make position unreliable).
           if (markerFound && elevateModel && approvals && conversationId && typeof input.stepIdx === 'number') {
             try {
-              answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now()) === true;
+              answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex) === true;
             } catch {
               answerStepRecorded = false;
             }
@@ -231,11 +231,16 @@ async function main() {
             if (!approvals || !conversationId) {
               outcome = 'no_session';
             } else {
-              const recorded = approvals.record(conversationId, {
-                model: elevateModel,
-                scope: parsed.scope,
-                created_at: Date.now()
-              });
+              // The answer row this approval comes from is consumed with it (by step and, when present, by tool call
+              // id): the same row cannot approve a later denial, whichever hook reads it.
+              const consumedKeys: string[] = [];
+              if (typeof input.stepIdx === 'number') consumedKeys.push(`step:${input.stepIdx}#${markerIndex}`);
+              if (typeof input.toolCall?.id === 'string' && input.toolCall.id) consumedKeys.push(`${input.toolCall.id}#${markerIndex}`);
+              const recorded = approvals.record(
+                conversationId,
+                { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
+                consumedKeys.length > 0 ? consumedKeys : undefined
+              );
               outcome = recorded ? 'recorded' : 'not_denied';
             }
           }

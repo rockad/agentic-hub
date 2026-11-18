@@ -9,6 +9,7 @@ import {
   isExemptPath,
   hasConflictMarkers,
   commitIncludesWorkingTree,
+  resolveGitCwd,
   type PreToolHookInput
 } from '../antigravity/guards.ts';
 import { clearConfigCacheForTesting } from '../src/core/config.ts';
@@ -491,5 +492,88 @@ describe('antigravity guards (guards.ts)', () => {
     // Must not hang
     const res = await evaluatePreToolGuards(input);
     expect(res.decision).toBe('allow');
+  });
+});
+
+describe('resolveGitCwd', () => {
+  let root = '';
+  let base = '';
+  const real = (p: string) => fs.realpathSync(p);
+
+  beforeEach(() => {
+    root = real(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-gitcwd-')));
+    base = path.join(root, 'base');
+    for (const d of ['base', 'other', 'a/b', 'a/c', 'dir with space']) {
+      fs.mkdirSync(path.join(root, d), { recursive: true });
+    }
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('a -C on an earlier command does not move the commit', () => {
+    expect(resolveGitCwd('git -C ../other status && git commit -m x', base)).toBe(base);
+  });
+
+  it('-C after cd is relative to the directory cd moved to', () => {
+    expect(resolveGitCwd('cd ../a && git -C b commit -m x', base)).toBe(path.join(root, 'a', 'b'));
+  });
+
+  it('cd counts when other commands sit between it and the commit', () => {
+    expect(resolveGitCwd('cd ../a && make && git commit -m x', base)).toBe(path.join(root, 'a'));
+  });
+
+  it('plain -C, and a -C on git add is ignored for the commit', () => {
+    expect(resolveGitCwd('git -C ../other commit -m x', base)).toBe(path.join(root, 'other'));
+    expect(resolveGitCwd('git -C ../other add . && git commit -m x', base)).toBe(base);
+  });
+
+  it('handles quoted directory names', () => {
+    expect(resolveGitCwd('cd "../dir with space" && git commit -m x', base)).toBe(path.join(root, 'dir with space'));
+    expect(resolveGitCwd("git -C '../dir with space' commit -m x", base)).toBe(path.join(root, 'dir with space'));
+  });
+
+  it('does not split on separators inside quotes', () => {
+    expect(resolveGitCwd('echo "a && cd ../other" && git commit -m "x; y"', base)).toBe(base);
+  });
+
+  it('applies repeated -C options in order, each relative to the previous', () => {
+    expect(resolveGitCwd('git -C ../a -C b commit -m x', base)).toBe(path.join(root, 'a', 'b'));
+  });
+
+  it('follows pushd like cd', () => {
+    expect(resolveGitCwd('pushd ../a && git commit -m x', base)).toBe(path.join(root, 'a'));
+  });
+
+  it('ignores a nonexistent directory and keeps the previous cwd', () => {
+    expect(resolveGitCwd('cd ../nope && git commit -m x', base)).toBe(base);
+    expect(resolveGitCwd('cd ../a && git -C nope commit -m x', base)).toBe(path.join(root, 'a'));
+  });
+
+  it('leaves cwd unchanged for bare cd and cd -', () => {
+    expect(resolveGitCwd('cd && git commit -m x', base)).toBe(base);
+    expect(resolveGitCwd('cd - && git commit -m x', base)).toBe(base);
+  });
+
+  it('handles global options before commit and returns the running cwd with no commit', () => {
+    expect(resolveGitCwd('git --no-pager -c user.name=x commit -m x', base)).toBe(base);
+    expect(resolveGitCwd('cd ../a; git status', base)).toBe(path.join(root, 'a'));
+  });
+
+  it('expands ~ with the configured home', () => {
+    const prev = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      expect(resolveGitCwd('cd ~/other && git commit -m x', base)).toBe(path.join(root, 'other'));
+    } finally {
+      if (prev === undefined) delete process.env.HOME;
+      else process.env.HOME = prev;
+    }
+  });
+
+  it('never throws on odd input', () => {
+    expect(resolveGitCwd('', base)).toBe(base);
+    expect(resolveGitCwd('git commit "unterminated', base)).toBe(base);
+    expect(resolveGitCwd('cd "unterminated && git commit', base)).toBe(base);
   });
 });

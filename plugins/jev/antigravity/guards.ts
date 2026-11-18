@@ -147,39 +147,125 @@ export function commitIncludesWorkingTree(cmd: string): boolean {
 }
 
 /**
- * Resolve the target repository directory for a `git ... commit` command when `git -C <dir>` or a preceding
- * `cd <dir>` targets a directory other than `baseCwd` (Antigravity sets `input.cwd` to the workspace root).
+ * Split a command line into segments (on `&&`, `||`, `;`, `|`, newline, outside quotes), each a list of shell words
+ * with quotes removed and backslash escapes applied. A small tokenizer for path resolution only: no expansion,
+ * substitution or redirection handling.
+ */
+function splitCommandSegments(cmd: string): string[][] {
+  const segments: string[][] = [];
+  let words: string[] = [];
+  let cur = '';
+  let inWord = false;
+  const endWord = () => {
+    if (inWord) words.push(cur);
+    cur = '';
+    inWord = false;
+  };
+  const endSegment = () => {
+    endWord();
+    if (words.length > 0) segments.push(words);
+    words = [];
+  };
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === "'") {
+      inWord = true;
+      const end = cmd.indexOf("'", i + 1);
+      if (end === -1) {
+        cur += cmd.slice(i + 1);
+        break;
+      }
+      cur += cmd.slice(i + 1, end);
+      i = end;
+    } else if (ch === '"') {
+      inWord = true;
+      i++;
+      while (i < cmd.length && cmd[i] !== '"') {
+        if (cmd[i] === '\\' && i + 1 < cmd.length && /["\\$`]/.test(cmd[i + 1])) i++;
+        cur += cmd[i];
+        i++;
+      }
+    } else if (ch === '\\' && i + 1 < cmd.length) {
+      inWord = true;
+      cur += cmd[i + 1];
+      i++;
+    } else if (ch === '&' && cmd[i + 1] === '&') {
+      endSegment();
+      i++;
+    } else if (ch === '|' || ch === ';' || ch === '\n') {
+      endSegment();
+      if (ch === '|' && cmd[i + 1] === '|') i++;
+    } else if (ch === ' ' || ch === '\t' || ch === '\r') {
+      endWord();
+    } else {
+      inWord = true;
+      cur += ch;
+    }
+  }
+  endSegment();
+  return segments;
+}
+
+/** Git global options that consume the next word as their value. */
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
+
+/**
+ * For a segment that runs `git [global options] commit`, the `-C <dir>` values in order; otherwise null. Leading
+ * `VAR=value`, `env`, `command`, `exec` and `time` words are skipped.
+ */
+function gitCommitDashC(words: string[]): string[] | null {
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]) || ['env', 'command', 'exec', 'time'].includes(words[i]))) i++;
+  if (words[i] !== 'git') return null;
+  i++;
+  const dirs: string[] = [];
+  while (i < words.length && words[i].startsWith('-')) {
+    const opt = words[i];
+    if (GIT_VALUE_OPTIONS.has(opt)) {
+      if (opt === '-C' && i + 1 < words.length) dirs.push(words[i + 1]);
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  return words[i] === 'commit' ? dirs : null;
+}
+
+/**
+ * Resolve the directory a `git ... commit` command runs in (Antigravity sets `input.cwd` to the workspace root).
+ * Walks the command's segments with a running cwd that starts at `baseCwd`: `cd <dir>` / `pushd <dir>` move it (when
+ * the directory exists), and the first `git ... commit` segment applies its own `-C <dir>` options in order, each
+ * relative to the previous, as git does. A `-C` on any other segment (an earlier `git add -C ...`) does not move the
+ * commit. With no commit segment the running cwd is returned. Fail-safe: any error or odd input yields `baseCwd`.
  */
 export function resolveGitCwd(cmd: string, baseCwd: string): string {
-  const stripQuotes = (s: string) => {
-    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-      return s.slice(1, -1);
+  try {
+    const expandHome = (p: string) =>
+      p === '~' ? jevHomeDir() : p.startsWith('~/') ? path.join(jevHomeDir(), p.slice(2)) : p;
+    const step = (from: string, dir: string): string => {
+      const candidate = path.resolve(from, expandHome(dir));
+      try {
+        return fsSync.statSync(candidate).isDirectory() ? candidate : from;
+      } catch {
+        return from;
+      }
+    };
+    let cwd = baseCwd;
+    for (const words of splitCommandSegments(cmd)) {
+      const dashC = gitCommitDashC(words);
+      if (dashC) {
+        for (const dir of dashC) cwd = step(cwd, dir);
+        return cwd;
+      }
+      if (words[0] === 'cd' || words[0] === 'pushd') {
+        const arg = words.slice(1).find((w) => w !== '--' && !(w.startsWith('-') && w.length > 1));
+        if (arg !== undefined && arg !== '-' && !/^[+-]\d+$/.test(arg)) cwd = step(cwd, arg);
+      }
     }
-    return s;
-  };
-  const expandHome = (p: string) =>
-    p === '~' ? jevHomeDir() : p.startsWith('~/') ? path.join(jevHomeDir(), p.slice(2)) : p;
-
-  let resolved = baseCwd;
-  // Find the segment containing `git ... commit` (plus an optional `cd <dir>` right before it in the same command).
-  const cdBeforeGit = /\bcd\s+("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*git\b/g;
-  for (const m of cmd.matchAll(cdBeforeGit)) {
-    const dir = expandHome(stripQuotes(m[1]));
-    const candidate = path.resolve(resolved, dir);
-    if (fsSync.existsSync(candidate)) resolved = candidate;
+    return cwd;
+  } catch {
+    return baseCwd;
   }
-
-  const dashC = /\bgit\s+(?:(?!&&|\|\||;|\||\n)[^])*?-C\s+("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|]+)/g;
-  for (const m of cmd.matchAll(dashC)) {
-    // Only apply -C from git invocations that are commit or add
-    const seg = m[0];
-    if (/\bcommit\b|\badd\b/.test(seg) || /\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*-C\b/.test(seg)) {
-      const dir = expandHome(stripQuotes(m[1]));
-      const candidate = path.resolve(baseCwd, dir);
-      if (fsSync.existsSync(candidate)) resolved = candidate;
-    }
-  }
-  return resolved;
 }
 
 /**

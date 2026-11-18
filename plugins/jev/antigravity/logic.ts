@@ -803,10 +803,18 @@ export type PendingServedRecord = {
   transcriptPath?: string;
   childConvId?: string | null;
   createdAt: number;
+  /** Failed backfill attempts so far; the item is dropped (and logged as gave_up) at the cap. */
+  attempts?: number;
 };
 
 const PENDING_SERVED_TTL_MS = 3600 * 1000;
 const PENDING_SERVED_MAX_ITEMS = 20;
+/** A child that never writes a model row is retried this many times, then dropped. */
+const PENDING_SERVED_MAX_ATTEMPTS = 10;
+/** Items examined per flush (oldest first); the rest wait for a later hook call. */
+const PENDING_SERVED_MAX_PER_FLUSH = 3;
+/** Stop starting new items once a flush has run this long. */
+const PENDING_SERVED_BUDGET_MS = 200;
 
 export function readStepContentFromTranscript(
   transcriptPath: string,
@@ -888,7 +896,8 @@ export function flushPendingServed(
   sessionId: string | undefined | null,
   logFn: (entry: Record<string, unknown>) => void,
   homedir = os.homedir(),
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  clock: () => number = Date.now
 ): void {
   if (!sessionId) return;
   const file = pendingServedFile(sessionsDir, sessionId);
@@ -899,12 +908,22 @@ export function flushPendingServed(
     if (!Array.isArray(raw) || raw.length === 0) return;
     const remaining: PendingServedRecord[] = [];
     let changed = false;
+    let processed = 0;
+    const startedAt = clock();
 
-    for (const item of raw as PendingServedRecord[]) {
+    // Oldest first; the sort is stable, so equal timestamps keep their stored order.
+    const items = (raw as PendingServedRecord[]).slice().sort((a, b) => (a?.createdAt ?? 0) - (b?.createdAt ?? 0));
+    for (const item of items) {
       if (!item || typeof item.createdAt !== 'number' || nowMs - item.createdAt > PENDING_SERVED_TTL_MS) {
         changed = true;
         continue;
       }
+      // Bounded work per hook call: past the item cap or the time budget, keep the rest for a later flush.
+      if (processed >= PENDING_SERVED_MAX_PER_FLUSH || clock() - startedAt > PENDING_SERVED_BUDGET_MS) {
+        remaining.push(item);
+        continue;
+      }
+      processed++;
       let childConvId = item.childConvId ?? null;
       if (!childConvId && item.transcriptPath) {
         const content = readStepContentFromTranscript(item.transcriptPath, item.stepIdx, item.toolCallId);
@@ -927,13 +946,25 @@ export function flushPendingServed(
           backfilled: true
         });
         changed = true;
-      } else {
-        if (childConvId !== item.childConvId) {
-          item.childConvId = childConvId;
-          changed = true;
-        }
-        remaining.push(item);
+        continue;
       }
+      item.childConvId = childConvId;
+      item.attempts = (typeof item.attempts === 'number' ? item.attempts : 0) + 1;
+      changed = true;
+      if (item.attempts >= PENDING_SERVED_MAX_ATTEMPTS) {
+        // Never resolved: log it once so the row is not silently lost, then drop it.
+        logFn({
+          event: 'subagent_served',
+          harness: 'antigravity',
+          session_id: sessionId,
+          child_conversation_id: childConvId,
+          requested_model: item.requestedModel ?? null,
+          served_model: null,
+          backfill: 'gave_up'
+        });
+        continue;
+      }
+      remaining.push(item);
     }
 
     if (changed) {

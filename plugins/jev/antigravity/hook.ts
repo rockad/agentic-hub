@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   readJevMode,
@@ -8,6 +7,7 @@ import {
   writeAntigravitySessionModel,
   privateDir,
   privateFile,
+  jevHomeDir,
   PRIVATE_FILE_MODE,
   type JevMode,
   type QuotaView
@@ -33,7 +33,7 @@ import { createAntigravityApprovalStore, type ApprovalScope } from './approvals.
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
     ? path.dirname(process.env.JEV_CONFIG_FILE)
-    : path.join(os.homedir(), '.config', 'jev');
+    : path.join(jevHomeDir(), '.config', 'jev');
 }
 
 function getDecisionsLogPath(): string {
@@ -148,7 +148,7 @@ async function main() {
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = createAntigravityApprovalStore(sessionsDir);
-    flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog);
+    flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
 
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;

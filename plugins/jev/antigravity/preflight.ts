@@ -185,9 +185,11 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
       writeAntigravitySessionModel(conversationId, modelName.trim());
     }
     if (conversationId) {
+      // HOME at call time, not os.homedir(): bun fixes os.homedir() at startup (same rule as autoHealAgyMcp).
+      const home = process.env.HOME || os.homedir();
       const jevDir = process.env.JEV_CONFIG_FILE
         ? path.dirname(process.env.JEV_CONFIG_FILE)
-        : path.join(os.homedir(), '.config', 'jev');
+        : path.join(home, '.config', 'jev');
       flushPendingServed(path.join(jevDir, 'antigravity-sessions'), conversationId, (entry) => {
         try {
           privateDir(jevDir);
@@ -202,7 +204,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
         } catch {
           // fail open
         }
-      });
+      }, home);
     }
 
     // 4. Read quota view with conversationId

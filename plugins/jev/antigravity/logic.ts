@@ -332,19 +332,14 @@ export function parseElevationAnswer(answerText?: string | null): { approved: bo
  *    the question, and no other. A row that is not written yet is no answer.
  * 3. Neither: the first GENERIC row after the question, but only when the question was the planner step's single tool
  *    call. With several tool calls (run in parallel) the rows may come in completion order, so there is no answer.
- *
- * `answerQuestionIdx` is the question index PostToolUse saw (default: the matched call's own). An answer whose key
- * (`<id>#<q>` or `step:<step_index>#<q>`) is in `consumedKeys` already approved a run and is no answer.
  */
 export function pullElevationAnswerFromTranscript(
   transcriptPath: string,
   requestedModel: string,
   deniedAtMs?: number,
-  answerStepIdx?: number | null,
-  answerQuestionIdx?: number | null,
-  consumedKeys: readonly string[] = []
+  answerStepIdx?: number | null
 ): { approved: boolean; scope?: ApprovalScope } | null {
-  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, { deniedAtMs });
+  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, { deniedAtMs, answerStepIdx });
   if (!pulled) return null;
   return parseElevationAnswer(pulled.raw);
 }
@@ -357,12 +352,19 @@ export type PullAskOptions = {
   afterStepIdx?: number;
   /**
    * Ignore a question whose answer was already recorded once. An entry is `<toolCallId>#<questionIndex>` (see
-   * `askAnswerKey`: one ask can carry several questions under one tool call id) or, for an older record, a bare tool
-   * call id, which consumes every question of that call.
+   * `askAnswerKey`: one ask can carry several questions under one tool call id), `step:<answerStep>#<questionIndex>`
+   * for a transcript with no tool call ids, or, for an older record, a bare tool call id, which consumes every question
+   * of that call.
    */
   excludeToolCallIds?: ReadonlySet<string>;
   /** Decides whether a question (or message) text is the one wanted, in place of "contains the marker text". */
   matches?: (text: string) => boolean;
+  /**
+   * The `step_index` PostToolUse recorded for the question's own answer row. A question with no tool call id is answered
+   * by exactly that GENERIC row. Without it, only a question that was the planner step's single tool call falls back to
+   * the first GENERIC row after it.
+   */
+  answerStepIdx?: number | null;
 };
 
 /**
@@ -376,7 +378,7 @@ export function pullAskAnswerFromTranscript(
   transcriptPath: string,
   markerText: string,
   opts: PullAskOptions = {}
-): { raw: string | null; toolCallId?: string; questionIndex?: number } | null {
+): { raw: string | null; toolCallId?: string; questionIndex?: number; answerStep?: number } | null {
   const deniedAtMs = opts.deniedAtMs;
   try {
     const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
@@ -416,6 +418,17 @@ export function pullAskAnswerFromTranscript(
 
     let latestToolMatch: AskMatch | null = null;
     let latestProseMatch: AskMatch | null = null;
+
+    const isGeneric = (s: Record<string, unknown>): boolean => typeof s.type === 'string' && s.type.toUpperCase() === 'GENERIC';
+    // The step_index of the answer row of an id-less question in step `i`: the row PostToolUse recorded, else (a lone
+    // ask_question only) the first GENERIC row after the question. Undefined when it cannot be told, so nothing is excluded.
+    const idlessAnswerStep = (i: number, toolCallCount: number): number | undefined => {
+      if (typeof opts.answerStepIdx === 'number') return opts.answerStepIdx;
+      if (toolCallCount !== 1) return undefined;
+      const row = steps.slice(i + 1).find(isGeneric);
+      return typeof row?.step_index === 'number' ? row.step_index : undefined;
+    };
+    const isConsumed = (key: string | undefined): boolean => key !== undefined && !!opts.excludeToolCallIds?.has(key);
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -464,7 +477,8 @@ export function pullAskAnswerFromTranscript(
                         ? (q as Record<string, unknown>).question
                         : '';
                   if (typeof qText === 'string' && questionMatches(qText)) {
-                    if (typeof rec.id === 'string' && opts.excludeToolCallIds?.has(askAnswerKey(rec.id, idx) as string)) return;
+                    const callId = typeof rec.id === 'string' ? rec.id : undefined;
+                    if (isConsumed(askAnswerKey(callId, idx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
                     matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
@@ -500,6 +514,8 @@ export function pullAskAnswerFromTranscript(
         const stepIndex = typeof step.step_index === 'number' ? step.step_index : null;
         if (typeof opts.afterStepIdx === 'number' && stepIndex !== null && stepIndex <= opts.afterStepIdx) continue;
         if (toolCallId && opts.excludeToolCallIds?.has(toolCallId)) continue;
+        // A prose match has no tool call: only a recorded row can say which answer it would read.
+        if (matchedProse && !toolCallId && isConsumed(askAnswerKey(undefined, 0, idlessAnswerStep(i, 0)))) continue;
       }
 
       if (matchedTool) {
@@ -523,7 +539,6 @@ export function pullAskAnswerFromTranscript(
     if (!latestMatch) return null;
 
     let genericStep: Record<string, unknown> | null = null;
-    let genericIndex = -1;
 
     if (latestMatch.toolCallId) {
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
@@ -533,7 +548,6 @@ export function pullAskAnswerFromTranscript(
           const stepToolId = step.toolCallId ?? step.tool_call_id;
           if (stepToolId === latestMatch.toolCallId) {
             genericStep = step;
-            genericIndex = i;
             break;
           }
         }
@@ -542,16 +556,15 @@ export function pullAskAnswerFromTranscript(
 
     // No id: the row PostToolUse recorded for the question (its input.stepIdx), and no other. Rows of parallel tool
     // calls follow the planner step in an order that may be call order or completion order, so position is not used.
-    if (!latestMatch.toolCallId && typeof answerStepIdx === 'number') {
-      const rows: Array<{ step: Record<string, unknown>; index: number }> = [];
+    if (!latestMatch.toolCallId && typeof opts.answerStepIdx === 'number') {
+      const rows: Array<Record<string, unknown>> = [];
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
         const step = steps[i];
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
-        if (stepType === 'GENERIC' && step.step_index === answerStepIdx) rows.push({ step, index: i });
+        if (stepType === 'GENERIC' && step.step_index === opts.answerStepIdx) rows.push(step);
       }
       // A duplicated index is ambiguous: fail closed.
-      genericStep = rows.length === 1 ? rows[0].step : null;
-      genericIndex = rows.length === 1 ? rows[0].index : -1;
+      genericStep = rows.length === 1 ? rows[0] : null;
     } else if (!latestMatch.toolCallId && latestMatch.toolCallCount === 1) {
       // The first-GENERIC-after fallback is only for a question that carries no tool call id, was not recorded by
       // PostToolUse, and was the single tool call of its planner step. With an id, a missing matching row means the
@@ -561,7 +574,6 @@ export function pullAskAnswerFromTranscript(
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
         if (stepType === 'GENERIC') {
           genericStep = step;
-          genericIndex = i;
           break;
         }
       }
@@ -574,7 +586,9 @@ export function pullAskAnswerFromTranscript(
     const rawAnswer = extractAskAnswer({ content: genericStep.content }, latestMatch.markerIndex);
     return {
       raw: rawAnswer,
-      ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId, questionIndex: latestMatch.markerIndex } : {})
+      questionIndex: latestMatch.markerIndex,
+      ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId } : {}),
+      ...(typeof genericStep.step_index === 'number' ? { answerStep: genericStep.step_index } : {})
     };
   } catch {
     return null;
@@ -770,46 +784,19 @@ export function evaluateAntigravitySubagentCall(
       if (typeof deniedAtMs === 'number') {
         // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
         let answerStepIdx: number | null = null;
-        let answerQuestionIdx: number | null = null;
-        let consumedKeys: string[] = [];
         try {
           answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
-          answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
-          consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
         } catch {
-          // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
           answerStepIdx = null;
-          answerQuestionIdx = null;
-          consumedKeys = [];
         }
-        const pull = pullElevationAnswerDetailed(
-          input.transcriptPath,
-          requestedModel,
-          deniedAtMs,
-          answerStepIdx,
-          answerQuestionIdx,
-          consumedKeys
-        );
+        const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs, answerStepIdx);
         if (pull?.approved && pull.scope) {
-          // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
-          // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
-          // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
-          // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
-          // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
-          // allows.
-          const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
-          const keys = pull.answerKey ? [pull.answerKey] : undefined;
+          // Allow only when the approval was really stored (and then claimed): a failed record (a lock timeout
+          // throws) would leave the denial in place and let the same answer be pulled again.
           let stored = false;
           let claimed = false;
           try {
-            if (typeof approvalStore.recordAndClaim === 'function') {
-              const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
-              stored = res.stored === true;
-              claimed = stored && res.approval !== null;
-            } else {
-              stored = approvalStore.record(sessionId, pulled, keys) === true;
-              claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
-            }
+            stored = approvalStore.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs }) === true;
           } catch {
             stored = false;
             claimed = false;
@@ -1168,10 +1155,15 @@ export function flushPendingServed(
 /**
  * The key an answered question is recorded under: `<toolCallId>#<questionIndex>`. One `ask_question` can carry several
  * questions under one tool call id, so consuming the whole call would hide the other questions' answers from the
- * delegations they belong to. Undefined when the call has no id.
+ * delegations they belong to.
+ *
+ * Real Antigravity transcripts carry no tool call id: then the key is `step:<answerStep>#<questionIndex>`, where
+ * `answerStep` is the `step_index` of the ask's own answer row (what PostToolUse reports as `stepIdx`), so one answer
+ * cannot be consumed twice or by another question. Undefined when there is neither an id nor a row.
  */
-export function askAnswerKey(toolCallId: string | undefined, questionIndex: number): string | undefined {
-  return toolCallId ? `${toolCallId}#${questionIndex}` : undefined;
+export function askAnswerKey(toolCallId: string | undefined, questionIndex: number, answerStep?: number | null): string | undefined {
+  if (toolCallId) return `${toolCallId}#${questionIndex}`;
+  return typeof answerStep === 'number' && Number.isInteger(answerStep) && answerStep >= 0 ? `step:${answerStep}#${questionIndex}` : undefined;
 }
 
 /**

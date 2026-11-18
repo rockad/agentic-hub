@@ -423,6 +423,12 @@ type AskEntry = DowngradeEntry & {
   ask_step?: number;
   /** The tool call id of the `ask_question` whose answer closed this entry: that answer is never applied again. */
   ask_id?: string;
+  /**
+   * The `step_index` of the answer row of the `ask_question` that carries this question, recorded by PostToolUse (its
+   * `stepIdx`) even when the row was not written yet. The PreToolUse pull reads only that row: real transcripts carry no
+   * tool call ids, and a tool that ran in parallel with the ask can put its own output row first.
+   */
+  answer_step?: number;
 };
 
 /** Pure: record the question for `signature` (a denial about to be sent). `first` when it was written, `asked`/`answered` when on record. */
@@ -506,6 +512,30 @@ export function answerAskDowngrade(
   return { state: choice === 'off' ? { ...base, off: state.off ?? { at: nowMs } } : base, recorded: true };
 }
 
+/**
+ * Pure: record `stepIdx`, the step_index of the answer row of an ask, against the pending question(s) it carries.
+ *   `sig` (the first characters of a signature, from the signed marker): the pending question of that delegation.
+ *   no `sig` (the plain marker): the OLDEST pending question that has no row recorded yet, so two plain questions of one ask
+ *   land on two entries, as their answers will.
+ * Nothing is recorded when no such question is pending (an answered question keeps nothing: it is closed).
+ */
+export function noteAskAnswerStep(
+  state: DowngradeState,
+  stepIdx: number,
+  nowMs: number,
+  sig?: string | null
+): { state: DowngradeState; recorded: boolean } {
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return { state, recorded: false };
+  const entries = answerable(state, nowMs) as AskEntry[];
+  const wanted = typeof sig === 'string' && sig ? sig.toLowerCase() : null;
+  const target = wanted
+    ? entries.filter((e) => isPending(e) && typeof e.signature === 'string' && e.signature.startsWith(wanted))
+    : entries.filter((e) => isPending(e) && typeof e.answer_step !== 'number').slice(0, 1);
+  if (target.length === 0) return { state, recorded: false };
+  const next = entries.map((e) => (target.includes(e) ? ({ ...e, answer_step: stepIdx } as AskEntry) : e));
+  return { state: { ...state, entries: next.slice(-MAX_ENTRIES) }, recorded: true };
+}
+
 /** Pure: the answer on record for `signature` (`off` when the conversation switched the question off), or null. */
 export function answeredDowngradeChoice(state: DowngradeState, signature: string, nowMs: number): DowngradeChoice | null {
   if (downgradeOff(state)) return 'off';
@@ -524,7 +554,7 @@ export function pendingDowngradeAsk(
   state: DowngradeState,
   signature: string,
   nowMs: number
-): { askedAt: number; askStep?: number; consumed: Set<string>; oldest: boolean } | null {
+): { askedAt: number; askStep?: number; answerStep?: number; consumed: Set<string>; oldest: boolean } | null {
   const entries = live(state, nowMs) as AskEntry[];
   const pending = entries.find((e) => !e.answered && e.signature === signature && typeof e.asked_at === 'number');
   if (!pending) return null;
@@ -533,6 +563,7 @@ export function pendingDowngradeAsk(
   return {
     askedAt: pending.asked_at as number,
     ...(typeof pending.ask_step === 'number' ? { askStep: pending.ask_step } : {}),
+    ...(typeof pending.answer_step === 'number' ? { answerStep: pending.answer_step } : {}),
     consumed,
     oldest
   };
@@ -547,6 +578,8 @@ export type DowngradeStore = {
   claim: (sessionId: string, signature: string, nowMs: number, stepIdx?: number) => DowngradeClaim;
   /** Record an answer once, for the delegation named by `sig` (or the oldest pending one); false when no such question was pending. */
   answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number, sig?: string | null) => boolean;
+  /** Record the answer row's step_index against the pending question(s) of the ask (see `noteAskAnswerStep`); false when none is pending. */
+  noteAnswerStep?: (sessionId: string, stepIdx: number, nowMs: number, sig?: string | null) => boolean;
   choiceFor: (sessionId: string, signature: string, nowMs: number) => DowngradeChoice | null;
   pending: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof pendingDowngradeAsk>;
 };
@@ -599,6 +632,12 @@ export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeS
     answer: (sessionId, choice, askId, nowMs, sig) =>
       locked(sessionId, () => {
         const { state, recorded } = answerAskDowngrade(read(sessionId), choice, askId, nowMs, sig);
+        if (recorded) write(sessionId, state);
+        return recorded;
+      }),
+    noteAnswerStep: (sessionId, stepIdx, nowMs, sig) =>
+      locked(sessionId, () => {
+        const { state, recorded } = noteAskAnswerStep(read(sessionId), stepIdx, nowMs, sig);
         if (recorded) write(sessionId, state);
         return recorded;
       }),

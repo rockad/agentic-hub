@@ -311,10 +311,12 @@ export async function applyAntigravityDowngrade(
           deniedAtMs: pending.askedAt,
           afterStepIdx: pending.askStep,
           excludeToolCallIds: pending.consumed,
-          matches: ownQuestion
+          matches: ownQuestion,
+          // The row PostToolUse recorded for this question; without it only a lone ask_question can be read.
+          answerStepIdx: pending.answerStep ?? null
         });
         const choice = pulled ? parseDowngradeAnswer(pulled.raw) : null;
-        const askId = pulled ? askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0) : undefined;
+        const askId = pulled ? askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0, pulled.answerStep) : undefined;
         if (choice && safely(() => store.answer(sessionId, choice, askId, nowMs, sigPrefix))) {
           return byAnswer(safely(() => store.choiceFor(sessionId, signature, nowMs)) ?? choice, true);
         }

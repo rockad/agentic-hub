@@ -189,12 +189,25 @@ async function main() {
         const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
         if (downgradeQuestions.length > 0 && !carriesElevation) {
           let dRow = false;
+          let dStepRecorded = false;
           let dChoice: 'yes' | 'keep' | 'off' | null = null;
           type DowngradeOutcome = 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error';
           let dOutcome: DowngradeOutcome = 'error';
           let dOutcomes: DowngradeOutcome[] = [];
           try {
             const results: Array<{ row: boolean; choice: 'yes' | 'keep' | 'off' | null; outcome: DowngradeOutcome }> = [];
+            // Record where the answer row is against every pending question of this ask, before waiting for it and
+            // whatever the outcome (no_row included): the row's step_index is this call's own stepIdx. The PreToolUse
+            // pull reads only that row (real transcripts carry no tool call ids; parallel tools make position unreliable).
+            if (conversationId && typeof input.stepIdx === 'number') {
+              for (const q of downgradeQuestions) {
+                try {
+                  if (downgrades.noteAnswerStep?.(conversationId, input.stepIdx, Date.now(), q.sig)) dStepRecorded = true;
+                } catch {
+                  // fail-open: the pull then reads a lone ask_question only
+                }
+              }
+            }
             // One bounded wait for the result row, shared by every question of the ask; each answer line is then read
             // from that one row (N questions must not cost N wait windows: the hook has a timeout).
             const rawAnswers = await pollForAskAnswers(
@@ -212,7 +225,7 @@ async function main() {
                 else if (!conversationId) outcome = 'not_asked';
                 else {
                   // Consumed per question, not per tool call: the other questions of this ask are still open.
-                  const askId = askAnswerKey(input.toolCall?.id, q.index);
+                  const askId = askAnswerKey(input.toolCall?.id, q.index, input.stepIdx);
                   outcome = downgrades.answer(conversationId, choice, askId, Date.now(), q.sig) ? 'recorded' : 'not_asked';
                 }
               } catch {
@@ -237,6 +250,7 @@ async function main() {
             transcript_readable: transcriptReadable,
             marker_found: true,
             row_found: dRow,
+            answer_step_recorded: dStepRecorded,
             parsed: { choice: dChoice },
             ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length, outcomes: dOutcomes } : {}),
             outcome: dOutcome

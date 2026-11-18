@@ -86,10 +86,25 @@ export function loadEnvFile(filePath: string): void {
   }
 }
 
+/**
+ * The files `ensureSecretsLoaded` reads, in order. `JEV_SECRETS_FILES` (a `path.delimiter`-separated list) replaces the
+ * default list when set; the tests point it at nothing. The default list is built from `HOME` at CALL time, not from
+ * `os.homedir()`: bun fixes `os.homedir()` at startup, so a test run (or a process started with another `HOME`) that
+ * changes `process.env.HOME` afterwards would otherwise still read the real `~/.config/zsh/secrets.env` and load real keys.
+ */
+export function secretsFiles(): string[] {
+  const override = process.env.JEV_SECRETS_FILES;
+  if (override !== undefined) return override.split(path.delimiter).filter(Boolean);
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  return [
+    path.join(home, '.config', 'zsh', 'secrets.env'),
+    path.join(home, '.config', 'jev', 'env'),
+    path.join(home, '.gemini', 'config', 'plugins', 'jev', '.env')
+  ];
+}
+
 export function ensureSecretsLoaded(): void {
-  loadEnvFile(path.join(os.homedir(), '.config', 'zsh', 'secrets.env'));
-  loadEnvFile(path.join(os.homedir(), '.config', 'jev', 'env'));
-  loadEnvFile(path.join(os.homedir(), '.gemini', 'config', 'plugins', 'jev', '.env'));
+  for (const file of secretsFiles()) loadEnvFile(file);
 }
 
 ensureSecretsLoaded();

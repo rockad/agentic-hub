@@ -354,6 +354,18 @@ export function isExemptPath(targetPath: string, exemptPaths: string[]): boolean
   return false;
 }
 
+/**
+ * The form of a write target that is counted and checked against the exempt paths: `path.resolve(cwd, target)`, so
+ * `src/a.ts`, `./src/a.ts`, `src/../src/a.ts` and `<cwd>/src/a.ts` are one file. A target inside the workspace is
+ * kept relative to it (so a workspace that sits under a directory named `plans` does not exempt everything in it);
+ * one outside stays absolute.
+ */
+export function normalizeWriteTarget(targetPath: string, cwd: string): string {
+  const resolved = path.resolve(cwd, targetPath);
+  const rel = path.relative(cwd, resolved);
+  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : resolved;
+}
+
 export interface PreToolHookInput {
   conversationId?: string;
   sessionId?: string;
@@ -525,18 +537,19 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
   // 3. Multi-file write guard
   const writeTools = ['write_file', 'edit_file', 'write_to_file', 'replace_file_content'];
   if (writeTools.includes(toolName)) {
-    const targetPath = String(args.Path ?? args.TargetFile ?? args.path ?? args.targetFile ?? '');
+    const rawTarget = String(args.Path ?? args.TargetFile ?? args.path ?? args.targetFile ?? '');
+
+    // No target path: nothing to count (an empty string is never recorded as a file).
+    if (rawTarget.trim().length === 0) {
+      return { decision: 'allow' };
+    }
+    const targetPath = normalizeWriteTarget(rawTarget, input.cwd || process.cwd());
 
     // Check exempt paths
     const cfg = loadJevConfigSync();
     const writeGuardCfg = cfg.harnesses?.antigravity?.writeGuard;
     const exemptPaths = writeGuardCfg?.exemptPaths || ['plans/', '/brain/', '.agents/memory/', '.agents/rules/'];
     if (isExemptPath(targetPath, exemptPaths)) {
-      return { decision: 'allow' };
-    }
-
-    // No target path: nothing to count (an empty string is never recorded as a file).
-    if (targetPath.trim().length === 0) {
       return { decision: 'allow' };
     }
 

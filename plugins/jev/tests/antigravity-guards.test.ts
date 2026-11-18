@@ -689,3 +689,72 @@ describe('commit detection shares the segment walker (A1)', () => {
     expect(res.decision).toBe('deny');
   });
 });
+
+describe('write guard path normalisation (A6)', () => {
+  let tmpHome = '';
+  let origHome = '';
+  let origConfig = '';
+  let sessionsDir = '';
+  let cwd = '';
+
+  beforeEach(() => {
+    clearConfigCacheForTesting();
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-guards-a6-'));
+    const jevDir = path.join(tmpHome, '.config', 'jev');
+    sessionsDir = path.join(jevDir, 'antigravity-sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    cwd = path.join(tmpHome, 'ws');
+    fs.mkdirSync(cwd, { recursive: true });
+    origHome = process.env.HOME || '';
+    origConfig = process.env.JEV_CONFIG_FILE || '';
+    process.env.HOME = tmpHome;
+    process.env.JEV_CONFIG_FILE = path.join(jevDir, 'config.json');
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE, JSON.stringify({ defaults: { mode: 'on' }, harnesses: { antigravity: { writeGuard: { maxFiles: 1 } } } }));
+  });
+  afterEach(() => {
+    clearConfigCacheForTesting();
+    process.env.HOME = origHome;
+    if (origConfig) process.env.JEV_CONFIG_FILE = origConfig;
+    else delete process.env.JEV_CONFIG_FILE;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const edit = (p: string, convId = 'c-a6') => ({
+    conversationId: convId,
+    cwd,
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { name: 'edit_file', args: { Path: p } }
+  });
+
+  it('src/a.ts, ./src/a.ts and <cwd>/src/a.ts are one file; a different file is the second', async () => {
+    expect((await evaluatePreToolGuards(edit('src/a.ts'))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(edit('./src/a.ts'))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(edit(path.join(cwd, 'src', 'a.ts')))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(edit('src/../src/a.ts'))).decision).toBe('allow');
+    const streak = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'c-a6.write-guard.json'), 'utf8'));
+    expect(streak.files).toEqual(['src/a.ts']);
+    expect((await evaluatePreToolGuards(edit('src/b.ts'))).decision).toBe('deny');
+  });
+
+  it('the exempt check sees the normalised path: ./plans/x.md and <cwd>/plans/x.md are exempt', async () => {
+    expect((await evaluatePreToolGuards(edit('src/a.ts', 'c-ex'))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(edit('./plans/x.md', 'c-ex'))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(edit(path.join(cwd, 'plans', 'x.md'), 'c-ex'))).decision).toBe('allow');
+    const streak = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'c-ex.write-guard.json'), 'utf8'));
+    expect(streak.files).toEqual(['src/a.ts']);
+  });
+
+  it('a workspace that sits under a directory named like an exempt path does not exempt everything', async () => {
+    const underPlans = path.join(tmpHome, 'plans', 'proj');
+    fs.mkdirSync(underPlans, { recursive: true });
+    const e = (p: string) => ({ ...edit(p, 'c-anc'), cwd: underPlans });
+    expect((await evaluatePreToolGuards(e('src/a.ts'))).decision).toBe('allow');
+    expect((await evaluatePreToolGuards(e(path.join(underPlans, 'src', 'b.ts')))).decision).toBe('deny');
+  });
+
+  it('a path outside the workspace is kept absolute', async () => {
+    const outside = path.join(tmpHome, 'other', 'z.ts');
+    expect((await evaluatePreToolGuards(edit(outside, 'c-out'))).decision).toBe('allow');
+    expect(JSON.parse(fs.readFileSync(path.join(sessionsDir, 'c-out.write-guard.json'), 'utf8')).files).toEqual([outside]);
+  });
+});

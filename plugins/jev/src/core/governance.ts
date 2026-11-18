@@ -470,13 +470,14 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
 
   if (isOrchestrator) {
     let variant: OrchestratorVariant = 'argon';
-    const qm = rawActiveModel || '';
-    if (/orchestrator\s*\(\s*carbon\s*\)/i.test(qm) || /carbon/i.test(qm)) {
+    // The variant follows the RESOLVED active model (the conversation's own record, or latest.json), never the global
+    // quota-state model while a fresher source won: that file can be stale and name the other variant. When the source
+    // is quota-state, the resolved model is that same value.
+    const qm = activeModel || '';
+    if (/carbon/i.test(qm)) {
       variant = 'carbon';
-    } else if (/orchestrator\s*\(\s*argon\s*\)/i.test(qm) || /argon/i.test(qm)) {
+    } else if (/argon/i.test(qm)) {
       variant = 'argon';
-    } else if (activeModel && /carbon/i.test(activeModel)) {
-      variant = 'carbon';
     } else if (planTier && /pro/i.test(planTier)) {
       variant = 'argon';
     } else {

@@ -602,3 +602,64 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(served.backfilled).toBe(true);
   });
 });
+
+describe('Antigravity hook: unsafe conversation ids (A2)', () => {
+  const ELEVATE = (id: string) => ({
+    conversationId: id,
+    lastUserInput: 'Invoke expert on pro',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } }
+  });
+
+  /** Every regular file under the temp home, relative to it. */
+  function filesUnder(dir: string, base = dir): string[] {
+    const out: string[] = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) out.push(...filesUnder(p, base));
+      else out.push(path.relative(base, p));
+    }
+    return out;
+  }
+
+  for (const id of ['../../x', 'a/b']) {
+    it(`id ${JSON.stringify(id)} makes the decision and writes nothing outside antigravity-sessions`, () => {
+      const proc = run('pre-tool-use', ELEVATE(id));
+      expect(proc.exitCode).toBe(0);
+      expect(JSON.parse(proc.stdout.toString()).decision).toBe('deny');
+
+      const sessions = path.join(home, '.config', 'jev', 'antigravity-sessions');
+      const all = filesUnder(home);
+      const stray = all.filter(
+        (f) => /approvals|write-guard|pending-served|\.model\.json/.test(f) && !f.startsWith(path.join('.config', 'jev', 'antigravity-sessions') + path.sep)
+      );
+      expect(stray).toEqual([]);
+      for (const f of fs.readdirSync(sessions)) expect(f).not.toMatch(/[\\/]/);
+      // Log rows carry the normalised id.
+      const rows = fs
+        .readFileSync(path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      const call = rows.find((r) => r.event === 'agent_call');
+      expect(call.session_id).toBe(id === '../../x' ? 'x' : 'ab');
+    });
+  }
+
+  it('post-tool-use with an unsafe id records under the normalised id only', () => {
+    expect(JSON.parse(run('pre-tool-use', ELEVATE('../../x')).stdout.toString()).decision).toBe('deny');
+    const post = run('post-tool-use', {
+      conversationId: '../../x',
+      toolCall: {
+        id: 'call_ask',
+        name: 'ask_question',
+        args: { questions: [{ question: "[jev-elevate:pro] Allow subagent 'expert' to run on pro?", options: ['(Recommended) Yes, once', 'No'] }] }
+      },
+      content: 'A1: (Recommended) Yes, once'
+    });
+    expect(post.exitCode).toBe(0);
+    expect(JSON.parse(run('pre-tool-use', ELEVATE('../../x')).stdout.toString()).decision).toBe('allow');
+    expect(fs.existsSync(path.join(home, '.config', 'x.approvals.json'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.config', 'jev', 'antigravity-sessions', 'x.approvals.json'))).toBe(true);
+  });
+});

@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import {
   readJevMode,
   readQuotaView,
+  safeSessionId,
   writeAntigravitySessionModel,
   privateDir,
   privateFile,
@@ -140,6 +141,10 @@ async function main() {
         passThrough(event);
       }
     }
+
+    // The conversation id arrives on stdin and becomes part of file names: normalise it once, here, so every path
+    // below (approvals, pending-served, session model, log rows) sees the same safe id or none.
+    if (input.conversationId !== undefined) input.conversationId = safeSessionId(input.conversationId) ?? undefined;
 
     const mode: JevMode = await readJevMode('antigravity');
     if (mode === 'off') {

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
-import { modelTierRank } from '../src/core/governance.js';
+import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 
 export type ApprovalScope = 'once' | '5min' | 'session';
 
@@ -153,11 +153,13 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
 export function createAntigravityApprovalStore(sessionsDir: string): ApprovalStore {
   privateDir(sessionsDir);
 
-  const approvalsFile = (sessionId: string) => path.join(sessionsDir, `${sessionId}.approvals.json`);
-  const lockDir = (sessionId: string) => path.join(sessionsDir, `${sessionId}.approvals.lock`);
+  // Defence in depth: a conversation id comes from hook stdin and ends up in file names, so it is normalised here
+  // too (the hook entry already does). An id with nothing safe in it means "no stored state": no file I/O at all.
+  const approvalsFile = (safeId: string) => path.join(sessionsDir, `${safeId}.approvals.json`);
+  const lockDir = (safeId: string) => path.join(sessionsDir, `${safeId}.approvals.lock`);
 
-  function withLock<T>(sessionId: string, fn: () => T): T {
-    const lock = lockDir(sessionId);
+  function withLock<T>(safeId: string, fn: () => T): T {
+    const lock = lockDir(safeId);
     const deadline = Date.now() + 2000;
     while (true) {
       try {
@@ -207,36 +209,51 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
   }
 
   return {
-    record: (sessionId, approval) =>
-      withLock(sessionId, () => {
+    record: (rawId, approval) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return false;
+      return withLock(sessionId, () => {
         const next = recordApproval(readState(sessionId), approval, approval.created_at);
         if (next) {
           writeState(sessionId, next);
           return true;
         }
         return false;
-      }),
-    deny: (sessionId, model, nowMs) =>
+      });
+    },
+    deny: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return;
       withLock(sessionId, () => {
         writeState(sessionId, noteDenied(readState(sessionId), model, nowMs));
-      }),
-    claim: (sessionId, requested, nowMs) =>
-      withLock(sessionId, () => {
+      });
+    },
+    claim: (rawId, requested, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLock(sessionId, () => {
         const { state, approval } = claimApproval(readState(sessionId), requested, nowMs);
         if (approval?.scope === 'once' || state.approvals.length !== readState(sessionId).approvals.length) {
           writeState(sessionId, state);
         }
         return approval;
-      }),
-    attempt: (sessionId, promptKey, signature, nowMs, windowMs) =>
-      withLock(sessionId, () => {
+      });
+    },
+    attempt: (rawId, promptKey, signature, nowMs, windowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return 1;
+      return withLock(sessionId, () => {
         const { state, count } = bumpAttempts(readState(sessionId), promptKey, signature, nowMs, windowMs);
         writeState(sessionId, state);
         return count;
-      }),
-    wasDeniedRecently: (sessionId, model, nowMs) =>
-      withLock(sessionId, () => {
+      });
+    },
+    wasDeniedRecently: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLock(sessionId, () => {
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
-      })
+      });
+    }
   };
 }

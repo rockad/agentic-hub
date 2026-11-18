@@ -1166,3 +1166,42 @@ describe('child conversation ID and served model extraction', () => {
     }
   });
 });
+
+describe('approval store: unsafe session ids (A2)', () => {
+  let tmpDir = '';
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-store-unsafe-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a path-like id is normalised: no file lands outside the sessions directory', () => {
+    const sessions = path.join(tmpDir, 'a', 'b', 'sessions');
+    const store = createAntigravityApprovalStore(sessions);
+    store.deny('../../x', 'pro', 1000);
+    expect(store.record('../../x', { model: 'pro', scope: 'once', created_at: 1001 })).toBe(true);
+    expect(store.claim('a/b', 'pro', 1002)).toBeNull(); // a different normalised id ('ab')
+    expect(store.claim('../../x', 'pro', 1002)?.scope).toBe('once');
+    const outside = fs.readdirSync(path.join(tmpDir, 'a')).sort();
+    expect(outside).toEqual(['b']);
+    expect(fs.readdirSync(path.join(tmpDir, 'a', 'b')).sort()).toEqual(['sessions']);
+    expect(fs.readdirSync(sessions).some((f) => f.startsWith('x.approvals'))).toBe(true);
+    expect(fs.readdirSync(sessions).every((f) => !f.includes('/'))).toBe(true);
+  });
+
+  it('an id with nothing safe in it behaves as no stored state and does no file I/O', () => {
+    const sessions = path.join(tmpDir, 'sessions');
+    const store = createAntigravityApprovalStore(sessions);
+    const before = fs.readdirSync(sessions);
+    for (const id of ['', '../..', '///', undefined as unknown as string, 42 as unknown as string]) {
+      store.deny(id, 'pro', 1000);
+      expect(store.record(id, { model: 'pro', scope: 'session', created_at: 1001 })).toBe(false);
+      expect(store.claim(id, 'pro', 1002)).toBeNull();
+      expect(store.attempt(id, 'k', 'sig', 1003)).toBe(1);
+      expect(store.wasDeniedRecently(id, 'pro', 1004)).toBeNull();
+    }
+    expect(fs.readdirSync(sessions)).toEqual(before);
+    expect(fs.readdirSync(tmpDir)).toEqual(['sessions']);
+  });
+});

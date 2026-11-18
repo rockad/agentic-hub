@@ -500,7 +500,7 @@ export function evaluateAntigravitySubagentCall(
     return { decision: 'pass' };
   }
 
-  const sessionId = input.conversationId || 'default-session';
+  const sessionId = safeSessionId(input.conversationId) || 'default-session';
   const nowMs = (deps.now ?? Date.now)();
   const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
   const mode: JevMode = deps.mode ?? 'on';

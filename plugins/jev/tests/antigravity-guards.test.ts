@@ -9,6 +9,8 @@ import {
   isExemptPath,
   hasConflictMarkers,
   commitIncludesWorkingTree,
+  commandRunsGitAdd,
+  findGitCommit,
   resolveGitCwd,
   type PreToolHookInput
 } from '../antigravity/guards.ts';
@@ -575,5 +577,115 @@ describe('resolveGitCwd', () => {
     expect(resolveGitCwd('', base)).toBe(base);
     expect(resolveGitCwd('git commit "unterminated', base)).toBe(base);
     expect(resolveGitCwd('cd "unterminated && git commit', base)).toBe(base);
+  });
+});
+
+describe('commit detection shares the segment walker (A1)', () => {
+  let tmpHome = '';
+  let jevConfigDir = '';
+  let origHome = '';
+  let origConfig = '';
+
+  beforeEach(() => {
+    clearConfigCacheForTesting();
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-guards-a1-'));
+    jevConfigDir = path.join(tmpHome, '.config', 'jev');
+    fs.mkdirSync(jevConfigDir, { recursive: true });
+    origHome = process.env.HOME || '';
+    origConfig = process.env.JEV_CONFIG_FILE || '';
+    process.env.HOME = tmpHome;
+    process.env.JEV_CONFIG_FILE = path.join(jevConfigDir, 'config.json');
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE, JSON.stringify({ defaults: { mode: 'on' } }));
+  });
+
+  afterEach(() => {
+    clearConfigCacheForTesting();
+    process.env.HOME = origHome;
+    if (origConfig) process.env.JEV_CONFIG_FILE = origConfig;
+    else delete process.env.JEV_CONFIG_FILE;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const CONFLICT = 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n';
+
+  function repoAt(rel: string): { dir: string; git: (cmd: string) => string } {
+    const dir = path.join(tmpHome, rel);
+    fs.mkdirSync(dir, { recursive: true });
+    const git = (cmd: string): string => {
+      const proc = Bun.spawnSync(['sh', '-c', `git ${cmd}`], { cwd: dir });
+      if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+      return proc.stdout.toString();
+    };
+    git('init');
+    git('config user.email "test@example.com"');
+    git('config user.name "Test"');
+    git('config commit.gpgsign false');
+    return { dir, git };
+  }
+
+  const cmdInput = (cwd: string, CommandLine: string): PreToolHookInput => ({
+    cwd,
+    toolCall: { name: 'run_command', args: { CommandLine } }
+  });
+
+  it('a quoted -C path with a space still reaches the gate (staged conflict denies)', async () => {
+    const { dir, git } = repoAt('dir with space');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    const elsewhere = path.join(tmpHome, 'elsewhere');
+    fs.mkdirSync(elsewhere, { recursive: true });
+    const res = await evaluatePreToolGuards(cmdInput(elsewhere, `git -C "${dir}" commit -m "x"`));
+    expect(res.decision).toBe('deny');
+    const res2 = await evaluatePreToolGuards(cmdInput(elsewhere, `git -C '${dir}' commit -m "x"`));
+    expect(res2.decision).toBe('deny');
+  });
+
+  it('a -c k=v global option with a quoted value does not hide the commit', async () => {
+    const { dir, git } = repoAt('c-opt-repo');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    const res = await evaluatePreToolGuards(cmdInput(dir, 'git -c "user.name=a b" commit -m "x"'));
+    expect(res.decision).toBe('deny');
+  });
+
+  it('env and VAR= prefixes do not hide the commit', async () => {
+    const { dir, git } = repoAt('env-prefix-repo');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    expect((await evaluatePreToolGuards(cmdInput(dir, 'env GIT_AUTHOR_NAME=x git commit -m "x"'))).decision).toBe('deny');
+    expect((await evaluatePreToolGuards(cmdInput(dir, 'GIT_AUTHOR_NAME=x git commit -m "x"'))).decision).toBe('deny');
+  });
+
+  it('a commit inside sh -c is still detected', async () => {
+    const { dir, git } = repoAt('shell-c-repo');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    expect((await evaluatePreToolGuards(cmdInput(dir, `bash -c 'git commit -m "x"'`))).decision).toBe('deny');
+  });
+
+  it('commit text inside an echo is not a commit: no diff is taken and nothing is logged', async () => {
+    const { dir, git } = repoAt('echo-repo');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    const res = await evaluatePreToolGuards(cmdInput(dir, `echo "run git commit -m later"`));
+    expect(res.decision).toBe('allow');
+    const log = path.join(jevConfigDir, 'antigravity_decisions.jsonl');
+    expect(fs.existsSync(log)).toBe(false);
+    expect(findGitCommit('echo "run git commit -m later"')).toBeNull();
+    expect(findGitCommit('git -C "a b" commit -m x')?.dashC).toEqual(['a b']);
+  });
+
+  it('git add with a quoted -C path widens the commit to the working tree', async () => {
+    const { dir, git } = repoAt('add dir with space');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    git('add a.txt');
+    git('commit -m init');
+    fs.writeFileSync(path.join(dir, 'a.txt'), CONFLICT); // NOT staged
+    expect(commandRunsGitAdd(`git -C "${dir}" add . && git -C "${dir}" commit -m x`)).toBe(true);
+    expect(commitIncludesWorkingTree(`git -C "${dir}" add . && git -C "${dir}" commit -m x`)).toBe(true);
+    expect(commitIncludesWorkingTree(`git -C "${dir}" commit -am x`)).toBe(true);
+    expect(commitIncludesWorkingTree(`git -C "${dir}" commit -m "fix -a flag"`)).toBe(false);
+    const res = await evaluatePreToolGuards(cmdInput(tmpHome, `git -C "${dir}" add . && git -C "${dir}" commit -m "x"`));
+    expect(res.decision).toBe('deny');
   });
 });

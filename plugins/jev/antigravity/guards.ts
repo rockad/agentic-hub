@@ -34,11 +34,6 @@ export function hasConflictMarkers(diff: string): boolean {
   return CONFLICT_MARKER_RE.test(diff);
 }
 
-/** `git` plus any global options, including options that take a value (`git -C repo add`). */
-const GIT_PREFIX = String.raw`\bgit\s+(?:-\S+(?:\s+[^-\s]\S*)?\s+)*`;
-const GIT_COMMIT_RE = new RegExp(GIT_PREFIX + String.raw`commit\b`);
-const GIT_ADD_RE = new RegExp(GIT_PREFIX + String.raw`add\b`);
-
 const GIT_DIFF_TIMEOUT_MS = 3000;
 const GIT_DIFF_MAX_BUFFER = 16 * 1024 * 1024;
 
@@ -123,30 +118,6 @@ function appendGuardLog(entry: Record<string, unknown>): void {
 }
 
 /**
- * Whether a `git commit` command line commits the working tree, not just the index: `-a`, `--all`, `-am` (any short
- * flag cluster containing `a`), or the same command line also runs `git add`. Quoted strings are dropped first so a
- * commit message such as "fix -a flag" is not read as a flag, and only the `git commit ...` segment (up to the next
- * command separator) is searched for flags.
- */
-function dropQuoted(cmd: string): string {
-  return cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
-}
-
-/** Whether the command line also runs `git add` (quoted strings ignored). */
-export function commandRunsGitAdd(cmd: string): boolean {
-  return GIT_ADD_RE.test(dropQuoted(cmd));
-}
-
-export function commitIncludesWorkingTree(cmd: string): boolean {
-  const unquoted = dropQuoted(cmd);
-  if (GIT_ADD_RE.test(unquoted)) return true;
-  const m = new RegExp(GIT_PREFIX + String.raw`commit\b([^;&|\n]*)`).exec(unquoted);
-  if (!m) return false;
-  const flags = m[1];
-  return /(?:^|\s)--all(?=\s|=|$)/.test(flags) || /(?:^|\s)-[A-Za-z]*a[A-Za-z]*(?=\s|$)/.test(flags);
-}
-
-/**
  * Split a command line into segments (on `&&`, `||`, `;`, `|`, newline, outside quotes), each a list of shell words
  * with quotes removed and backslash escapes applied. A small tokenizer for path resolution only: no expansion,
  * substitution or redirection handling.
@@ -209,26 +180,115 @@ function splitCommandSegments(cmd: string): string[][] {
 /** Git global options that consume the next word as their value. */
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
 
-/**
- * For a segment that runs `git [global options] commit`, the `-C <dir>` values in order; otherwise null. Leading
- * `VAR=value`, `env`, `command`, `exec` and `time` words are skipped.
- */
-function gitCommitDashC(words: string[]): string[] | null {
+/** Words that may precede the command in a segment (`env X=1 git ...`, `sudo git ...`, `then git ...`). */
+const COMMAND_PREFIX_WORDS = new Set(['env', 'command', 'exec', 'time', 'sudo', 'nohup', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '(']);
+/** Prefix words that take options of their own (`env -i git ...`): the option words after them are skipped. */
+const PREFIX_WITH_OPTIONS = new Set(['env', 'command', 'exec', 'time', 'sudo', 'nohup']);
+const SHELL_WORDS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+/** `git commit` options that consume the next word, so a message such as `-m "-a"` is never read as a flag. */
+const COMMIT_VALUE_OPTIONS = new Set(['-m', '-F', '-C', '-c', '-t', '-S', '--message', '--file', '--reuse-message', '--reedit-message', '--template', '--author', '--date', '--cleanup', '--fixup', '--squash']);
+
+/** One `git [global options] <subcommand> [args]` invocation found in a command line. */
+export type GitInvocation = {
+  subcommand: string;
+  /** The `-C <dir>` values, in order. */
+  dashC: string[];
+  /** The words after the subcommand, up to the end of its segment (quotes already removed). */
+  args: string[];
+};
+
+function baseName(word: string): string {
+  const i = word.lastIndexOf('/');
+  return i === -1 ? word : word.slice(i + 1);
+}
+
+/** The git invocations one segment runs (several when it is `sh -c '...'`), in order. */
+function gitInvocationsOfSegment(words: string[], depth = 0): GitInvocation[] {
   let i = 0;
-  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]) || ['env', 'command', 'exec', 'time'].includes(words[i]))) i++;
-  if (words[i] !== 'git') return null;
+  while (i < words.length) {
+    const w = words[i];
+    if (/^[A-Za-z_]\w*=/.test(w)) {
+      i++;
+    } else if (COMMAND_PREFIX_WORDS.has(w)) {
+      i++;
+      if (PREFIX_WITH_OPTIONS.has(w)) while (i < words.length && words[i].startsWith('-') && words[i].length > 1) i++;
+    } else if (w.length > 1 && /^[({]+/.test(w)) {
+      words = [...words.slice(0, i), w.replace(/^[({]+/, ''), ...words.slice(i + 1)];
+    } else {
+      break;
+    }
+  }
+  if (i >= words.length) return [];
+  const head = baseName(words[i]);
+
+  if (SHELL_WORDS.has(head) && depth < 3) {
+    const flag = words.findIndex((w, j) => j > i && /^-[A-Za-z]*c[A-Za-z]*$/.test(w));
+    if (flag === -1 || flag + 1 >= words.length) return [];
+    return splitCommandSegments(words[flag + 1]).flatMap((seg) => gitInvocationsOfSegment(seg, depth + 1));
+  }
+  if (head !== 'git') return [];
+
   i++;
-  const dirs: string[] = [];
+  const dashC: string[] = [];
   while (i < words.length && words[i].startsWith('-')) {
     const opt = words[i];
     if (GIT_VALUE_OPTIONS.has(opt)) {
-      if (opt === '-C' && i + 1 < words.length) dirs.push(words[i + 1]);
+      if (opt === '-C' && i + 1 < words.length) dashC.push(words[i + 1]);
       i += 2;
     } else {
       i++;
     }
   }
-  return words[i] === 'commit' ? dirs : null;
+  if (i >= words.length) return [];
+  return [{ subcommand: words[i], dashC, args: words.slice(i + 1) }];
+}
+
+/** Every git invocation in the command line, in order (quoted text is data, not a command). */
+export function findGitInvocations(cmd: string): GitInvocation[] {
+  try {
+    return splitCommandSegments(cmd).flatMap((words) => gitInvocationsOfSegment(words));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The first `git ... commit` invocation in the command line, or null. Detection, the working-tree test and the
+ * directory resolution all go through this one walker, so quoting, `-c k=v`, `-C "dir with space"`, `env` /
+ * `VAR=` prefixes and `sh -c '...'` behave the same everywhere. Text inside quotes (an `echo "git commit"`) is a
+ * word of another command, never a commit.
+ */
+export function findGitCommit(cmd: string): GitInvocation | null {
+  return findGitInvocations(cmd).find((g) => g.subcommand === 'commit') ?? null;
+}
+
+/** Whether the command line also runs `git add` (quoted strings ignored). */
+export function commandRunsGitAdd(cmd: string): boolean {
+  return findGitInvocations(cmd).some((g) => g.subcommand === 'add');
+}
+
+/**
+ * Whether a `git commit` command line commits the working tree, not just the index: `-a`, `--all`, `-am` (any short
+ * flag cluster containing `a`), or the same command line also runs `git add`. Only the commit's own arguments are
+ * searched for flags, and the value of an option such as `-m` is skipped, so a message like "fix -a flag" is not
+ * read as a flag.
+ */
+export function commitIncludesWorkingTree(cmd: string): boolean {
+  const invocations = findGitInvocations(cmd);
+  if (invocations.some((g) => g.subcommand === 'add')) return true;
+  const commit = invocations.find((g) => g.subcommand === 'commit');
+  if (!commit) return false;
+  for (let i = 0; i < commit.args.length; i++) {
+    const a = commit.args[i];
+    if (a === '--') break;
+    if (a === '--all') return true;
+    if (COMMIT_VALUE_OPTIONS.has(a)) {
+      i++;
+      continue;
+    }
+    if (/^-[A-Za-z]*a[A-Za-z]*$/.test(a)) return true;
+  }
+  return false;
 }
 
 /**
@@ -252,9 +312,9 @@ export function resolveGitCwd(cmd: string, baseCwd: string): string {
     };
     let cwd = baseCwd;
     for (const words of splitCommandSegments(cmd)) {
-      const dashC = gitCommitDashC(words);
-      if (dashC) {
-        for (const dir of dashC) cwd = step(cwd, dir);
+      const commit = gitInvocationsOfSegment(words).find((g) => g.subcommand === 'commit');
+      if (commit) {
+        for (const dir of commit.dashC) cwd = step(cwd, dir);
         return cwd;
       }
       if (words[0] === 'cd' || words[0] === 'pushd') {
@@ -415,7 +475,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
   // 2. run_command commit gate
   if (toolName === 'run_command') {
     const cmd = String(args.CommandLine ?? args.command ?? '');
-    if (GIT_COMMIT_RE.test(cmd)) {
+    if (findGitCommit(cmd)) {
       // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
       // so the diff is taken against HEAD instead of --cached.
       const includesWorkingTree = commitIncludesWorkingTree(cmd);

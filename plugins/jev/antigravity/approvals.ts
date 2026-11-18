@@ -37,6 +37,17 @@ export type ApprovalStore = {
    * already consumed nothing is stored (false), otherwise they are remembered as consumed.
    */
   record: (sessionId: string, approval: Approval, consumedKeys?: string[]) => boolean;
+  /**
+   * `record` and `claim` as ONE locked operation: the approval is stored for the pending denial and, in the same
+   * lock, claimed for `approval.model`. No other call can claim a "once" approval in between, so one answer allows
+   * one run even when two pro calls evaluate in parallel. `stored: false` (nothing recorded, `approval: null`) when
+   * `record` would refuse; a stored approval is always claimed, so `approval` is null only when `stored` is false.
+   */
+  recordAndClaim?: (
+    sessionId: string,
+    approval: Approval,
+    consumedKeys?: string[]
+  ) => { stored: boolean; approval: Approval | null };
   deny: (sessionId: string, model: string, nowMs: number) => void;
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
@@ -301,6 +312,17 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
           return true;
         }
         return false;
+      });
+    },
+    recordAndClaim: (rawId, approval, consumedKeys) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return { stored: false, approval: null };
+      return withLock(sessionId, () => {
+        const recorded = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys);
+        if (!recorded) return { stored: false, approval: null };
+        const { state, approval: claimed } = claimApproval(recorded, approval.model, approval.created_at);
+        writeState(sessionId, state);
+        return { stored: true, approval: claimed };
       });
     },
     deny: (rawId, model, nowMs) => {

@@ -1283,7 +1283,8 @@ describe('pull fallback answer matching and record failure (A3, A4)', () => {
   it('A4: when record fails the pull does not allow, falls back to deny, and a second call does not replay', () => {
     const file = transcriptYes();
     approvals.deny('s-a4', 'pro', nowMs - 5000);
-    const failing = { ...approvals, record: () => null as unknown as boolean } as ApprovalStore;
+    // A store without the atomic recordAndClaim (record, then claim), whose record fails.
+    const failing = { ...approvals, recordAndClaim: undefined, record: () => null as unknown as boolean } as ApprovalStore;
     const first = evaluateAntigravitySubagentCall(subInput(file), { approvals: failing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
     expect(first.decision).toBe('deny');
     expect(first.pullFallback).toBe('record_failed');
@@ -1297,6 +1298,7 @@ describe('pull fallback answer matching and record failure (A3, A4)', () => {
     approvals.deny('s-a4', 'pro', nowMs - 5000);
     const throwing = {
       ...approvals,
+      recordAndClaim: undefined,
       record: () => {
         throw new Error('approvals lock timeout');
       }
@@ -1304,6 +1306,24 @@ describe('pull fallback answer matching and record failure (A3, A4)', () => {
     const d = evaluateAntigravitySubagentCall(subInput(file), { approvals: throwing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
     expect(d.decision).toBe('deny');
     expect(d.pullFallback).toBe('record_failed');
+  });
+
+  it('A4: the atomic recordAndClaim failing (not stored, or a lock timeout) is a failure too', () => {
+    const file = transcriptYes();
+    approvals.deny('s-a4', 'pro', nowMs - 5000);
+    const notStored = { ...approvals, recordAndClaim: () => ({ stored: false, approval: null }) } as ApprovalStore;
+    const a = evaluateAntigravitySubagentCall(subInput(file), { approvals: notStored, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
+    expect(a.decision).toBe('deny');
+    expect(a.pullFallback).toBe('record_failed');
+    const throwing = {
+      ...approvals,
+      recordAndClaim: () => {
+        throw new Error('approvals lock timeout');
+      }
+    } as ApprovalStore;
+    const b = evaluateAntigravitySubagentCall(subInput(file), { approvals: throwing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs + 1000 });
+    expect(b.decision).toBe('deny');
+    expect(b.pullFallback).toBe('record_failed');
   });
 
   it('A4: when record succeeds the pull still allows and reports pullFallback true', () => {

@@ -49,8 +49,8 @@ export type AntigravityHookDecision = {
   approvalScope?: ApprovalScope;
   attemptCount?: number;
   clampedTo?: string;
-  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. */
-  pullFallback?: true | 'record_failed';
+  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. */
+  pullFallback?: true | 'record_failed' | 'claim_lost';
 };
 
 export type AntigravityLogicDeps = {
@@ -744,7 +744,7 @@ export function evaluateAntigravitySubagentCall(
 
   // Choice mode (default):
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-  let pullFallback: 'record_failed' | undefined;
+  let pullFallback: 'record_failed' | 'claim_lost' | undefined;
   if (count <= 2) {
     if (approvalStore && input.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
       const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
@@ -772,22 +772,30 @@ export function evaluateAntigravitySubagentCall(
           consumedKeys
         );
         if (pull?.approved && pull.scope) {
-          // Allow only when the approval was really stored (and then claimed): a failed record (a lock timeout
-          // throws) would leave the denial in place and let the same answer be pulled again. The record refuses an
-          // answer row that already approved a run.
+          // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
+          // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
+          // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
+          // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
+          // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
+          // allows.
+          const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
+          const keys = pull.answerKey ? [pull.answerKey] : undefined;
           let stored = false;
+          let claimed = false;
           try {
-            stored =
-              approvalStore.record(
-                sessionId,
-                { model: requestedModel, scope: pull.scope, created_at: nowMs },
-                pull.answerKey ? [pull.answerKey] : undefined
-              ) === true;
+            if (typeof approvalStore.recordAndClaim === 'function') {
+              const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
+              stored = res.stored === true;
+              claimed = stored && res.approval !== null;
+            } else {
+              stored = approvalStore.record(sessionId, pulled, keys) === true;
+              claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
+            }
           } catch {
             stored = false;
+            claimed = false;
           }
-          if (stored) {
-            approvalStore.claim(sessionId, requestedModel, nowMs);
+          if (claimed) {
             return {
               decision: 'allow',
               elevation: 'approved',
@@ -795,7 +803,7 @@ export function evaluateAntigravitySubagentCall(
               pullFallback: true
             };
           }
-          pullFallback = 'record_failed';
+          pullFallback = stored ? 'claim_lost' : 'record_failed';
         }
       }
     }

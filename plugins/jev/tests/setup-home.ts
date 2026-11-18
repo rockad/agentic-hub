@@ -55,6 +55,12 @@ for (const name of Object.keys(process.env)) {
 // at a stub (tests/claude-hook-process.test.ts).
 process.env.JEV_MODEL_REFRESH = 'off';
 
+// The legacy schema-1 quota fallback is a machine-wide file (/tmp/antigravity-quota.json) that a running Antigravity
+// statusline keeps rewriting. Outside HOME, it would make a test's quota strategy follow the developer's live quota (a
+// conserve or free_only reading blocks the elevation tests). Pin it to a file that does not exist; tests that need a
+// legacy quota set JEV_QUOTA_LEGACY_FILE themselves. Spawned hook processes inherit it through process.env.
+process.env.JEV_QUOTA_LEGACY_FILE = path.join(home, 'no-legacy-antigravity-quota.json');
+
 // bun test does not emit process 'exit' or 'beforeExit' (checked on 1.4.3); a preload afterAll runs once, after the last file.
 // A home created by `bun run test` belongs to that script, which removes it.
 afterAll(() => {

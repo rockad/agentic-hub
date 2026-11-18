@@ -15,7 +15,7 @@ import {
 import type { JevMode } from '../src/core/config.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
-import type { JevTelemetryEvent } from '../src/core/telemetry.js';
+import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -1365,7 +1365,7 @@ export function writeAntigravityTurn(
   }
 }
 
-export type AntigravityModelUsedSource = 'clamped' | 'downgraded' | 'requested' | 'inherited';
+export type AntigravityModelUsedSource = ModelUsedSource;
 
 export type AntigravityTelemetryInput =
   | {
@@ -1453,32 +1453,20 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
   const rawType = params.args?.TypeName ?? params.args?.typeName ?? params.args?.Role ?? params.args?.role;
   const subagentType = str(rawType);
 
-  let modelUsed: string | undefined;
-  let modelUsedSource: AntigravityModelUsedSource | undefined;
-
-  const clamped = str(params.decision.clampedTo);
-  const downgraded =
+  // The same value rules as the Claude Code hook (resolveModelUsed): clamp, else applied downgrade, else the model the
+  // call named, else the session model.
+  const downgradedTo =
     params.downgradeLog?.downgrade === 'applied'
       ? (str(params.downgradeLog.downgrade_to) ??
          str(params.decision.overwrite?.Model) ??
          str(params.decision.overwrite?.model))
       : undefined;
-  const requested = str(requestedModel);
-  const inherited = str(sessionModel);
-
-  if (clamped) {
-    modelUsed = clamped;
-    modelUsedSource = 'clamped';
-  } else if (downgraded) {
-    modelUsed = downgraded;
-    modelUsedSource = 'downgraded';
-  } else if (requested) {
-    modelUsed = requested;
-    modelUsedSource = 'requested';
-  } else if (inherited) {
-    modelUsed = inherited;
-    modelUsedSource = 'inherited';
-  }
+  const { modelUsed, modelUsedSource } = resolveModelUsed({
+    clampedTo: params.decision.clampedTo,
+    downgradedTo,
+    requested: requestedModel,
+    sessionModel
+  });
 
   const downgrade = str(params.downgradeLog?.downgrade);
   const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
@@ -1496,7 +1484,8 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     ...(matchedRecommendedTier
       ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
       : {}),
-    ...(modelUsed && modelUsedSource ? { modelUsed, modelUsedSource } : {}),
+    ...(modelUsed ? { modelUsed } : {}),
+    modelUsedSource,
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),

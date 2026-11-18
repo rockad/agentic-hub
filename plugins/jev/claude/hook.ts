@@ -45,6 +45,7 @@ import {
   loadEnvFile,
   fetchRecallMemory,
   logJevTelemetry,
+  resolveModelUsed,
   checkEgress,
   egressContextDirs,
   discoverWorkspaceAgents,
@@ -1241,10 +1242,11 @@ export async function liveRateTask(task: string, signal?: AbortSignal): Promise<
 }
 
 /**
- * Telemetry record for one decisions-log entry. On UserPromptSubmit the model is the
- * recommended one (`modelRecommended`, which replaces the old, misleading `modelUsed`);
- * on PreToolUse it is the model the delegation requested (`modelUsed`) next to the
- * recommended one. Both carry the `turn` id so the two can be joined.
+ * Telemetry record for one decisions-log entry. Every record that knows the session model carries `sessionModel` and
+ * `sessionModelSource` (the baseline). On UserPromptSubmit the model is the recommended one (`modelRecommended`) and
+ * there is no `modelUsed`: nothing has been delegated yet. On PreToolUse (`agent_call`) `modelUsed` is the model the
+ * delegation is expected to run on and `modelUsedSource` says why (see `resolveModelUsed`), next to the recommended one.
+ * Both carry the `turn` id so the two can be joined. A record never holds prompt text.
  */
 export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
@@ -1256,19 +1258,30 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
     taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
     tierRecommended: str(entry.tier),
     turn: str(entry.turn),
+    ...sessionModelFields(entry),
     ...(isPrompt
-      ? {
-          modelRecommended: str(entry.recommended_model) ?? str(entry.model),
-          // Deprecated alias kept for one release (case study 5.7): same value as modelRecommended.
-          modelUsed: str(entry.recommended_model) ?? str(entry.model)
-        }
+      ? // The prompt only advises: nothing is delegated yet, so there is no modelUsed (the old alias is gone).
+        { modelRecommended: str(entry.recommended_model) ?? str(entry.model) }
       : {
-          modelUsed:
-            str(entry.clamped_to) ?? (entry.downgrade === 'applied' ? str(entry.downgrade_to) : undefined) ?? str(entry.requested_model) ?? str(entry.model),
+          ...(entry.hook === 'PreToolUse'
+            ? resolveModelUsed({
+                clampedTo: entry.clamped_to,
+                downgradedTo: entry.downgrade === 'applied' ? entry.downgrade_to : undefined,
+                requested: entry.requested_model ?? entry.model,
+                sessionModel: entry.sessionModel
+              })
+            : {}),
           modelRecommended: str(entry.recommended_model)
         }),
     quotaStrategy: str(entry.quota)
   };
+}
+
+/** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */
+function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource'> {
+  if (!('sessionModel' in entry)) return {};
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+  return { sessionModel: str(entry.sessionModel), sessionModelSource: str(entry.session_model_source) };
 }
 
 /** Telemetry appends in flight: the process must wait for them before it exits, or the lines are lost. */

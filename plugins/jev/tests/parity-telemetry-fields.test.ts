@@ -29,14 +29,14 @@ describe('UserPromptSubmit record', () => {
     expect(log).toMatchObject({ hook: 'UserPromptSubmit', session_id: 's1', turn: turnId(prompt), tier: 'flash', recommended_model: 'sonnet' });
   });
 
-  it('the telemetry event has modelRecommended, and modelUsed as a deprecated alias with the same value', async () => {
+  it('the telemetry event has modelRecommended and the session model, and no modelUsed', async () => {
     const { log } = await runPrompt('Find where the quota file is written');
 
     const event = telemetryEvent(log);
 
-    expect(keys(event)).toEqual(['harness', 'modelRecommended', 'modelUsed', 'quotaStrategy', 'sessionId', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(keys(event)).toEqual(['harness', 'modelRecommended', 'quotaStrategy', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
     expect(event.modelRecommended).toBe('sonnet');
-    expect(event.modelUsed).toBe(event.modelRecommended);
+    expect('modelUsed' in event).toBe(false);
   });
 
   it('the remembered advice and the turn marker use the names PreToolUse reads', async () => {
@@ -75,7 +75,8 @@ describe('PreToolUse record', () => {
 
     const event = telemetryEvent(log[0]);
 
-    expect(keys(event)).toEqual(['harness', 'modelRecommended', 'modelUsed', 'sessionId', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(keys(event)).toEqual(['harness', 'modelRecommended', 'modelUsed', 'modelUsedSource', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(event.modelUsedSource).toBe('requested');
     expect([event.modelUsed, event.modelRecommended, event.turn, event.tierRecommended]).toEqual(['opus', 'sonnet', advice.turn, 'flash']);
   });
 

@@ -1571,6 +1571,48 @@ describe('Antigravity telemetry helpers (logic)', () => {
       expect(inheritEv.requestedModel).toBeNull();
     });
 
+    it('records modelUsedSource "inherited" without modelUsed when neither the call nor the session names a model', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker' },
+        decision: { decision: 'pass' }
+      });
+      expect('modelUsed' in ev).toBe(false);
+      expect(ev.modelUsedSource).toBe('inherited');
+      expect(ev.sessionModel).toBeNull();
+      expect(ev.sessionModelSource).toBeNull();
+    });
+
+    it('an applied downgrade without downgrade_to falls back to the overwritten Model', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'pro' },
+        decision: { decision: 'pass', overwrite: { Model: 'flash_lite' } },
+        downgradeLog: { downgrade: 'applied' }
+      });
+      expect(ev.modelUsed).toBe('flash_lite');
+      expect(ev.modelUsedSource).toBe('downgraded');
+    });
+
+    it('a downgrade that was only asked does not change the model used', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'pro' },
+        decision: { decision: 'deny' },
+        downgradeLog: { downgrade: 'asked', downgrade_to: 'flash_lite' }
+      });
+      expect(ev.modelUsed).toBe('pro');
+      expect(ev.modelUsedSource).toBe('requested');
+    });
+
     it('joins turnState.recommendedTier only when turnState.turn matches current turn', () => {
       const prompt = '<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\nFix bug\n</USER_REQUEST>';
       const expectedTurn = turnId('Fix bug');

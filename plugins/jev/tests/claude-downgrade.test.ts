@@ -15,6 +15,7 @@ import {
   onPostToolUse,
   onPreToolUse,
   onUserPromptSubmit,
+  telemetryEvent,
   type DowngradeStore,
   type HookDeps,
   type HookInput
@@ -376,6 +377,16 @@ describe('auto mode', () => {
     expect(o.updatedInput).toEqual({ ...input, model: 'haiku' });
     expect(o.additionalContext).toContain('haiku instead of opus');
     expect(logs[0]).toMatchObject({ downgrade: 'applied', downgrade_from: 'opus', downgrade_to: 'haiku', downgrade_needed: 'flash_lite' });
+  });
+
+  it('telemetry names the applied downgrade as the model used, whether or not the call named one', async () => {
+    const named = setup(auto);
+    await onPreToolUse(call(INPUT), named.d);
+    expect(telemetryEvent(named.logs[0])).toMatchObject({ modelUsed: 'haiku', modelUsedSource: 'downgraded' });
+
+    const modelless = setup({ ...auto, readSessionModel: () => 'claude-sonnet-5-5' });
+    await onPreToolUse(call({ description: 'x', prompt: 'y', subagent_type: 'general-purpose' }), modelless.d);
+    expect(telemetryEvent(modelless.logs[0])).toMatchObject({ modelUsed: 'haiku', modelUsedSource: 'downgraded', sessionModel: 'claude-sonnet-5-5' });
   });
 
   it('applies to a model-less call too, setting the model', async () => {

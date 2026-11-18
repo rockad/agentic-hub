@@ -14,6 +14,7 @@ import {
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
+import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -875,32 +876,59 @@ function pendingServedFile(sessionsDir: string, sessionId: string): string | nul
   return path.join(sessionsDir, `${safe}.pending-served.json`);
 }
 
+/** How long a hook waits for the pending-served lock before skipping its update (fail open, never block the tool call). */
+export const PENDING_SERVED_LOCK_WAIT_MS = 500;
+
+/** The lock directory that guards one session's pending-served file. */
+function pendingServedLock(file: string): string {
+  return file.replace(/\.json$/, '.lock');
+}
+
+/**
+ * Add one entry to the session's pending-served list. The read-modify-write runs under a directory lock, so two hooks
+ * recording at once lose nothing. On a lock timeout the entry is skipped (fail open) and `logFn` gets one
+ * `lock_timeout` row.
+ */
 export function recordPendingServed(
   sessionsDir: string,
   sessionId: string,
-  entry: PendingServedRecord
+  entry: PendingServedRecord,
+  logFn?: (entry: Record<string, unknown>) => void
 ): void {
   try {
     const file = pendingServedFile(sessionsDir, sessionId);
     if (!file) return;
     privateDir(sessionsDir);
-    let existing: PendingServedRecord[] = [];
-    try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (Array.isArray(raw)) existing = raw;
-    } catch {
-      // fresh
-    }
-    const now = entry.createdAt;
-    const kept = existing
-      .filter((e) => e && typeof e.createdAt === 'number' && now - e.createdAt <= PENDING_SERVED_TTL_MS)
-      .slice(-(PENDING_SERVED_MAX_ITEMS - 1));
-    kept.push(entry);
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(kept) + '\n', { mode: PRIVATE_FILE_MODE });
-    privateFile(tmp);
-    fs.renameSync(tmp, file);
-    privateFile(file);
+    withDirLockOrSkip(
+      pendingServedLock(file),
+      () => {
+        let existing: PendingServedRecord[] = [];
+        try {
+          const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+          if (Array.isArray(raw)) existing = raw;
+        } catch {
+          // fresh
+        }
+        const now = entry.createdAt;
+        const kept = existing
+          .filter((e) => e && typeof e.createdAt === 'number' && now - e.createdAt <= PENDING_SERVED_TTL_MS)
+          .slice(-(PENDING_SERVED_MAX_ITEMS - 1));
+        kept.push(entry);
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(kept) + '\n', { mode: PRIVATE_FILE_MODE });
+        privateFile(tmp);
+        fs.renameSync(tmp, file);
+        privateFile(file);
+      },
+      (err) => {
+        try {
+          logFn?.({ event: 'lock_timeout', state: 'pending-served', op: 'record', session_id: sessionId, lock: err.lock });
+        } catch {
+          // logging is best-effort
+        }
+      },
+      { waitMs: PENDING_SERVED_LOCK_WAIT_MS }
+    );
   } catch {
     // best-effort
   }
@@ -919,80 +947,95 @@ export function flushPendingServed(
   if (!file) return;
   try {
     if (!fs.existsSync(file)) return;
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!Array.isArray(raw) || raw.length === 0) return;
-    const remaining: PendingServedRecord[] = [];
-    let changed = false;
-    let processed = 0;
-    const startedAt = clock();
+    // The whole read-modify-write runs under the lock (the work is bounded by the per-flush item and time caps), so a
+    // hook recording a new entry at the same time is neither lost nor overwritten. A lock timeout skips this flush.
+    withDirLockOrSkip(
+      pendingServedLock(file),
+      () => {
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!Array.isArray(raw) || raw.length === 0) return;
+        const remaining: PendingServedRecord[] = [];
+        let changed = false;
+        let processed = 0;
+        const startedAt = clock();
 
-    // Oldest first; the sort is stable, so equal timestamps keep their stored order.
-    const items = (raw as PendingServedRecord[]).slice().sort((a, b) => (a?.createdAt ?? 0) - (b?.createdAt ?? 0));
-    for (const item of items) {
-      if (!item || typeof item.createdAt !== 'number' || nowMs - item.createdAt > PENDING_SERVED_TTL_MS) {
-        changed = true;
-        continue;
-      }
-      // Bounded work per hook call: past the item cap or the time budget, keep the rest for a later flush.
-      if (processed >= PENDING_SERVED_MAX_PER_FLUSH || clock() - startedAt > PENDING_SERVED_BUDGET_MS) {
-        remaining.push(item);
-        continue;
-      }
-      processed++;
-      let childConvId = item.childConvId ?? null;
-      if (!childConvId && item.transcriptPath) {
-        const content = readStepContentFromTranscript(item.transcriptPath, item.stepIdx, item.toolCallId);
-        if (content) {
-          childConvId = extractChildConversationId(content, sessionId);
+        // Oldest first; the sort is stable, so equal timestamps keep their stored order.
+        const items = (raw as PendingServedRecord[]).slice().sort((a, b) => (a?.createdAt ?? 0) - (b?.createdAt ?? 0));
+        for (const item of items) {
+          if (!item || typeof item.createdAt !== 'number' || nowMs - item.createdAt > PENDING_SERVED_TTL_MS) {
+            changed = true;
+            continue;
+          }
+          // Bounded work per hook call: past the item cap or the time budget, keep the rest for a later flush.
+          if (processed >= PENDING_SERVED_MAX_PER_FLUSH || clock() - startedAt > PENDING_SERVED_BUDGET_MS) {
+            remaining.push(item);
+            continue;
+          }
+          processed++;
+          let childConvId = item.childConvId ?? null;
+          if (!childConvId && item.transcriptPath) {
+            const content = readStepContentFromTranscript(item.transcriptPath, item.stepIdx, item.toolCallId);
+            if (content) {
+              childConvId = extractChildConversationId(content, sessionId);
+            }
+          }
+          let servedModel: string | null = null;
+          if (childConvId) {
+            servedModel = findServedModelFromTranscript(childConvId, homedir);
+          }
+          if (childConvId && servedModel) {
+            logFn({
+              event: 'subagent_served',
+              harness: 'antigravity',
+              session_id: sessionId,
+              child_conversation_id: childConvId,
+              requested_model: item.requestedModel ?? null,
+              served_model: servedModel,
+              backfilled: true
+            });
+            changed = true;
+            continue;
+          }
+          item.childConvId = childConvId;
+          item.attempts = (typeof item.attempts === 'number' ? item.attempts : 0) + 1;
+          changed = true;
+          if (item.attempts >= PENDING_SERVED_MAX_ATTEMPTS) {
+            // Never resolved: log it once so the row is not silently lost, then drop it.
+            logFn({
+              event: 'subagent_served',
+              harness: 'antigravity',
+              session_id: sessionId,
+              child_conversation_id: childConvId,
+              requested_model: item.requestedModel ?? null,
+              served_model: null,
+              backfill: 'gave_up'
+            });
+            continue;
+          }
+          remaining.push(item);
         }
-      }
-      let servedModel: string | null = null;
-      if (childConvId) {
-        servedModel = findServedModelFromTranscript(childConvId, homedir);
-      }
-      if (childConvId && servedModel) {
-        logFn({
-          event: 'subagent_served',
-          harness: 'antigravity',
-          session_id: sessionId,
-          child_conversation_id: childConvId,
-          requested_model: item.requestedModel ?? null,
-          served_model: servedModel,
-          backfilled: true
-        });
-        changed = true;
-        continue;
-      }
-      item.childConvId = childConvId;
-      item.attempts = (typeof item.attempts === 'number' ? item.attempts : 0) + 1;
-      changed = true;
-      if (item.attempts >= PENDING_SERVED_MAX_ATTEMPTS) {
-        // Never resolved: log it once so the row is not silently lost, then drop it.
-        logFn({
-          event: 'subagent_served',
-          harness: 'antigravity',
-          session_id: sessionId,
-          child_conversation_id: childConvId,
-          requested_model: item.requestedModel ?? null,
-          served_model: null,
-          backfill: 'gave_up'
-        });
-        continue;
-      }
-      remaining.push(item);
-    }
 
-    if (changed) {
-      if (remaining.length === 0) {
-        fs.unlinkSync(file);
-      } else {
-        const tmp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(remaining) + '\n', { mode: PRIVATE_FILE_MODE });
-        privateFile(tmp);
-        fs.renameSync(tmp, file);
-        privateFile(file);
-      }
-    }
+        if (changed) {
+          if (remaining.length === 0) {
+            fs.unlinkSync(file);
+          } else {
+            const tmp = `${file}.${process.pid}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(remaining) + '\n', { mode: PRIVATE_FILE_MODE });
+            privateFile(tmp);
+            fs.renameSync(tmp, file);
+            privateFile(file);
+          }
+        }
+      },
+      (err) => {
+        try {
+          logFn({ event: 'lock_timeout', state: 'pending-served', op: 'flush', session_id: sessionId, lock: err.lock });
+        } catch {
+          // logging is best-effort
+        }
+      },
+      { waitMs: PENDING_SERVED_LOCK_WAIT_MS }
+    );
   } catch {
     // fail-open
   }

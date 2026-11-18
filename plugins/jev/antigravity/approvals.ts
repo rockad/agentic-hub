@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
 import { modelTierRank, safeSessionId } from '../src/core/governance.js';
+import { withDirLock } from '../src/core/dir-lock.js';
 
 export type ApprovalScope = 'once' | '5min' | 'session';
 
@@ -159,36 +160,7 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
   const lockDir = (safeId: string) => path.join(sessionsDir, `${safeId}.approvals.lock`);
 
   function withLock<T>(safeId: string, fn: () => T): T {
-    const lock = lockDir(safeId);
-    const deadline = Date.now() + 2000;
-    while (true) {
-      try {
-        fs.mkdirSync(lock);
-        break;
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-        try {
-          const stat = fs.statSync(lock);
-          if (Date.now() - stat.mtimeMs > 3000) {
-            fs.rmSync(lock, { recursive: true, force: true });
-            continue;
-          }
-        } catch {
-          // lock was released
-        }
-        if (Date.now() > deadline) throw new Error('approvals lock timeout');
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-      }
-    }
-    try {
-      return fn();
-    } finally {
-      try {
-        fs.rmSync(lock, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
+    return withDirLock(lockDir(safeId), fn);
   }
 
   function readState(sessionId: string): ApprovalState {

@@ -21,6 +21,10 @@ import {
   type AntigravitySessionRecord
 } from '../src/shared.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
+import { withDirLockOrSkip } from '../src/core/dir-lock.js';
+
+/** How long the write guard waits for its lock before failing open. */
+const WRITE_GUARD_LOCK_WAIT_MS = 500;
 
 /** Added opening or closing conflict-marker lines only (a diff line starts with `+`). */
 export const CONFLICT_MARKER_RE = /^\+(<<<<<<< |>>>>>>> )/m;
@@ -594,68 +598,78 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
     const maxFiles = writeGuardCfg?.maxFiles ?? 3;
     const limit = isOrchestrator ? maxFilesOrchestrator : maxFiles;
 
-    // Track files in session write guard file
+    // Track files in the session write guard file. The read, the count and the write happen under one lock, so
+    // parallel tool calls neither lose a recorded file nor each see the same count. On a lock timeout the guard
+    // fails open (this edit is allowed and not counted) and leaves one trace line.
     const guardFile = path.join(sessionsDir, `${convId}.write-guard.json`);
-    let guardData: { last_dispatch_ts: number; files: string[] } = {
-      last_dispatch_ts: 0,
-      files: []
-    };
+        const locked = withDirLockOrSkip(
+      guardFile.replace(/\.json$/, '.lock'),
+      (): { decision: 'allow' } | { decision: 'deny'; reason: string } => {
+        let guardData: { last_dispatch_ts: number; files: string[] } = {
+          last_dispatch_ts: 0,
+          files: []
+        };
 
-    try {
-      if (fsSync.existsSync(guardFile)) {
-        const read = readRegularFile(guardFile, 64 * 1024);
-        if (read.kind === 'ok') {
-          const parsed = JSON.parse(read.text);
-          if (parsed && typeof parsed === 'object') {
-            guardData = {
-              last_dispatch_ts: typeof parsed.last_dispatch_ts === 'number' ? parsed.last_dispatch_ts : 0,
-              files: Array.isArray(parsed.files) ? parsed.files.map(String) : []
-            };
+        try {
+          if (fsSync.existsSync(guardFile)) {
+            const read = readRegularFile(guardFile, 64 * 1024);
+            if (read.kind === 'ok') {
+              const parsed = JSON.parse(read.text);
+              if (parsed && typeof parsed === 'object') {
+                guardData = {
+                  last_dispatch_ts: typeof parsed.last_dispatch_ts === 'number' ? parsed.last_dispatch_ts : 0,
+                  files: Array.isArray(parsed.files) ? parsed.files.map(String) : []
+                };
+              }
+            }
           }
+        } catch {
+          // ignore
         }
-      }
-    } catch {
-      // ignore
-    }
 
-    // Reset files if dispatch epoch changed
-    if (guardData.last_dispatch_ts !== lastDispatchEpoch) {
-      guardData = {
-        last_dispatch_ts: lastDispatchEpoch,
-        files: []
-      };
-    }
+        // Reset files if dispatch epoch changed
+        if (guardData.last_dispatch_ts !== lastDispatchEpoch) {
+          guardData = {
+            last_dispatch_ts: lastDispatchEpoch,
+            files: []
+          };
+        }
 
-    // If target file already recorded in streak: pass through
-    if (guardData.files.includes(targetPath)) {
-      return { decision: 'allow' };
-    }
+        // If target file already recorded in streak: pass through
+        if (guardData.files.includes(targetPath)) {
+          return { decision: 'allow' };
+        }
 
-    // Check limit
-    if (guardData.files.length >= limit) {
-      appendGuardLog({ event: 'write_guard', session_id: convId, outcome: 'deny', count: guardData.files.length, limit });
-      return {
-        decision: 'deny',
-        reason: `[jev] Post-Approval Transition Gate: You are editing multiple files (>= ${limit}) without a recent jev_dispatch, jev_batch_dispatch, or subagent delegation in the last 15 minutes. Call jev_batch_dispatch (or jev_dispatch) and delegate parallel workstreams first.`
-      };
-    }
+        // Check limit
+        if (guardData.files.length >= limit) {
+          appendGuardLog({ event: 'write_guard', session_id: convId, outcome: 'deny', count: guardData.files.length, limit });
+          return {
+            decision: 'deny',
+            reason: `[jev] Post-Approval Transition Gate: You are editing multiple files (>= ${limit}) without a recent jev_dispatch, jev_batch_dispatch, or subagent delegation in the last 15 minutes. Call jev_batch_dispatch (or jev_dispatch) and delegate parallel workstreams first.`
+          };
+        }
 
-    // Record file
-    guardData.files.push(targetPath);
-    try {
-      privateDir(sessionsDir);
-      // Same throttled prune (and stamp) as the *.model.json files: stale streak files do not pile up.
-      pruneExpiredSessionModels(sessionsDir, nowSec);
-      const tmpFile = `${guardFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-      fsSync.writeFileSync(tmpFile, JSON.stringify(guardData, null, 2) + '\n', { mode: PRIVATE_FILE_MODE });
-      privateFile(tmpFile);
-      fsSync.renameSync(tmpFile, guardFile);
-      privateFile(guardFile);
-    } catch {
-      // ignore
-    }
+        // Record file
+        guardData.files.push(targetPath);
+        try {
+          privateDir(sessionsDir);
+          // Same throttled prune (and stamp) as the *.model.json files: stale streak files do not pile up.
+          pruneExpiredSessionModels(sessionsDir, nowSec);
+          const tmpFile = `${guardFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+          fsSync.writeFileSync(tmpFile, JSON.stringify(guardData, null, 2) + '\n', { mode: PRIVATE_FILE_MODE });
+          privateFile(tmpFile);
+          fsSync.renameSync(tmpFile, guardFile);
+          privateFile(guardFile);
+        } catch {
+          // ignore
+        }
 
-    return { decision: 'allow' };
+        return { decision: 'allow' };
+      },
+      (err) => appendGuardLog({ event: 'write_guard', session_id: convId, outcome: 'lock_timeout', lock: err.lock }),
+      { waitMs: WRITE_GUARD_LOCK_WAIT_MS }
+    );
+    return locked ?? { decision: 'allow' };
   }
 
   return { decision: 'allow' };

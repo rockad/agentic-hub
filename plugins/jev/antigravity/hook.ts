@@ -267,7 +267,7 @@ async function main() {
             transcriptPath: input.transcriptPath,
             childConvId: childConvId || null,
             createdAt: Date.now()
-          });
+          }, appendDecisionLog);
         }
 
         console.log('{}');

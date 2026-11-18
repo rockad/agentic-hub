@@ -515,10 +515,12 @@ describe('Antigravity downgrade telemetry via JEV_TELEMETRY_FILE (hook process)'
       harness: 'antigravity',
       toolOrHook: 'PreToolUse',
       event: 'agent_call',
-      modelUsed: 'flash',
-      modelUsedSource: 'requested',
+      decision: 'deny',
+      requestedModel: 'flash',
       downgrade: 'asked'
     });
+    expect('modelUsed' in rows[0]).toBe(false);
+    expect('modelUsedSource' in rows[0]).toBe(false);
     expect(rows[1]).toMatchObject({
       harness: 'antigravity',
       toolOrHook: 'PreToolUse',

@@ -589,6 +589,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     session: sessionId,
     session_id: sessionId,
     tool_name: tool,
+    // What the hook did with the call: the verdict (ask or deny), allow for a clamp or an applied downgrade, else pass.
+    decision: verdict ? verdict.decision : clamp || downgradeOut ? 'allow' : 'pass',
     turn: state?.turn ?? null,
     subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
     model: call.model ?? null,
@@ -1264,7 +1266,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
         { modelRecommended: str(entry.recommended_model) ?? str(entry.model) }
       : {
           // A Workflow carries no model of its own (the agents it launches choose theirs), so it has no modelUsed.
-          ...(entry.hook === 'PreToolUse' && entry.tool_name !== 'Workflow'
+          // A denied call never ran: no modelUsed either (the model it asked for stays in the decisions log).
+          ...(entry.hook === 'PreToolUse' && entry.tool_name !== 'Workflow' && entry.decision !== 'deny'
             ? resolveModelUsed({
                 clampedTo: entry.clamped_to,
                 downgradedTo: entry.downgrade === 'applied' ? entry.downgrade_to : undefined,
@@ -1274,7 +1277,10 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
                 sessionModel: entry.sessionModel
               })
             : {}),
-          modelRecommended: str(entry.recommended_model)
+          modelRecommended: str(entry.recommended_model),
+          ...(entry.hook === 'PreToolUse' && str(entry.decision) ? { decision: str(entry.decision) } : {}),
+          // The model the call asked for stays on a denied row, where modelUsed is unset.
+          ...(entry.hook === 'PreToolUse' && str(entry.requested_model) ? { requestedModel: str(entry.requested_model) } : {})
         }),
     quotaStrategy: str(entry.quota)
   };

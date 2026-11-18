@@ -1467,12 +1467,18 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
          str(params.decision.overwrite?.Model) ??
          str(params.decision.overwrite?.model))
       : undefined;
-  const { modelUsed, modelUsedSource } = resolveModelUsed({
-    clampedTo: params.decision.clampedTo,
-    downgradedTo,
-    requested: requestedModel,
-    sessionModel
-  });
+  // A denied call never ran: no modelUsed and no modelUsedSource (requestedModel stays). Every call that goes ahead keeps
+  // them, and so does a native ask, where the run may or may not happen.
+  const used: { modelUsed?: string; modelUsedSource?: ModelUsedSource } =
+    params.decision.decision === 'deny'
+      ? {}
+      : resolveModelUsed({
+          clampedTo: params.decision.clampedTo,
+          downgradedTo,
+          requested: requestedModel,
+          sessionModel
+        });
+  const { modelUsed, modelUsedSource } = used;
 
   const downgrade = str(params.downgradeLog?.downgrade);
   const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
@@ -1491,7 +1497,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
       : {}),
     ...(modelUsed ? { modelUsed } : {}),
-    modelUsedSource,
+    ...(modelUsedSource ? { modelUsedSource } : {}),
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),

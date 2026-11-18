@@ -1599,7 +1599,7 @@ describe('Antigravity telemetry helpers (logic)', () => {
       expect(ev.modelUsedSource).toBe('downgraded');
     });
 
-    it('a downgrade that was only asked does not change the model used', () => {
+    it('a downgrade that was only asked is a denial: no modelUsed, the requested model stays', () => {
       const ev = buildAntigravityTelemetryEvent({
         kind: 'agent_call',
         conversationId: 'c1',
@@ -1609,8 +1609,9 @@ describe('Antigravity telemetry helpers (logic)', () => {
         decision: { decision: 'deny' },
         downgradeLog: { downgrade: 'asked', downgrade_to: 'flash_lite' }
       });
-      expect(ev.modelUsed).toBe('pro');
-      expect(ev.modelUsedSource).toBe('requested');
+      expect(ev.modelUsed).toBeUndefined();
+      expect(ev.modelUsedSource).toBeUndefined();
+      expect(ev.requestedModel).toBe('pro');
     });
 
     it('joins turnState.recommendedTier only when turnState.turn matches current turn', () => {

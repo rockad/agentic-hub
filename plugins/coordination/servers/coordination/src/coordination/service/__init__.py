@@ -14,6 +14,7 @@ from coordination.service.types import (
     InboxResult,
     ServiceSettings,
     SweepResult,
+    WakeSnapshot,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "State",
     "SweepResult",
     "TaskService",
+    "WakeSnapshot",
 ]

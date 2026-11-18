@@ -51,12 +51,26 @@ S1-ID adds, here (wiring only; the identity code is `coordination.identity`):
 - `POST /sessions`, `GET /sessions` and `POST /sessions/end` (spec 3.5), added only when
   `create_app` is given an `identity` service; `main` passes the one `/mcp` uses, so the tools and
   the routes share one registry. `app.state.identity.end_hooks` is where S1-WAKE registers
-  what closes a parked listener with `410` when a session ends."""
+  what closes a parked listener with `410` when a session ends.
+
+S1-WAKE adds, here (wiring only; the wake path is `coordination.wake`):
+
+- `POST /wake/listen` and `GET|POST /wake/pending` (spec 7), added only when `create_app` is given a
+  `wake` service. `main` builds one in `build_server_app` and wires it three ways: the listener
+  table is the `ListenerView` of the task service, the MCP tools, `GET /sessions` and the A2A
+  session lister; the wake service is the task service's `notifier` and the MCP tools' wake
+  confirmation; and its table closes parked listeners on a key revocation (`403`, the admin revoke
+  hook), on a session end (`410`, the identity end hook) and at shutdown (`503`, `Retry-After: 5`).
+  The same table's size is the `listeners.parked` figure of the admin `status`.
+- Shutdown: the app's lifespan answers parked listeners `503` as it stops, and `main` runs uvicorn
+  through `WakeShutdownServer`, which does the same the moment SIGTERM arrives (uvicorn would
+  otherwise wait for the parked requests to finish before it runs the lifespan shutdown)."""
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from starlette.applications import Starlette
@@ -83,6 +97,8 @@ from coordination.config import Config, load
 from coordination.identity import IdentityService, SessionsEndpoint
 from coordination.logging import AuthorizationRedactionMiddleware, configure_logging
 from coordination.mcp import McpEndpoint
+from coordination.wake.routes import WakeEndpoint
+from coordination.wake.service import WakeService
 
 logger = logging.getLogger("coordination.app")
 
@@ -152,6 +168,7 @@ def create_app(
     a2a: A2AEndpoint | None = None,
     admin: AdminServer | None = None,
     identity: IdentityService | None = None,
+    wake: WakeService | None = None,
     lifespan: Lifespan[Starlette] | None = None,
 ) -> Starlette:
     config = config if config is not None else load()
@@ -167,6 +184,8 @@ def create_app(
         routes.extend(a2a.routes())
     if identity is not None:
         routes.extend(SessionsEndpoint(identity).routes())  # `/sessions` and `/sessions/end`, local-harness only
+    if wake is not None:
+        routes.extend(WakeEndpoint(wake, round_s=config.wake_round_s).routes())  # `/wake/*`, local-harness only
     # First in the list = outermost: the redaction runs before every other layer, the access
     # control included, so the access control only ever sees the masked header and the Credential.
     middleware = [Middleware(AuthorizationRedactionMiddleware)]
@@ -192,34 +211,60 @@ def create_app(
     app.state.a2a = a2a
     app.state.mcp = mcp  # S1-ADMIN reaches `mcp.sessions.drop_key` through it when it revokes a key
     app.state.admin = admin  # not a route: the Unix socket, started by `build_server_app`'s lifespan
-    app.state.identity = identity  # S1-WAKE registers `identity.end_hooks.register("wake", ...)` here
+    app.state.identity = identity  # `build_server_app` registers `identity.end_hooks.register("wake", ...)`
+    app.state.wake = wake
     return app
 
 
-def build_server_app(config: Config) -> Starlette:
+def build_server_app(config: Config, *, clock: Clock | None = None, wake_recheck_s: float | None = None) -> Starlette:
     """The app `main` serves: `create_app` with the Postgres-backed key store, so every request
     but `/healthz` and the public root card is authenticated. The engine connects on first use
-    and is disposed when the app shuts down."""
+    and is disposed when the app shuts down. `clock` and `wake_recheck_s` exist so a test can run the
+    real wiring against a hand-moved clock and a short wake re-check; `main` passes neither."""
     from coordination.a2a import build_a2a, load_cards_or_empty, sync_cards
     from coordination.admin.keystore import SqlKeyAdminStore
     from coordination.admin.wiring import build_admin
     from coordination.audit import SqlAuditStore
+    from coordination.identity import IdentityService, SessionRegistry
     from coordination.mcp import build_endpoint
     from coordination.service import CoordinationService, Directory, ServiceSettings
     from coordination.store.engine import make_engine
     from coordination.store.task_store import CoordTaskStore
+    from coordination.wake.build import build_wake
 
     engine = make_engine(config)
-    clock = SystemClock()
+    clock = clock if clock is not None else SystemClock()
     audit = AuditLog(SqlAuditStore(engine), clock)
     task_store = CoordTaskStore(engine, clock=clock)
     directory = Directory(engine)
-    service = CoordinationService(task_store, directory, audit, clock, ServiceSettings.from_config(config))
-    mcp = build_endpoint(config, service, engine, clock, audit=audit)
+    # S1-WAKE: one registry and one listener table for everybody. The table is the `ListenerView`
+    # of the task service, the identity service (`GET /sessions`), the MCP tools and the A2A
+    # session lister; the wake service is the task service's notifier (spec 7.4) and the MCP
+    # tools' wake confirmation (spec 7.5).
+    registry = SessionRegistry(engine, clock)
+    wake = build_wake(
+        config, engine, clock, registry, audit=audit, **({} if wake_recheck_s is None else {"recheck_s": wake_recheck_s})
+    )
+    table = wake.table
+    service = CoordinationService(
+        task_store, directory, audit, clock, ServiceSettings.from_config(config), listeners=table, notifier=wake
+    )
+    wake.bind(service)
+    identity = IdentityService(registry, clock, audit=audit, listeners=table, pending=service.pending_count)
+    mcp = build_endpoint(
+        config, service, engine, clock, audit=audit, listeners=table, identity=identity, confirm=wake.confirm
+    )
     cards = load_cards_or_empty(config.cards_file)
-    a2a = build_a2a(config, service, task_store, directory, engine, clock, registry=cards)
+    a2a = build_a2a(config, service, task_store, directory, engine, clock, registry=cards, listeners=table)
     keys = SqlKeyAdminStore(engine)  # the S1-AUTH store, plus list and rotate for the admin commands
-    admin = build_admin(config, clock, engine, service, task_store, audit, directory, cards, keys=keys, mcp=mcp)
+    admin = build_admin(
+        config, clock, engine, service, task_store, audit, directory, cards,
+        keys=keys, mcp=mcp, listener_count=table.count,
+    )  # fmt: skip
+    # The two hand-overs to S1-WAKE (admin.md section 6, identity.md section 6): a revoked key's
+    # parked listeners are answered `403`, an ended session's `410`.
+    admin.hooks.register("wake", table.close_key)
+    identity.end_hooks.register("wake", table.close_session)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -235,11 +280,15 @@ def build_server_app(config: Config) -> Starlette:
             started = True
             yield
         finally:
+            # Parked listeners are answered `503` with `Retry-After: 5` before the engine goes.
+            # `WakeShutdownServer` already did this at SIGTERM; this covers every other way the
+            # lifespan ends (a test, a programmatic stop).
+            table.begin_shutdown()
             if started:
                 await admin.stop()
             await engine.dispose()
 
-    return create_app(
+    app = create_app(
         config,
         clock=clock,
         audit=audit,
@@ -247,9 +296,46 @@ def build_server_app(config: Config) -> Starlette:
         mcp=mcp,
         a2a=a2a,
         admin=admin,
-        identity=mcp.identity,  # the service the `/mcp` tools use, so the routes and the tools share one registry
+        identity=identity,  # the service the `/mcp` tools use, so the routes and the tools share one registry
+        wake=wake,
         lifespan=lifespan,
     )
+    app.state.engine = engine  # so a test that does not run the lifespan can dispose it
+    app.state.service = service  # the task service the bindings share (tests send through it)
+    return app
+
+
+def make_server(app: Starlette, uvicorn_config):
+    """A uvicorn `Server` that answers parked wake listeners `503` (`Retry-After: 5`) the moment
+    SIGTERM or SIGINT arrives (spec 7.2, S1-WAKE).
+
+    uvicorn runs the lifespan shutdown only after every open request has finished, and a parked
+    `/wake/listen` request lasts up to 900 s, so without this the listeners would be cut off at
+    the graceful-shutdown timeout instead of being told to back off. The table also refuses new
+    listeners from then on."""
+    import asyncio
+
+    import uvicorn
+
+    wake: WakeService | None = getattr(app.state, "wake", None)
+
+    class WakeShutdownServer(uvicorn.Server):
+        loop: asyncio.AbstractEventLoop | None = None
+
+        async def startup(self, sockets=None):  # type: ignore[no-untyped-def]
+            self.loop = asyncio.get_running_loop()
+            await super().startup(sockets=sockets)
+
+        def handle_exit(self, sig, frame):  # type: ignore[no-untyped-def]
+            if wake is not None:
+                if self.loop is not None and not self.loop.is_closed():
+                    # Thread-safe, and it wakes the loop whichever thread the handler runs on.
+                    self.loop.call_soon_threadsafe(wake.table.begin_shutdown)
+                else:
+                    wake.table.begin_shutdown()
+            super().handle_exit(sig, frame)
+
+    return WakeShutdownServer(uvicorn_config)
 
 
 def main() -> None:
@@ -262,12 +348,14 @@ def main() -> None:
     config = startup_check(workers=WORKERS)
     configure_logging(config.log_level, secrets=(config.key_pepper or "", config.push_enc_key or ""))
     host, port = config.listen_host_port
+    app = build_server_app(config)
     # log_config=None: uvicorn's loggers propagate to the redacting JSON handler set above.
-    uvicorn.run(
-        build_server_app(config),
-        host=host,
-        port=port,
-        workers=WORKERS,
-        log_level=config.log_level,
-        log_config=None,
+    # `make_server` is what `uvicorn.run` does for one worker, plus the SIGTERM answer for parked
+    # wake listeners (S1-WAKE).
+    server = make_server(
+        app,
+        uvicorn.Config(app, host=host, port=port, workers=WORKERS, log_level=config.log_level, log_config=None),
     )
+    server.run()
+    if not server.started:
+        sys.exit(3)  # uvicorn's own exit code for a failed start (`uvicorn.run` does the same)

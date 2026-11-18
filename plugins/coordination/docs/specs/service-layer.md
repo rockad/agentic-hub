@@ -66,7 +66,7 @@ TTL sweeps (1.5, 6.2): an unconfirmed `SUBMITTED` task past `expires_at` goes to
 
 - The handle-guess counter (spec 5.2, R1, R10, X3): built with S2-LISTEN. The constant "not available" refusal it will count is the `_admit_remote` path in `service.py`.
 - The blocking wait of `SendMessage` (D22) and `a2a_wait`: bindings over `get_task`; they need a change notifier that does not exist yet.
-- Session registration, binding and `/sessions` (S1-ID), the listener table and the wake endpoint (S1-WAKE), the cards-file load (S1-AUTH), the per-client-IP limit (the public listener), and push.
+- Session registration, binding and `/sessions` (S1-ID, done), the listener table and the wake endpoint (S1-WAKE, done; it added `wake_snapshot`, `wake_pending_set` and `held_count` to the service, see wake.md section 8), the cards-file load (S1-AUTH), the per-client-IP limit (the public listener), and push.
 
 ## 5. Tests
 

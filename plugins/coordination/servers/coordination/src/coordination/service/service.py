@@ -86,6 +86,7 @@ from coordination.service.types import (
     InboxResult,
     ServiceSettings,
     SweepResult,
+    WakeSnapshot,
     card_of,
     derive_task_id,
 )
@@ -272,9 +273,13 @@ class CoordinationService:
                 raise
             return await self._view_of(again.task)
         index = await self._store.get_index(task_id)
+        # The view is built before the wake machinery is told: `recipientListening` says whether
+        # the recipient was parked when the task arrived (it is about to be woken, which takes it
+        # out of the table), not whether it is parked a moment after its own wake (S1-WAKE).
+        view = await self._view(task, index)
         if admission.state is State.SUBMITTED:
             await self._notify(index)
-        return await self._view(task, index)
+        return view
 
     async def _admit(self, caller: Caller, tenant: str, to: str | None, now: datetime) -> _Admission:
         """Decide the first state and routing of a new task from the caller and the address."""
@@ -552,6 +557,36 @@ class CoordinationService:
         if any(C.coord_unread(t) > 0 for t in await self._store.working_for_handle(handle)):
             return True
         return counts.queued_wakeable > 0 and self._listeners.newest_listening(card) == handle
+
+    async def wake_snapshot(self, handle: str) -> WakeSnapshot:
+        """What the wake endpoint needs to decide one wake, in as few queries as it can: the ids of
+        the tasks that make a wake pending for `handle` (spec 7.4, the same rule as
+        `has_wake_pending`, but naming the tasks so the anti-loop rule can tell whether the pending
+        set changed; empty means nothing is wakeable) and `pending_count`. Ids and a count only, no
+        content. The ids query runs only when the counts say something is wakeable."""
+        card = card_of(handle)
+        session = await self._dir.session(handle) if card else None
+        if card is None or session is None or session.ended:
+            return WakeSnapshot(frozenset(), 0)
+        counts = await self._store.count_pending(handle, card, self._clock.now(), self._s.reoffer_max)
+        unread = {t.id for t in await self._store.working_for_handle(handle) if C.coord_unread(t) > 0}
+        include_queued = self._listeners.newest_listening(card) == handle
+        ids = set(unread)
+        if counts.own_wakeable > 0 or (include_queued and counts.queued_wakeable > 0):
+            ids.update(
+                await self._store.wakeable_task_ids(
+                    handle, card, self._clock.now(), self._s.reoffer_max, include_queued=include_queued
+                )
+            )
+        return WakeSnapshot(frozenset(ids), counts.own_submitted + counts.queued_card + len(unread))
+
+    async def wake_pending_set(self, handle: str) -> frozenset[str]:
+        """The ids of the tasks that make a wake pending for `handle` (see `wake_snapshot`)."""
+        return (await self.wake_snapshot(handle)).ids
+
+    async def held_count(self, card_id: str) -> int:
+        """Held tasks waiting for a human on `card_id` (the `held_for_review` count), no bodies."""
+        return await self._store.count_held_for_card(card_id)
 
     # ======================================================================================
     # Recipient: respond

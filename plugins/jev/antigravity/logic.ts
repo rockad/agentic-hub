@@ -9,12 +9,14 @@ import {
   subagentCeilingRank,
   poolForTier,
   safeSessionId,
+  type ActiveModelSource,
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
-import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
+import type { JevTelemetryEvent } from '../src/core/telemetry.js';
+import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -1263,4 +1265,242 @@ export async function pollForAskAnswers(
     if (anyAnswer(answers)) return answers;
   }
   return answers;
+}
+
+export type AntigravitySessionModelSource = 'hook' | ActiveModelSource;
+
+export function resolveAntigravitySessionModel(
+  inputModelName?: string | null,
+  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null
+): { sessionModel: string | null; sessionModelSource: AntigravitySessionModelSource | null } {
+  const hookModel = typeof inputModelName === 'string' ? inputModelName.trim() : '';
+  if (hookModel.length > 0) {
+    return { sessionModel: hookModel, sessionModelSource: 'hook' };
+  }
+  const quotaModel = typeof quotaView?.active_model === 'string' ? quotaView.active_model.trim() : '';
+  if (quotaModel.length > 0) {
+    return {
+      sessionModel: quotaModel,
+      sessionModelSource: quotaView?.activeModelSource ?? 'quota-state'
+    };
+  }
+  return { sessionModel: null, sessionModelSource: null };
+}
+
+/** Strip host metadata wrappers from Antigravity's `lastUserInput` before hashing or dispatching. */
+export function cleanUserInput(raw: string): string {
+  if (!raw) return '';
+  let text = raw;
+  text = text.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '');
+  text = text.replace(/<\/?USER_REQUEST>/gi, '');
+  return text.trim();
+}
+
+/** Short stable id for one user turn, shared between PreInvocation and PreToolUse telemetry. */
+export function turnId(prompt: string): string {
+  return createHash('sha1').update(cleanUserInput(prompt).trim()).digest('hex').slice(0, 12);
+}
+
+export type AntigravityTurnState = {
+  turn: string;
+  recommendedTier?: string;
+  recommendedSubagent?: string;
+  effort?: string;
+  at: string;
+};
+
+function turnStateFile(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  if (!safe) return null;
+  return path.join(sessionsDir, `${safe}.turn.json`);
+}
+
+export function readAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null
+): AntigravityTurnState | null {
+  if (!sessionId) return null;
+  const file = turnStateFile(sessionsDir, sessionId);
+  if (!file) return null;
+  try {
+    const read = readRegularFile(file, 64 * 1024);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.turn !== 'string' || parsed.turn.length === 0) {
+      return null;
+    }
+    return {
+      turn: parsed.turn,
+      ...(typeof parsed.recommendedTier === 'string' && parsed.recommendedTier.length > 0
+        ? { recommendedTier: parsed.recommendedTier }
+        : {}),
+      ...(typeof parsed.recommendedSubagent === 'string' && parsed.recommendedSubagent.length > 0
+        ? { recommendedSubagent: parsed.recommendedSubagent }
+        : {}),
+      ...(typeof parsed.effort === 'string' && parsed.effort.length > 0 ? { effort: parsed.effort } : {}),
+      at: typeof parsed.at === 'string' ? parsed.at : ''
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  state: AntigravityTurnState
+): void {
+  if (!sessionId) return;
+  const file = turnStateFile(sessionsDir, sessionId);
+  if (!file) return;
+  try {
+    privateDir(sessionsDir);
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp);
+    fs.renameSync(tmp, file);
+    privateFile(file);
+  } catch {
+    // best-effort; never crash the hook
+  }
+}
+
+export type AntigravityModelUsedSource = 'clamped' | 'downgraded' | 'requested' | 'inherited';
+
+export type AntigravityTelemetryInput =
+  | {
+      kind: 'pre_invocation';
+      conversationId?: string | null;
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
+      lastUserInput?: string | null;
+      recommendedSubagent: string;
+      recommendedTier: string;
+      effort?: string;
+      taskLen?: number;
+      taskHash?: string;
+      quotaStrategy?: string;
+    }
+  | {
+      kind: 'agent_call';
+      conversationId?: string | null;
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
+      lastUserInput?: string | null;
+      toolName?: string;
+      args?: Record<string, unknown>;
+      turnState?: AntigravityTurnState | null;
+      decision: AntigravityHookDecision;
+      downgradeLog?: Record<string, unknown>;
+      quotaStrategy?: string;
+    }
+  | {
+      kind: 'subagent_served';
+      conversationId?: string | null;
+      childConversationId?: string | null;
+      requestedModel?: string | null;
+      servedModel?: string | null;
+      backfilled?: boolean;
+    };
+
+export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
+
+  if (params.kind === 'pre_invocation') {
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const cleaned = cleanUserInput(params.lastUserInput || '');
+    const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+    const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PreInvocation',
+      sessionId: params.conversationId ?? null,
+      ...(turn ? { turn } : {}),
+      ...(typeof params.taskLen === 'number' ? { taskLen: params.taskLen } : {}),
+      ...(params.taskHash ? { taskHash: params.taskHash } : {}),
+      sessionModel,
+      sessionModelSource,
+      recommendedSubagent: params.recommendedSubagent,
+      recommendedTier: params.recommendedTier,
+      modelRecommended: params.recommendedTier,
+      ...(params.effort ? { effort: params.effort } : {}),
+      ...(quotaStrategy ? { quotaStrategy } : {})
+    };
+  }
+
+  if (params.kind === 'subagent_served') {
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      event: 'subagent_served',
+      sessionId: params.conversationId ?? null,
+      childConversationId: params.childConversationId ?? null,
+      requestedModel: params.requestedModel ?? null,
+      servedModel: params.servedModel ?? null,
+      backfilled: Boolean(params.backfilled)
+    };
+  }
+
+  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+  const cleaned = cleanUserInput(params.lastUserInput || '');
+  const currentTurn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+  const matchedRecommendedTier =
+    currentTurn && params.turnState && params.turnState.turn === currentTurn && params.turnState.recommendedTier
+      ? params.turnState.recommendedTier
+      : undefined;
+
+  const { requestedModel } = extractSubagentModel(params.args);
+  const rawType = params.args?.TypeName ?? params.args?.typeName ?? params.args?.Role ?? params.args?.role;
+  const subagentType = str(rawType);
+
+  let modelUsed: string | undefined;
+  let modelUsedSource: AntigravityModelUsedSource | undefined;
+
+  const clamped = str(params.decision.clampedTo);
+  const downgraded =
+    params.downgradeLog?.downgrade === 'applied'
+      ? (str(params.downgradeLog.downgrade_to) ??
+         str(params.decision.overwrite?.Model) ??
+         str(params.decision.overwrite?.model))
+      : undefined;
+  const requested = str(requestedModel);
+  const inherited = str(sessionModel);
+
+  if (clamped) {
+    modelUsed = clamped;
+    modelUsedSource = 'clamped';
+  } else if (downgraded) {
+    modelUsed = downgraded;
+    modelUsedSource = 'downgraded';
+  } else if (requested) {
+    modelUsed = requested;
+    modelUsedSource = 'requested';
+  } else if (inherited) {
+    modelUsed = inherited;
+    modelUsedSource = 'inherited';
+  }
+
+  const downgrade = str(params.downgradeLog?.downgrade);
+  const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
+
+  return {
+    harness: 'antigravity',
+    toolOrHook: 'PreToolUse',
+    event: 'agent_call',
+    sessionId: params.conversationId ?? null,
+    ...(currentTurn ? { turn: currentTurn } : {}),
+    toolName: params.toolName || 'invoke_subagent',
+    ...(subagentType ? { taskSummary: `subagent: ${subagentType}` } : {}),
+    sessionModel,
+    sessionModelSource,
+    ...(matchedRecommendedTier
+      ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
+      : {}),
+    ...(modelUsed && modelUsedSource ? { modelUsed, modelUsedSource } : {}),
+    requestedModel: requestedModel ?? null,
+    decision: params.decision.decision,
+    ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
+    ...(downgrade ? { downgrade } : {}),
+    ...(quotaStrategy ? { quotaStrategy } : {})
+  };
 }

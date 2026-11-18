@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { writeAntigravityTurn, turnId } from '../antigravity/logic.ts';
 
 const HOOK = path.join(import.meta.dir, '..', 'antigravity', 'hook.ts');
 const FIXTURE_PATH = path.join(import.meta.dir, 'fixtures', 'agy-invoke-subagent.json');
@@ -699,5 +700,303 @@ describe('Antigravity hook: an id with nothing safe in it means no stored state 
     run('post-tool-use', ANSWER('@@@'));
     const files = fs.existsSync(sessionsDir()) ? fs.readdirSync(sessionsDir()) : [];
     expect(files).not.toContain('default-session.approvals.json');
+  });
+});
+
+describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
+  const sessionsDir = () => path.join(home, '.config', 'jev', 'antigravity-sessions');
+  const telemetryPath = () => path.join(home, 'telemetry.jsonl');
+  const readTelemetry = (): Record<string, any>[] => {
+    const file = telemetryPath();
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+  };
+
+  it('PreToolUse invoke_subagent writes agent_call with sessionModelSource=hook, matching .turn.json modelRecommended, and modelUsedSource=requested', () => {
+    const prompt = 'Implement telemetry test';
+    const expectedTurn = turnId(prompt);
+    writeAntigravityTurn(sessionsDir(), 'conv-tel-req', {
+      turn: expectedTurn,
+      recommendedTier: 'flash_lite',
+      recommendedSubagent: 'code-engineer',
+      at: new Date().toISOString()
+    });
+
+    const proc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-req',
+        lastUserInput: prompt,
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 'call_tel_1',
+          name: 'invoke_subagent',
+          args: { TypeName: 'worker', Model: 'flash_lite' }
+        }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(proc.exitCode).toBe(0);
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionId: 'conv-tel-req',
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
+      turn: expectedTurn,
+      modelRecommended: 'flash_lite',
+      modelUsed: 'flash_lite',
+      modelUsedSource: 'requested'
+    });
+  });
+
+  it('PreToolUse invoke_subagent omits modelRecommended when .turn.json is stale, falls back to quota-state, and marks omitted Model as inherited', () => {
+    fs.writeFileSync(
+      path.join(home, '.gemini', 'antigravity-cli', 'quota-state.json'),
+      JSON.stringify({
+        schema: 2,
+        updated_at: Math.floor(Date.now() / 1000),
+        active_model: 'Gemini 3.8 Flash (Medium)',
+        buckets: {}
+      })
+    );
+    const prompt = 'Fresh user turn prompt';
+    const expectedTurn = turnId(prompt);
+    writeAntigravityTurn(sessionsDir(), 'conv-tel-stale', {
+      turn: turnId('Stale earlier prompt'),
+      recommendedTier: 'pro',
+      at: new Date().toISOString()
+    });
+
+    const proc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-stale',
+        lastUserInput: prompt,
+        toolCall: {
+          id: 'call_tel_2',
+          name: 'invoke_subagent',
+          args: { TypeName: 'worker' }
+        }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(proc.exitCode).toBe(0);
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionId: 'conv-tel-stale',
+      sessionModel: 'Gemini 3.8 Flash (Medium)',
+      sessionModelSource: 'quota-state',
+      turn: expectedTurn,
+      modelUsed: 'Gemini 3.8 Flash (Medium)',
+      modelUsedSource: 'inherited'
+    });
+    expect(rows[0]).not.toHaveProperty('modelRecommended');
+  });
+
+  it('PreToolUse invoke_subagent sets modelUsedSource=inherited for Model=inherit and modelUsedSource=clamped under JEV_ELEVATION=clamp', () => {
+    const inheritProc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-inh',
+        lastUserInput: 'Inherit model task',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 'call_tel_3',
+          name: 'invoke_subagent',
+          args: { TypeName: 'worker', Model: 'inherit' }
+        }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(inheritProc.exitCode).toBe(0);
+
+    const clampProc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-clamp',
+        lastUserInput: 'Clamp model task',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: {
+          id: 'call_tel_4',
+          name: 'invoke_subagent',
+          args: { TypeName: 'expert', Model: 'pro' }
+        }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath(), JEV_ELEVATION: 'clamp' }
+    );
+    expect(clampProc.exitCode).toBe(0);
+    expect(JSON.parse(clampProc.stdout.toString())).toMatchObject({ decision: 'allow', overwrite: { Model: 'flash' } });
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
+      modelUsed: 'gemini-3.8-flash-low',
+      modelUsedSource: 'inherited'
+    });
+    expect(rows[1]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
+      modelUsed: 'flash',
+      modelUsedSource: 'clamped'
+    });
+  });
+
+  it('does NOT write JEV_TELEMETRY_FILE for non-invoke_subagent tools (run_command) or when Jev mode is off', () => {
+    const otherProc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-other',
+        lastUserInput: 'Run command',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'call_cmd', name: 'run_command', args: { CommandLine: 'ls' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(otherProc.exitCode).toBe(0);
+    expect(fs.existsSync(telemetryPath())).toBe(false);
+
+    fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'off' } }));
+
+    const offPre = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-tel-off',
+        lastUserInput: 'Off mode task',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'call_off_pre', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash_lite' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(offPre.exitCode).toBe(0);
+
+    const offPost = run(
+      'post-tool-use',
+      {
+        conversationId: 'conv-tel-off',
+        toolCall: { id: 'call_off_post', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash_lite' } },
+        content: 'Subagent started. Conversation ID: 00000000-0000-4000-8000-000000000701'
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(offPost.exitCode).toBe(0);
+    expect(fs.existsSync(telemetryPath())).toBe(false);
+  });
+
+  it('PostToolUse invoke_subagent emits subagent_served telemetry immediately when child transcript is present', () => {
+    const childId = '00000000-0000-4000-8000-000000000702';
+    const brainLogs = path.join(home, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+    fs.mkdirSync(brainLogs, { recursive: true });
+    fs.writeFileSync(
+      path.join(brainLogs, 'transcript_full.jsonl'),
+      '{"step_index":0,"model":"gemini-3.8-pro-preview","type":"MODEL","content":"hello"}\n'
+    );
+
+    const proc = run(
+      'post-tool-use',
+      {
+        conversationId: 'conv-tel-served-now',
+        toolCall: {
+          id: 'call_sub_now',
+          name: 'invoke_subagent',
+          args: { TypeName: 'coder', Model: 'pro' }
+        },
+        content: `Subagent started. Conversation ID: ${childId}`
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString().trim()).toBe('{}');
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      event: 'subagent_served',
+      sessionId: 'conv-tel-served-now',
+      childConversationId: childId,
+      requestedModel: 'pro',
+      servedModel: 'gemini-3.8-pro-preview',
+      backfilled: false
+    });
+  });
+
+  it('PostToolUse invoke_subagent emits backfilled subagent_served telemetry on a subsequent hook invocation', () => {
+    const parentId = '00000000-0000-4000-8000-000000000020';
+    const childId = 'e1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const parentTranscript = path.join(home, 'parent-tel-transcript.jsonl');
+    fs.writeFileSync(parentTranscript, '{"step_index":0,"type":"USER_INPUT","content":"hi"}\n');
+
+    const postRes = run(
+      'post-tool-use',
+      {
+        conversationId: parentId,
+        stepIdx: 1,
+        transcriptPath: parentTranscript,
+        toolCall: { id: 'call_sub_defer', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'pro' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(postRes.exitCode).toBe(0);
+    expect(readTelemetry()).toHaveLength(0);
+
+    fs.appendFileSync(
+      parentTranscript,
+      JSON.stringify({ step_index: 1, type: 'GENERIC', content: `Created subagent ${childId}` }) + '\n'
+    );
+    const brainLogs = path.join(home, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+    fs.mkdirSync(brainLogs, { recursive: true });
+    fs.writeFileSync(
+      path.join(brainLogs, 'transcript_full.jsonl'),
+      '{"step_index":0,"type":"EPHEMERAL_MESSAGE","model":null}\n{"step_index":1,"type":"PLANNER_RESPONSE","model":"gemini-4-hydrogen-tiered-xhigh"}\n'
+    );
+
+    const nextRes = run(
+      'pre-tool-use',
+      {
+        conversationId: parentId,
+        modelName: 'gemini-4-hydrogen-high',
+        toolCall: { id: 'call_sub_next', name: 'invoke_subagent', args: { TypeName: 'research', Model: 'flash' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(nextRes.exitCode).toBe(0);
+
+    const rows = readTelemetry();
+    const served = rows.find((e) => e.event === 'subagent_served' && e.childConversationId === childId);
+    expect(served).toBeDefined();
+    expect(served).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      event: 'subagent_served',
+      sessionId: parentId,
+      childConversationId: childId,
+      requestedModel: 'pro',
+      servedModel: 'gemini-4-hydrogen-tiered-xhigh',
+      backfilled: true
+    });
   });
 });

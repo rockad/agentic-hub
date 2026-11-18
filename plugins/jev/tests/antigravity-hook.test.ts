@@ -12,8 +12,15 @@ import {
   findServedModelFromTranscript,
   MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
+  resolveAntigravitySessionModel,
+  cleanUserInput,
+  turnId,
+  readAntigravityTurn,
+  writeAntigravityTurn,
+  buildAntigravityTelemetryEvent,
   type AntigravityHookInput,
-  type AntigravityHookDecision
+  type AntigravityHookDecision,
+  type AntigravityTurnState
 } from '../antigravity/logic.ts';
 import {
   ApprovalStore,
@@ -1355,5 +1362,276 @@ describe('evaluateAntigravitySubagentCall with an id that has nothing safe in it
     );
     expect(decision.decision).toBe('deny');
     expect(calls).toEqual([]);
+  });
+});
+
+describe('Antigravity telemetry helpers (logic)', () => {
+  let tmpDir = '';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-telemetry-helpers-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('resolveAntigravitySessionModel', () => {
+    it('prefers inputModelName with source "hook" over quotaView', () => {
+      const res = resolveAntigravitySessionModel('  gemini-3.8-pro-low  ', {
+        active_model: 'gemini-3.8-flash-low',
+        activeModelSource: 'argument'
+      });
+      expect(res).toEqual({
+        sessionModel: 'gemini-3.8-pro-low',
+        sessionModelSource: 'hook'
+      });
+    });
+
+    it('falls back to quotaView.active_model and activeModelSource (or "quota-state" when omitted)', () => {
+      expect(
+        resolveAntigravitySessionModel('', {
+          active_model: '  gemini-3.8-flash-arg  ',
+          activeModelSource: 'argument'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-arg',
+        sessionModelSource: 'argument'
+      });
+
+      expect(
+        resolveAntigravitySessionModel(null, {
+          active_model: 'gemini-3.8-flash-latest',
+          activeModelSource: 'latest'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-latest',
+        sessionModelSource: 'latest'
+      });
+
+      expect(
+        resolveAntigravitySessionModel(undefined, {
+          active_model: 'gemini-3.8-flash-quota'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-quota',
+        sessionModelSource: 'quota-state'
+      });
+    });
+
+    it('returns null for both fields when hook model and quotaView model are missing', () => {
+      expect(resolveAntigravitySessionModel(undefined, null)).toEqual({
+        sessionModel: null,
+        sessionModelSource: null
+      });
+      expect(
+        resolveAntigravitySessionModel('   ', {
+          active_model: '  ',
+          activeModelSource: 'quota-state'
+        })
+      ).toEqual({
+        sessionModel: null,
+        sessionModelSource: null
+      });
+    });
+  });
+
+  describe('cleanUserInput and turnId', () => {
+    it('strips <ADDITIONAL_METADATA> and <USER_REQUEST> wrappers so PreInvocation and PreToolUse produce identical turn ids', () => {
+      const plain = 'Audit telemetry events across hooks';
+      const wrapped =
+        '<ADDITIONAL_METADATA>\nworkspace: /home/user/projects/jev\ncursor: line 42\n</ADDITIONAL_METADATA>\n' +
+        `<USER_REQUEST>\n  ${plain}  \n</USER_REQUEST>`;
+
+      expect(cleanUserInput(wrapped)).toBe(plain);
+      expect(turnId(wrapped)).toBe(turnId(plain));
+      expect(turnId(wrapped)).toMatch(/^[0-9a-f]{12}$/);
+    });
+  });
+
+  describe('readAntigravityTurn and writeAntigravityTurn', () => {
+    it('round-trips full and minimal turn state', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      const full: AntigravityTurnState = {
+        turn: 'abc123def456',
+        recommendedTier: 'flash',
+        recommendedSubagent: 'code-engineer',
+        effort: 'medium',
+        at: '2026-11-18T12:00:00.000Z'
+      };
+      writeAntigravityTurn(sessionsDir, 'sess-1', full);
+      expect(readAntigravityTurn(sessionsDir, 'sess-1')).toEqual(full);
+
+      const minimal: AntigravityTurnState = {
+        turn: 'fedcba654321',
+        at: '2026-11-18T12:05:00.000Z'
+      };
+      writeAntigravityTurn(sessionsDir, 'sess-1', minimal);
+      expect(readAntigravityTurn(sessionsDir, 'sess-1')).toEqual(minimal);
+    });
+
+    it('returns null and no-ops safely for missing, unsafe, or malformed turn files', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      expect(readAntigravityTurn(sessionsDir, null)).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, undefined)).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, '../escape')).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, 'does-not-exist')).toBeNull();
+
+      // Malformed JSON
+      fs.writeFileSync(path.join(sessionsDir, 'bad-json.turn.json'), '{not json');
+      expect(readAntigravityTurn(sessionsDir, 'bad-json')).toBeNull();
+
+      // Missing or empty turn field
+      fs.writeFileSync(path.join(sessionsDir, 'missing-turn.turn.json'), JSON.stringify({ at: '2026-11-18T00:00:00Z' }));
+      expect(readAntigravityTurn(sessionsDir, 'missing-turn')).toBeNull();
+
+      fs.writeFileSync(path.join(sessionsDir, 'empty-turn.turn.json'), JSON.stringify({ turn: '', at: '2026-11-18T00:00:00Z' }));
+      expect(readAntigravityTurn(sessionsDir, 'empty-turn')).toBeNull();
+
+      // writeAntigravityTurn ignores missing or unsafe sessionId without throwing
+      writeAntigravityTurn(sessionsDir, '../escape', { turn: 'abc', at: '2026-11-18T00:00:00Z' });
+      writeAntigravityTurn(sessionsDir, null, { turn: 'abc', at: '2026-11-18T00:00:00Z' });
+      expect(fs.existsSync(path.join(tmpDir, 'escape.turn.json'))).toBe(false);
+    });
+  });
+
+  describe('buildAntigravityTelemetryEvent', () => {
+    it('records modelUsedSource "clamped" when decision.clampedTo is set', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'research', Model: 'pro' },
+        decision: { decision: 'allow', elevation: 'clamped', clampedTo: 'flash' }
+      });
+
+      expect(ev.modelUsed).toBe('flash');
+      expect(ev.modelUsedSource).toBe('clamped');
+      expect(ev.requestedModel).toBe('pro');
+      expect(ev.taskSummary).toBe('subagent: research');
+    });
+
+    it('records modelUsedSource "downgraded" when downgradeLog.downgrade is "applied"', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        decision: { decision: 'allow', overwrite: { Model: 'flash_lite' } },
+        downgradeLog: { downgrade: 'applied', downgrade_to: 'flash_lite' }
+      });
+
+      expect(ev.modelUsed).toBe('flash_lite');
+      expect(ev.modelUsedSource).toBe('downgraded');
+      expect(ev.downgrade).toBe('applied');
+    });
+
+    it('records modelUsedSource "requested" when args.Model is explicit without clamp/downgrade', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        decision: { decision: 'pass' }
+      });
+
+      expect(ev.modelUsed).toBe('flash');
+      expect(ev.modelUsedSource).toBe('requested');
+      expect(ev.requestedModel).toBe('flash');
+    });
+
+    it('records modelUsedSource "inherited" with sessionModel when args.Model is omitted or "inherit"', () => {
+      const omittedEv = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker' },
+        decision: { decision: 'pass' }
+      });
+      expect(omittedEv.modelUsed).toBe('gemini-3.8-flash-low');
+      expect(omittedEv.modelUsedSource).toBe('inherited');
+      expect(omittedEv.requestedModel).toBeNull();
+
+      const inheritEv = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'inherit' },
+        decision: { decision: 'pass' }
+      });
+      expect(inheritEv.modelUsed).toBe('gemini-3.8-flash-low');
+      expect(inheritEv.modelUsedSource).toBe('inherited');
+      expect(inheritEv.requestedModel).toBeNull();
+    });
+
+    it('joins turnState.recommendedTier only when turnState.turn matches current turn', () => {
+      const prompt = '<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\nFix bug\n</USER_REQUEST>';
+      const expectedTurn = turnId('Fix bug');
+
+      const matched = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: prompt,
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        turnState: {
+          turn: expectedTurn,
+          recommendedTier: 'flash',
+          recommendedSubagent: 'code-engineer',
+          at: '2026-11-18T12:00:00.000Z'
+        },
+        decision: { decision: 'pass' }
+      });
+      expect(matched.turn).toBe(expectedTurn);
+      expect(matched.modelRecommended).toBe('flash');
+      expect(matched.recommendedTier).toBe('flash');
+
+      const mismatched = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: prompt,
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        turnState: {
+          turn: '000000000000',
+          recommendedTier: 'pro',
+          recommendedSubagent: 'code-engineer',
+          at: '2026-11-18T11:55:00.000Z'
+        },
+        decision: { decision: 'pass' }
+      });
+      expect(mismatched.turn).toBe(expectedTurn);
+      expect(mismatched.modelRecommended).toBeUndefined();
+      expect(mismatched.recommendedTier).toBeUndefined();
+    });
+
+    it('builds subagent_served event shape', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'subagent_served',
+        conversationId: 'parent-1',
+        childConversationId: 'child-2',
+        requestedModel: 'flash',
+        servedModel: 'gemini-3.8-flash-low',
+        backfilled: true
+      });
+
+      expect(ev).toEqual({
+        harness: 'antigravity',
+        toolOrHook: 'PostToolUse',
+        event: 'subagent_served',
+        sessionId: 'parent-1',
+        childConversationId: 'child-2',
+        requestedModel: 'flash',
+        servedModel: 'gemini-3.8-flash-low',
+        backfilled: true
+      });
+    });
   });
 });

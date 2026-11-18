@@ -13,9 +13,10 @@ import {
   type JevMode,
   type QuotaView
 } from '../src/shared.js';
-import { taskFingerprint } from '../src/core/telemetry.js';
+import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
+import { withTimeout } from '../src/core/with-timeout.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
@@ -28,6 +29,8 @@ import {
   findServedModelFromTranscript,
   recordPendingServed,
   flushPendingServed,
+  readAntigravityTurn,
+  buildAntigravityTelemetryEvent,
   TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
   type AntigravityHookInput
@@ -131,6 +134,18 @@ function passThrough(event: string): void {
 
 async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
+  const pendingTelemetry: Promise<unknown>[] = [];
+  const trackTelemetry = (p: Promise<unknown>): void => {
+    pendingTelemetry.push(p);
+  };
+  const flushTelemetry = async (): Promise<void> => {
+    if (pendingTelemetry.length === 0) return;
+    try {
+      await withTimeout(Promise.allSettled(pendingTelemetry.splice(0)), 1000);
+    } catch {
+      // best-effort
+    }
+  };
 
   try {
     // The only network call this hook can make is the downgrade rating at PreToolUse (one router call, 1.5 s, fail-open);
@@ -167,7 +182,28 @@ async function main() {
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
     const downgrades = createAntigravityDowngradeStore(sessionsDir);
-    flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
+    flushPendingServed(
+      sessionsDir,
+      input.conversationId,
+      (entry) => {
+        appendDecisionLog(entry);
+        if (entry.event === 'subagent_served' && entry.child_conversation_id && entry.served_model) {
+          trackTelemetry(
+            logJevTelemetry(
+              buildAntigravityTelemetryEvent({
+                kind: 'subagent_served',
+                conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
+                childConversationId: String(entry.child_conversation_id),
+                requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
+                servedModel: String(entry.served_model),
+                backfilled: entry.backfilled === true
+              })
+            )
+          );
+        }
+      },
+      jevHomeDir()
+    );
 
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;
@@ -255,6 +291,7 @@ async function main() {
             ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length, outcomes: dOutcomes } : {}),
             outcome: dOutcome
           });
+          await flushTelemetry();
           console.log('{}');
           process.exit(0);
         }
@@ -345,6 +382,7 @@ async function main() {
           outcome
         });
 
+        await flushTelemetry();
         console.log('{}');
         process.exit(0);
       } else if (toolName === 'invoke_subagent') {
@@ -372,6 +410,18 @@ async function main() {
             requested_model: requestedModel || null,
             served_model: servedModel || null
           });
+          trackTelemetry(
+            logJevTelemetry(
+              buildAntigravityTelemetryEvent({
+                kind: 'subagent_served',
+                conversationId,
+                childConversationId: childConvId || null,
+                requestedModel: requestedModel || null,
+                servedModel: servedModel || null,
+                backfilled: false
+              })
+            )
+          );
         } else {
           recordPendingServed(sessionsDir, conversationId, {
             stepIdx: input.stepIdx,
@@ -383,9 +433,11 @@ async function main() {
           }, appendDecisionLog);
         }
 
+        await flushTelemetry();
         console.log('{}');
         process.exit(0);
       }
+      await flushTelemetry();
       console.log('{}');
       process.exit(0);
     }
@@ -464,6 +516,28 @@ async function main() {
       ...downgradeLog
     });
 
+    if (input.toolCall?.name === 'invoke_subagent') {
+      const turnState = readAntigravityTurn(sessionsDir, input.conversationId);
+      trackTelemetry(
+        logJevTelemetry(
+          buildAntigravityTelemetryEvent({
+            kind: 'agent_call',
+            conversationId: input.conversationId,
+            inputModelName: input.modelName,
+            quotaView,
+            lastUserInput: input.lastUserInput,
+            toolName: 'invoke_subagent',
+            args: input.toolCall?.args,
+            turnState,
+            decision,
+            downgradeLog
+          })
+        )
+      );
+    }
+
+    await flushTelemetry();
+
     if (decision.decision === 'pass') {
       passThrough(event);
     }
@@ -485,6 +559,7 @@ async function main() {
     process.exit(0);
   } catch {
     // Fail-open: never block an Antigravity session on hook failure, and never approve on its behalf either
+    await flushTelemetry();
     passThrough(event);
   }
 }

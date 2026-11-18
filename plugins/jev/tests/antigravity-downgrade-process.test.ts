@@ -455,3 +455,80 @@ describe('Antigravity downgrade: one ask with several signed questions (#76 revi
     expect(row.downgrade_questions).toBe(3);
   });
 });
+
+describe('Antigravity downgrade telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
+  const telemetryPath = () => path.join(home, 'telemetry.jsonl');
+  const readTelemetry = (): Record<string, any>[] => {
+    const file = telemetryPath();
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+  };
+
+  it('auto mode writes agent_call telemetry with modelUsed: flash_lite and modelUsedSource: downgraded', () => {
+    seedRating([0.03, 0.83, 0.14, 0]);
+    const proc = run('pre-tool-use', invoke('flash'), {
+      JEV_DOWNGRADE: 'auto',
+      JEV_TELEMETRY_FILE: telemetryPath()
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(JSON.parse(proc.stdout.toString())).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionId: CONV,
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
+      modelUsed: 'flash_lite',
+      modelUsedSource: 'downgraded',
+      downgrade: 'applied'
+    });
+  });
+
+  it('ask mode after "Yes, flash_lite" writes agent_call telemetry with modelUsed: flash_lite and modelUsedSource: downgraded', () => {
+    seedRating([0.03, 0.83, 0.14, 0]);
+    const first = run('pre-tool-use', invoke('flash'), { JEV_TELEMETRY_FILE: telemetryPath() });
+    expect(first.exitCode).toBe(0);
+    expect(JSON.parse(first.stdout.toString()).decision).toBe('deny');
+
+    const post = run('post-tool-use', askPost(`A1: ${DOWNGRADE_LABELS.yes}`), {
+      JEV_TELEMETRY_FILE: telemetryPath()
+    });
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+
+    const retry = run('pre-tool-use', invoke('flash'), { JEV_TELEMETRY_FILE: telemetryPath() });
+    expect(retry.exitCode).toBe(0);
+    expect(JSON.parse(retry.stdout.toString())).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      modelUsed: 'flash',
+      modelUsedSource: 'requested',
+      downgrade: 'asked'
+    });
+    expect(rows[1]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionId: CONV,
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
+      modelUsed: 'flash_lite',
+      modelUsedSource: 'downgraded',
+      downgrade: 'applied'
+    });
+  });
+});

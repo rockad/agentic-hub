@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { runPreflight, autoHealAgyMcp } from '../antigravity/preflight.ts';
+import { turnId, readAntigravityTurn, recordPendingServed } from '../antigravity/logic.ts';
 import { jevTelemetryFile, logJevTelemetry } from '../src/core/telemetry.ts';
 import { clearConfigCacheForTesting } from '../src/core/config.ts';
 
@@ -302,5 +303,248 @@ describe('antigravity preflight hook', () => {
     expect(jevTelemetryFile()).toBe(path.join(tmpHome, '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl'));
     await logJevTelemetry({ harness: 'antigravity', toolOrHook: 'probe' });
     expect(fs.existsSync(path.join(tmpHome, '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl'))).toBe(true);
+  });
+
+  it('PreInvocation telemetry logs sessionModel, sessionModelSource precedence, modelRecommended, turn, and quotaStrategy without raw prompt', async () => {
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
+    const sessionsDir = path.join(jevConfigDir, 'antigravity-sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const telemPath = process.env.JEV_TELEMETRY_FILE!;
+
+    fs.writeFileSync(
+      path.join(agyDir, 'quota-state.json'),
+      JSON.stringify({
+        schema: 2,
+        updated_at: nowSec,
+        active_model: 'gemini-3.8-flash-quota',
+        buckets: { 'gemini-5h': { remaining_fraction: 0.85 } }
+      })
+    );
+
+    const stub = async () => ({
+      answers: {
+        recommendedSubagent: { choice: 'code-engineer' },
+        recommendedTier: { choice: 'flash' }
+      }
+    });
+
+    const corePrompt = 'SECRET_PROMPT_ANALYZE_TELEMETRY_PIPELINE';
+    const wrappedPrompt = `<ADDITIONAL_METADATA>\nworkspace: /tmp\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\n${corePrompt}\n</USER_REQUEST>`;
+
+    // 1. modelName present on hook input -> sessionModelSource: 'hook'
+    await capture(
+      { conversationId: 'c-src-hook', modelName: 'gemini-3.8-pro-low', lastUserInput: wrappedPrompt, invocationNum: 1 },
+      { autoHeal: () => {}, callJev: stub as any }
+    );
+    let content = fs.readFileSync(telemPath, 'utf8');
+    expect(content).not.toContain(corePrompt);
+    expect(content).not.toContain('"tool":"jev_dispatch"');
+    let pre = content.trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.toolOrHook === 'PreInvocation');
+    expect(pre).toHaveLength(1);
+    expect(pre[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreInvocation',
+      sessionId: 'c-src-hook',
+      sessionModel: 'gemini-3.8-pro-low',
+      sessionModelSource: 'hook',
+      recommendedSubagent: 'code-engineer',
+      recommendedTier: 'flash',
+      modelRecommended: 'flash',
+      turn: turnId(corePrompt),
+      quotaStrategy: 'normal'
+    });
+
+    // 2. No modelName, <safeId>.model.json present -> sessionModelSource: 'argument'
+    fs.rmSync(telemPath, { force: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, 'c-src-arg.model.json'),
+      JSON.stringify({ conversationId: 'c-src-arg', model: 'gemini-3.8-flash-arg', updated_at: nowSec })
+    );
+    fs.writeFileSync(
+      path.join(sessionsDir, 'latest.json'),
+      JSON.stringify({ conversationId: 'other', model: 'gemini-3.8-flash-latest', updated_at: nowSec })
+    );
+    await capture(
+      { conversationId: 'c-src-arg', lastUserInput: corePrompt, invocationNum: 1 },
+      { autoHeal: () => {}, callJev: stub as any }
+    );
+    pre = fs.readFileSync(telemPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.toolOrHook === 'PreInvocation');
+    expect(pre).toHaveLength(1);
+    expect(pre[0].sessionModel).toBe('gemini-3.8-flash-arg');
+    expect(pre[0].sessionModelSource).toBe('argument');
+    expect(pre[0].turn).toBe(turnId(corePrompt));
+
+    // 3. No modelName, no <safeId>.model.json, latest.json present -> sessionModelSource: 'latest'
+    fs.rmSync(telemPath, { force: true });
+    await capture(
+      { conversationId: 'c-src-latest', lastUserInput: corePrompt, invocationNum: 1 },
+      { autoHeal: () => {}, callJev: stub as any }
+    );
+    pre = fs.readFileSync(telemPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.toolOrHook === 'PreInvocation');
+    expect(pre).toHaveLength(1);
+    expect(pre[0].sessionModel).toBe('gemini-3.8-flash-latest');
+    expect(pre[0].sessionModelSource).toBe('latest');
+
+    // 4. No modelName, no session files -> falls back to quota-state.json ('quota-state')
+    fs.rmSync(telemPath, { force: true });
+    fs.rmSync(path.join(sessionsDir, 'latest.json'), { force: true });
+    await capture(
+      { conversationId: 'c-src-quota', lastUserInput: corePrompt, invocationNum: 1 },
+      { autoHeal: () => {}, callJev: stub as any }
+    );
+    pre = fs.readFileSync(telemPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.toolOrHook === 'PreInvocation');
+    expect(pre).toHaveLength(1);
+    expect(pre[0].sessionModel).toBe('gemini-3.8-flash-quota');
+    expect(pre[0].sessionModelSource).toBe('quota-state');
+  });
+
+  it('writes turn state with recommendation on dispatch success and clears stale recommendation on dispatch failure or skip', async () => {
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
+    fs.writeFileSync(
+      path.join(agyDir, 'quota-state.json'),
+      JSON.stringify({
+        schema: 2,
+        updated_at: Math.floor(Date.now() / 1000),
+        active_model: 'gemini-3.8-pro-low',
+        buckets: { 'gemini-5h': { remaining_fraction: 0.85 } }
+      })
+    );
+    const sessionsDir = path.join(jevConfigDir, 'antigravity-sessions');
+    const convId = 'c-turn-state';
+    const turnFile = path.join(sessionsDir, `${convId}.turn.json`);
+
+    // 1. Dispatch succeeds -> full turn state with recommendedTier, recommendedSubagent, effort
+    const prompt1 = 'Implement telemetry join across hooks';
+    await capture(
+      { conversationId: convId, modelName: 'gemini-3.8-pro-low', lastUserInput: prompt1, invocationNum: 1 },
+      {
+        autoHeal: () => {},
+        callJev: async () => ({
+          answers: {
+            recommendedSubagent: { choice: 'code-engineer' },
+            recommendedTier: { choice: 'flash' }
+          }
+        }) as any
+      }
+    );
+    const state1 = readAntigravityTurn(sessionsDir, convId);
+    expect(state1).not.toBeNull();
+    expect(state1!.turn).toBe(turnId(prompt1));
+    expect(state1!.recommendedTier).toBe('flash');
+    expect(state1!.recommendedSubagent).toBe('code-engineer');
+    expect(typeof state1!.effort).toBe('string');
+    expect(state1!.at.length).toBeGreaterThan(0);
+
+    // 2. Dispatch fails on a new turn -> overwrites with { turn, at } and omits recommendedTier
+    const prompt2 = 'Investigate failing integration suite';
+    await capture(
+      { conversationId: convId, modelName: 'gemini-3.8-pro-low', lastUserInput: prompt2, invocationNum: 1 },
+      {
+        autoHeal: () => {},
+        callJev: async () => { throw new Error('upstream timeout'); }
+      }
+    );
+    const raw2 = JSON.parse(fs.readFileSync(turnFile, 'utf8'));
+    expect(raw2.turn).toBe(turnId(prompt2));
+    expect(typeof raw2.at).toBe('string');
+    expect(raw2.recommendedTier).toBeUndefined();
+    expect(raw2.recommendedSubagent).toBeUndefined();
+
+    // 3. Re-seed recommendation, then skip dispatch (short prompt) -> clears stale recommendation
+    await capture(
+      { conversationId: convId, modelName: 'gemini-3.8-pro-low', lastUserInput: prompt1, invocationNum: 1 },
+      {
+        autoHeal: () => {},
+        callJev: async () => ({
+          answers: {
+            recommendedSubagent: { choice: 'research' },
+            recommendedTier: { choice: 'flash_lite' }
+          }
+        }) as any
+      }
+    );
+    expect(readAntigravityTurn(sessionsDir, convId)?.recommendedTier).toBe('flash_lite');
+
+    await capture(
+      { conversationId: convId, modelName: 'gemini-3.8-pro-low', lastUserInput: 'ok', invocationNum: 1 },
+      {
+        autoHeal: () => {},
+        callJev: async () => { throw new Error('should not be called for short prompt'); }
+      }
+    );
+    const raw3 = JSON.parse(fs.readFileSync(turnFile, 'utf8'));
+    expect(raw3.turn).toBe(turnId('ok'));
+    expect(typeof raw3.at).toBe('string');
+    expect(raw3.recommendedTier).toBeUndefined();
+    expect(raw3.recommendedSubagent).toBeUndefined();
+  });
+
+  it('flushes resolved pending-served entries to subagent_served telemetry in mode on, and writes nothing in mode off', async () => {
+    const sessionsDir = path.join(jevConfigDir, 'antigravity-sessions');
+    const parentId = '00000000-0000-4000-8000-0000000000a1';
+    const childId = '00000000-0000-4000-8000-0000000000c9';
+
+    const childLogsDir = path.join(tmpHome, '.gemini', 'antigravity-cli', 'brain', childId, '.system_generated', 'logs');
+    fs.mkdirSync(childLogsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(childLogsDir, 'transcript_full.jsonl'),
+      '{"step_index":0,"type":"MODEL","model":"gemini-3.8-pro-preview"}\n'
+    );
+
+    recordPendingServed(sessionsDir, parentId, {
+      childConvId: childId,
+      requestedModel: 'flash',
+      createdAt: Date.now()
+    });
+
+    // Mode off: prints {}, does not flush or write telemetry/decisions
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'off' } }));
+    const offOut = await capture(
+      { conversationId: parentId, lastUserInput: 'hi' },
+      { autoHeal: () => {} }
+    );
+    expect(JSON.parse(offOut)).toEqual({});
+    expect(fs.existsSync(process.env.JEV_TELEMETRY_FILE!)).toBe(false);
+    expect(fs.existsSync(path.join(jevConfigDir, 'antigravity_decisions.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsDir, `${parentId}.pending-served.json`))).toBe(true);
+
+    // Mode on: flushes pending-served and emits subagent_served telemetry
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
+    clearConfigCacheForTesting();
+    fs.writeFileSync(
+      path.join(agyDir, 'quota-state.json'),
+      JSON.stringify({
+        schema: 2,
+        updated_at: Math.floor(Date.now() / 1000),
+        active_model: 'gemini-3.8-flash-low',
+        buckets: { 'gemini-5h': { remaining_fraction: 0.85 } }
+      })
+    );
+
+    await capture(
+      { conversationId: parentId, lastUserInput: 'hi' },
+      { autoHeal: () => {} }
+    );
+
+    expect(fs.existsSync(process.env.JEV_TELEMETRY_FILE!)).toBe(true);
+    const events = fs
+      .readFileSync(process.env.JEV_TELEMETRY_FILE!, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const served = events.filter((e) => e.event === 'subagent_served');
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      event: 'subagent_served',
+      sessionId: parentId,
+      childConversationId: childId,
+      requestedModel: 'flash',
+      servedModel: 'gemini-3.8-pro-preview',
+      backfilled: true
+    });
+    expect(fs.existsSync(path.join(sessionsDir, `${parentId}.pending-served.json`))).toBe(false);
   });
 });

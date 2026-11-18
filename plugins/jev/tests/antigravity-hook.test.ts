@@ -1205,3 +1205,110 @@ describe('approval store: unsafe session ids (A2)', () => {
     expect(fs.readdirSync(tmpDir)).toEqual(['sessions']);
   });
 });
+
+describe('pull fallback answer matching and record failure (A3, A4)', () => {
+  let testDir = '';
+  let approvals: ApprovalStore;
+  const nowMs = 1_000_000;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pull-a3-'));
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const ASK_X =
+    '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"ask_X","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow?"]}}]}\n';
+
+  it('A3: an id-bearing question with no matching row yet does not take another tool\'s GENERIC output', () => {
+    const file = path.join(testDir, 't.jsonl');
+    fs.writeFileSync(
+      file,
+      ASK_X + '{"step_index":2,"type":"GENERIC","toolCallId":"other_tool","content":"A1: Yes, once"}\n'
+    );
+    expect(pullElevationAnswerFromTranscript(file, 'pro', Date.parse('2026-11-16T12:00:00.000Z'))).toBeNull();
+
+    approvals.deny('s-a3', 'pro', nowMs - 5000);
+    const decision = evaluateAntigravitySubagentCall(
+      {
+        conversationId: 's-a3',
+        transcriptPath: file,
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'sub', name: 'invoke_subagent', args: { TypeName: 'expert', Model: 'pro' } }
+      },
+      { approvals, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs }
+    );
+    expect(decision.decision).toBe('deny');
+    expect(decision.pullFallback).toBeUndefined();
+  });
+
+  it('A3: once the question\'s own row arrives, its answer is used (and a later unrelated row is not)', () => {
+    const file = path.join(testDir, 't.jsonl');
+    fs.writeFileSync(
+      file,
+      ASK_X +
+        '{"step_index":2,"type":"GENERIC","toolCallId":"other_tool","content":"A1: Yes, once"}\n' +
+        '{"step_index":3,"type":"GENERIC","toolCallId":"ask_X","content":"A1: No, proceed on flash"}\n'
+    );
+    expect(pullElevationAnswerFromTranscript(file, 'pro', Date.parse('2026-11-16T12:00:00.000Z'))).toEqual({ approved: false });
+  });
+
+  it('A3: a question without a tool call id still falls back to the first GENERIC after it', () => {
+    const file = path.join(testDir, 't.jsonl');
+    fs.writeFileSync(
+      file,
+      '{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"ask_question","args":{"questions":["[jev-elevate:pro] Q"]}}]}\n' +
+        '{"step_index":2,"type":"GENERIC","content":"A1: Yes, once"}\n'
+    );
+    expect(pullElevationAnswerFromTranscript(file, 'pro')).toEqual({ approved: true, scope: 'once' });
+  });
+
+  function transcriptYes(): string {
+    const file = path.join(testDir, 'yes.jsonl');
+    fs.writeFileSync(file, ASK_X + '{"step_index":2,"type":"GENERIC","toolCallId":"ask_X","content":"A1: Yes, once"}\n');
+    return file;
+  }
+  const subInput = (file: string): AntigravityHookInput => ({
+    conversationId: 's-a4',
+    transcriptPath: file,
+    modelName: 'gemini-3.8-flash-low',
+    lastUserInput: 'p',
+    toolCall: { id: 'sub', name: 'invoke_subagent', args: { TypeName: 'expert', Model: 'pro' } }
+  });
+
+  it('A4: when record fails the pull does not allow, falls back to deny, and a second call does not replay', () => {
+    const file = transcriptYes();
+    approvals.deny('s-a4', 'pro', nowMs - 5000);
+    const failing = { ...approvals, record: () => null as unknown as boolean } as ApprovalStore;
+    const first = evaluateAntigravitySubagentCall(subInput(file), { approvals: failing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
+    expect(first.decision).toBe('deny');
+    expect(first.pullFallback).toBe('record_failed');
+    const second = evaluateAntigravitySubagentCall(subInput(file), { approvals: failing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs + 1000 });
+    expect(second.decision).toBe('deny');
+    expect(approvals.claim('s-a4', 'pro', nowMs + 2000)).toBeNull();
+  });
+
+  it('A4: a record that throws (lock timeout) is a failure too, not an allow', () => {
+    const file = transcriptYes();
+    approvals.deny('s-a4', 'pro', nowMs - 5000);
+    const throwing = {
+      ...approvals,
+      record: () => {
+        throw new Error('approvals lock timeout');
+      }
+    } as ApprovalStore;
+    const d = evaluateAntigravitySubagentCall(subInput(file), { approvals: throwing, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
+    expect(d.decision).toBe('deny');
+    expect(d.pullFallback).toBe('record_failed');
+  });
+
+  it('A4: when record succeeds the pull still allows and reports pullFallback true', () => {
+    const file = transcriptYes();
+    approvals.deny('s-a4', 'pro', nowMs - 5000);
+    const d = evaluateAntigravitySubagentCall(subInput(file), { approvals, sessionModelOverride: 'gemini-3.8-flash-low', now: () => nowMs });
+    expect(d.decision).toBe('allow');
+    expect(d.pullFallback).toBe(true);
+  });
+});

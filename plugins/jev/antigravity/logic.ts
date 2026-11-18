@@ -49,7 +49,8 @@ export type AntigravityHookDecision = {
   approvalScope?: ApprovalScope;
   attemptCount?: number;
   clampedTo?: string;
-  pullFallback?: boolean;
+  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. */
+  pullFallback?: true | 'record_failed';
 };
 
 export type AntigravityLogicDeps = {
@@ -469,7 +470,9 @@ export function pullElevationAnswerFromTranscript(
       }
     }
 
-    if (!genericStep) {
+    // The first-GENERIC-after fallback is only for a question that carries no tool call id. With an id, a missing
+    // matching row means the answer is not in the transcript yet; the next GENERIC step belongs to another tool.
+    if (!genericStep && !latestMatch.toolCallId) {
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
         const step = steps[i];
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
@@ -670,20 +673,31 @@ export function evaluateAntigravitySubagentCall(
 
   // Choice mode (default):
   const count = deps.approvals?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+  let pullFallback: 'record_failed' | undefined;
   if (count <= 2) {
     if (deps.approvals && input.transcriptPath && typeof deps.approvals.wasDeniedRecently === 'function') {
       const deniedAtMs = deps.approvals.wasDeniedRecently(sessionId, requestedModel, nowMs);
       if (typeof deniedAtMs === 'number') {
         const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs);
         if (pull?.approved && pull.scope) {
-          deps.approvals.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs });
-          deps.approvals.claim(sessionId, requestedModel, nowMs);
-          return {
-            decision: 'allow',
-            elevation: 'approved',
-            approvalScope: pull.scope,
-            pullFallback: true
-          };
+          // Allow only when the approval was really stored (and then claimed): a failed record (a lock timeout
+          // throws) would leave the denial in place and let the same answer be pulled again.
+          let stored = false;
+          try {
+            stored = deps.approvals.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs }) === true;
+          } catch {
+            stored = false;
+          }
+          if (stored) {
+            deps.approvals.claim(sessionId, requestedModel, nowMs);
+            return {
+              decision: 'allow',
+              elevation: 'approved',
+              approvalScope: pull.scope,
+              pullFallback: true
+            };
+          }
+          pullFallback = 'record_failed';
         }
       }
     }
@@ -699,7 +713,8 @@ export function evaluateAntigravitySubagentCall(
       decision: 'deny',
       reason,
       elevation: 'denied',
-      attemptCount: count
+      attemptCount: count,
+      ...(pullFallback ? { pullFallback } : {})
     };
   }
 

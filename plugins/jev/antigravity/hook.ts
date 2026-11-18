@@ -329,7 +329,7 @@ async function main() {
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
-      ...(decision.pullFallback ? { pull_fallback: true } : {})
+      ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {})
     });
 
     if (decision.decision === 'pass') {

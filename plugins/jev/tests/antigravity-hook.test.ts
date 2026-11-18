@@ -1672,8 +1672,22 @@ describe('Antigravity telemetry helpers (logic)', () => {
         childConversationId: 'child-2',
         requestedModel: 'flash',
         servedModel: 'gemini-3.8-flash-low',
+        sessionModel: null,
+        sessionModelSource: null,
         backfilled: true
       });
+    });
+
+    it('subagent_served carries the session model from the hook input, else the quota view, else null', () => {
+      const base = { kind: 'subagent_served' as const, conversationId: 'parent-1', childConversationId: 'child-2', servedModel: 'm' };
+      expect(buildAntigravityTelemetryEvent({ ...base, inputModelName: ' gemini-3.8-flash-low ' })).toMatchObject({
+        sessionModel: 'gemini-3.8-flash-low',
+        sessionModelSource: 'hook'
+      });
+      expect(
+        buildAntigravityTelemetryEvent({ ...base, quotaView: { active_model: 'quota-model', activeModelSource: 'quota-state' } as any })
+      ).toMatchObject({ sessionModel: 'quota-model', sessionModelSource: 'quota-state' });
+      expect(buildAntigravityTelemetryEvent({ ...base })).toMatchObject({ sessionModel: null, sessionModelSource: null });
     });
   });
 });

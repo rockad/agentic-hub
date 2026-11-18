@@ -742,6 +742,8 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
       { JEV_TELEMETRY_FILE: telemetryPath() }
     );
     expect(proc.exitCode).toBe(0);
+    // The pass-through prints nothing, even though the hook awaits a telemetry flush first.
+    expect(proc.stdout.toString()).toBe('');
 
     const rows = readTelemetry();
     expect(rows).toHaveLength(1);
@@ -824,6 +826,7 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
       { JEV_TELEMETRY_FILE: telemetryPath() }
     );
     expect(inheritProc.exitCode).toBe(0);
+    expect(inheritProc.stdout.toString()).toBe('');
 
     const clampProc = run(
       'pre-tool-use',
@@ -918,6 +921,7 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
       'post-tool-use',
       {
         conversationId: 'conv-tel-served-now',
+        modelName: 'gemini-3.8-flash-low',
         toolCall: {
           id: 'call_sub_now',
           name: 'invoke_subagent',
@@ -940,8 +944,30 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
       childConversationId: childId,
       requestedModel: 'pro',
       servedModel: 'gemini-3.8-pro-preview',
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook',
       backfilled: false
     });
+  });
+
+  it('PostToolUse invoke_subagent writes no subagent_served telemetry row when nothing was found (no transcript to read)', () => {
+    const proc = run(
+      'post-tool-use',
+      {
+        conversationId: '00000000-aaaa',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'call_sub_none', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash_lite' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString().trim()).toBe('{}');
+    expect(readTelemetry().filter((e) => e.event === 'subagent_served')).toHaveLength(0);
+
+    // The decisions log is the audit trail and still records the call.
+    const logFile = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const entry = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n').pop()!);
+    expect(entry).toMatchObject({ event: 'subagent_served', child_conversation_id: null, served_model: null });
   });
 
   it('PostToolUse invoke_subagent emits backfilled subagent_served telemetry on a subsequent hook invocation', () => {
@@ -996,6 +1022,8 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
       childConversationId: childId,
       requestedModel: 'pro',
       servedModel: 'gemini-4-hydrogen-tiered-xhigh',
+      sessionModel: 'gemini-4-hydrogen-high',
+      sessionModelSource: 'hook',
       backfilled: true
     });
   });

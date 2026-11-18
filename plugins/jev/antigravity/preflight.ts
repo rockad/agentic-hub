@@ -199,6 +199,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
                 buildAntigravityTelemetryEvent({
                   kind: 'subagent_served',
                   conversationId: typeof entry.session_id === 'string' ? entry.session_id : (safeId ?? null),
+                  inputModelName: modelName,
                   childConversationId: String(entry.child_conversation_id),
                   requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
                   servedModel: String(entry.served_model),

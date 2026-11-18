@@ -1397,6 +1397,9 @@ export type AntigravityTelemetryInput =
   | {
       kind: 'subagent_served';
       conversationId?: string | null;
+      /** The session model from the hook input (PostToolUse, or the hook that flushed a backfill); absent when not known. */
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
       childConversationId?: string | null;
       requestedModel?: string | null;
       servedModel?: string | null;
@@ -1429,11 +1432,14 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
   }
 
   if (params.kind === 'subagent_served') {
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
     return {
       harness: 'antigravity',
       toolOrHook: 'PostToolUse',
       event: 'subagent_served',
       sessionId: params.conversationId ?? null,
+      sessionModel,
+      sessionModelSource,
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,

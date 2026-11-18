@@ -191,3 +191,68 @@ describe('through the real handlers', () => {
     expect(event).toMatchObject({ modelUsedSource: 'inherited', sessionModel: null, sessionModelSource: null });
   });
 });
+
+describe('modelUsed follows the model the hook resolved (F1) and skips Workflow rows (F5)', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+
+  const project = (agent: string, model: string): { cwd: string; env: Record<string, string> } => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-telemetry-'));
+    fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.claude', 'agents', `${agent}.md`), `---\nname: ${agent}\nmodel: ${model}\n---\nbody\n`);
+    return { cwd: root, env: { CLAUDE_CONFIG_DIR: path.join(root, 'config'), CLAUDE_PROJECT_DIR: root } };
+  };
+
+  const run = async (tool_name: string, tool_input: Record<string, unknown>, cwd: string, env: Record<string, string>) => {
+    const logs: Record<string, unknown>[] = [];
+    const d: HookDeps = {
+      readMode: async () => 'on',
+      readSessionModel: () => 'claude-opus-5-5',
+      readQuotaStrategy: async () => 'unknown',
+      dispatch: async () => flashRec,
+      log: (e) => logs.push(e as Record<string, unknown>),
+      claimClamp: memoryClaim(),
+      readTurn: () => null,
+      saveTurn: () => {},
+      env: { ...env }
+    };
+    await onPreToolUse({ session_id: 's1', cwd, tool_name, tool_input }, d);
+    return { logs, event: telemetryEvent(logs[0]) };
+  };
+
+  it('F1: a call with no model whose subagent definition pins haiku used haiku, not the session model', async () => {
+    const { cwd, env } = project('cheap', 'haiku');
+    const { logs, event } = await run('Agent', { description: 'x', prompt: 'y', subagent_type: 'cheap' }, cwd, env);
+    expect(logs[0].model_source).toBe('definition');
+    expect(event).toMatchObject({ sessionModel: 'claude-opus-5-5', modelUsed: 'haiku', modelUsedSource: 'requested' });
+  });
+
+  it('F1: the forced subagent-model environment decides the model, even over the one the call named', async () => {
+    const { cwd, env } = project('cheap', 'haiku');
+    const { event } = await run(
+      'Agent',
+      { description: 'x', prompt: 'y', subagent_type: 'general-purpose', model: 'opus' },
+      cwd,
+      { ...env, CLAUDE_CODE_SUBAGENT_MODEL: 'haiku', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' }
+    );
+    expect(event).toMatchObject({ modelUsed: 'haiku', modelUsedSource: 'requested' });
+  });
+
+  it('F1: telemetryEvent reads resolved_model as the model the call runs on', () => {
+    const e = telemetryEvent({ hook: 'PreToolUse', event: 'agent_call', session_id: 's1', requested_model: null, resolved_model: 'haiku', sessionModel: 'claude-opus-5-5' });
+    expect(e).toMatchObject({ modelUsed: 'haiku', modelUsedSource: 'requested' });
+    const none = telemetryEvent({ hook: 'PreToolUse', event: 'agent_call', session_id: 's1', requested_model: null, resolved_model: null, sessionModel: 'claude-opus-5-5' });
+    expect(none).toMatchObject({ modelUsed: 'claude-opus-5-5', modelUsedSource: 'inherited' });
+  });
+
+  it('F5: a Workflow row carries no modelUsed and no modelUsedSource', async () => {
+    const { cwd, env } = project('cheap', 'haiku');
+    const { event } = await run('Workflow', { script: 'agent("x",{model:"haiku"})' }, cwd, env);
+    expect(event.toolOrHook).toBe('PreToolUse');
+    expect(event.sessionModel).toBe('claude-opus-5-5');
+    expect('modelUsed' in event).toBe(false);
+    expect('modelUsedSource' in event).toBe(false);
+  });
+});

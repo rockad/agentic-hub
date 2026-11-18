@@ -598,7 +598,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     user_intent: state?.intent ?? null,
     sessionModel,
     session_model_source: sessionModelSource,
-    ...(resolved ? { model_source: resolved.source } : {}),
+    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
     ...(effortAsk ? { effort_ask: true } : {}),
     reason:
       logReason ??
@@ -1263,11 +1263,14 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
       ? // The prompt only advises: nothing is delegated yet, so there is no modelUsed (the old alias is gone).
         { modelRecommended: str(entry.recommended_model) ?? str(entry.model) }
       : {
-          ...(entry.hook === 'PreToolUse'
+          // A Workflow carries no model of its own (the agents it launches choose theirs), so it has no modelUsed.
+          ...(entry.hook === 'PreToolUse' && entry.tool_name !== 'Workflow'
             ? resolveModelUsed({
                 clampedTo: entry.clamped_to,
                 downgradedTo: entry.downgrade === 'applied' ? entry.downgrade_to : undefined,
-                requested: entry.requested_model ?? entry.model,
+                // The model the hook resolved (forced environment model, the call's own, the definition's, a ladder pin,
+                // the subagent-model environment) is what the call runs on; the call's own model is the fallback.
+                requested: str(entry.resolved_model) ?? entry.requested_model ?? entry.model,
                 sessionModel: entry.sessionModel
               })
             : {}),

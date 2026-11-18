@@ -193,6 +193,7 @@ async function main() {
               buildAntigravityTelemetryEvent({
                 kind: 'subagent_served',
                 conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
+                inputModelName: input.modelName,
                 childConversationId: String(entry.child_conversation_id),
                 requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
                 servedModel: String(entry.served_model),
@@ -410,18 +411,23 @@ async function main() {
             requested_model: requestedModel || null,
             served_model: servedModel || null
           });
-          trackTelemetry(
-            logJevTelemetry(
-              buildAntigravityTelemetryEvent({
-                kind: 'subagent_served',
-                conversationId,
-                childConversationId: childConvId || null,
-                requestedModel: requestedModel || null,
-                servedModel: servedModel || null,
-                backfilled: false
-              })
-            )
-          );
+          // Telemetry only for a served model that was found, as the backfill paths do; the decisions-log row above
+          // stays as the audit trail for a call where nothing could be read.
+          if (childConvId && servedModel) {
+            trackTelemetry(
+              logJevTelemetry(
+                buildAntigravityTelemetryEvent({
+                  kind: 'subagent_served',
+                  conversationId,
+                  inputModelName: input.modelName,
+                  childConversationId: childConvId,
+                  requestedModel: requestedModel || null,
+                  servedModel,
+                  backfilled: false
+                })
+              )
+            );
+          }
         } else {
           recordPendingServed(sessionsDir, conversationId, {
             stepIdx: input.stepIdx,

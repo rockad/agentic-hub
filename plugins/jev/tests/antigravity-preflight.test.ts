@@ -523,7 +523,7 @@ describe('antigravity preflight hook', () => {
     );
 
     await capture(
-      { conversationId: parentId, lastUserInput: 'hi' },
+      { conversationId: parentId, lastUserInput: 'hi', modelName: 'gemini-3.8-pro-low' },
       { autoHeal: () => {} }
     );
 
@@ -543,6 +543,8 @@ describe('antigravity preflight hook', () => {
       childConversationId: childId,
       requestedModel: 'flash',
       servedModel: 'gemini-3.8-pro-preview',
+      sessionModel: 'gemini-3.8-pro-low',
+      sessionModelSource: 'hook',
       backfilled: true
     });
     expect(fs.existsSync(path.join(sessionsDir, `${parentId}.pending-served.json`))).toBe(false);

@@ -271,8 +271,8 @@ export function pruneExpiredSessionModels(sessionsDir: string, nowSec: number, f
     const entries = fsSync.readdirSync(sessionsDir);
     for (const name of entries) {
       const filePath = path.join(sessionsDir, name);
-      if (name.endsWith('.write-guard.json')) {
-        // Write-guard streak files carry no model: expire them by their last write, with the same TTL.
+      if (name.endsWith('.write-guard.json') || name.endsWith('.turn.json')) {
+        // Write-guard streak files and per-conversation turn state carry no model: expire them by their last write, with the same TTL.
         try {
           const st = fsSync.statSync(filePath);
           if (st.isFile() && nowSec - st.mtimeMs / 1000 > ANTIGRAVITY_SESSION_TTL_SEC) {

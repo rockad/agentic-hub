@@ -16,6 +16,12 @@ export type ApprovalState = {
   approvals: Approval[];
   attempts?: Record<string, { count: number; updated_at: number }>;
   denied?: Record<string, number>;
+  /**
+   * The step_index of the ask_question answer row, per elevation model (lower-case), recorded by PostToolUse against
+   * a pending denial. The PreToolUse pull reads only that row: real transcripts carry no tool call ids, so the
+   * position of the answer cannot be inferred when other tools ran in parallel with the question.
+   */
+  answerSteps?: Record<string, number>;
 };
 
 export type ApprovalStore = {
@@ -24,6 +30,10 @@ export type ApprovalStore = {
   claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
+  /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
+  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number) => boolean;
+  /** The recorded answer row step_index for `model`, or null when none is recorded for a pending denial. */
+  getAnswerStep?: (sessionId: string, model: string, nowMs: number) => number | null;
 };
 
 export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
@@ -45,7 +55,24 @@ export function approvalValid(a: Approval, nowMs: number): boolean {
 
 export function noteDenied(state: ApprovalState, model: string, nowMs: number): ApprovalState {
   const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
-  return { ...state, denied: { ...Object.fromEntries(kept), [model.toLowerCase()]: nowMs } };
+  // A fresh denial starts a fresh question: an answer row recorded for an earlier denial must not be read for it.
+  const { [model.toLowerCase()]: _stale, ...answerSteps } = state.answerSteps ?? {};
+  const next: ApprovalState = { ...state, denied: { ...Object.fromEntries(kept), [model.toLowerCase()]: nowMs } };
+  if (Object.keys(answerSteps).length > 0) next.answerSteps = answerSteps;
+  else delete next.answerSteps;
+  return next;
+}
+
+export function noteAnswerStep(state: ApprovalState, model: string, stepIdx: number, nowMs: number): ApprovalState | null {
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
+  if (!wasDeniedRecently(state, model, nowMs)) return null;
+  return { ...state, answerSteps: { ...(state.answerSteps ?? {}), [model.toLowerCase()]: stepIdx } };
+}
+
+export function getAnswerStep(state: ApprovalState, model: string, nowMs: number): number | null {
+  if (!wasDeniedRecently(state, model, nowMs)) return null;
+  const v = state.answerSteps?.[model.toLowerCase()];
+  return typeof v === 'number' ? v : null;
 }
 
 export function getRecentDenialTimestamp(state: ApprovalState, model: string, nowMs: number): number | null {
@@ -76,8 +103,13 @@ export function recordApproval(state: ApprovalState, approval: Approval, nowMs: 
   const remainingDenied = Object.fromEntries(
     Object.entries(state.denied ?? {}).filter(([m]) => modelTierRank(m) < want)
   );
-  const next = addApproval(state, approval, nowMs);
-  return { ...next, denied: remainingDenied };
+  const remainingSteps = Object.fromEntries(
+    Object.entries(state.answerSteps ?? {}).filter(([m]) => modelTierRank(m) < want)
+  );
+  const next: ApprovalState = { ...addApproval(state, approval, nowMs), denied: remainingDenied };
+  if (Object.keys(remainingSteps).length > 0) next.answerSteps = remainingSteps;
+  else delete next.answerSteps;
+  return next;
 }
 
 export function claimApproval(
@@ -148,7 +180,20 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
     r.denied && typeof r.denied === 'object' && !Array.isArray(r.denied)
       ? (r.denied as Record<string, number>)
       : undefined;
-  return { approvals, ...(attempts ? { attempts } : {}), ...(denied ? { denied } : {}) };
+  const answerSteps =
+    r.answerSteps && typeof r.answerSteps === 'object' && !Array.isArray(r.answerSteps)
+      ? Object.fromEntries(
+          Object.entries(r.answerSteps as Record<string, unknown>).filter(
+            (e): e is [string, number] => typeof e[1] === 'number' && Number.isInteger(e[1]) && e[1] >= 0
+          )
+        )
+      : undefined;
+  return {
+    approvals,
+    ...(attempts ? { attempts } : {}),
+    ...(denied ? { denied } : {}),
+    ...(answerSteps && Object.keys(answerSteps).length > 0 ? { answerSteps } : {})
+  };
 }
 
 export function createAntigravityApprovalStore(sessionsDir: string): ApprovalStore {
@@ -226,6 +271,21 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
       return withLock(sessionId, () => {
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       });
+    },
+    noteAnswerStep: (rawId, model, stepIdx, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return false;
+      return withLock(sessionId, () => {
+        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs);
+        if (!next) return false;
+        writeState(sessionId, next);
+        return true;
+      });
+    },
+    getAnswerStep: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLock(sessionId, () => getAnswerStep(readState(sessionId), model, nowMs));
     }
   };
 }

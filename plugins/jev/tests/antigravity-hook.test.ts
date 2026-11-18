@@ -969,7 +969,9 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
       '{"step_index":2,"type":"GENERIC","content":"A1: Yes, for the next 5 minutes"}\n';
     fs.writeFileSync(transcriptFile, content);
 
-    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro');
+    // A prose match has no tool call: with no recorded answer row (PostToolUse stepIdx) the next GENERIC is not trusted.
+    expect(pullElevationAnswerFromTranscript(transcriptFile, 'pro')).toBeNull();
+    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', undefined, 2);
     expect(pull).toEqual({ approved: true, scope: '5min' });
   });
 
@@ -983,7 +985,7 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
     fs.writeFileSync(transcriptFile, content);
 
     // If deniedAtMs is 10:55, it ignores step 1 (older than 10:55 - 5s) and matches step 3
-    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', Date.parse('2026-11-16T10:55:00.000Z'));
+    const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', Date.parse('2026-11-16T10:55:00.000Z'), 4);
     expect(pull).toEqual({ approved: true, scope: 'session' });
   });
 

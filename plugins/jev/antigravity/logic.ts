@@ -323,10 +323,21 @@ export function parseElevationAnswer(answerText?: string | null): { approved: bo
   return scope ? { approved: true, scope } : { approved: false };
 }
 
+/**
+ * The answer to the latest `[jev-elevate:<model>]` question in the transcript, or null when there is none yet.
+ *
+ * Which GENERIC row is the question's own answer (real transcripts carry no tool call ids):
+ * 1. A tool call id on the question, when there is one: the GENERIC row with the same id (and no other row).
+ * 2. `answerStepIdx`, the step_index PostToolUse recorded for the question's own row: exactly that GENERIC row after
+ *    the question, and no other. A row that is not written yet is no answer.
+ * 3. Neither: the first GENERIC row after the question, but only when the question was the planner step's single tool
+ *    call. With several tool calls (run in parallel) the rows may come in completion order, so there is no answer.
+ */
 export function pullElevationAnswerFromTranscript(
   transcriptPath: string,
   requestedModel: string,
-  deniedAtMs?: number
+  deniedAtMs?: number,
+  answerStepIdx?: number | null
 ): { approved: boolean; scope?: ApprovalScope } | null {
   try {
     const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
@@ -358,6 +369,8 @@ export function pullElevationAnswerFromTranscript(
       stepIndexInArray: number;
       toolCallId?: string;
       markerIndex: number;
+      /** How many tool calls the planner step made: 0 for a prose match. */
+      toolCallCount: number;
     };
 
     let latestToolMatch: AskMatch | null = null;
@@ -440,13 +453,15 @@ export function pullElevationAnswerFromTranscript(
         latestToolMatch = {
           stepIndexInArray: i,
           toolCallId,
-          markerIndex
+          markerIndex,
+          toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0
         };
       } else if (matchedProse) {
         latestProseMatch = {
           stepIndexInArray: i,
           toolCallId,
-          markerIndex
+          markerIndex,
+          toolCallCount: 0
         };
       }
     }
@@ -470,9 +485,21 @@ export function pullElevationAnswerFromTranscript(
       }
     }
 
-    // The first-GENERIC-after fallback is only for a question that carries no tool call id. With an id, a missing
-    // matching row means the answer is not in the transcript yet; the next GENERIC step belongs to another tool.
-    if (!genericStep && !latestMatch.toolCallId) {
+    // No id: the row PostToolUse recorded for the question (its input.stepIdx), and no other. Rows of parallel tool
+    // calls follow the planner step in an order that may be call order or completion order, so position is not used.
+    if (!latestMatch.toolCallId && typeof answerStepIdx === 'number') {
+      const rows: Array<Record<string, unknown>> = [];
+      for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
+        const step = steps[i];
+        const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
+        if (stepType === 'GENERIC' && step.step_index === answerStepIdx) rows.push(step);
+      }
+      // A duplicated index is ambiguous: fail closed.
+      genericStep = rows.length === 1 ? rows[0] : null;
+    } else if (!latestMatch.toolCallId && latestMatch.toolCallCount === 1) {
+      // The first-GENERIC-after fallback is only for a question that carries no tool call id, was not recorded by
+      // PostToolUse, and was the single tool call of its planner step. With an id, a missing matching row means the
+      // answer is not in the transcript yet; the next GENERIC step belongs to another tool.
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
         const step = steps[i];
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
@@ -681,7 +708,14 @@ export function evaluateAntigravitySubagentCall(
     if (approvalStore && input.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
       const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
       if (typeof deniedAtMs === 'number') {
-        const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs);
+        // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
+        let answerStepIdx: number | null = null;
+        try {
+          answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
+        } catch {
+          answerStepIdx = null;
+        }
+        const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs, answerStepIdx);
         if (pull?.approved && pull.scope) {
           // Allow only when the approval was really stored (and then claimed): a failed record (a lock timeout
           // throws) would leave the denial in place and let the same answer be pulled again.

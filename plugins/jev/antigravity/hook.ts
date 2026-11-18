@@ -171,6 +171,7 @@ async function main() {
 
         let markerFound = false;
         let rowFound = false;
+        let answerStepRecorded = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
         let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
 
@@ -197,6 +198,17 @@ async function main() {
           }
 
           markerFound = typeof elevateModel === 'string';
+
+          // Record where the answer row is, before waiting for it and whatever the answer turns out to be: the row's
+          // step_index is this call's own stepIdx, even when the row is not written yet. The PreToolUse pull reads only
+          // that row (real transcripts carry no tool call ids, and parallel tool calls make position unreliable).
+          if (markerFound && elevateModel && approvals && conversationId && typeof input.stepIdx === 'number') {
+            try {
+              answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now()) === true;
+            } catch {
+              answerStepRecorded = false;
+            }
+          }
 
           // Only an elevation question is worth waiting for: a bounded wait (~150 ms polls, <= 2 s) for the answer row
           // when content is not on stdin and transcriptPath + stepIdx are given. Any other question returns at once.
@@ -239,6 +251,7 @@ async function main() {
           transcript_readable: transcriptReadable,
           marker_found: markerFound,
           row_found: rowFound,
+          answer_step_recorded: answerStepRecorded,
           parsed,
           outcome
         });

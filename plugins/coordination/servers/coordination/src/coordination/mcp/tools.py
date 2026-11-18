@@ -10,7 +10,8 @@ here.
 Identity (spec 5.4, 5.4.1) is resolved per call by `_handle`:
 
 - agy (a `local-harness` key of an `antigravity@` card): the conversation id in `_meta`, mapped
-  through the durable `sessions` table; an unseen conversation registers on its first call (D30).
+  through the durable `sessions` table; an unseen conversation registers on its first call (D30),
+  and a conversation whose session had ended revives on its next call (Z17).
 - every other client: the handle `a2a_hello` bound to its `Mcp-Session-Id`.
 - either, when neither exists: the optional `handle` argument, accepted only for a live session of
   the calling key's card (spec 3.4 fallback), else the constant error `NOT_BOUND_TEXT`.
@@ -52,6 +53,7 @@ from coordination.mcp.sessions import (
     AGY_CONVERSATION_KEY,
     AGY_ROOT_KEY,
     McpSession,
+    McpSessions,
     SessionRegistry,
     is_agy_card,
     valid_session_id,
@@ -112,6 +114,8 @@ class CallContext:
     principal: Principal
     session: McpSession
     meta: Mapping[str, Any] = field(default_factory=dict)  # `params._meta`, read only for agy
+    #: The `Mcp-Session-Id` map, so `a2a_hello` can move a handle off an older binding (Z17).
+    bindings: McpSessions | None = None
 
 
 # -- the catalogue --------------------------------------------------------------------------
@@ -387,7 +391,7 @@ class McpTools:
             return fail(exc.code, exc.message)
         except ServiceError as exc:
             return fail(exc.code, str(exc) or exc.code)
-        except IdentityError as exc:  # `session_ended`, `handle_collision`: constant codes and messages
+        except IdentityError as exc:  # `unknown_handle`, `wrong_card`, `handle_collision`: constant codes and messages
             return fail(exc.code, exc.message)
         except asyncio.CancelledError:
             raise
@@ -482,14 +486,17 @@ class McpTools:
                 )
             handle = await self._agy_handle(card, key_id, conv, root, parent)
         elif "handle" in args:
-            handle = await self._checked_handle(card, args["handle"])
-            ctx.session.handle = handle
+            # An ended handle is revived here, like a resumed registration (Z17).
+            handle = (await self._identity.bind_handle(card, key_id, args["handle"])).handle
+            await self._bind(ctx, key_id, card, handle)
         else:
             # `name` mode: register a session whose id is this Mcp-Session-Id (spec 4.2), so the
             # sid8 of the handle comes from it; the handle is built by the server.
-            registration = await self._identity.register(card, key_id, ctx.session.session_id, args["name"])
+            registration = await self._identity.register(
+                card, key_id, ctx.session.session_id, args["name"], via="hello"
+            )
             handle = registration.session.handle
-            ctx.session.handle = handle
+            await self._bind(ctx, key_id, card, handle)
         await self._registry.touch(handle)
         pending, held = await self._counts(handle, card)
         return ok(
@@ -503,6 +510,17 @@ class McpTools:
                 "server_version": coordination.__version__,
             }
         )
+
+    async def _bind(self, ctx: CallContext, key_id: str, card: str, handle: str) -> None:
+        """Bind this `Mcp-Session-Id` to `handle` and drop the binding of any other live
+        `Mcp-Session-Id` of the same card (Z17: the newest `a2a_hello` wins, so a resumed session
+        takes its handle back from its stale predecessor). The loser's next call is unbound and
+        gets the constant "call a2a_hello" error. One `session_rebound` row per binding dropped."""
+        ctx.session.handle = handle
+        if ctx.bindings is None:
+            return
+        for old in ctx.bindings.unbind_others(handle, card, ctx.session.session_id):
+            await self._identity.rebound(key_id, handle, old[:8], ctx.session.session_id[:8])
 
     # -- reads ---------------------------------------------------------------------------
 

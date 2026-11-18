@@ -326,8 +326,8 @@ def test_audit_row_refuses_what_the_canary_would_be(canaries):
     from coordination.audit import AuditError
 
     with pytest.raises(AuditError):
-        asyncio.run(audit.registration(actor="k1", handle=key, card_id="c"))
+        asyncio.run(audit.session_registered(actor="k1", handle=key, card_id="c", via="hook"))
     with pytest.raises(AuditError):
-        asyncio.run(audit.registration(actor=f"Bearer {key}", handle="h", card_id="c"))
+        asyncio.run(audit.session_registered(actor=f"Bearer {key}", handle="h", card_id="c", via="hook"))
     assert re.search(r"a2ak_", "".join(map(str, store.rows))) is None
     assert store.rows == []

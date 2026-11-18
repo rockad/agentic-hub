@@ -58,7 +58,8 @@ def test_in_memory_store_satisfies_the_protocol(store):
 
 def test_every_event_type_in_the_plan_exists():
     assert {e.value for e in AuditEvent} == {
-        "key_created", "key_rotated", "key_revoked", "auth_failure_sampled", "registration",
+        "key_created", "key_rotated", "key_revoked", "auth_failure_sampled", "session_registered",
+        "session_ended", "session_rebound", "alias_added",
         "wake_sent", "hold_entered", "hold_released", "hold_denied", "state_transition",
         "budget_exhausted", "handle_probe_limited",
     }  # fmt: skip
@@ -72,7 +73,14 @@ def test_each_writer_method_writes_one_valid_row(log, store):
         await log.key_created(actor="admin", key_id="k1", scope="local-harness")
         await log.key_rotated(actor="admin", key_id="k1", new_key_id="k2")
         await log.key_revoked(actor="admin", key_id="k2")
-        await log.registration(actor="k1", handle="claude-code@box/x~3f2a9c1d", card_id="claude-code@box")
+        await log.session_registered(
+            actor="k1", handle="claude-code@box/x~3f2a9c1d", card_id="claude-code@box", via="hook"
+        )
+        await log.session_ended(actor="k1", handle="claude-code@box/x~3f2a9c1d", via="explicit")
+        await log.session_rebound(
+            actor="k1", handle="claude-code@box/x~3f2a9c1d", from_binding="3f2a9c1d", to_binding="9b4e7a02"
+        )
+        await log.alias_added(actor="k1", handle="claude-code@box/x~3f2a9c1d", alias="x2")
         await log.wake_sent(actor=SYSTEM_ACTOR, handle="claude-code@box/x~3f2a9c1d", pending_n=2)
         await log.budget_exhausted(actor=SYSTEM_ACTOR, handle="claude-code@box/x~3f2a9c1d", budget_per_h=20)
         await log.hold_entered(actor="k9", task_id="t1", origin="remote")
@@ -86,7 +94,8 @@ def test_each_writer_method_writes_one_valid_row(log, store):
     run(go())
     assert [r.event for r in store.rows] == [
         AuditEvent.KEY_CREATED, AuditEvent.KEY_ROTATED, AuditEvent.KEY_REVOKED,
-        AuditEvent.REGISTRATION, AuditEvent.WAKE_SENT, AuditEvent.BUDGET_EXHAUSTED,
+        AuditEvent.SESSION_REGISTERED, AuditEvent.SESSION_ENDED, AuditEvent.SESSION_REBOUND,
+        AuditEvent.ALIAS_ADDED, AuditEvent.WAKE_SENT, AuditEvent.BUDGET_EXHAUSTED,
         AuditEvent.HOLD_ENTERED, AuditEvent.HOLD_RELEASED, AuditEvent.HOLD_DENIED,
         AuditEvent.STATE_TRANSITION, AuditEvent.HANDLE_PROBE_LIMITED,
     ]  # fmt: skip
@@ -160,7 +169,7 @@ def test_quarantined_is_a_valid_state(log, store):
 )
 def test_content_shaped_detail_is_refused(detail):
     with pytest.raises(AuditError):
-        make_row(T0, AuditEvent.REGISTRATION, "k1", "h", **detail)
+        make_row(T0, AuditEvent.SESSION_ENDED, "k1", "h", via="explicit", **detail)
 
 
 @pytest.mark.parametrize(
@@ -174,11 +183,11 @@ def test_content_shaped_detail_is_refused(detail):
 )
 def test_secret_or_long_values_are_refused_in_detail_actor_and_subject(value):
     with pytest.raises(AuditError):
-        make_row(T0, AuditEvent.REGISTRATION, "k1", "h", card_id=value)
+        make_row(T0, AuditEvent.SESSION_ENDED, "k1", "h", via="explicit", alias=value)
     with pytest.raises(AuditError):
-        make_row(T0, AuditEvent.REGISTRATION, value, "h")
+        make_row(T0, AuditEvent.SESSION_ENDED, value, "h", via="explicit")
     with pytest.raises(AuditError):
-        make_row(T0, AuditEvent.REGISTRATION, "k1", value)
+        make_row(T0, AuditEvent.SESSION_ENDED, "k1", value, via="explicit")
 
 
 def test_key_id_alone_is_allowed():
@@ -202,7 +211,7 @@ def test_naive_time_and_unknown_event_are_refused():
 
 def test_a_refused_row_never_reaches_the_store(log, store):
     with pytest.raises(AuditError):
-        run(log.registration(actor="k1", handle="a2ak_dev_abc_SECRETSECRETSECRET", card_id="c"))
+        run(log.session_registered(actor="k1", handle="a2ak_dev_abc_SECRETSECRETSECRET", card_id="c", via="hook"))
     assert store.rows == []
 
 
@@ -376,7 +385,7 @@ def test_sql_audit_store_appends_alone_and_inside_a_transaction(config):
             store = SqlAuditStore(env.engine)
             assert isinstance(store, TransactionalAuditStore)
             log = AuditLog(store, env.clock)
-            await log.registration(actor="k1", handle="h1", card_id="c@x")  # own transaction
+            await log.session_registered(actor="k1", handle="h1", card_id="c@x", via="hook")  # own transaction
             row = log.hold_entered_row(actor="k1", task_id="t1", origin="remote")
             with pytest.raises(RuntimeError):
                 async with env.engine.begin() as conn:  # joined: rolled back with the caller's work
@@ -389,10 +398,10 @@ def test_sql_audit_store_appends_alone_and_inside_a_transaction(config):
 
     rows = run(go())
     assert [(r.event, r.actor, r.subject) for r in rows] == [
-        ("registration", "k1", "h1"),
+        ("session_registered", "k1", "h1"),
         ("hold_entered", "k1", "t1"),
     ]
-    assert rows[0].detail_json == {"card_id": "c@x"} and isinstance(rows[0].at, datetime)
+    assert rows[0].detail_json == {"card_id": "c@x", "via": "hook", "revived": False} and isinstance(rows[0].at, datetime)
     assert sa is not None
 
 

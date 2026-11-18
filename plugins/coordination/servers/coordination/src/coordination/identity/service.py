@@ -7,18 +7,17 @@ registry. The caller has already authenticated the request and passes the key's 
 class never reads a card, a handle or a conversation id from anything but its arguments, and every
 lookup is scoped to the card it is given, so a key can only touch sessions of its own card.
 
-Two defaults the spec leaves open, built conservatively and marked [design]:
+Decision Z17 (2026-11-18), built here:
 
-- `REVIVE_ENDED_SESSIONS = False`. A session that has ended stays ended. A registration or an agy
-  call for an ended (card, harness session id) is refused with `session_ended`, never revived, and
-  a task addressed to its handle stays orphaned (spec 5.2). Spec 5.2 also says "if the same harness
-  session resumes, the same handle comes back and the task is offered again", which reads as
-  revival; the two sentences disagree and the owner has not decided. Setting this to True makes a
-  registration of an ended session revive it (`ended_at` cleared, `last_seen_at` now). Note the
-  cost of the default: a session expired by `A2A_SESSION_IDLE_TTL_H` (12 h) and then resumed cannot
-  register again; the user starts a new session.
+- A session that has ended and then resumes revives: the same harness session id brings back the
+  same handle (`ended_at` cleared, `last_seen_at` now), and a task addressed to the handle, orphaned
+  while it was ended, is offered again (spec 5.2). This is the only behaviour; there is no switch.
+  It holds for `POST /sessions`, the agy conversation binding and `a2a_hello(handle)`.
+- Lifecycle audit events, written here through the S1-OBS writer: `session_registered` (with `via`
+  and `revived`), `session_ended` (with `via`), `session_rebound` and `alias_added`.
+- Idle expiry (`end_idle`) ends each idle session by name, so the end hooks fire.
 - The unnamed-session form: see `identity.handles` (the suffix is always present; the default name
-  is the `<sid8>`).
+  is the `<sid8>`; decided in Z17).
 """
 
 from __future__ import annotations
@@ -26,12 +25,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 
-from coordination.audit import AuditLog
+from coordination.audit import SYSTEM_ACTOR, AuditLog
 from coordination.clock import Clock
 from coordination.identity.errors import (
     InvalidRequest,
-    SessionEnded,
     UnknownHandle,
     WrongCard,
 )
@@ -41,11 +40,9 @@ from coordination.identity.liveness import liveness_state
 from coordination.identity.registry import SessionRegistry, SessionView
 from coordination.service import ListenerView, NoListeners
 from coordination.service.directory import Session
+from coordination.service.types import card_of
 
 log = logging.getLogger("coordination.identity")
-
-#: [design] whether a registration of an ended session revives it. See the module docstring.
-REVIVE_ENDED_SESSIONS = False
 
 PendingCount = Callable[[str], Awaitable[int]]
 
@@ -96,44 +93,48 @@ class IdentityService:
     # -- registering ---------------------------------------------------------------------
 
     async def register(
-        self, card_id: str, key_id: str, harness_session_id: str, name_hint: str = ""
+        self, card_id: str, key_id: str, harness_session_id: str, name_hint: str = "", *, via: str = "hook"
     ) -> Registration:
         """Register or refresh the session (card, harness session id); idempotent.
 
+        `via` says which route registered it, for the audit row: `hook` (`POST /sessions`),
+        `hello` (`a2a_hello` in `name` mode) or `auto_agy` (an unseen agy conversation).
+
         - New: the server builds the handle from the card, the hint and the session id (never the
-          caller), checks it is unique, and writes one `registration` audit row.
+          caller), checks it is unique, and writes one `session_registered` audit row
+          (`revived` false).
         - Known and live: returns the same handle and refreshes `last_seen_at`. A hint that derives
           a different name from the handle's own becomes an alias (a later `SessionStart` name,
-          spec 5.4.1).
-        - Known and ended: `session_ended`, unless `REVIVE_ENDED_SESSIONS`.
+          spec 5.4.1) and writes one `alias_added` row.
+        - Known and ended: revived (Z17): same handle, `ended_at` cleared, `last_seen_at` now, one
+          `session_registered` row with `revived` true; its orphaned tasks are offered again.
         - A conversation that was grouped under a root as a sub-invocation is not a session of its
-          own: the root's handle comes back, `created` false, and no alias is added.
+          own: the root's handle comes back (revived if it had ended), `created` false, and no
+          alias is added.
         Raises `HandleCollision` (409) when another session holds the handle."""
         existing = await self.registry.by_harness_session(card_id, harness_session_id)
         if existing is not None:
-            return await self._known(card_id, key_id, existing, name_hint)
+            return await self._known(card_id, key_id, existing, name_hint, via)
         link = await self.registry.conversation(card_id, harness_session_id)
         if link is not None:
             grouped = await self.registry.by_handle(link.handle)
             if grouped is not None:
-                if grouped.ended:
-                    raise SessionEnded
-                return Registration(grouped, created=False)
+                revived = grouped.ended and await self._revive(key_id, grouped, via)
+                fresh = await self.registry.by_handle(grouped.handle) if revived else None
+                return Registration(fresh or grouped, created=False, revived=revived)
         handle = build_handle(card_id, name_hint, harness_session_id)
         session, created = await self.registry.register(card_id, harness_session_id, handle)
         if created:
-            await self._log_registration(key_id, session)
+            await self._audit_registered(key_id, session, via, revived=False)
             return Registration(session, True)
-        return await self._known(card_id, key_id, session, name_hint)  # a concurrent call won
+        return await self._known(card_id, key_id, session, name_hint, via)  # a concurrent call won
 
-    async def _known(self, card_id: str, key_id: str, session: Session, name_hint: str) -> Registration:
+    async def _known(
+        self, card_id: str, key_id: str, session: Session, name_hint: str, via: str
+    ) -> Registration:
         revived = False
         if session.ended:
-            if not REVIVE_ENDED_SESSIONS:
-                raise SessionEnded
-            revived = await self.registry.revive(session.handle)
-            if revived:
-                await self._log_registration(key_id, session)
+            revived = await self._revive(key_id, session, via)
         else:
             await self.registry.refresh(session.handle)
         alias_added: str | None = None
@@ -141,16 +142,71 @@ class IdentityService:
         if wanted and wanted != name_part(session.handle):
             if await self.registry.add_alias(card_id, session.handle, wanted):
                 alias_added = wanted
+                await self._audit_alias(key_id, session.handle, wanted)
         fresh = await self.registry.by_handle(session.handle)
         return Registration(fresh or session, created=False, revived=revived, alias_added=alias_added)
 
-    async def _log_registration(self, key_id: str, session: Session) -> None:
+    async def _revive(self, key_id: str, session: Session, via: str) -> bool:
+        """Bring an ended session back (Z17). True only for the call that did it, which is also the
+        one call that writes the `session_registered` row (`revived` true)."""
+        if not await self.registry.revive(session.handle):
+            return False
+        await self._audit_registered(key_id, session, via, revived=True)
+        return True
+
+    async def bind_handle(self, card_id: str, key_id: str, handle: object) -> Session:
+        """The session an `a2a_hello(handle)` names (spec 5.4, Z17): it must exist
+        (`unknown_handle`) and belong to `card_id` (`wrong_card`). A handle that ended is revived,
+        as a resumed registration would be (`session_registered`, `via` hello, `revived` true).
+        A live one is returned as it is; binding it is the caller's."""
+        if not isinstance(handle, str) or not HANDLE_RE.match(handle):
+            raise UnknownHandle
+        session = await self.registry.by_handle(handle)
+        if session is None:
+            raise UnknownHandle
+        if session.card_id != card_id or card_of(handle) != card_id:
+            raise WrongCard
+        if session.ended and await self._revive(key_id, session, "hello"):
+            return await self.registry.by_handle(handle) or session
+        return session
+
+    async def rebound(self, key_id: str, handle: str, from_binding: str, to_binding: str) -> None:
+        """Record that `a2a_hello` moved `handle` from one `Mcp-Session-Id` to another (Z17). The
+        ids are the 8-character prefixes of those values."""
         if self._audit is None:
             return
         try:
-            await self._audit.registration(actor=key_id, handle=session.handle, card_id=session.card_id)
+            await self._audit.session_rebound(
+                actor=key_id, handle=handle, from_binding=from_binding, to_binding=to_binding
+            )
+        except Exception as exc:  # noqa: BLE001 - the rebind stands; only its log line failed
+            log.warning("rebind audit failed", extra={"fields": {"error": type(exc).__name__}})
+
+    async def _audit_registered(self, key_id: str, session: Session, via: str, *, revived: bool) -> None:
+        if self._audit is None:
+            return
+        try:
+            await self._audit.session_registered(
+                actor=key_id, handle=session.handle, card_id=session.card_id, via=via, revived=revived
+            )
         except Exception as exc:  # noqa: BLE001 - the registration stands; only its log line failed
             log.warning("registration audit failed", extra={"fields": {"error": type(exc).__name__}})
+
+    async def _audit_alias(self, key_id: str, handle: str, alias: str) -> None:
+        if self._audit is None:
+            return
+        try:
+            await self._audit.alias_added(actor=key_id, handle=handle, alias=alias)
+        except Exception as exc:  # noqa: BLE001 - the alias stands; only its log line failed
+            log.warning("alias audit failed", extra={"fields": {"error": type(exc).__name__}})
+
+    async def _audit_ended(self, actor: str, handle: str, via: str) -> None:
+        if self._audit is None:
+            return
+        try:
+            await self._audit.session_ended(actor=actor, handle=handle, via=via)
+        except Exception as exc:  # noqa: BLE001 - the end stands; only its log line failed
+            log.warning("end audit failed", extra={"fields": {"error": type(exc).__name__}})
 
     # -- agy: bind by conversation id ----------------------------------------------------
 
@@ -171,8 +227,10 @@ class IdentityService:
         - A sub-invocation (`root_conversation_id` differs from the conversation): grouped under the
           root's session, registering the root if it is unseen (the subagent never becomes a
           top-level handle), and the link plus `parent_conversation_id` recorded for provenance.
-        - An unseen conversation: registered on this first call (D30), one `registration` audit row.
-        An ended session is `session_ended`, never revived here."""
+        - An unseen conversation: registered on this first call (D30), one `session_registered`
+          audit row with `via` auto_agy.
+        An ended session is revived by the call (Z17), the same handle comes back: one
+        `session_registered` row with `revived` true."""
         session = await self.registry.by_harness_session(card_id, conversation_id)
         if session is None:
             link = await self.registry.conversation(card_id, conversation_id)
@@ -183,19 +241,23 @@ class IdentityService:
             if root is not None:
                 session = await self.registry.by_harness_session(card_id, root)
                 if session is None:
-                    session = (await self.register(card_id, key_id, root)).session
-                if not session.ended:
-                    await self.registry.link_conversation(
-                        card_id,
-                        conversation_id,
-                        session.handle,
-                        root_conversation_id=root,
-                        parent_conversation_id=parent_conversation_id,
-                    )
+                    session = (await self.register(card_id, key_id, root, via="auto_agy")).session
+                session = await self._revived(key_id, session)
+                await self.registry.link_conversation(
+                    card_id,
+                    conversation_id,
+                    session.handle,
+                    root_conversation_id=root,
+                    parent_conversation_id=parent_conversation_id,
+                )
             else:
-                session = (await self.register(card_id, key_id, conversation_id)).session
-        if session.ended:
-            raise SessionEnded
+                session = (await self.register(card_id, key_id, conversation_id, via="auto_agy")).session
+        return await self._revived(key_id, session)
+
+    async def _revived(self, key_id: str, session: Session) -> Session:
+        """`session`, brought back first if it had ended (agy path, `via` auto_agy)."""
+        if session.ended and await self._revive(key_id, session, "auto_agy"):
+            return await self.registry.by_handle(session.handle) or session
         return session
 
     # -- listing -------------------------------------------------------------------------
@@ -205,11 +267,12 @@ class IdentityService:
         *,
         handle: str | None = None,
         card_id: str | None = None,
-        include_ended: bool = True,
+        include_ended: bool = False,
         limit: int = 100,
     ) -> list[ListedSession]:
-        """Sessions with their liveness and pending count, newest-seen first. A local-harness key
-        sees every card on the server (spec 3.5: own machines only)."""
+        """Sessions with their liveness and pending count, newest-seen first. Live sessions only
+        unless `include_ended` (Z17). A local-harness key sees every card on the server (spec 3.5:
+        own machines only)."""
         now = self._clock.now()
         out: list[ListedSession] = []
         for view in await self.registry.list_sessions(
@@ -229,12 +292,18 @@ class IdentityService:
     # -- ending --------------------------------------------------------------------------
 
     async def end(
-        self, card_id: str, *, handle: str | None = None, harness_session_id: str | None = None
+        self,
+        card_id: str,
+        *,
+        handle: str | None = None,
+        harness_session_id: str | None = None,
+        key_id: str | None = None,
     ) -> EndResult:
         """Mark a session of the key's own card ended and close its parked listener (the end hooks
         WAKE registers answer it with 410). Idempotent: ending an ended session succeeds and still
         fires the hooks, so a listener that raced the first call is not left parked. Not reliable
-        by design (spec 3.5): liveness never rests on it."""
+        by design (spec 3.5): liveness never rests on it. The call that ends it writes one
+        `session_ended` row (`via` explicit, actor `key_id`); a repeat writes none."""
         if (handle is None) == (harness_session_id is None):
             raise InvalidRequest("Give either handle or harness_session_id.")
         if handle is not None:
@@ -250,8 +319,32 @@ class IdentityService:
             raise WrongCard
         ended_now = await self.registry.end(session.handle)
         report = await self.end_hooks.fire(session.handle)
+        if ended_now:
+            await self._audit_ended(key_id or SYSTEM_ACTOR, session.handle, "explicit")
         log.info(
             "session ended",
             extra={"fields": {"ended_now": ended_now, "listeners_closed": report.total_closed, "hooks_failed": len(report.failed)}},
         )
         return EndResult(session.handle, session.card_id, ended_now, report)
+
+    async def end_idle(self, last_seen_before: datetime) -> list[EndResult]:
+        """End every live session with no call since `last_seen_before` (`A2A_SESSION_IDLE_TTL_H`),
+        one by one and by name (Z17): each gets the end hooks, so WAKE answers its parked listener
+        with 410, and one `session_ended` row (`via` idle_ttl, actor `system`). A session that
+        called in after the scan is left alone. Returns what it ended, oldest first.
+
+        Nothing runs this on a timer yet: the sweep loop is not started by the app (undecided).
+        The service layer's own `Directory.end_idle` still ends idle sessions without naming them;
+        until the sweep calls this instead, only this function fires the hooks."""
+        out: list[EndResult] = []
+        for handle in await self.registry.idle_handles(last_seen_before):
+            if not await self.registry.end(handle, idle_before=last_seen_before):
+                continue  # another call ended it, or it was seen again
+            report = await self.end_hooks.fire(handle)
+            await self._audit_ended(SYSTEM_ACTOR, handle, "idle_ttl")
+            log.info(
+                "session expired",
+                extra={"fields": {"listeners_closed": report.total_closed, "hooks_failed": len(report.failed)}},
+            )
+            out.append(EndResult(handle, card_of(handle) or "", True, report))
+        return out

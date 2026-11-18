@@ -123,7 +123,7 @@ class SessionRegistry:
         *,
         handle: str | None = None,
         card_id: str | None = None,
-        include_ended: bool = True,
+        include_ended: bool = False,
         limit: int = MAX_LIST,
     ) -> list[SessionView]:
         """Sessions newest-seen first, with their aliases (`GET /sessions`)."""
@@ -252,22 +252,39 @@ class SessionRegistry:
         async with self._engine.begin() as conn:
             await conn.execute(stmt)
 
-    async def end(self, handle: str) -> bool:
+    async def idle_handles(self, last_seen_before: datetime) -> list[str]:
+        """Handles of live sessions with no call since `last_seen_before` (the idle-TTL candidates),
+        oldest first."""
+        stmt = (
+            sa.select(sessions.c.handle)
+            .where(sessions.c.ended_at.is_(None), sessions.c.last_seen_at < last_seen_before)
+            .order_by(sessions.c.last_seen_at, sessions.c.handle)
+        )
+        async with self._engine.connect() as conn:
+            return [r.handle for r in (await conn.execute(stmt)).all()]
+
+    async def end(self, handle: str, *, idle_before: datetime | None = None) -> bool:
         """Mark the session ended. True if this call ended it, False if it was already ended (or
-        unknown). The row is kept: a handle is never reused."""
+        unknown). The row is kept: a handle is never reused. With `idle_before` the row is ended
+        only while its `last_seen_at` is still older than that, so a session that called in between
+        the idle scan and this write is left alone."""
         stmt = (
             sa.update(sessions)
             .where(sessions.c.handle == handle, sessions.c.ended_at.is_(None))
             .values(ended_at=self._clock.now())
         )
+        if idle_before is not None:
+            stmt = stmt.where(sessions.c.last_seen_at < idle_before)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-        self._touched.pop(handle, None)
+        if result.rowcount:
+            self._touched.pop(handle, None)
         return bool(result.rowcount)
 
     async def revive(self, handle: str) -> bool:
-        """Clear `ended_at` and refresh `last_seen_at`. Only used when a resumed ended session
-        revives, which is off by default (`identity.service.REVIVE_ENDED_SESSIONS`) [design]."""
+        """Clear `ended_at` and refresh `last_seen_at`: a resumed ended session comes back with the
+        same handle (decision Z17). True only for the call that revived it, so a concurrent revive
+        is counted, and audited, once."""
         now = self._clock.now()
         stmt = (
             sa.update(sessions)

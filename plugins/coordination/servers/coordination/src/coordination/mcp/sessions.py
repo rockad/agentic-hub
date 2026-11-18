@@ -4,7 +4,8 @@ Two identity paths, never mixed (spec 5.4 and 5.4.1):
 
 - **Claude Code and every other client that is not agy.** The server issues an `Mcp-Session-Id` at
   `initialize` and keeps `mcp_session_id -> (key_id, handle)` in memory (`McpSessions`). The handle
-  is set by `a2a_hello`. A restart loses the map; the client then gets 404, re-initialises, and its
+  is set by `a2a_hello`; one handle is bound to one `Mcp-Session-Id` at a time, the newest
+  `a2a_hello` takes it (`unbind_others`, decision Z17). A restart loses the map; the client then gets 404, re-initialises, and its
   first identity-bound call returns the constant "Not bound. Call a2a_hello." The map is also tied
   to the API key: a request that carries key B's bearer and key A's session id is refused 403
   (SP5 D12 finding 1; the `mcp` SDK did not do this and a hand-written server must).
@@ -118,6 +119,23 @@ class McpSessions:
 
     def remove(self, session_id: str) -> bool:
         return self._by_id.pop(session_id, None) is not None
+
+    def unbind_others(self, handle: str, card_id: str, keep_session_id: str) -> list[str]:
+        """Drop `handle` from every other live `Mcp-Session-Id` of `card_id` that holds it, and
+        return their ids (decision Z17: the newest `a2a_hello` wins). The sessions stay in the map;
+        their next identity-bound call finds them unbound ("Not bound. Call a2a_hello."). An entry
+        idle past the TTL is not live and is dropped, not reported."""
+        now = self._clock.monotonic()
+        dropped: list[str] = []
+        for sid, s in list(self._by_id.items()):
+            if sid == keep_session_id or s.handle != handle or s.card_id != card_id:
+                continue
+            if now - s.last_seen_m > self._idle_ttl_s:
+                del self._by_id[sid]
+                continue
+            s.handle = None
+            dropped.append(sid)
+        return dropped
 
     def drop_key(self, key_id: str) -> int:
         """Forget every session of a key (S1-ADMIN calls this when it revokes one)."""

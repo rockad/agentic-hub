@@ -283,7 +283,7 @@ class McpEndpoint:
             await _send_json(send, 200, _rpc_error(rid, INVALID_PARAMS, "Unknown tool."))
             return
         meta = params.get("_meta")
-        ctx = CallContext(principal, session, meta if isinstance(meta, dict) else {})
+        ctx = CallContext(principal, session, meta if isinstance(meta, dict) else {}, bindings=self._sessions)
         key = (session.session_id, rid)
         call = asyncio.ensure_future(self._tools.call(name, params.get("arguments"), ctx))
         self._inflight[key] = call

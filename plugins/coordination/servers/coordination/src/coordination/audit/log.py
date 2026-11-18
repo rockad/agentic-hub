@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from coordination.audit.events import AuditEvent, AuditRow, make_row
+from coordination.audit.events import ENDED_VIA, REGISTERED_VIA, AuditEvent, AuditRow, make_row
 from coordination.audit.protocol import AuditStore
 from coordination.clock import Clock
 
@@ -84,8 +84,35 @@ class AuditLog:
 
     # sessions and wakes --------------------------------------------------------------------
 
-    async def registration(self, *, actor: str, handle: str, card_id: str) -> AuditRow:
-        return await self._write(AuditEvent.REGISTRATION, actor, handle, card_id=card_id)
+    async def session_registered(
+        self, *, actor: str, handle: str, card_id: str, via: str, revived: bool = False
+    ) -> AuditRow:
+        """A session was created (`revived` false) or an ended one came back (`revived` true).
+        `via` is `hook` (`POST /sessions`), `hello` (`a2a_hello`) or `auto_agy` (an unseen agy
+        conversation's first call)."""
+        if via not in REGISTERED_VIA:
+            raise ValueError(f"unknown registration route {via!r}")
+        return await self._write(
+            AuditEvent.SESSION_REGISTERED, actor, handle, card_id=card_id, via=via, revived=bool(revived)
+        )
+
+    async def session_ended(self, *, actor: str, handle: str, via: str) -> AuditRow:
+        """`via` is `explicit` (`POST /sessions/end`) or `idle_ttl` (the idle expiry, actor `system`)."""
+        if via not in ENDED_VIA:
+            raise ValueError(f"unknown end route {via!r}")
+        return await self._write(AuditEvent.SESSION_ENDED, actor, handle, via=via)
+
+    async def session_rebound(
+        self, *, actor: str, handle: str, from_binding: str, to_binding: str
+    ) -> AuditRow:
+        """`a2a_hello` moved `handle` from one `Mcp-Session-Id` to another. The two ids are the
+        8-character prefixes of the `Mcp-Session-Id` values, never the full values."""
+        return await self._write(
+            AuditEvent.SESSION_REBOUND, actor, handle, from_binding=from_binding, to_binding=to_binding
+        )
+
+    async def alias_added(self, *, actor: str, handle: str, alias: str) -> AuditRow:
+        return await self._write(AuditEvent.ALIAS_ADDED, actor, handle, alias=alias)
 
     async def wake_sent(self, *, actor: str, handle: str, pending_n: int) -> AuditRow:
         return await self._write(AuditEvent.WAKE_SENT, actor, handle, pending_n=pending_n)

@@ -17,7 +17,6 @@ from coordination.identity.errors import (
     HandleCollision,
     IdentityError,
     InvalidRequest,
-    SessionEnded,
     UnknownHandle,
     WrongCard,
 )
@@ -62,7 +61,6 @@ __all__ = [
     "ListedSession",
     "PeerSession",
     "Registration",
-    "SessionEnded",
     "SessionEndHooks",
     "SessionRegistry",
     "SessionsEndpoint",

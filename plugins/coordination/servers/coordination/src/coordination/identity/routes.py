@@ -1,7 +1,9 @@
 """`/sessions` (spec 3.5): the HTTP face of `IdentityService`.
 
-- `POST /sessions`: register or refresh a session (the `SessionStart` hook of both harnesses).
-- `GET /sessions`: list sessions with liveness and pending counts.
+- `POST /sessions`: register or refresh a session (the `SessionStart` hook of both harnesses). A
+  session that had ended is revived (decision Z17); there is no `409 session_ended`.
+- `GET /sessions`: list sessions with liveness and pending counts; live sessions only unless
+  `include_ended=1` (Z17).
 - `POST /sessions/end`: end a session and close its parked listener (the `SessionEnd` hook).
 
 The access-control middleware has already checked size, Host, Origin, the API key and its scope
@@ -161,7 +163,7 @@ class SessionsEndpoint:
         card = params.get("card")
         if card is not None and not CARD_RE.match(card):
             raise InvalidRequest("card is not a valid card id.")
-        include_raw = params.get("include_ended", "1")
+        include_raw = params.get("include_ended", "0")
         if include_raw not in ("0", "1"):
             raise InvalidRequest("include_ended must be 0 or 1.")
         limit_raw = params.get("limit", str(DEFAULT_LIST))
@@ -193,7 +195,7 @@ class SessionsEndpoint:
         who = self._card(request)
         if isinstance(who, Response):
             return who
-        _key_id, card_id = who
+        key_id, card_id = who
         try:
             body = await self._body(request, _END_FIELDS)
             handle = self._text(body, "handle")
@@ -208,7 +210,7 @@ class SessionsEndpoint:
                 raise WrongCard("card does not match the API key.")
             elif not SESSION_ID_RE.match(hsid):
                 raise InvalidRequest("harness_session_id is not a valid session id.")
-            result = await self._identity.end(card_id, handle=handle, harness_session_id=hsid)
+            result = await self._identity.end(card_id, handle=handle, harness_session_id=hsid, key_id=key_id)
         except IdentityError as exc:
             return self._fail(exc)
         return _json(

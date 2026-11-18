@@ -1155,3 +1155,29 @@ Additional notes from the review (recorded in WS2 Part A, Gap 6):
 
 - The `PostToolUse` answer poll runs only for `[jev-elevate:*]` questions.
 - Served-model logging excludes the parent conversation id and reads the first model row of the child transcript.
+
+### 32.8 Round 2 Live Verification Results (2026-11-18, PR `#72`)
+
+PRs `#54`, `#55`, `#66`, and `#73` are merged into `main`. Redacted summary of Round 2 live checks executed on `feat/jev-orchestrator-integration` (exact conversation IDs, paths, and log rows are in the owner's private evidence note):
+
+#### Code Fixes Landed During Live Testing (PR `#72`)
+
+- **Pull fallback shadowing (`02ec78d`, `46ab2ca`):** Antigravity flushes the `ask_question` `GENERIC` result step after `PostToolUse` returns (`ask_answer` logs `outcome: "no_row"`). Intervening `GENERIC` tool outputs or `PLANNER_RESPONSE` prose mentioning `[jev-elevate:pro]` shadowed the real `ask_question` `tool_calls` step in `pullElevationAnswerFromTranscript`; restricted bare content matching to `PLANNER_RESPONSE` without `tool_calls` and prioritized `tool_calls` matches.
+- **Deferred `subagent_served` backfill (`f0ea706`):** `PostToolUse` on `invoke_subagent` also runs before Antigravity flushes the parent `GENERIC` result row and the child's first `PLANNER_RESPONSE` model row. Added `.pending-served.json` deferred backfill flushed on subsequent `PreInvocation` / `hook.ts` invocations (`backfilled: true`).
+- **`Yes, once` replay prevention (`2678059`):** `recordApproval()` did not clear `state.denied[model]`, allowing a subsequent `Model: "pro"` call within the 15-minute denial window to replay an already-consumed `Yes, once` from the transcript. `recordApproval()` now clears covered denials.
+- **`git -C` / `cd` commit-gate target (`c9fe0e1`):** `guards.ts` ran `git diff` in `input.cwd` (workspace root) even for `git -C <dir> commit` or `cd <dir> && git commit`. Added `resolveGitCwd()` and `commit_gate` / `write_guard` `outcome: "deny"` decision logging.
+
+#### Check Status
+
+- **LC12 (`ask_question` approval round trip): Passed.**
+  - `"Yes, once"`: Attempt 1 denied; `ask_answer` logged `no_row`; Attempt 2 allowed via `pull_fallback: true` with no native dialog; `.approvals.json` cleared both `approvals` and `denied`; `subagent_served` (`backfilled: true`) recorded the child's served model (also verified in a second workspace outside `doppelganger`).
+  - `"No, proceed on flash"` (healthy quota fixture): Attempt 1 denied; `ask_question` answered No; re-invoke with `Model: "flash"` passed with no approval recorded and `subagent_served` (`backfilled: true`) recorded the child's served model.
+  - `"Yes, for the next 5 minutes"` (healthy quota fixture): Attempt 1 denied; Attempt 2 allowed via `pull_fallback: true` with `approval_scope: "5min"` and no native dialog; a second `Model: "pro"` call within 5 minutes passed directly (`approval_scope: "5min"`) without asking; `.approvals.json` persisted the `5min` approval with `denied: {}` and both `subagent_served` rows recorded the children's served model.
+- **LC10 (plugin takes over workspace hooks, `on` / `on-demand` / `off` / second workspace): Passed.** With workspace `jev-enforcement` disabled (`"enabled": false`):
+  - Mode `on`: `PreInvocation` directive appeared; `commit_gate` denied staged conflict block (`-m`), `git commit -am` working-tree conflict, `git add <untracked> && git commit`, and `-c color.ui=always`, while allowing a Markdown setext heading; `write_guard` allowed a `plans/` exempt edit + 3 distinct code edits and denied the 4th; `free_only` quota fixture denied `invoke_subagent(Model: "flash")`.
+  - Mode `on-demand` (D1, healthy quota fixture): `invoke_subagent(Model: "pro")` returned `decision: "ask"` (`elevation: "asked"`, `attempt_count: null`) with no `.approvals.json` written and `subagent_served` (`backfilled: true`) recorded.
+  - Second workspace (`agentic-hub` PR `#66` worktree): `PreInvocation` directive, `commit_gate`, and `invoke_subagent` guard all fired from the user-level plugin install with no entries in global `hooks.json` (D4).
+  - Mode `off`: `PreInvocation` ran MCP auto-heal (`disabled: false` -> `true`) with `{}` stdout, zero session files written, and zero telemetry or decision-log rows (D2).
+  - `doppelganger` cleanup PR is unblocked (LC10 passed; `jev-enforcement` remains disabled in `.agents/hooks.json`).
+- **LC7 (MCP server conversation identity): Passed.** Each Antigravity instance spawns its own `jev` MCP server process and does not inject `ANTIGRAVITY_CONVERSATION_ID` into top-level MCP server environments, confirming `readQuotaView` step 2 (`'env'`) stays disabled. Against the `v2.3.16` MCP server across two concurrent conversations on different models, `jev_quota()` without arguments reported `activeModelSource: "latest"` (last-writer-wins across sessions), while `jev_quota(conversationId)` reported `activeModelSource: "argument"` with each session's own model. Note: global `mcp_config.json` points to the main checkout until PR `#72` merges.
+- **LC9 Part B, LC8, LC11:** Not run (waiting for the Argon weekly reset). Note from LC12/LC10: `pro` subagents invoked from a Hydrogen parent ran on `gemini-4-hydrogen-tiered-xhigh` (`flash` ran on `gemini-4-hydrogen-tiered-high`).

@@ -27,6 +27,7 @@ import {
   type QuotaView
 } from '../src/shared.js';
 import { flushPendingServed } from './logic.js';
+import { withTimeout } from '../src/core/with-timeout.js';
 
 interface PreInvocationInput {
   conversationId?: string;
@@ -57,25 +58,6 @@ const TIER_CRITERIA: Record<string, string> = {
   flash: 'Standard agentic steps, routine edits, content synthesis, local commands',
   pro: 'Deep reasoning, architecture, complex multi-file refactors, high-stakes writing'
 };
-
-function withTimeout<T>(
-  pOrFn: Promise<T> | ((signal: AbortSignal) => Promise<T>),
-  ms: number,
-  externalController?: AbortController
-): Promise<T | null> {
-  const controller = externalController || new AbortController();
-  let timer: any;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      controller.abort();
-      resolve(null);
-    }, ms);
-  });
-  const promise = typeof pOrFn === 'function' ? pOrFn(controller.signal) : pOrFn;
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
 
 function cleanUserInput(raw: string): string {
   if (!raw) return '';

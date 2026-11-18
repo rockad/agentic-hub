@@ -22,6 +22,8 @@ import {
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
+  pollForAskAnswers,
+  askAnswerKey,
   extractChildConversationId,
   findServedModelFromTranscript,
   recordPendingServed,
@@ -190,23 +192,39 @@ async function main() {
           let dChoice: 'yes' | 'keep' | 'off' | null = null;
           type DowngradeOutcome = 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error';
           let dOutcome: DowngradeOutcome = 'error';
+          let dOutcomes: DowngradeOutcome[] = [];
           try {
             const results: Array<{ row: boolean; choice: 'yes' | 'keep' | 'off' | null; outcome: DowngradeOutcome }> = [];
-            for (const q of downgradeQuestions) {
-              const rawAnswer = await pollForAskAnswer(input, q.index);
+            // One bounded wait for the result row, shared by every question of the ask; each answer line is then read
+            // from that one row (N questions must not cost N wait windows: the hook has a timeout).
+            const rawAnswers = await pollForAskAnswers(
+              input,
+              downgradeQuestions.map((q) => q.index)
+            );
+            downgradeQuestions.forEach((q, n) => {
+              const rawAnswer = rawAnswers[n] ?? null;
               const row = rawAnswer !== null;
               const choice = parseDowngradeAnswer(rawAnswer);
               let outcome: DowngradeOutcome;
-              if (!row) outcome = 'no_row';
-              else if (!choice) outcome = 'rejected';
-              else if (!conversationId) outcome = 'not_asked';
-              else outcome = downgrades.answer(conversationId, choice, input.toolCall?.id, Date.now(), q.sig) ? 'recorded' : 'not_asked';
+              try {
+                if (!row) outcome = 'no_row';
+                else if (!choice) outcome = 'rejected';
+                else if (!conversationId) outcome = 'not_asked';
+                else {
+                  // Consumed per question, not per tool call: the other questions of this ask are still open.
+                  const askId = askAnswerKey(input.toolCall?.id, q.index);
+                  outcome = downgrades.answer(conversationId, choice, askId, Date.now(), q.sig) ? 'recorded' : 'not_asked';
+                }
+              } catch {
+                outcome = 'error';
+              }
               results.push({ row, choice, outcome });
-            }
+            });
             const shown = results.find((r) => r.outcome === 'recorded') ?? results[0];
             dRow = results.some((r) => r.row);
             dChoice = shown.choice;
             dOutcome = shown.outcome;
+            dOutcomes = results.map((r) => r.outcome);
           } catch {
             dOutcome = 'error';
           }
@@ -220,7 +238,7 @@ async function main() {
             marker_found: true,
             row_found: dRow,
             parsed: { choice: dChoice },
-            ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length } : {}),
+            ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length, outcomes: dOutcomes } : {}),
             outcome: dOutcome
           });
           console.log('{}');

@@ -19,7 +19,9 @@ import { taskFingerprint } from '../src/core/telemetry.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { callJev } from '../src/core/client.js';
 import { DOWNGRADE_ALIAS, DOWNGRADE_MARKER_SIG_CHARS, type DowngradeChoice, type DowngradeStore } from './approvals.js';
-import { answerLabel, extractSubagentModel, pullAskAnswerFromTranscript, type AntigravityHookDecision, type AntigravityHookInput } from './logic.js';
+import { answerLabel, askAnswerKey, extractSubagentModel, pullAskAnswerFromTranscript, type AntigravityHookDecision, type AntigravityHookInput } from './logic.js';
+
+export { askAnswerKey };
 
 /**
  * The plain marker the downgrade question starts with. The question Jev prescribes carries the delegation's short
@@ -312,7 +314,8 @@ export async function applyAntigravityDowngrade(
           matches: ownQuestion
         });
         const choice = pulled ? parseDowngradeAnswer(pulled.raw) : null;
-        if (choice && safely(() => store.answer(sessionId, choice, pulled?.toolCallId, nowMs, sigPrefix))) {
+        const askId = pulled ? askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0) : undefined;
+        if (choice && safely(() => store.answer(sessionId, choice, askId, nowMs, sigPrefix))) {
           return byAnswer(safely(() => store.choiceFor(sessionId, signature, nowMs)) ?? choice, true);
         }
       }

@@ -355,7 +355,11 @@ export type PullAskOptions = {
   deniedAtMs?: number;
   /** Ignore question steps whose `step_index` is not greater than this (the step the denial happened at). */
   afterStepIdx?: number;
-  /** Ignore a question whose tool call id is listed: its answer was already recorded once. */
+  /**
+   * Ignore a question whose answer was already recorded once. An entry is `<toolCallId>#<questionIndex>` (see
+   * `askAnswerKey`: one ask can carry several questions under one tool call id) or, for an older record, a bare tool
+   * call id, which consumes every question of that call.
+   */
   excludeToolCallIds?: ReadonlySet<string>;
   /** Decides whether a question (or message) text is the one wanted, in place of "contains the marker text". */
   matches?: (text: string) => boolean;
@@ -372,7 +376,7 @@ export function pullAskAnswerFromTranscript(
   transcriptPath: string,
   markerText: string,
   opts: PullAskOptions = {}
-): { raw: string | null; toolCallId?: string } | null {
+): { raw: string | null; toolCallId?: string; questionIndex?: number } | null {
   const deniedAtMs = opts.deniedAtMs;
   try {
     const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
@@ -449,6 +453,10 @@ export function pullAskAnswerFromTranscript(
               const questions = args?.questions;
               if (Array.isArray(questions)) {
                 questions.forEach((q, idx) => {
+                  // The first matching question of a step that is not already consumed wins: two questions of one ask
+                  // share the tool call id, so an answer is tracked per question (`<id>#<index>`), and the delegation
+                  // next in line reads the earliest open question, not the latest.
+                  if (matchedTool) return;
                   const qText =
                     typeof q === 'string'
                       ? q
@@ -456,6 +464,7 @@ export function pullAskAnswerFromTranscript(
                         ? (q as Record<string, unknown>).question
                         : '';
                   if (typeof qText === 'string' && questionMatches(qText)) {
+                    if (typeof rec.id === 'string' && opts.excludeToolCallIds?.has(askAnswerKey(rec.id, idx) as string)) return;
                     matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
@@ -563,7 +572,10 @@ export function pullAskAnswerFromTranscript(
     }
 
     const rawAnswer = extractAskAnswer({ content: genericStep.content }, latestMatch.markerIndex);
-    return { raw: rawAnswer, ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId } : {}) };
+    return {
+      raw: rawAnswer,
+      ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId, questionIndex: latestMatch.markerIndex } : {})
+    };
   } catch {
     return null;
   }
@@ -1151,4 +1163,47 @@ export function flushPendingServed(
   } catch {
     // fail-open
   }
+}
+
+/**
+ * The key an answered question is recorded under: `<toolCallId>#<questionIndex>`. One `ask_question` can carry several
+ * questions under one tool call id, so consuming the whole call would hide the other questions' answers from the
+ * delegations they belong to. Undefined when the call has no id.
+ */
+export function askAnswerKey(toolCallId: string | undefined, questionIndex: number): string | undefined {
+  return toolCallId ? `${toolCallId}#${questionIndex}` : undefined;
+}
+
+/**
+ * Like {@link pollForAskAnswer} for an ask with several questions: ONE bounded wait for the result row, shared by all of
+ * them, then every question's own `A<n>` line is read from what the transcript holds at that moment. `questionIndexes`
+ * are read in order and the answers returned in the same order (`null` for an index with no answer line). N questions
+ * cost one wait window, not N, so the hook stays inside its timeout however many questions the assistant packs into
+ * one ask.
+ */
+export async function pollForAskAnswers(
+  input: AntigravityHookInput | undefined,
+  questionIndexes: number[],
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+): Promise<Array<string | null>> {
+  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes));
+  const anyAnswer = (list: Array<string | null>) => list.some((a) => a !== null);
+
+  let answers = readAll();
+  if (anyAnswer(answers)) return answers;
+
+  const contentOnStdin = typeof input?.content === 'string' && input.content.trim().length > 0;
+  if (contentOnStdin || !input?.transcriptPath || typeof input?.stepIdx !== 'number') return answers;
+
+  const maxWaitMs = opts?.maxWaitMs ?? 2000;
+  const pollIntervalMs = opts?.pollIntervalMs ?? 150;
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    const remaining = maxWaitMs - (Date.now() - startTime);
+    if (remaining <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
+    answers = readAll();
+    if (anyAnswer(answers)) return answers;
+  }
+  return answers;
 }

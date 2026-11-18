@@ -13,6 +13,7 @@ import {
   delegationTask,
   downgradeMarker,
   downgradeSignature,
+  askAnswerKey,
   findDowngradeQuestion,
   findDowngradeQuestions,
   parseDowngradeMarker,
@@ -20,7 +21,7 @@ import {
   userNamedFlash,
   type DowngradeDeps
 } from '../antigravity/downgrade.ts';
-import { evaluateAntigravitySubagentCall, type AntigravityHookDecision, type AntigravityHookInput } from '../antigravity/logic.ts';
+import { evaluateAntigravitySubagentCall, pollForAskAnswers, type AntigravityHookDecision, type AntigravityHookInput } from '../antigravity/logic.ts';
 import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalStore, type DowngradeStore } from '../antigravity/approvals.ts';
 import type { TierRating } from '../src/core/downgrade-state.ts';
 import { HAIKU, OPUS, SONNET, rating } from './downgrade-helpers.ts';
@@ -818,3 +819,195 @@ describe('pure helpers', () => {
     expect(userNamedFlash(undefined)).toBe(false);
   });
 });
+
+describe('two signed questions in one ask_question (one tool call id), answers pulled late (#76 review B1)', () => {
+  const a = () => call({ Model: 'flash' });
+  const b = () => call({ Model: 'flash', Prompt: 'translate the readme' });
+  const markerA = () => downgradeMarker(downgradeSignature(A_ARGS()));
+  const markerB = () => downgradeMarker(downgradeSignature(B_ARGS()));
+
+  /** One step, one tool call id, two questions; the result row holds one `A<n>:` line per answer given. */
+  const twoQuestionAsk = (order: Array<'a' | 'b'>, answers: string[], id = 'ask_two') => {
+    const markers = order.map((k) => (k === 'a' ? markerA() : markerB()));
+    const rows: object[] = [
+      {
+        step_index: 11,
+        type: 'PLANNER_RESPONSE',
+        tool_calls: [{ id, name: 'ask_question', args: { questions: markers.map((m, i) => ({ question: `${m} Run ${i}?`, options: Object.values(DOWNGRADE_LABELS) })) } }]
+      }
+    ];
+    if (answers.length > 0) rows.push({ step_index: 12, type: 'GENERIC', toolCallId: id, content: `Created At: x\n${answers.map((l, i) => `A${i + 1}: ${l}`).join('\n')}` });
+    return transcript(rows);
+  };
+  async function askBoth() {
+    expect((await decide(a(), ask)).decision.decision).toBe('deny');
+    expect((await decide(b(), ask)).decision.decision).toBe('deny');
+  }
+
+  it('A pulls Yes, then B pulls No: B is kept on flash (not passed as already-asked)', async () => {
+    await askBoth();
+    const file = twoQuestionAsk(['a', 'b'], [DOWNGRADE_LABELS.yes, DOWNGRADE_LABELS.keep]);
+    const ra = await decide({ ...a(), transcriptPath: file }, ask);
+    expect(ra.decision).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.decision.decision).toBe('pass');
+    expect(rb.log.downgrade).toBe('answered');
+    expect(rb.log.downgrade_pull).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBe('keep');
+  });
+
+  it('reverse order: B pulls No, then A pulls Yes (questions listed B, A)', async () => {
+    await askBoth();
+    const file = twoQuestionAsk(['b', 'a'], [DOWNGRADE_LABELS.keep, DOWNGRADE_LABELS.yes]);
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.log.downgrade).toBe('answered');
+    expect(rb.decision.decision).toBe('pass');
+    const ra = await decide({ ...a(), transcriptPath: file }, ask);
+    expect(ra.decision).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+  });
+
+  it('A pulls Yes, then B pulls Yes: both are rewritten', async () => {
+    await askBoth();
+    const file = twoQuestionAsk(['a', 'b'], [DOWNGRADE_LABELS.yes, DOWNGRADE_LABELS.yes]);
+    expect((await decide({ ...a(), transcriptPath: file }, ask)).decision.decision).toBe('allow');
+    expect((await decide({ ...b(), transcriptPath: file }, ask)).decision.decision).toBe('allow');
+  });
+
+  it('one answered, one not: the answered one is applied, the other passes as asked-once and stays open', async () => {
+    await askBoth();
+    const file = twoQuestionAsk(['a', 'b'], [DOWNGRADE_LABELS.yes]);
+    expect((await decide({ ...a(), transcriptPath: file }, ask)).decision.decision).toBe('allow');
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.decision.decision).toBe('pass');
+    expect(rb.log.downgrade_skip).toBe('already-asked');
+    expect(store.pending('conv-dg', downgradeSignature(B_ARGS()), now)).not.toBeNull();
+  });
+
+  it('A recorded from PostToolUse (ask id + question index) does not consume the whole call: B still pulls its own answer', async () => {
+    await askBoth();
+    expect(store.answer('conv-dg', 'yes', askAnswerKey('ask_two', 0), now, sig8(A_ARGS()))).toBe(true);
+    const file = twoQuestionAsk(['a', 'b'], [DOWNGRADE_LABELS.yes, DOWNGRADE_LABELS.keep]);
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.log.downgrade).toBe('answered');
+    expect(rb.decision.decision).toBe('pass');
+  });
+
+  it('two plain-marker questions in one ask: the oldest delegation reads the FIRST question, the next one the second', async () => {
+    await askBoth();
+    const rows = [
+      {
+        step_index: 11,
+        type: 'PLANNER_RESPONSE',
+        tool_calls: [{ id: 'ask_plain', name: 'ask_question', args: { questions: [{ question: `${DOWNGRADE_MARKER} one` }, { question: `${DOWNGRADE_MARKER} two` }] } }]
+      },
+      { step_index: 12, type: 'GENERIC', toolCallId: 'ask_plain', content: `A1: ${DOWNGRADE_LABELS.yes}\nA2: ${DOWNGRADE_LABELS.keep}` }
+    ];
+    const file = transcript(rows);
+    expect((await decide({ ...a(), transcriptPath: file }, ask)).decision.decision).toBe('allow');
+    const rb = await decide({ ...b(), transcriptPath: file }, ask);
+    expect(rb.log.downgrade).toBe('answered');
+  });
+});
+
+describe('one bounded wait for all the questions of an ask (#76 review B2)', () => {
+  const input = (file: string): AntigravityHookInput => ({ transcriptPath: file, stepIdx: 1 });
+  const start = (file: string) => fs.writeFileSync(file, '{"step_index":0,"type":"USER_INPUT","content":"start"}\n');
+
+  it('three questions, no row: the total wait is one window, not one per question', async () => {
+    const file = path.join(dir, 't-none.jsonl');
+    start(file);
+    const t0 = Date.now();
+    const answers = await pollForAskAnswers(input(file), [0, 1, 2], { maxWaitMs: 300, pollIntervalMs: 50 });
+    const waited = Date.now() - t0;
+    expect(answers).toEqual([null, null, null]);
+    expect(waited).toBeLessThan(600); // sequential polling waited about 900 ms
+  });
+
+  it('three questions, a late row: one poll, all three answers read from that row', async () => {
+    const file = path.join(dir, 't-late.jsonl');
+    start(file);
+    setTimeout(() => {
+      fs.appendFileSync(
+        file,
+        JSON.stringify({ step_index: 1, type: 'GENERIC', content: `A1: ${DOWNGRADE_LABELS.yes}\nA2: ${DOWNGRADE_LABELS.keep}\nA3: ${DOWNGRADE_LABELS.off}` }) + '\n'
+      );
+    }, 120);
+    const t0 = Date.now();
+    const answers = await pollForAskAnswers(input(file), [0, 1, 2], { maxWaitMs: 600, pollIntervalMs: 40 });
+    expect(answers).toEqual([DOWNGRADE_LABELS.yes, DOWNGRADE_LABELS.keep, DOWNGRADE_LABELS.off]);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it('content on stdin answers every index at once, and an index with no answer line is null', async () => {
+    const answers = await pollForAskAnswers({ content: `A1: ${DOWNGRADE_LABELS.yes}\nA3: ${DOWNGRADE_LABELS.keep}` }, [0, 1, 2], { maxWaitMs: 200, pollIntervalMs: 50 });
+    expect(answers).toEqual([DOWNGRADE_LABELS.yes, null, DOWNGRADE_LABELS.keep]);
+  });
+});
+
+describe('a re-asked late question supersedes its older pending entry (#76 review B3)', () => {
+  const a = () => call({ Model: 'flash' });
+  const b = () => call({ Model: 'flash', Prompt: 'translate the readme' });
+  const pendingFor = (args: Record<string, unknown>) => {
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'conv-dg.downgrade.json'), 'utf8'));
+    return saved.entries.filter((e: { answered: boolean; signature: string }) => !e.answered && e.signature === downgradeSignature(args));
+  };
+
+  it('asked at T, asked again after 11 minutes, answered with a plain marker: no pending entry is left for that delegation', async () => {
+    expect((await decide(a(), ask)).decision.decision).toBe('deny');
+    now += 11 * 60_000;
+    expect((await decide(a(), ask)).decision.decision).toBe('deny'); // asked again (the first window ran out)
+    expect(pendingFor(A_ARGS())).toHaveLength(1);
+    expect(store.answer('conv-dg', 'yes', 'ask_plain', now)).toBe(true);
+    expect(pendingFor(A_ARGS())).toHaveLength(0);
+    expect(store.choiceFor('conv-dg', downgradeSignature(A_ARGS()), now)).toBe('yes');
+    // nothing is left open: a second plain answer records nothing
+    expect(store.answer('conv-dg', 'keep', 'ask_plain2', now)).toBe(false);
+  });
+
+  it('the re-ask does not close or drop another delegation\'s late question', async () => {
+    await decide(a(), ask);
+    await decide(b(), ask);
+    now += 11 * 60_000;
+    await decide(a(), ask);
+    expect(pendingFor(A_ARGS())).toHaveLength(1);
+    expect(pendingFor(B_ARGS())).toHaveLength(1);
+    // the plain marker now closes B (the oldest pending), A stays open for its own answer
+    expect(store.answer('conv-dg', 'keep', 'ask_p', now)).toBe(true);
+    expect(store.choiceFor('conv-dg', downgradeSignature(B_ARGS()), now)).toBe('keep');
+    expect(pendingFor(A_ARGS())).toHaveLength(1);
+  });
+
+  it('a signed answer for the re-asked delegation closes its single live entry', async () => {
+    await decide(a(), ask);
+    now += 11 * 60_000;
+    await decide(a(), ask);
+    expect(store.answer('conv-dg', 'keep', 'ask_s', now, sig8(A_ARGS()))).toBe(true);
+    expect(pendingFor(A_ARGS())).toHaveLength(0);
+  });
+});
+
+describe('nits (#76 review B5)', () => {
+  it('a lock timeout names the lock: the downgrade store says downgrade, not approvals (settled by the shared dir-lock helper)', () => {
+    privateLockDir();
+    const lock = path.join(sessionsDir, 'conv-dg.downgrade.lock');
+    fs.mkdirSync(lock, { recursive: true }); // a fresh lock held by "someone else"
+    let message = '';
+    try {
+      store.answer('conv-dg', 'yes', 'ask_x', now);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toBe('dir lock timeout: conv-dg.downgrade.lock');
+    expect(message).not.toContain('approvals');
+  });
+
+  it('preflight uses the shared withTimeout and keeps no copy of its own', () => {
+    const source = fs.readFileSync(path.join(import.meta.dir, '..', 'antigravity', 'preflight.ts'), 'utf8');
+    expect(source).toMatch(/import \{ withTimeout \} from '\.\.\/src\/core\/with-timeout\.js';/);
+    expect(source).not.toMatch(/function withTimeout/);
+  });
+});
+
+function privateLockDir(): void {
+  fs.mkdirSync(sessionsDir, { recursive: true });
+}

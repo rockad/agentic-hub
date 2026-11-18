@@ -461,9 +461,13 @@ function answerable(state: DowngradeState, nowMs: number): DowngradeEntry[] {
   return state.entries.filter((e) => e.expires_at > nowMs || isLatePending(e, nowMs));
 }
 
-/** Pure: `next` with the late-but-answerable questions of `prev` put back (the shared helpers drop them after 10 minutes). */
-export function retainAnswerable(prev: DowngradeState, next: DowngradeState, nowMs: number): DowngradeState {
-  const kept = prev.entries.filter((e) => isLatePending(e, nowMs));
+/**
+ * Pure: `next` with the late-but-answerable questions of `prev` put back (the shared helpers drop them after 10 minutes).
+ * `superseded` is the signature of a delegation that was just asked again: its older late question is NOT put back, so the
+ * delegation has one live question and a plain-marker answer closes it entirely (not just the older of two).
+ */
+export function retainAnswerable(prev: DowngradeState, next: DowngradeState, nowMs: number, superseded?: string): DowngradeState {
+  const kept = prev.entries.filter((e) => isLatePending(e, nowMs) && !(superseded !== undefined && e.signature === superseded));
   if (kept.length === 0) return next;
   const have = new Set(next.entries.map((e) => `${e.signature}|${e.asked_at}`));
   const entries = [...kept.filter((e) => !have.has(`${e.signature}|${e.asked_at}`)), ...next.entries].slice(-MAX_ENTRIES);
@@ -589,7 +593,7 @@ export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeS
       locked(sessionId, () => {
         const prev = read(sessionId);
         const { state, result } = claimAskDowngrade(prev, signature, nowMs, stepIdx);
-        if (result === 'first') write(sessionId, retainAnswerable(prev, state, nowMs));
+        if (result === 'first') write(sessionId, retainAnswerable(prev, state, nowMs, signature));
         return result;
       }),
     answer: (sessionId, choice, askId, nowMs, sig) =>

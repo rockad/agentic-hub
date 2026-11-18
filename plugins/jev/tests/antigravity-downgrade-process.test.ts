@@ -368,3 +368,90 @@ describe('Antigravity downgrade: several delegations in one conversation (v2.3.1
     expect(state().entries.every((e: any) => !e.answered)).toBe(true);
   });
 });
+
+describe('Antigravity downgrade: one ask with several signed questions (#76 review B1, B2, B5)', () => {
+  const ARGS_B = { TypeName: 'self', Role: 'worker', Prompt: 'translate the readme' };
+  const ARGS_C = { TypeName: 'self', Role: 'worker', Prompt: 'summarise the changelog' };
+  const SIG_B = downgradeSignature(ARGS_B);
+  const SIG_C = downgradeSignature(ARGS_C);
+  const invokeFor = (args: object, id: string) => ({ ...invoke('flash'), toolCall: { id, name: 'invoke_subagent', args: { ...args, Model: 'flash' } } });
+  const marker = (sig: string) => `[jev-downgrade:flash_lite:${sig.slice(0, 8)}]`;
+  const transcriptFile = () => path.join(home, 'transcript.jsonl');
+  const jsonl = (list: object[]) => list.map((r) => JSON.stringify(r)).join('\n') + '\n';
+
+  function seed(sigs: string[]) {
+    fs.mkdirSync(sessions(), { recursive: true });
+    const cheap = (signature: string) => ({ signature, choice: 'flash_lite', p: [0.03, 0.83, 0.14, 0], real: true, expires_at: Date.now() + 600_000 });
+    fs.writeFileSync(stateFile(), JSON.stringify({ entries: [], ratings: sigs.map(cheap) }));
+  }
+  const askStep = (id: string, sigs: string[]) => ({
+    step_index: 11,
+    type: 'PLANNER_RESPONSE',
+    tool_calls: [{ id, name: 'ask_question', args: { questions: sigs.map((s, i) => ({ question: `${marker(s)} Run ${i}?`, options: Object.values(DOWNGRADE_LABELS) })) } }]
+  });
+  const post = (id: string, sigs: string[], extra: Record<string, unknown> = {}) => ({
+    conversationId: CONV,
+    stepIdx: 12,
+    toolCall: { id, name: 'ask_question', args: { questions: sigs.map((s, i) => ({ question: `${marker(s)} Run ${i}?`, options: Object.values(DOWNGRADE_LABELS) })) } },
+    ...extra
+  });
+
+  it('B1: both answers arrive late (PostToolUse: no_row); A pulls Yes, then B pulls No -> B is kept on flash, not passed as already-asked', () => {
+    seed([SIGNATURE, SIG_B]);
+    expect(JSON.parse(run('pre-tool-use', invoke('flash')).stdout.toString()).decision).toBe('deny');
+    expect(JSON.parse(run('pre-tool-use', invokeFor(ARGS_B, 'call_sub_b')).stdout.toString()).decision).toBe('deny');
+    const file = transcriptFile();
+    fs.writeFileSync(file, jsonl([askStep('call_ask2', [SIGNATURE, SIG_B])]));
+    // PostToolUse hits no_row (the row is not there yet)
+    const late = run('post-tool-use', post('call_ask2', [SIGNATURE, SIG_B], { transcriptPath: file }));
+    expect(late.stdout.toString().trim()).toBe('{}');
+    expect(logRows().find((r) => r.event === 'ask_answer')!.outcome).toBe('no_row');
+    // the row lands after PostToolUse returned
+    fs.appendFileSync(file, jsonl([{ step_index: 12, type: 'GENERIC', toolCallId: 'call_ask2', content: `Created At: x\nA1: ${DOWNGRADE_LABELS.yes}\nA2: ${DOWNGRADE_LABELS.keep}` }]));
+    expect(JSON.parse(run('pre-tool-use', invoke('flash', { transcriptPath: file })).stdout.toString())).toEqual({ decision: 'allow', overwrite: { Model: 'flash_lite' } });
+    const retryBPull = run('pre-tool-use', { ...invokeFor(ARGS_B, 'call_sub_b'), transcriptPath: file });
+    expect(retryBPull.stdout.toString()).toBe('');
+    const last = logRows().filter((r) => r.event === 'agent_call').pop()!;
+    expect(last.downgrade).toBe('answered');
+    expect(last.downgrade_pull).toBe(true);
+  });
+
+  it('B1: the recorder stores each answer under <tool call id>#<question index>', () => {
+    seed([SIGNATURE, SIG_B]);
+    run('pre-tool-use', invoke('flash'));
+    run('pre-tool-use', invokeFor(ARGS_B, 'call_sub_b'));
+    run('post-tool-use', post('call_ask2', [SIG_B, SIGNATURE], { content: `A1: ${DOWNGRADE_LABELS.keep}\nA2: ${DOWNGRADE_LABELS.yes}` }));
+    const ids = state().entries.filter((e: any) => e.answered).map((e: any) => e.ask_id).sort();
+    expect(ids).toEqual(['call_ask2#0', 'call_ask2#1']);
+  });
+
+  it('B2: three questions and no row: one wait window (not three), the hook stays well inside its timeout', async () => {
+    seed([SIGNATURE, SIG_B, SIG_C]);
+    const file = transcriptFile();
+    fs.writeFileSync(file, jsonl([askStep('call_ask3', [SIGNATURE, SIG_B, SIG_C])]));
+    const started = Date.now();
+    const proc = Bun.spawn(['bun', HOOK, 'post-tool-use'], {
+      stdin: new TextEncoder().encode(JSON.stringify(post('call_ask3', [SIGNATURE, SIG_B, SIG_C], { transcriptPath: file }))),
+      stdout: 'pipe',
+      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'), JEV_OPENROUTER_API_KEY: '', OPENROUTER_API_KEY: '', JEV_DOWNGRADE: 'ask' }
+    });
+    await proc.exited;
+    const elapsed = Date.now() - started;
+    expect((await new Response(proc.stdout).text()).trim()).toBe('{}');
+    expect(elapsed).toBeLessThan(4500); // three sequential 2 s windows took 6 s and more
+    const row = logRows().find((r) => r.event === 'ask_answer')!;
+    expect(row.outcome).toBe('no_row');
+    expect(row.downgrade_questions).toBe(3);
+  });
+
+  it('B5: the ask_answer row lists the outcome of EVERY question, not one', () => {
+    seed([SIGNATURE, SIG_B]);
+    run('pre-tool-use', invoke('flash'));
+    run('pre-tool-use', invokeFor(ARGS_B, 'call_sub_b'));
+    // question 1 is delegation A (recorded); question 2 names a delegation nothing is pending for (not_asked); 3 has no answer line
+    run('post-tool-use', post('call_ask3', [SIGNATURE, SIG_C, SIG_B], { content: `A1: ${DOWNGRADE_LABELS.yes}\nA2: ${DOWNGRADE_LABELS.keep}` }));
+    const row = logRows().find((r) => r.event === 'ask_answer')!;
+    expect(row.outcomes).toEqual(['recorded', 'not_asked', 'no_row']);
+    expect(row.downgrade_questions).toBe(3);
+  });
+});

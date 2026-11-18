@@ -833,3 +833,130 @@ describe('commit gate log rows carry the session id (A9)', () => {
     expect(limit[0].session_id).toBe('c-a9-limit');
   });
 });
+
+describe('commit detection is not narrower than the raw regex was (R1) and follows cd in nested shells (R4)', () => {
+  let tmpHome = '';
+  let jevConfigDir = '';
+  let origHome = '';
+  let origConfig = '';
+
+  beforeEach(() => {
+    clearConfigCacheForTesting();
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-guards-r1-'));
+    jevConfigDir = path.join(tmpHome, '.config', 'jev');
+    fs.mkdirSync(jevConfigDir, { recursive: true });
+    origHome = process.env.HOME || '';
+    origConfig = process.env.JEV_CONFIG_FILE || '';
+    process.env.HOME = tmpHome;
+    process.env.JEV_CONFIG_FILE = path.join(jevConfigDir, 'config.json');
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE, JSON.stringify({ defaults: { mode: 'on' } }));
+  });
+
+  afterEach(() => {
+    clearConfigCacheForTesting();
+    process.env.HOME = origHome;
+    if (origConfig) process.env.JEV_CONFIG_FILE = origConfig;
+    else delete process.env.JEV_CONFIG_FILE;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const CONFLICT = 'one\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n';
+
+  function stagedConflictRepo(): { dir: string; elsewhere: string } {
+    const dir = path.join(tmpHome, 'repo');
+    fs.mkdirSync(dir, { recursive: true });
+    const git = (cmd: string) => {
+      const proc = Bun.spawnSync(['sh', '-c', `git ${cmd}`], { cwd: dir });
+      if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+    };
+    git('init');
+    git('config user.email "test@example.com"');
+    git('config user.name "Test"');
+    git('config commit.gpgsign false');
+    fs.writeFileSync(path.join(dir, 'c.txt'), CONFLICT);
+    git('add c.txt');
+    const elsewhere = path.join(tmpHome, 'elsewhere');
+    fs.mkdirSync(elsewhere, { recursive: true });
+    return { dir, elsewhere };
+  }
+
+  const decide = async (cwd: string, CommandLine: string) =>
+    (await evaluatePreToolGuards({ cwd, toolCall: { name: 'run_command', args: { CommandLine } } })).decision;
+
+  const WRAPPED = [
+    'timeout 60 git commit -m x',
+    'nice git commit -m x',
+    'nice -n 5 git commit -m x',
+    'stdbuf -oL git commit -m x',
+    'xargs -0 git commit -m x < /dev/null',
+    'sudo -u root git commit -m x',
+    'eval "git commit -m x"',
+    'eval git commit -m x',
+    'echo $(git commit -m x)',
+    'echo `git commit -m x`',
+    'x="$(git commit -m x)"',
+    'git commit -m x &',
+    '(git commit -m x)',
+    '{ git commit -m x; }',
+    'env X=1 git commit -m x',
+    'command -p git commit -m x',
+    'time -p git commit -m x',
+    'doas git commit -m x',
+    'flock /tmp/lock git commit -m x'
+  ];
+
+  for (const cmd of WRAPPED) {
+    it(`denies a staged conflict through: ${cmd}`, async () => {
+      const { dir } = stagedConflictRepo();
+      expect(await decide(dir, cmd)).toBe('deny');
+    });
+  }
+
+  it('commit text inside quotes or a single-quoted substitution is still data, not a commit', async () => {
+    const { dir } = stagedConflictRepo();
+    expect(await decide(dir, `echo "run git commit -m later"`)).toBe('allow');
+    expect(await decide(dir, `echo '$(git commit -m x)'`)).toBe('allow');
+    expect(findGitCommit(`echo "$(echo hi)"`)).toBeNull();
+  });
+
+  it('finds the commit of a wrapper command through findGitCommit', () => {
+    expect(findGitCommit('timeout 60 git commit -m x')?.subcommand).toBe('commit');
+    expect(findGitCommit('sudo -u root git -C /a commit -m x')?.dashC).toEqual(['/a']);
+    expect(findGitCommit('echo $(git commit -m x)')?.subcommand).toBe('commit');
+  });
+
+  it('a cd inside a subshell moves the directory the commit is checked in', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    expect(await decide(elsewhere, `(cd "${dir}" && git commit -m x)`)).toBe('deny');
+    expect(await decide(elsewhere, `{ cd "${dir}"; git commit -m x; }`)).toBe('deny');
+  });
+
+  it('a cd inside sh -c moves the directory the commit is checked in', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    expect(await decide(elsewhere, `sh -c 'cd ${dir} && git commit -m x'`)).toBe('deny');
+    expect(await decide(elsewhere, `bash -lc "cd '${dir}' && git commit -m x"`)).toBe('deny');
+  });
+
+  it('a cd inside a command substitution or eval moves the directory too', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    expect(await decide(elsewhere, `echo $(cd ${dir} && git commit -m x)`)).toBe('deny');
+    expect(await decide(elsewhere, `eval "cd ${dir} && git commit -m x"`)).toBe('deny');
+  });
+
+  it('env -C moves the directory like git -C', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    expect(await decide(elsewhere, `env -C ${dir} git commit -m x`)).toBe('deny');
+  });
+
+  it('a subshell cd that closed before the commit still checks the original directory', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    // The commit runs in `dir` (the cd was in a closed subshell), so `dir` must be among the checked directories.
+    expect(await decide(dir, `(cd ${elsewhere} && true); git commit -m x`)).toBe('deny');
+  });
+
+  it('keeps the top-level cd and pushd forms working', async () => {
+    const { dir, elsewhere } = stagedConflictRepo();
+    expect(await decide(elsewhere, `cd ${dir} && git commit -m x`)).toBe('deny');
+    expect(await decide(elsewhere, `pushd ${dir} >/dev/null && git commit -m x`)).toBe('deny');
+  });
+});

@@ -188,14 +188,23 @@ const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--na
 const COMMAND_PREFIX_WORDS = new Set(['env', 'command', 'exec', 'time', 'sudo', 'nohup', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '(']);
 /** Prefix words that take options of their own (`env -i git ...`): the option words after them are skipped. */
 const PREFIX_WITH_OPTIONS = new Set(['env', 'command', 'exec', 'time', 'sudo', 'nohup']);
+/** Options of those prefix words that consume the next word as their value (`sudo -u root git ...`). */
+const PREFIX_VALUE_OPTIONS: Record<string, Set<string>> = {
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  sudo: new Set(['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '-D', '--chdir', '-R', '--chroot', '-T', '-U', '-r', '-t']),
+  time: new Set(['-f', '--format', '-o', '--output']),
+  exec: new Set(['-a'])
+};
 const SHELL_WORDS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+/** How deep `sh -c`, `eval` and command substitutions are followed. */
+const NESTED_MAX_DEPTH = 3;
 /** `git commit` options that consume the next word, so a message such as `-m "-a"` is never read as a flag. */
 const COMMIT_VALUE_OPTIONS = new Set(['-m', '-F', '-C', '-c', '-t', '-S', '--message', '--file', '--reuse-message', '--reedit-message', '--template', '--author', '--date', '--cleanup', '--fixup', '--squash']);
 
 /** One `git [global options] <subcommand> [args]` invocation found in a command line. */
 export type GitInvocation = {
   subcommand: string;
-  /** The `-C <dir>` values, in order. */
+  /** The directory changes the invocation applies, in order: `env -C <dir>` first, then each `git -C <dir>`. */
   dashC: string[];
   /** The words after the subcommand, up to the end of its segment (quotes already removed). */
   args: string[];
@@ -206,8 +215,14 @@ function baseName(word: string): string {
   return i === -1 ? word : word.slice(i + 1);
 }
 
-/** The git invocations one segment runs (several when it is `sh -c '...'`), in order. */
-function gitInvocationsOfSegment(words: string[], depth = 0): GitInvocation[] {
+/**
+ * Where the command word of a segment is: past `VAR=` assignments, prefix words (`env`, `sudo`, `time`, `then`, ...)
+ * with their options and option values, and leading `(` / `{`. `dirs` collects the directories `env -C <dir>` moves to.
+ * Returns null for a segment that is only prefixes.
+ */
+function commandHead(rawWords: string[]): { words: string[]; i: number; head: string; dirs: string[] } | null {
+  let words = rawWords;
+  const dirs: string[] = [];
   let i = 0;
   while (i < words.length) {
     const w = words[i];
@@ -215,25 +230,127 @@ function gitInvocationsOfSegment(words: string[], depth = 0): GitInvocation[] {
       i++;
     } else if (COMMAND_PREFIX_WORDS.has(w)) {
       i++;
-      if (PREFIX_WITH_OPTIONS.has(w)) while (i < words.length && words[i].startsWith('-') && words[i].length > 1) i++;
+      if (PREFIX_WITH_OPTIONS.has(w)) {
+        const valueOpts = PREFIX_VALUE_OPTIONS[w];
+        while (i < words.length && words[i].startsWith('-') && words[i].length > 1) {
+          const opt = words[i];
+          i++;
+          if (valueOpts?.has(opt) && i < words.length) {
+            if (w === 'env' && (opt === '-C' || opt === '--chdir')) dirs.push(words[i]);
+            i++;
+          } else if (w === 'env' && opt.startsWith('--chdir=')) {
+            dirs.push(opt.slice('--chdir='.length));
+          }
+        }
+      }
     } else if (w.length > 1 && /^[({]+/.test(w)) {
       words = [...words.slice(0, i), w.replace(/^[({]+/, ''), ...words.slice(i + 1)];
     } else {
       break;
     }
   }
-  if (i >= words.length) return [];
-  const head = baseName(words[i]);
+  if (i >= words.length) return null;
+  return { words, i, head: baseName(words[i]), dirs };
+}
 
-  if (SHELL_WORDS.has(head) && depth < 3) {
-    const flag = words.findIndex((w, j) => j > i && /^-[A-Za-z]*c[A-Za-z]*$/.test(w));
-    if (flag === -1 || flag + 1 >= words.length) return [];
-    return splitCommandSegments(words[flag + 1]).flatMap((seg) => gitInvocationsOfSegment(seg, depth + 1));
+/** The command line a segment hands to another shell: `sh -c '<text>'` (the text) or `eval <words>` (joined by spaces, as eval does). */
+function nestedCommandText(h: { words: string[]; i: number; head: string }): string | null {
+  if (SHELL_WORDS.has(h.head)) {
+    const flag = h.words.findIndex((w, j) => j > h.i && /^-[A-Za-z]*c[A-Za-z]*$/.test(w));
+    return flag === -1 || flag + 1 >= h.words.length ? null : h.words[flag + 1];
   }
-  if (head !== 'git') return [];
+  if (h.head === 'eval') {
+    const rest = h.words.slice(h.i + 1).join(' ');
+    return rest.length > 0 ? rest : null;
+  }
+  return null;
+}
+
+/**
+ * The bodies of `$( ... )`, `<( ... )`, `>( ... )` and backtick command substitutions of a command line, outermost
+ * only (a nested one is found when its body is read in turn). Text inside single quotes is data and is skipped; a
+ * substitution inside double quotes still runs.
+ */
+function commandSubstitutions(cmd: string): string[] {
+  const bodies: string[] = [];
+  let i = 0;
+  const closeParen = (from: number): number => {
+    let depth = 1;
+    let j = from;
+    while (j < cmd.length) {
+      const c = cmd[j];
+      if (c === '\\') {
+        j += 2;
+        continue;
+      }
+      if (c === "'") {
+        const end = cmd.indexOf("'", j + 1);
+        if (end === -1) return -1;
+        j = end + 1;
+        continue;
+      }
+      if (c === '(') depth++;
+      else if (c === ')' && --depth === 0) return j;
+      j++;
+    }
+    return -1;
+  };
+  let inDouble = false;
+  while (i < cmd.length) {
+    const c = cmd[i];
+    if (c === '\\') {
+      i += 2;
+    } else if (c === "'" && !inDouble) {
+      const end = cmd.indexOf("'", i + 1);
+      if (end === -1) break;
+      i = end + 1;
+    } else if (c === '"') {
+      inDouble = !inDouble;
+      i++;
+    } else if ((c === '$' || (!inDouble && (c === '<' || c === '>'))) && cmd[i + 1] === '(') {
+      const end = closeParen(i + 2);
+      if (end === -1) {
+        bodies.push(cmd.slice(i + 2));
+        break;
+      }
+      bodies.push(cmd.slice(i + 2, end));
+      i = end + 1;
+    } else if (c === '`') {
+      let j = i + 1;
+      while (j < cmd.length && cmd[j] !== '`') j += cmd[j] === '\\' ? 2 : 1;
+      bodies.push(cmd.slice(i + 1, Math.min(j, cmd.length)));
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return bodies;
+}
+
+/**
+ * The git invocations one segment runs (several when it is `sh -c '...'` or `eval ...`), in order. A segment whose
+ * command word is some other wrapper (`timeout 60 git commit`, `nice -n 5 git ...`, `xargs git ...`, `flock f git ...`)
+ * is searched for a later `git` word, so detection is never narrower than a plain text match was: only the
+ * directory resolution and flag parsing are structural.
+ */
+function gitInvocationsOfSegment(rawWords: string[], depth = 0): GitInvocation[] {
+  const h = commandHead(rawWords);
+  if (!h) return [];
+  const { words } = h;
+  let i = h.i;
+
+  const nested = depth < NESTED_MAX_DEPTH ? nestedCommandText(h) : null;
+  if (nested !== null) return invocationsOfCommandLine(nested, depth + 1);
+  if (SHELL_WORDS.has(h.head) || h.head === 'eval') return [];
+
+  if (h.head !== 'git') {
+    const j = words.findIndex((w, k) => k > i && baseName(w) === 'git');
+    if (j === -1) return [];
+    i = j;
+  }
 
   i++;
-  const dashC: string[] = [];
+  const dashC: string[] = [...h.dirs];
   while (i < words.length && words[i].startsWith('-')) {
     const opt = words[i];
     if (GIT_VALUE_OPTIONS.has(opt)) {
@@ -247,10 +364,16 @@ function gitInvocationsOfSegment(words: string[], depth = 0): GitInvocation[] {
   return [{ subcommand: words[i], dashC, args: words.slice(i + 1) }];
 }
 
+function invocationsOfCommandLine(cmd: string, depth: number): GitInvocation[] {
+  const own = splitCommandSegments(cmd).flatMap((words) => gitInvocationsOfSegment(words, depth));
+  if (depth >= NESTED_MAX_DEPTH) return own;
+  return [...own, ...commandSubstitutions(cmd).flatMap((body) => invocationsOfCommandLine(body, depth + 1))];
+}
+
 /** Every git invocation in the command line, in order (quoted text is data, not a command). */
 export function findGitInvocations(cmd: string): GitInvocation[] {
   try {
-    return splitCommandSegments(cmd).flatMap((words) => gitInvocationsOfSegment(words));
+    return invocationsOfCommandLine(cmd, 0);
   } catch {
     return [];
   }
@@ -296,39 +419,88 @@ export function commitIncludesWorkingTree(cmd: string): boolean {
 }
 
 /**
- * Resolve the directory a `git ... commit` command runs in (Antigravity sets `input.cwd` to the workspace root).
- * Walks the command's segments with a running cwd that starts at `baseCwd`: `cd <dir>` / `pushd <dir>` move it (when
- * the directory exists), and the first `git ... commit` segment applies its own `-C <dir>` options in order, each
- * relative to the previous, as git does. A `-C` on any other segment (an earlier `git add -C ...`) does not move the
- * commit. With no commit segment the running cwd is returned. Fail-safe: any error or odd input yields `baseCwd`.
+ * Where a command line's first `git ... commit` runs. Walks the segments with a running cwd that starts at `baseCwd`:
+ * `cd <dir>` / `pushd <dir>` move it (when the directory exists), and the commit applies its own `env -C` / `-C <dir>`
+ * options in order, each relative to the previous, as git does. `sh -c '...'`, `eval ...` and `$( ... )` bodies are
+ * walked the same way from the cwd they start in, so a `cd` inside them moves their commit. A `cd` inside a `( ... )`
+ * subshell may have ended before the commit, so `cwds` then also lists the directory without it. A `-C` on any other
+ * segment (an earlier `git add -C ...`) does not move the commit. Without a commit, `end` is the running cwd.
+ */
+function walkCommandLine(cmd: string, baseCwd: string, depth: number): { found: boolean; cwds: string[]; end: string } {
+  const expandHome = (p: string) =>
+    p === '~' ? jevHomeDir() : p.startsWith('~/') ? path.join(jevHomeDir(), p.slice(2)) : p;
+  const step = (from: string, dir: string): string => {
+    const candidate = path.resolve(from, expandHome(dir));
+    try {
+      return fsSync.statSync(candidate).isDirectory() ? candidate : from;
+    } catch {
+      return from;
+    }
+  };
+  const unique = (xs: string[]) => [...new Set(xs)];
+  // A substitution body runs in its own subshell: its cd moves its own commit, and the segment splitter below would
+  // cut it in two at the `&&`, so the bodies are walked whole first and their directories are checked as well.
+  const subDirs: string[] = [];
+  if (depth < NESTED_MAX_DEPTH) {
+    for (const body of commandSubstitutions(cmd)) {
+      const r = walkCommandLine(body, baseCwd, depth + 1);
+      if (r.found) subDirs.push(...r.cwds);
+    }
+  }
+  let cwd = baseCwd;
+  let outer = baseCwd; // the cwd without the cds that were opened inside a `( ... )` subshell
+  for (const raw of splitCommandSegments(cmd)) {
+    const subshell = raw[0].startsWith('(');
+    const h = commandHead(raw);
+    if (!h) continue;
+    const nested = depth < NESTED_MAX_DEPTH ? nestedCommandText(h) : null;
+    if (nested !== null) {
+      const starts = unique([cwd, outer]);
+      const hits = starts.map((s) => walkCommandLine(nested, s, depth + 1)).filter((r) => r.found);
+      if (hits.length > 0) return { found: true, cwds: unique([...hits.flatMap((r) => r.cwds), ...subDirs]), end: cwd };
+      continue;
+    }
+    const commit = gitInvocationsOfSegment(raw, depth).find((g) => g.subcommand === 'commit');
+    if (commit) {
+      const cwds = unique([...[cwd, outer].map((s) => commit.dashC.reduce(step, s)), ...subDirs]);
+      return { found: true, cwds, end: cwd };
+    }
+    if (h.head === 'cd' || h.head === 'pushd') {
+      const arg = h.words.slice(h.i + 1).find((w) => w !== '--' && !(w.startsWith('-') && w.length > 1));
+      if (arg !== undefined && arg !== '-' && !/^[+-]\d+$/.test(arg)) {
+        cwd = step(cwd, arg);
+        if (!subshell) outer = step(outer, arg);
+      }
+    }
+  }
+  if (subDirs.length > 0) return { found: true, cwds: unique(subDirs), end: cwd };
+  return { found: false, cwds: [], end: cwd };
+}
+
+/**
+ * The directory a `git ... commit` command runs in (Antigravity sets `input.cwd` to the workspace root); see
+ * `walkCommandLine`. Without a commit it is the cwd the command line leaves behind. Fail-safe: any error or odd
+ * input yields `baseCwd`.
  */
 export function resolveGitCwd(cmd: string, baseCwd: string): string {
   try {
-    const expandHome = (p: string) =>
-      p === '~' ? jevHomeDir() : p.startsWith('~/') ? path.join(jevHomeDir(), p.slice(2)) : p;
-    const step = (from: string, dir: string): string => {
-      const candidate = path.resolve(from, expandHome(dir));
-      try {
-        return fsSync.statSync(candidate).isDirectory() ? candidate : from;
-      } catch {
-        return from;
-      }
-    };
-    let cwd = baseCwd;
-    for (const words of splitCommandSegments(cmd)) {
-      const commit = gitInvocationsOfSegment(words).find((g) => g.subcommand === 'commit');
-      if (commit) {
-        for (const dir of commit.dashC) cwd = step(cwd, dir);
-        return cwd;
-      }
-      if (words[0] === 'cd' || words[0] === 'pushd') {
-        const arg = words.slice(1).find((w) => w !== '--' && !(w.startsWith('-') && w.length > 1));
-        if (arg !== undefined && arg !== '-' && !/^[+-]\d+$/.test(arg)) cwd = step(cwd, arg);
-      }
-    }
-    return cwd;
+    const r = walkCommandLine(cmd, baseCwd, 0);
+    return r.found ? r.cwds[0] : r.end;
   } catch {
     return baseCwd;
+  }
+}
+
+/**
+ * Every directory the first `git ... commit` of the command line may run in: normally one, and more when a `cd` inside
+ * a subshell leaves it unclear whether the commit saw it. Never empty; falls back to `[baseCwd]`.
+ */
+export function resolveGitCommitDirs(cmd: string, baseCwd: string): string[] {
+  try {
+    const r = walkCommandLine(cmd, baseCwd, 0);
+    return r.found && r.cwds.length > 0 ? r.cwds : [baseCwd];
+  } catch {
+    return [baseCwd];
   }
 }
 
@@ -495,39 +667,42 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
       // `git commit -a/--all/-am`, or a command line that also runs `git add`, commits more than the index now holds,
       // so the diff is taken against HEAD instead of --cached.
       const includesWorkingTree = commitIncludesWorkingTree(cmd);
-      const cwd = resolveGitCwd(cmd, input.cwd || process.cwd());
+      // Normally one directory; a `cd` inside a `( ... )` subshell can leave two, and every one is checked.
+      const cwds = resolveGitCommitDirs(cmd, input.cwd || process.cwd());
       const deadline = Date.now() + GIT_DIFF_TIMEOUT_MS;
       const sid = safeSessionId(input.conversationId || input.sessionId || '') || null;
-      try {
-        const diff = runGit([...PLAIN_DIFF_ARGS, includesWorkingTree ? 'HEAD' : '--cached'], cwd, GIT_DIFF_TIMEOUT_MS);
-        if (hasConflictMarkers(diff)) {
-          appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: includesWorkingTree ? 'working_tree' : 'staged' });
-          return {
-            decision: 'deny',
-            reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the ${includesWorkingTree ? 'working-tree' : 'staged'} diff. Resolve conflicts before committing.`
-          };
-        }
-      } catch {
-        // Fail open on any git error (no repository, no HEAD yet, timeout, oversized diff), and leave a trace.
-        appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error' });
-      }
-      // The hook runs before the command, so a file the same line `git add`s may still be untracked, and no diff
-      // shows untracked files: scan them directly. Runs even when the diff failed (a repository with no HEAD yet).
-      if (commandRunsGitAdd(cmd)) {
+      for (const cwd of cwds) {
         try {
-          const scan = scanUntrackedForConflicts(cwd, deadline);
-          if (scan.kind === 'conflict') {
-            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: 'untracked' });
+          const diff = runGit([...PLAIN_DIFF_ARGS, includesWorkingTree ? 'HEAD' : '--cached'], cwd, GIT_DIFF_TIMEOUT_MS);
+          if (hasConflictMarkers(diff)) {
+            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: includesWorkingTree ? 'working_tree' : 'staged' });
             return {
               decision: 'deny',
-              reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the untracked file ${scan.file}, which this command may add. Resolve conflicts before committing.`
+              reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the ${includesWorkingTree ? 'working-tree' : 'staged'} diff. Resolve conflicts before committing.`
             };
           }
-          if (scan.kind === 'limit') {
-            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'untracked_limit', reason: scan.reason });
-          }
         } catch {
-          appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error', stage: 'untracked' });
+          // Fail open on any git error (no repository, no HEAD yet, timeout, oversized diff), and leave a trace.
+          appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error' });
+        }
+        // The hook runs before the command, so a file the same line `git add`s may still be untracked, and no diff
+        // shows untracked files: scan them directly. Runs even when the diff failed (a repository with no HEAD yet).
+        if (commandRunsGitAdd(cmd)) {
+          try {
+            const scan = scanUntrackedForConflicts(cwd, deadline);
+            if (scan.kind === 'conflict') {
+              appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'deny', mode: 'untracked' });
+              return {
+                decision: 'deny',
+                reason: `[jev] Pre-Commit Gate: Detected unresolved merge conflict markers in the untracked file ${scan.file}, which this command may add. Resolve conflicts before committing.`
+              };
+            }
+            if (scan.kind === 'limit') {
+              appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'untracked_limit', reason: scan.reason });
+            }
+          } catch {
+            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error', stage: 'untracked' });
+          }
         }
       }
     }

@@ -218,6 +218,45 @@ describe('antigravity preflight hook', () => {
     expect(msg).toContain('00000000-0000-4000-8000-0000000000c9');
   });
 
+  it('Argon warning: 0 remaining says so; free_only with some remaining says exhausted without a hard-coded 0%', async () => {
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
+    const warn = async (argon: number): Promise<string> => {
+      fs.writeFileSync(
+        path.join(agyDir, 'quota-state.json'),
+        JSON.stringify({
+          schema: 2,
+          updated_at: Math.floor(Date.now() / 1000),
+          active_model: 'Orchestrator (Argon)',
+          plan_tier: 'pro',
+          buckets: {
+            'gemini-5h': { remaining_fraction: 0.8 },
+            'gemini-weekly': { remaining_fraction: 0.8 },
+            'gemini-argon-wtu-weekly': { remaining_fraction: argon, reset_at: Math.floor(Date.now() / 1000) + 3600 }
+          }
+        })
+      );
+      let stdout = '';
+      const origLog = console.log;
+      console.log = (m: string) => { stdout += m; };
+      try {
+        await runPreflight(JSON.stringify({ conversationId: '00000000-0000-4000-8000-0000000000ca', modelName: 'Orchestrator (Argon)', lastUserInput: 'fix bug' }));
+      } finally {
+        console.log = origLog;
+      }
+      return JSON.parse(stdout).injectSteps[0].ephemeralMessage as string;
+    };
+
+    const zero = await warn(0);
+    expect(zero).toContain('ARGON EXHAUSTED WARNING');
+    expect(zero).toContain('(0% remaining until');
+
+    const some = await warn(0.03);
+    expect(some).toContain('ARGON EXHAUSTED WARNING');
+    expect(some).toContain('exhausted');
+    expect(some).not.toMatch(/\(0% remaining/);
+    expect(some).not.toContain('0% remaining until');
+  });
+
   it('privacy: logs taskHash and taskLen, never raw task text or tool: jev_dispatch on PreInvocation lines', async () => {
     fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
     fs.writeFileSync(

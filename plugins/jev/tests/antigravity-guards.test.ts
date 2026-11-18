@@ -758,3 +758,78 @@ describe('write guard path normalisation (A6)', () => {
     expect(JSON.parse(fs.readFileSync(path.join(sessionsDir, 'c-out.write-guard.json'), 'utf8')).files).toEqual([outside]);
   });
 });
+
+describe('commit gate log rows carry the session id (A9)', () => {
+  let tmpHome = '';
+  let origHome = '';
+  let origConfig = '';
+  let jevConfigDir = '';
+
+  beforeEach(() => {
+    clearConfigCacheForTesting();
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-guards-a9-'));
+    jevConfigDir = path.join(tmpHome, '.config', 'jev');
+    fs.mkdirSync(jevConfigDir, { recursive: true });
+    origHome = process.env.HOME || '';
+    origConfig = process.env.JEV_CONFIG_FILE || '';
+    process.env.HOME = tmpHome;
+    process.env.JEV_CONFIG_FILE = path.join(jevConfigDir, 'config.json');
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE, JSON.stringify({ defaults: { mode: 'on' } }));
+  });
+  afterEach(() => {
+    clearConfigCacheForTesting();
+    process.env.HOME = origHome;
+    if (origConfig) process.env.JEV_CONFIG_FILE = origConfig;
+    else delete process.env.JEV_CONFIG_FILE;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const rows = (): Array<Record<string, unknown>> =>
+    fs
+      .readFileSync(path.join(jevConfigDir, 'antigravity_decisions.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+
+  it('an untracked git error row has session_id', async () => {
+    const notRepo = path.join(tmpHome, 'not-a-repo');
+    fs.mkdirSync(notRepo, { recursive: true });
+    const prev = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = tmpHome;
+    try {
+      await evaluatePreToolGuards({
+        conversationId: 'c-a9-err',
+        cwd: notRepo,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git add . && git commit -m x' } }
+      });
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prev;
+    }
+    const gitErrors = rows().filter((r) => r.event === 'commit_gate' && r.outcome === 'git_error');
+    expect(gitErrors.map((r) => r.stage ?? 'diff').sort()).toEqual(['diff', 'untracked']);
+    for (const r of gitErrors) expect(r.session_id).toBe('c-a9-err');
+  });
+
+  it('an untracked_limit row has session_id', async () => {
+    const repo = path.join(tmpHome, 'many');
+    fs.mkdirSync(repo, { recursive: true });
+    for (const cmd of ['init', 'config user.email t@example.com', 'config user.name T', 'config commit.gpgsign false']) {
+      expect(Bun.spawnSync(['sh', '-c', `git ${cmd}`], { cwd: repo }).exitCode).toBe(0);
+    }
+    fs.writeFileSync(path.join(repo, 'seed.txt'), 'x\n');
+    Bun.spawnSync(['sh', '-c', 'git add seed.txt && git commit -m seed'], { cwd: repo });
+    const dir = path.join(repo, 'bulk');
+    fs.mkdirSync(dir);
+    for (let i = 0; i < 2001; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x');
+    const res = await evaluatePreToolGuards({
+      conversationId: 'c-a9-limit',
+      cwd: repo,
+      toolCall: { name: 'run_command', args: { CommandLine: 'git add . && git commit -m x' } }
+    });
+    expect(res.decision).toBe('allow');
+    const limit = rows().filter((r) => r.outcome === 'untracked_limit');
+    expect(limit).toHaveLength(1);
+    expect(limit[0].session_id).toBe('c-a9-limit');
+  });
+});

@@ -524,10 +524,10 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
             };
           }
           if (scan.kind === 'limit') {
-            appendGuardLog({ event: 'commit_gate', outcome: 'untracked_limit', reason: scan.reason });
+            appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'untracked_limit', reason: scan.reason });
           }
         } catch {
-          appendGuardLog({ event: 'commit_gate', outcome: 'git_error', stage: 'untracked' });
+          appendGuardLog({ event: 'commit_gate', session_id: sid, outcome: 'git_error', stage: 'untracked' });
         }
       }
     }

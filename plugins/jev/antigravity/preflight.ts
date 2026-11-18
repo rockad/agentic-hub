@@ -243,7 +243,10 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
         const resetAtStr = typeof resetAt === 'number'
           ? new Date(resetAt * 1000).toISOString()
           : 'weekly reset';
-        parts.push(`[ARGON EXHAUSTED WARNING: Orchestrator (Argon) frontier quota is exhausted (0% remaining until ${resetAtStr}). Orchestrator (Argon) will refuse turns. Switch model to Gemini 4 Hydrogen via /model (Antigravity will re-run the refused request automatically after /model).]`);
+        // The number is the actual remaining value: only a pool at exactly 0 says "0% remaining"; a free_only pool with some
+        // remaining says "exhausted" without one.
+        const remainingNote = frontier?.min_remaining === 0 ? '0% remaining ' : '';
+        parts.push(`[ARGON EXHAUSTED WARNING: Orchestrator (Argon) frontier quota is exhausted (${remainingNote}until ${resetAtStr}). Orchestrator (Argon) will refuse turns. Switch model to Gemini 4 Hydrogen via /model (Antigravity will re-run the refused request automatically after /model).]`);
       }
     }
 

@@ -663,3 +663,39 @@ describe('Antigravity hook: unsafe conversation ids (A2)', () => {
     expect(fs.existsSync(path.join(home, '.config', 'jev', 'antigravity-sessions', 'x.approvals.json'))).toBe(true);
   });
 });
+
+describe('Antigravity hook: an id with nothing safe in it means no stored state (R2)', () => {
+  const ELEVATE = (id: string) => ({
+    conversationId: id,
+    lastUserInput: 'Invoke expert on pro',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } }
+  });
+  const ANSWER = (id: string) => ({
+    conversationId: id,
+    toolCall: {
+      id: 'call_ask',
+      name: 'ask_question',
+      args: { questions: [{ question: "[jev-elevate:pro] Allow subagent 'expert' to run on pro?", options: ['Yes, for this session', 'No'] }] }
+    },
+    content: 'A1: Yes, for this session'
+  });
+  const sessionsDir = () => path.join(home, '.config', 'jev', 'antigravity-sessions');
+
+  it('two different unsafe ids do not share an approval, and no state file is written for them', () => {
+    expect(JSON.parse(run('pre-tool-use', ELEVATE('///')).stdout.toString()).decision).toBe('deny');
+    const post = run('post-tool-use', ANSWER('///'));
+    expect(post.exitCode).toBe(0);
+    // A different unsafe conversation must not inherit the first one's "Yes, for this session".
+    expect(JSON.parse(run('pre-tool-use', ELEVATE('@@@')).stdout.toString()).decision).toBe('deny');
+    const files = fs.existsSync(sessionsDir()) ? fs.readdirSync(sessionsDir()) : [];
+    expect(files.filter((f) => /approvals/.test(f))).toEqual([]);
+  });
+
+  it('an unsafe id is not mapped onto the shared default-session file either', () => {
+    run('pre-tool-use', ELEVATE('@@@'));
+    run('post-tool-use', ANSWER('@@@'));
+    const files = fs.existsSync(sessionsDir()) ? fs.readdirSync(sessionsDir()) : [];
+    expect(files).not.toContain('default-session.approvals.json');
+  });
+});

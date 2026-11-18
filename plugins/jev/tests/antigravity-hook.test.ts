@@ -1312,3 +1312,26 @@ describe('pull fallback answer matching and record failure (A3, A4)', () => {
     expect(d.pullFallback).toBe(true);
   });
 });
+
+describe('evaluateAntigravitySubagentCall with an id that has nothing safe in it (R2)', () => {
+  it('never touches the approvals store: no stored state, decided normally', () => {
+    const calls: string[] = [];
+    const store = new Proxy({} as ApprovalStore, {
+      get: (_t, name) => () => {
+        calls.push(String(name));
+        return null;
+      }
+    });
+    const decision = evaluateAntigravitySubagentCall(
+      {
+        conversationId: '///',
+        lastUserInput: 'run subagent on pro',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } }
+      },
+      { approvals: store, sessionModelOverride: 'gemini-3.8-flash-low', now: () => 1000 }
+    );
+    expect(decision.decision).toBe('deny');
+    expect(calls).toEqual([]);
+  });
+});

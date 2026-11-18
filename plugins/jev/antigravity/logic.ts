@@ -504,6 +504,9 @@ export function evaluateAntigravitySubagentCall(
   }
 
   const sessionId = safeSessionId(input.conversationId) || 'default-session';
+  // An id that was sent but has nothing safe in it means no stored state (not the shared default-session file).
+  const rawId = input.conversationId;
+  const approvalStore = typeof rawId === 'string' && rawId.length > 0 && !safeSessionId(rawId) ? undefined : deps.approvals;
   const nowMs = (deps.now ?? Date.now)();
   const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
   const mode: JevMode = deps.mode ?? 'on';
@@ -629,7 +632,7 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // Check covering approval
-  const approval = deps.approvals?.claim(sessionId, requestedModel, nowMs);
+  const approval = approvalStore?.claim(sessionId, requestedModel, nowMs);
   if (approval) {
     return {
       decision: 'allow',
@@ -654,7 +657,7 @@ export function evaluateAntigravitySubagentCall(
   const signature = `${typeName}:${requestedModel}`;
 
   if (elevationMode === 'clamp') {
-    const count = deps.approvals?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+    const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
     if (count === 1) {
       return {
         decision: 'allow',
@@ -672,11 +675,11 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // Choice mode (default):
-  const count = deps.approvals?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+  const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   let pullFallback: 'record_failed' | undefined;
   if (count <= 2) {
-    if (deps.approvals && input.transcriptPath && typeof deps.approvals.wasDeniedRecently === 'function') {
-      const deniedAtMs = deps.approvals.wasDeniedRecently(sessionId, requestedModel, nowMs);
+    if (approvalStore && input.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
+      const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
       if (typeof deniedAtMs === 'number') {
         const pull = pullElevationAnswerFromTranscript(input.transcriptPath, requestedModel, deniedAtMs);
         if (pull?.approved && pull.scope) {
@@ -684,12 +687,12 @@ export function evaluateAntigravitySubagentCall(
           // throws) would leave the denial in place and let the same answer be pulled again.
           let stored = false;
           try {
-            stored = deps.approvals.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs }) === true;
+            stored = approvalStore.record(sessionId, { model: requestedModel, scope: pull.scope, created_at: nowMs }) === true;
           } catch {
             stored = false;
           }
           if (stored) {
-            deps.approvals.claim(sessionId, requestedModel, nowMs);
+            approvalStore.claim(sessionId, requestedModel, nowMs);
             return {
               decision: 'allow',
               elevation: 'approved',
@@ -702,7 +705,7 @@ export function evaluateAntigravitySubagentCall(
       }
     }
 
-    deps.approvals?.deny(sessionId, requestedModel, nowMs);
+    approvalStore?.deny(sessionId, requestedModel, nowMs);
     const reason = buildElevationReason({
       typeName,
       requestedModel,

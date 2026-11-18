@@ -144,7 +144,14 @@ async function main() {
 
     // The conversation id arrives on stdin and becomes part of file names: normalise it once, here, so every path
     // below (approvals, pending-served, session model, log rows) sees the same safe id or none.
-    if (input.conversationId !== undefined) input.conversationId = safeSessionId(input.conversationId) ?? undefined;
+    // An id that was sent but has nothing safe in it (`///`, `@@@`) means no stored state for this call: it must not
+    // fall back to the shared default-session file, or two unrelated conversations would share approvals.
+    let noSession = false;
+    if (input.conversationId !== undefined) {
+      const safe = safeSessionId(input.conversationId);
+      noSession = safe === null && String(input.conversationId).length > 0;
+      input.conversationId = safe ?? undefined;
+    }
 
     const mode: JevMode = await readJevMode('antigravity');
     if (mode === 'off') {
@@ -152,20 +159,20 @@ async function main() {
     }
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
-    const approvals = createAntigravityApprovalStore(sessionsDir);
+    const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
     flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
 
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;
       if (toolName === 'ask_question') {
-        const conversationId = input.conversationId || 'default-session';
+        const conversationId = noSession ? null : input.conversationId || 'default-session';
         const contentOnStdin = typeof input.content === 'string' && input.content.trim().length > 0;
         const transcriptReadable = isTranscriptReadable(input.transcriptPath);
 
         let markerFound = false;
         let rowFound = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
-        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'error' = 'error';
+        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
 
         try {
           const questions = input.toolCall?.args?.questions;
@@ -209,12 +216,16 @@ async function main() {
           } else if (!parsed.approved || !parsed.scope) {
             outcome = 'rejected';
           } else {
-            const recorded = approvals.record(conversationId, {
-              model: elevateModel,
-              scope: parsed.scope,
-              created_at: Date.now()
-            });
-            outcome = recorded ? 'recorded' : 'not_denied';
+            if (!approvals || !conversationId) {
+              outcome = 'no_session';
+            } else {
+              const recorded = approvals.record(conversationId, {
+                model: elevateModel,
+                scope: parsed.scope,
+                created_at: Date.now()
+              });
+              outcome = recorded ? 'recorded' : 'not_denied';
+            }
           }
         } catch {
           outcome = 'error';

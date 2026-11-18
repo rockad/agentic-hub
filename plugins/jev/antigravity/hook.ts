@@ -245,7 +245,7 @@ async function main() {
         let servedModel: string | null = null;
         if (childConvId) {
           try {
-            servedModel = findServedModelFromTranscript(childConvId);
+            servedModel = findServedModelFromTranscript(childConvId, jevHomeDir());
           } catch {
             // best-effort
           }

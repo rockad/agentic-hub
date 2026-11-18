@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import {
   isExplicitProOverride,
@@ -13,7 +12,7 @@ import {
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
-import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
+import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
@@ -761,7 +760,7 @@ export const TRANSCRIPT_HEAD_WINDOW_BYTES = 256 * 1024;
 /** The model of the FIRST transcript row that carries one (bounded head read), or null. */
 export function findServedModelFromTranscript(
   childConvId: string,
-  homedir = os.homedir()
+  homedir = jevHomeDir()
 ): string | null {
   if (!new RegExp(`^${UUID_SOURCE}$`, 'i').test(childConvId)) {
     return null;
@@ -938,7 +937,7 @@ export function flushPendingServed(
   sessionsDir: string,
   sessionId: string | undefined | null,
   logFn: (entry: Record<string, unknown>) => void,
-  homedir = os.homedir(),
+  homedir = jevHomeDir(),
   nowMs = Date.now(),
   clock: () => number = Date.now
 ): void {

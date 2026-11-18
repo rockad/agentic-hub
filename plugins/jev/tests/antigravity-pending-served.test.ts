@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { flushPendingServed, type PendingServedRecord } from '../antigravity/logic.ts';
+import { flushPendingServed, findServedModelFromTranscript, type PendingServedRecord } from '../antigravity/logic.ts';
 
 const SESSION = '00000000-0000-4000-8000-000000000001';
 const child = (n: number) => `00000000-0000-4000-8000-0000000001${String(n).padStart(2, '0')}`;
@@ -106,5 +106,44 @@ describe('flushPendingServed bounds', () => {
     flush();
     expect(fs.existsSync(file)).toBe(false);
     expect(logged).toEqual([]);
+  });
+});
+
+describe('call-time home for the served-model lookup (A8)', () => {
+  let tmp = '';
+  let origHome: string | undefined;
+  const CHILD = '00000000-0000-4000-8000-00000000a801';
+  const PARENT = '00000000-0000-4000-8000-00000000a802';
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-a8-'));
+    origHome = process.env.HOME;
+    const logs = path.join(tmp, '.gemini', 'antigravity-cli', 'brain', CHILD, '.system_generated', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, 'transcript_full.jsonl'), '{"step_index":1,"type":"PLANNER_RESPONSE","model":"gemini-4-hydrogen-high"}\n');
+  });
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME;
+    else process.env.HOME = origHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('findServedModelFromTranscript follows HOME changed after import when no home is passed', () => {
+    process.env.HOME = tmp;
+    expect(findServedModelFromTranscript(CHILD)).toBe('gemini-4-hydrogen-high');
+  });
+
+  it('flushPendingServed follows HOME changed after import when no home is passed', () => {
+    process.env.HOME = tmp;
+    const sessions = path.join(tmp, 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, `${PARENT}.pending-served.json`),
+      JSON.stringify([{ requestedModel: 'flash', childConvId: CHILD, createdAt: Date.now() }]) + '\n'
+    );
+    const rows: Record<string, unknown>[] = [];
+    flushPendingServed(sessions, PARENT, (r) => rows.push(r));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ event: 'subagent_served', served_model: 'gemini-4-hydrogen-high', backfilled: true });
   });
 });

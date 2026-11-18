@@ -23,6 +23,7 @@ import {
   privateDir,
   privateFile,
   PRIVATE_FILE_MODE,
+  jevHomeDir,
   type QuotaView
 } from '../src/shared.js';
 import { flushPendingServed } from './logic.js';
@@ -186,7 +187,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
     }
     if (conversationId) {
       // HOME at call time, not os.homedir(): bun fixes os.homedir() at startup (same rule as autoHealAgyMcp).
-      const home = process.env.HOME || os.homedir();
+      const home = jevHomeDir();
       const jevDir = process.env.JEV_CONFIG_FILE
         ? path.dirname(process.env.JEV_CONFIG_FILE)
         : path.join(home, '.config', 'jev');

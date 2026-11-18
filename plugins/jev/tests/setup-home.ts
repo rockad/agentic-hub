@@ -24,7 +24,6 @@ const home = prepared ? startedIn : fs.mkdtempSync(path.join(os.tmpdir(), PREFIX
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 delete process.env.XDG_CONFIG_HOME;
-delete process.env.JEV_CONFIG_FILE;
 
 if (os.homedir() !== home) {
   console.error(
@@ -49,6 +48,10 @@ for (const name of Object.keys(process.env)) {
   }
 }
 
+// The config file: modules resolve it from os.homedir() (the REAL home under plain `bun test`), so JEV_CONFIG_FILE pins it to a
+// path inside the temporary home (none exists, so every default applies). Tests that need a config set their own.
+process.env.JEV_CONFIG_FILE = path.join(home, '.config', 'jev', 'config.json');
+
 // The router's decision cache lives in a machine-wide file (/dev/shm/jev/cache.sqlite) unless JEV_CACHE_FILE says otherwise,
 // and a rating cached there by an earlier real run would answer a test's router call without a key. Point it inside the
 // temporary home, after the scrub above, so every test and every process a test spawns uses a private cache.
@@ -57,12 +60,13 @@ process.env.JEV_CACHE_FILE = path.join(home, 'decision-cache.sqlite');
 // Secrets: src/core/client.ts loads API keys from ~/.config/zsh/secrets.env, ~/.config/jev/env and the Antigravity .env.
 // It builds that list from HOME at call time, and JEV_SECRETS_FILES replaces the list. Under plain `bun test` bun keeps the
 // real os.homedir(), so the list is pinned here to files inside the temporary home (none exists): no real key can be loaded,
-// by this process or by any process a test spawns (they inherit this variable).
+// by this process or by any process a test spawns WITH an `env` (a Bun.spawn / Bun.spawnSync without one gives the child the
+// environment bun started with, not this modified process.env: tests/spawn-env.test.ts fails on such a call).
 process.env.JEV_SECRETS_FILES = path.join(home, '.config', 'jev', 'test-secrets.env');
 
 // No test may start a real catalogue refresh: the SessionStart hook launches a detached refresh when the catalogue is
 // missing, and that refresh runs paid `claude -p` probes. Set after the scrub above, so every process a test spawns
-// inherits it. The one test that exercises the real trigger deletes it from its own env and points JEV_REFRESH_SCRIPT
+// with `env: { ...process.env }` (see the note above) gets it. The one test that exercises the real trigger deletes it from its own env and points JEV_REFRESH_SCRIPT
 // at a stub (tests/claude-hook-process.test.ts).
 process.env.JEV_MODEL_REFRESH = 'off';
 

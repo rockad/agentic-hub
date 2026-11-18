@@ -21,7 +21,10 @@ function quotaViewUnderHome(home: string, extraEnv: Record<string, string> = {})
     'try { const v = await m.readQuotaView();' +
     ' console.log(JSON.stringify({ ok: true, strategy: v.strategy, fiveHour: v.gemini.five_hour, weekly: v.gemini.weekly })); }' +
     ' catch (e) { console.log(JSON.stringify({ ok: false, error: String(e) })); }';
-  const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: { ...process.env, ...extraEnv, HOME: home } });
+  // The preload pins JEV_CONFIG_FILE inside its own temporary home; this child reads the config under ITS home.
+  const env: Record<string, string | undefined> = { ...process.env, ...extraEnv, HOME: home };
+  if (!('JEV_CONFIG_FILE' in extraEnv)) delete env.JEV_CONFIG_FILE;
+  const proc = Bun.spawnSync(['bun', '-e', script], { cwd: PLUGIN_ROOT, env: env as Record<string, string> });
   return JSON.parse(proc.stdout.toString().trim());
 }
 

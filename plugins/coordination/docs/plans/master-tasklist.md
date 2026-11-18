@@ -102,6 +102,19 @@ W4a and W4b are done (decisions Z6 and Z10 to Z16). Short note of what was built
 - S1-A2A: wire tests against the pinned spec commit `4735f48`; front desk per Z13; TCK allowlist reviewed by the user (Z16) and the TCK CI job enabled.
 - S1-ADMIN: admin socket and `a2a-coord key|review|status|card|db`; `key create` requires `--expires` (Z14).
 
+W5a parked 2026-11-18 (weekly quota rule) [verified]. Resume in this order:
+
+1. Both streams are built and independently checked, pushed, no PR yet. Worktrees `agentic-hub-wt-id` and `agentic-hub-wt-wake`, both clean.
+   - S1-ID: `feat/coordination-id` at `be74a9c`. That is `330aa3f` (checker passed all, 1273 passed, 3 skipped) plus the decision Z17 commit (revive, rebind, lifecycle audit, live-only listing; 1283 passed, 3 skipped [reported by its agent]).
+   - S1-WAKE: `feat/coordination-wake` at `cd25787`, built on `330aa3f`, not on `be74a9c` (checker passed all, 1353 passed, 3 skipped). Its open defaults are listed in `docs/specs/wake.md`.
+2. Rebase `feat/coordination-wake` onto `be74a9c` and resolve conflicts in `mcp/` and `identity/` (WAKE added confirm calls; Z17 changed binding and revive).
+3. Decision Z18 (user, 2026-11-18): start the TTL sweep (`service.run_forever`) in the app lifespan. When adding it:
+   - make the sweep end idle sessions through `IdentityService.end_idle`, so the end hooks fire (WAKE answers 410) and `session_ended{via: idle_ttl}` is written. Today `CoordinationService.sweep` calls `Directory.end_idle`, which does neither.
+   - fix `cli/render.py`, which still prints "(null until S1-WAKE)".
+   - record Z18 in master-plan 12.3.
+4. Re-run both suites with Docker, push, then open PRs: S1-ID against `main`, S1-WAKE against `feat/coordination-id`. Merge on the user's word.
+5. Then the end-to-end wake test with the user (paused at step 1). Helper scripts are in `~/.config/a2a-coord/` (`register.sh`, `listen.sh`, `pending.sh`, `send.sh`, `probe.sh`). The flow: register a session, park a listener, the peer sends a task that is held for review, the user releases it, and the listener wakes with the count.
+
 W5a brief (started 2026-11-17; the brief for the account or Antigravity session that runs it):
 
 1. S1-ID is being built by a Claude Code workflow in worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from main `503fb93`, with an independent check and up to two repair rounds. S1-WAKE follows, stacked on `feat/coordination-id` (worktree `agentic-hub-wt-wake`, branch `feat/coordination-wake`). Deliverables and acceptance: master-plan section 4.2.

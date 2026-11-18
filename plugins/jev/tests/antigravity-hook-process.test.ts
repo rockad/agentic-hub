@@ -34,6 +34,8 @@ function run(event: string, input: object, extraEnv: Record<string, string> = {}
       ...process.env,
       HOME: home,
       JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'),
+      // These tests are about the elevation guard: no downgrade rating, so no router call (the downgrade has its own tests).
+      JEV_DOWNGRADE: 'off',
       ...extraEnv
     }
   });

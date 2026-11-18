@@ -3,6 +3,21 @@ import * as path from 'node:path';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
 import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 import { withDirLock } from '../src/core/dir-lock.js';
+import {
+  DOWNGRADE_TTL_MS,
+  MAX_ENTRIES,
+  claimDowngrade,
+  downgradeOff,
+  live,
+  normalizeDowngradeState,
+  peekDowngrade,
+  rememberRating,
+  withRatings,
+  type DowngradeClaim,
+  type DowngradeEntry,
+  type DowngradeState,
+  type TierRating
+} from '../src/core/downgrade-state.js';
 
 export type ApprovalScope = 'once' | '5min' | 'session';
 
@@ -384,5 +399,154 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
       if (!sessionId) return [];
       return withLock(sessionId, () => readState(sessionId).consumedAnswers ?? []);
     }
+  };
+}
+
+// ── Downgrade choice state (`[jev-downgrade:flash_lite]`) ───────────────────────────────────────────────────────────
+// A separate file from the approvals: a downgrade answer never grants an elevation and an elevation approval never
+// answers a downgrade question. The rating, the question state and the session-off switch are the shared pure state of
+// `src/core/downgrade-state.ts`; this section adds what is Antigravity's own (one needed alias, three prescribed answers,
+// and the bounds that keep an answer from being applied twice).
+
+/** The only alias the Antigravity downgrade question is about: the marker is `[jev-downgrade:flash_lite]`. */
+export const DOWNGRADE_ALIAS = 'flash_lite';
+
+/** The three prescribed answers: a Yes, a No for this delegation, and a No for the rest of the conversation. */
+export type DowngradeChoice = 'yes' | 'keep' | 'off';
+
+/** What an answered entry stores: the prescribed label (`off` is the shared session-off form), never the user's text. */
+const STORED_LABEL: Record<DowngradeChoice, string> = { yes: 'Yes, flash_lite', keep: 'No, keep flash', off: 'session off' };
+
+/** One question asked in this conversation, as `claimDowngrade` writes it, plus what Antigravity adds to it. */
+type AskEntry = DowngradeEntry & {
+  /** The `step_index` the denial happened at: a question at or before it cannot be this denial's. */
+  ask_step?: number;
+  /** The tool call id of the `ask_question` whose answer closed this entry: that answer is never applied again. */
+  ask_id?: string;
+};
+
+/** Pure: record the question for `signature` (a denial about to be sent). `first` when it was written, `asked`/`answered` when on record. */
+export function claimAskDowngrade(
+  state: DowngradeState,
+  signature: string,
+  nowMs: number,
+  stepIdx?: number
+): { state: DowngradeState; result: DowngradeClaim } {
+  const claimed = claimDowngrade(state, signature, DOWNGRADE_ALIAS, nowMs, true);
+  if (claimed.result !== 'first' || typeof stepIdx !== 'number') return claimed;
+  const entries = claimed.state.entries.map((e) =>
+    !e.answered && e.signature === signature && e.asked_at === nowMs ? ({ ...e, ask_step: stepIdx } as AskEntry) : e
+  );
+  return { state: { ...claimed.state, entries }, result: 'first' };
+}
+
+/**
+ * Pure: record the user's answer. Every unanswered question of this conversation is closed by it (the answer does not name a
+ * delegation), once: the pending entries are marked answered with the label and the answer's tool call id, so the same
+ * answer read again, from the transcript or from a second hook run, finds nothing pending and records nothing. With no
+ * pending question the state is returned unchanged and `recorded` is false: an answer nobody asked for covers no call.
+ */
+export function answerAskDowngrade(
+  state: DowngradeState,
+  choice: DowngradeChoice,
+  askId: string | undefined,
+  nowMs: number
+): { state: DowngradeState; recorded: boolean } {
+  const entries = live(state, nowMs);
+  if (!entries.some((e) => !e.answered && e.from === DOWNGRADE_ALIAS)) return { state, recorded: false };
+  const next = entries.map((e) =>
+    !e.answered && e.from === DOWNGRADE_ALIAS
+      ? ({ ...e, answered: true, chosen: STORED_LABEL[choice], ...(askId ? { ask_id: askId } : {}), expires_at: nowMs + DOWNGRADE_TTL_MS } as AskEntry)
+      : e
+  );
+  const base = withRatings(state, next.slice(-MAX_ENTRIES), nowMs);
+  return { state: choice === 'off' ? { ...base, off: state.off ?? { at: nowMs } } : base, recorded: true };
+}
+
+/** Pure: the answer on record for `signature` (`off` when the conversation switched the question off), or null. */
+export function answeredDowngradeChoice(state: DowngradeState, signature: string, nowMs: number): DowngradeChoice | null {
+  if (downgradeOff(state)) return 'off';
+  const hit = live(state, nowMs)
+    .filter((e) => e.answered && e.signature === signature)
+    .pop();
+  if (!hit) return null;
+  return hit.chosen === STORED_LABEL.yes ? 'yes' : hit.chosen === STORED_LABEL.keep ? 'keep' : hit.chosen === STORED_LABEL.off ? 'off' : null;
+}
+
+/** Pure: the unanswered question for `signature` (when it was asked, at which step), plus the ask ids already consumed. */
+export function pendingDowngradeAsk(
+  state: DowngradeState,
+  signature: string,
+  nowMs: number
+): { askedAt: number; askStep?: number; consumed: Set<string> } | null {
+  const entries = live(state, nowMs) as AskEntry[];
+  const pending = entries.find((e) => !e.answered && e.signature === signature && typeof e.asked_at === 'number');
+  if (!pending) return null;
+  const consumed = new Set(entries.flatMap((e) => (typeof e.ask_id === 'string' ? [e.ask_id] : [])));
+  return { askedAt: pending.asked_at as number, ...(typeof pending.ask_step === 'number' ? { askStep: pending.ask_step } : {}), consumed };
+}
+
+export type DowngradeStore = {
+  /** What is on record for a call before it is rated (see `peekDowngrade`). */
+  peek: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof peekDowngrade>;
+  /** Keep the delegation's rating for ten minutes, so a retry does not call the router again. */
+  remember: (sessionId: string, signature: string, rating: TierRating, nowMs: number) => void;
+  /** Write the question down (atomically: one parallel caller is `first`). */
+  claim: (sessionId: string, signature: string, nowMs: number, stepIdx?: number) => DowngradeClaim;
+  /** Record an answer once; false when no question was pending. */
+  answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number) => boolean;
+  choiceFor: (sessionId: string, signature: string, nowMs: number) => DowngradeChoice | null;
+  pending: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof pendingDowngradeAsk>;
+};
+
+export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeStore {
+  const idOf = (sessionId: string): string => {
+    const safe = safeSessionId(sessionId);
+    if (!safe) throw new Error('unsafe session id');
+    return safe;
+  };
+  const file = (sessionId: string) => path.join(sessionsDir, `${idOf(sessionId)}.downgrade.json`);
+  const lock = (sessionId: string) => path.join(sessionsDir, `${idOf(sessionId)}.downgrade.lock`);
+
+  const read = (sessionId: string): DowngradeState => {
+    const target = file(sessionId); // an id with nothing safe in it throws here, so the caller skips the evaluation
+    try {
+      return normalizeDowngradeState(JSON.parse(fs.readFileSync(target, 'utf8')));
+    } catch {
+      return { entries: [] };
+    }
+  };
+  const write = (sessionId: string, state: DowngradeState): void => {
+    privateDir(sessionsDir);
+    const target = file(sessionId);
+    const tmp = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp);
+    fs.renameSync(tmp, target);
+    privateFile(target);
+  };
+  const locked = <T>(sessionId: string, fn: () => T): T => {
+    privateDir(sessionsDir);
+    return withDirLock(lock(sessionId), fn);
+  };
+
+  return {
+    peek: (sessionId, signature, nowMs) => peekDowngrade(read(sessionId), signature, nowMs),
+    remember: (sessionId, signature, rating, nowMs) =>
+      locked(sessionId, () => write(sessionId, rememberRating(read(sessionId), signature, rating, nowMs))),
+    claim: (sessionId, signature, nowMs, stepIdx) =>
+      locked(sessionId, () => {
+        const { state, result } = claimAskDowngrade(read(sessionId), signature, nowMs, stepIdx);
+        if (result === 'first') write(sessionId, state);
+        return result;
+      }),
+    answer: (sessionId, choice, askId, nowMs) =>
+      locked(sessionId, () => {
+        const { state, recorded } = answerAskDowngrade(read(sessionId), choice, askId, nowMs);
+        if (recorded) write(sessionId, state);
+        return recorded;
+      }),
+    choiceFor: (sessionId, signature, nowMs) => answeredDowngradeChoice(read(sessionId), signature, nowMs),
+    pending: (sessionId, signature, nowMs) => pendingDowngradeAsk(read(sessionId), signature, nowMs)
   };
 }

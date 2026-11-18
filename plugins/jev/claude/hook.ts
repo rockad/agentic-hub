@@ -137,6 +137,7 @@ import {
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
+import { withTimeout } from '../src/core/with-timeout.js';
 import { createSessionModelLearner, isAuthoritative, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 import { clip } from './agent-definitions.js';
 import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, type WorkflowResolver } from './workflow-guard.js';
@@ -285,24 +286,8 @@ function sessionModelOf(input: HookInput, sessionId: string | null, deps: HookDe
   return { model: stored, source: stored ? 'stored' : null };
 }
 
-export function withTimeout<T>(
-  pOrFn: Promise<T> | ((signal: AbortSignal) => Promise<T>),
-  ms: number,
-  externalController?: AbortController
-): Promise<T | null> {
-  const controller = externalController || new AbortController();
-  let timer: any;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      controller.abort();
-      resolve(null);
-    }, ms);
-  });
-  const promise = typeof pOrFn === 'function' ? pOrFn(controller.signal) : pOrFn;
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
+// The timeout race lives in src/core/with-timeout.ts (the Antigravity downgrade uses it too); re-exported for existing imports.
+export { withTimeout };
 
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
   const sessionId = safeSessionId(input.session_id);

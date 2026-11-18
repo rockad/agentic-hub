@@ -14,6 +14,8 @@ import {
   type QuotaView
 } from '../src/shared.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
+import { checkEgress, egressContextDirs } from '../src/core/egress.js';
+import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
@@ -29,7 +31,8 @@ import {
   type AntigravityHookInput
 } from './logic.js';
 import { readRegularFileTail } from '../claude/safe-read.js';
-import { createAntigravityApprovalStore, type ApprovalScope } from './approvals.js';
+import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
+import { applyAntigravityDowngrade, findDowngradeQuestion, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -128,7 +131,8 @@ async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
 
   try {
-    // No API keys are loaded here: the hook makes no network call.
+    // The only network call this hook can make is the downgrade rating at PreToolUse (one router call, 1.5 s, fail-open);
+    // the key is loaded the way the MCP server loads it, on import of the shared client.
     const jevDir = getJevDir();
 
     const rawStdin = await Bun.stdin.text();
@@ -160,6 +164,7 @@ async function main() {
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
+    const downgrades = createAntigravityDowngradeStore(sessionsDir);
     flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
 
     if (event === 'post-tool-use') {
@@ -174,6 +179,41 @@ async function main() {
         let answerStepRecorded = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
         let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
+
+        // A downgrade question (`[jev-downgrade:flash_lite]`, text starts with the marker) is recorded by its own branch.
+        // An elevation marker wins when a call carries both: the elevation flow is the one that must never miss an answer.
+        const downgradeIndex = findDowngradeQuestion(input.toolCall?.args?.questions);
+        const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
+        if (downgradeIndex !== null && !carriesElevation) {
+          let dRow = false;
+          let dChoice: 'yes' | 'keep' | 'off' | null = null;
+          let dOutcome: 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error' = 'error';
+          try {
+            const rawAnswer = await pollForAskAnswer(input, downgradeIndex);
+            dRow = rawAnswer !== null;
+            dChoice = parseDowngradeAnswer(rawAnswer);
+            if (!dRow) dOutcome = 'no_row';
+            else if (!dChoice) dOutcome = 'rejected';
+            else if (!conversationId) dOutcome = 'not_asked';
+            else dOutcome = downgrades.answer(conversationId, dChoice, input.toolCall?.id, Date.now()) ? 'recorded' : 'not_asked';
+          } catch {
+            dOutcome = 'error';
+          }
+          appendDecisionLog({
+            event: 'ask_answer',
+            marker: 'downgrade',
+            session_id: conversationId,
+            stepIdx: input.stepIdx ?? null,
+            content_on_stdin: contentOnStdin,
+            transcript_readable: transcriptReadable,
+            marker_found: true,
+            row_found: dRow,
+            parsed: { choice: dChoice },
+            outcome: dOutcome
+          });
+          console.log('{}');
+          process.exit(0);
+        }
 
         try {
           const questions = input.toolCall?.args?.questions;
@@ -329,12 +369,30 @@ async function main() {
       activeModel = ceilingModelForHarness('antigravity', trimmedModel);
     }
 
-    const decision = evaluateAntigravitySubagentCall(input, {
+    let decision = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: activeModel,
       quotaView,
       mode
     });
+
+    // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
+    // fails open: its log carries the `downgrade*` fields of the row below.
+    let downgradeLog: Record<string, unknown> = {};
+    if (decision.decision === 'pass') {
+      const downgraded = await applyAntigravityDowngrade(input, decision, {
+        store: downgrades,
+        jevMode: mode,
+        sessionModel: activeModel,
+        env: process.env,
+        downgradeConfig: loadDowngradeMode,
+        downgradeMinProbability: loadDowngradeMinProbability,
+        rateTask: liveRateTask,
+        egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd, ...(input.workspacePaths ?? [])])).allowed
+      });
+      decision = downgraded.decision;
+      downgradeLog = downgraded.log;
+    }
 
     const { requestedModel } = extractSubagentModel(input.toolCall?.args);
     const lastUserPrompt = input.lastUserInput || '';
@@ -358,7 +416,8 @@ async function main() {
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
-      ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {})
+      ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
+      ...downgradeLog
     });
 
     if (decision.decision === 'pass') {

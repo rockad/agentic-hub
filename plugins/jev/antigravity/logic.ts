@@ -302,7 +302,7 @@ export async function pollForAskAnswer(
 }
 
 /** An answer text without its `A1:` prefix and its `(Recommended)` tag (a prefix as Antigravity writes it, or a suffix). */
-function answerLabel(answerText: string): string {
+export function answerLabel(answerText: string): string {
   return answerText
     .trim()
     .replace(/^A\d+:\s*/, '')
@@ -344,26 +344,34 @@ export function pullElevationAnswerFromTranscript(
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
 ): { approved: boolean; scope?: ApprovalScope } | null {
-  const r = pullElevationAnswerDetailed(
-    transcriptPath,
-    requestedModel,
-    deniedAtMs,
-    answerStepIdx,
-    answerQuestionIdx,
-    consumedKeys
-  );
-  return r ? { approved: r.approved, ...(r.scope ? { scope: r.scope } : {}) } : null;
+  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, { deniedAtMs });
+  if (!pulled) return null;
+  return parseElevationAnswer(pulled.raw);
 }
 
-/** Like `pullElevationAnswerFromTranscript`, plus the consumption key of the answer row that was read. */
-export function pullElevationAnswerDetailed(
+/** Bounds for `pullAskAnswerFromTranscript`: an older question never answers a newer denial. */
+export type PullAskOptions = {
+  /** Ignore steps whose timestamp is more than 5 s before this time (a step with no timestamp is not filtered by time). */
+  deniedAtMs?: number;
+  /** Ignore question steps whose `step_index` is not greater than this (the step the denial happened at). */
+  afterStepIdx?: number;
+  /** Ignore a question whose tool call id is listed: its answer was already recorded once. */
+  excludeToolCallIds?: ReadonlySet<string>;
+};
+
+/**
+ * The most recent `ask_question` in the bounded transcript tail whose question carries `markerText` (compared lowercase),
+ * and the raw answer text of its result row. Null when there is no such question, or its result row is not in the tail
+ * yet (`raw` is null when the row is there but holds no answer for the question). `toolCallId` is the question's own tool
+ * call id when the transcript names one, so a caller can record that this answer was consumed. The answer comes only from
+ * the user's result row (`A<n>:` lines), never from the question or its options.
+ */
+export function pullAskAnswerFromTranscript(
   transcriptPath: string,
-  requestedModel: string,
-  deniedAtMs?: number,
-  answerStepIdx?: number | null,
-  answerQuestionIdx?: number | null,
-  consumedKeys: readonly string[] = []
-): { approved: boolean; scope?: ApprovalScope; answerKey?: string } | null {
+  markerText: string,
+  opts: PullAskOptions = {}
+): { raw: string | null; toolCallId?: string } | null {
+  const deniedAtMs = opts.deniedAtMs;
   try {
     const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
     if (read.kind !== 'ok') return null;
@@ -388,7 +396,7 @@ export function pullElevationAnswerDetailed(
       }
     }
 
-    const marker = `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`.toLowerCase();
+    const marker = markerText.toLowerCase();
 
     type AskMatch = {
       stepIndexInArray: number;
@@ -474,6 +482,13 @@ export function pullElevationAnswerDetailed(
         else if (typeof step.tool_call_id === 'string') toolCallId = step.tool_call_id;
       }
 
+      if (matchedTool || matchedProse) {
+        // A question the denial cannot have caused, or one whose answer was already recorded, is not this denial's answer.
+        const stepIndex = typeof step.step_index === 'number' ? step.step_index : null;
+        if (typeof opts.afterStepIdx === 'number' && stepIndex !== null && stepIndex <= opts.afterStepIdx) continue;
+        if (toolCallId && opts.excludeToolCallIds?.has(toolCallId)) continue;
+      }
+
       if (matchedTool) {
         latestToolMatch = {
           stepIndexInArray: i,
@@ -543,20 +558,8 @@ export function pullElevationAnswerDetailed(
       return null;
     }
 
-    // The question the user answered is the one PostToolUse saw, when it recorded one (several asks in one planner
-    // step may carry the marker); otherwise the matched call's own.
-    const questionIdx = typeof answerQuestionIdx === 'number' && !latestMatch.toolCallId ? answerQuestionIdx : latestMatch.markerIndex;
-    // Consumption key of the answer row: the tool call id when there is one, else the row's step_index.
-    const rowKey = latestMatch.toolCallId
-      ? latestMatch.toolCallId
-      : typeof genericStep.step_index === 'number'
-        ? `step:${genericStep.step_index}`
-        : `pos:${genericIndex}`;
-    const answerKey = `${rowKey}#${questionIdx}`;
-    if (consumedKeys.includes(answerKey)) return null;
-
-    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIdx);
-    return { ...parseElevationAnswer(rawAnswer), answerKey };
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, latestMatch.markerIndex);
+    return { raw: rawAnswer, ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId } : {}) };
   } catch {
     return null;
   }

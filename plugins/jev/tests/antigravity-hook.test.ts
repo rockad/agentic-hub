@@ -9,6 +9,7 @@ import {
   pollForAskAnswer,
   pullElevationAnswerFromTranscript,
   extractChildConversationId,
+  detectAntigravityAutoApprove,
   findServedModelFromTranscript,
   MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
@@ -154,7 +155,7 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     expect(decision.elevation).toBe('denied');
   });
 
-  it('triggers dialog backstop (ask) on 3rd attempt without approval in the same prompt', () => {
+  it('keeps denying on the 3rd attempt without approval in the same prompt (no dialog backstop)', () => {
     const input: AntigravityHookInput = {
       conversationId: 'c1',
       lastUserInput: 'run subagent on pro',
@@ -186,14 +187,16 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     });
     expect(d2.decision).toBe('deny');
 
-    // Attempt 3: ask (backstop)
+    // Attempt 3: still deny (an ask would be auto-approved under TURBO), now telling the agent to stop retrying pro
     const d3 = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: 'gemini-3.8-flash-low',
       now: () => 1100
     });
-    expect(d3.decision).toBe('ask');
-    expect(d3.elevation).toBe('asked');
+    expect(d3.decision).toBe('deny');
+    expect(d3.elevation).toBe('denied');
+    expect(d3.attemptCount).toBe(3);
+    expect(d3.reason).toContain('flash');
   });
 
   it('passes when explicit pro override is in the user prompt', () => {
@@ -1689,6 +1692,161 @@ describe('Antigravity telemetry helpers (logic)', () => {
         buildAntigravityTelemetryEvent({ ...base, quotaView: { active_model: 'quota-model', activeModelSource: 'quota-state' } as any })
       ).toMatchObject({ sessionModel: 'quota-model', sessionModelSource: 'quota-state' });
       expect(buildAntigravityTelemetryEvent({ ...base })).toMatchObject({ sessionModel: null, sessionModelSource: null });
+    });
+  });
+});
+
+describe('Antigravity elevation never asks in choice and clamp modes (auto-approve safe)', () => {
+  let testDir = '';
+  let savedHome: string | undefined;
+  let approvals: ApprovalStore;
+
+  const proCall = (overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
+    conversationId: 'c-noask',
+    lastUserInput: 'run subagent on pro',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'solve it', Model: 'pro' } },
+    ...overrides
+  });
+
+  const writeHomeJson = (rel: string, body: string) => {
+    const file = path.join(testDir, 'home', rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-noask-test-'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(testDir, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const deps = (extra: Record<string, unknown> = {}, now = 1000) => ({
+    approvals,
+    sessionModelOverride: 'gemini-3.8-flash-low',
+    now: () => now,
+    ...extra
+  });
+
+  describe('choice mode', () => {
+    it('denies attempts 3 and 4 and never returns ask', () => {
+      const decisions = [1, 2, 3, 4, 5].map((n) =>
+        evaluateAntigravitySubagentCall(proCall(), deps({}, 1000 + n * 50))
+      );
+      for (const d of decisions) {
+        expect(d.decision).toBe('deny');
+        expect(d.elevation).toBe('denied');
+      }
+      expect(decisions.map((d) => d.attemptCount)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('keeps the plain question reason for attempts 1-2 and adds the stop-retrying hint from attempt 3', () => {
+      const d = [1, 2, 3, 4].map((n) => evaluateAntigravitySubagentCall(proCall(), deps({}, 1000 + n * 50)));
+      expect(d[0].reason).not.toContain('stop retrying');
+      expect(d[1].reason).not.toContain('stop retrying');
+      for (const late of [d[2], d[3]]) {
+        expect(late.reason).toContain('[jev-elevate:pro]');
+        expect(late.reason).toContain('stop retrying');
+        expect(late.reason).toContain('Model: "flash"');
+        expect(late.reason).toContain('ask_question');
+      }
+    });
+
+    it('honours a "Yes, once" answer recorded after two denies at attempt 3, and consumes it only once', () => {
+      const transcriptFile = path.join(testDir, 'transcript.jsonl');
+      const nowMs = 1_000_000;
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"call_q","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow expert?"]}}]}\n' +
+          '{"step_index":2,"type":"GENERIC","toolCallId":"call_q","content":"A1: Yes, once"}\n'
+      );
+      // Two denies happen before the answer row exists in the transcript.
+      const empty = path.join(testDir, 'empty.jsonl');
+      fs.writeFileSync(empty, '');
+      const d1 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: empty }), deps({}, nowMs));
+      const d2 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: empty }), deps({}, nowMs + 1000));
+      expect(d1.decision).toBe('deny');
+      expect(d2.decision).toBe('deny');
+
+      // Attempt 3: the answer is now in the transcript; the pull fallback must still run and allow.
+      const d3 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: transcriptFile }), deps({}, nowMs + 2000));
+      expect(d3.decision).toBe('allow');
+      expect(d3.elevation).toBe('approved');
+      expect(d3.approvalScope).toBe('once');
+      expect(d3.pullFallback).toBe(true);
+
+      // The same answer must not be replayed: the next pro attempt is denied again, still never ask.
+      const d4 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: transcriptFile }), deps({}, nowMs + 3000));
+      expect(d4.decision).toBe('deny');
+      expect(d4.reason).toContain('stop retrying');
+    });
+  });
+
+  describe('clamp mode', () => {
+    it('allows every attempt (1..3) with Model overwritten to the ceiling', () => {
+      for (const n of [1, 2, 3]) {
+        const d = evaluateAntigravitySubagentCall(proCall(), deps({ elevationMode: 'clamp' }, 1000 + n * 50));
+        expect(d.decision).toBe('allow');
+        expect(d.elevation).toBe('clamped');
+        expect(d.overwrite).toEqual({ Model: 'flash' });
+        expect(d.clampedTo).toBe('flash');
+        expect(d.attemptCount).toBe(n);
+      }
+    });
+  });
+
+  describe('dialog mode', () => {
+    const dialog = () => evaluateAntigravitySubagentCall(proCall(), deps({ elevationMode: 'dialog' }));
+
+    it('returns ask with no warning when there is no Antigravity config', () => {
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.elevation).toBe('asked');
+      expect(d.autoApproveWarning).toBeUndefined();
+    });
+
+    it('carries the warning for a TURBO permission preset and still returns ask', () => {
+      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO' }));
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.elevation).toBe('asked');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('carries the warning for toolPermission always-proceed in the CLI settings', () => {
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'always-proceed' }));
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('has no warning for a non-turbo preset', () => {
+      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_DEFAULT' }));
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'ask' }));
+      expect(dialog().autoApproveWarning).toBeUndefined();
+    });
+
+    it('does not throw and adds no warning for malformed or non-object JSON', () => {
+      for (const body of ['{not json', '', '[]', 'null', '"AGENT_PERMISSION_PRESET_TURBO"']) {
+        writeHomeJson('.gemini/config/config.json', body);
+        writeHomeJson('.gemini/antigravity-cli/settings.json', body);
+        const d = dialog();
+        expect(d.decision).toBe('ask');
+        expect(d.autoApproveWarning).toBeUndefined();
+      }
+    });
+
+    it('detectAntigravityAutoApprove treats an unreadable path as not detected', () => {
+      fs.mkdirSync(path.join(testDir, 'home', '.gemini', 'config', 'config.json'), { recursive: true });
+      expect(detectAntigravityAutoApprove(path.join(testDir, 'home'))).toBe(false);
     });
   });
 });

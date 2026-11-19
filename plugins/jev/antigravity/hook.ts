@@ -526,6 +526,7 @@ async function main() {
       prompt_length: promptLength,
       prompt_hash: promptHash,
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
+      ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
       ...downgradeLog
     });
 

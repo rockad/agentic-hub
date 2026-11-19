@@ -587,10 +587,10 @@ without any approval prompt from Jev: use mode `on` to have Jev enforce the appr
 | :--- | :--- |
 | `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/` (mode `on` and `on-demand`; mode `off` writes nothing). It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. It never asks: every attempt is denied, and from the third attempt of the same delegation in one prompt the reason says to stop retrying (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call (the only mode that asks; it logs `auto_approve_warning` when `permission_mode` is `bypassPermissions` or `auto`), `JEV_ELEVATION=clamp` the opt-in clamp (every call is clamped, a repeat too). Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. It never asks: every attempt is denied, and from the third attempt of the same delegation in one prompt the reason says to stop retrying (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call (the only mode that asks; it logs `auto_approve_warning` when `permission_mode` is `bypassPermissions` or `auto`), `JEV_ELEVATION=clamp` the opt-in clamp (every call is clamped, a repeat too). Outside dialog mode nothing asks (2.3.18): a model Jev cannot rank (not in the catalogue, unknown family) and a remapped session alias under clamp are **denied with guidance** (`re-invoke with opus, sonnet or haiku, or omit model / inherit`; `re-invoke with an explicit model at or below the session model`), an unreadable or ambiguous agent definition is denied with `re-invoke with an explicit model on the call` (an explicit call model does not read the definition, so it cannot loop), a forced subagent model (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`) **passes** as the user's own instruction (`elevation: "instructed"`, `instructed_by: "env-force"`, `forced_model`), and an effort of `xhigh` or `max` takes its own choice flow (see "Effort" below). Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
 | `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session), in mode `on` only: approvals and downgrade answers are decisions, so on-demand and off record nothing. Prints nothing. |
-| `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, never a dialog: the third attempt adds the stop-retrying sentence); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
+| `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, never a dialog: the third attempt adds the stop-retrying sentence), in clamp mode too (a script cannot be clamped); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) is **denied with guidance** (the sites by position and reason, how many, what to change; never script text). Only `JEV_ELEVATION=dialog` opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
 | `PostToolUse` on `Workflow` | Drift recorder: re-hashes the script files the guard analysed and logs `workflow_changed` when one differs; prints a message while Jev is on. No prompt. Mode `off` does nothing at all (no log row, the pin is left for the next prune). |
 
 What the hooks do **not** do:
@@ -926,14 +926,14 @@ and `workflow` is visited. Comments and strings that mention a model are never r
 | Script | Result |
 | :--- | :--- |
 | `agent(p)` with no model, `model: 'inherit'`, a literal at or below the session model | Passes. |
-| A literal `model` above the session model (family-first order, the same as the `Agent` guard), no instruction naming it | The `Agent` choice flow, for the strongest model named: a covering approval passes; otherwise the call is **denied with the prescribed `[jev-elevate:<model>]` question** (the reason names the workflow by its script hash); every denied attempt of the same script (a signature of the script hashes) in one prompt is denied again, never asked, and from the third the reason says to stop retrying. `JEV_ELEVATION=dialog` and `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp (an `ask` here is the one place `clamp` still asks). |
+| A literal `model` above the session model (family-first order, the same as the `Agent` guard), no instruction naming it | The `Agent` choice flow, for the strongest model named: a covering approval passes; otherwise the call is **denied with the prescribed `[jev-elevate:<model>]` question** (the reason names the workflow by its script hash); every denied attempt of the same script (a signature of the script hashes) in one prompt is denied again, never asked, and from the third the reason says to stop retrying. `JEV_ELEVATION=clamp` takes the same flow (a script cannot be run on another model, so there is nothing to clamp); `JEV_ELEVATION=dialog` asks at once. |
 | The prompt names that model or a stronger one | Passes (`workflow_guard: "passed-instructed"`). |
 | An `agentType` | Its definition's `model` and `effort` are read from `.claude/agents/*.md` (project up to the git root or `CLAUDE_PROJECT_DIR`, then the user config dir, then installed plugins); a built-in type runs on the session model; an explicit `model` on the call wins over the definition. |
-| `effort` | A literal `xhigh` or `max` asks (an interim threshold with no spec behind it, cognitive-engine RFC 007); `low`, `medium`, `high` pass; any other value asks. |
+| `effort` | A literal `xhigh` or `max` is an unverifiable site (an interim threshold with no spec behind it, cognitive-engine RFC 007): denied with guidance, or asked in dialog mode; `low`, `medium`, `high` pass; any other value is an unverifiable site too. |
 | The environment | `CLAUDE_CODE_SUBAGENT_MODEL` (when the call and its definition set none), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` and `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (replacing them) are read from the hook's environment and the resulting model is ranked like a written one. |
 | `meta.phases[].model` | Ranked too, although in Claude Code it is only a progress hint: a false positive, never a miss. |
 
-**Fail closed (the permission dialog, never a deny loop).** Everything the analysis does not understand asks, with
+**Fail closed (a deny with guidance; the permission dialog only in `JEV_ELEVATION=dialog`).** Everything the analysis does not understand is stopped, with
 a reason that names `file:line:col`:
 
 - aliasing `agent` or `workflow`, passing them as values, member or computed access to them, `.call` and tagged templates;
@@ -943,7 +943,7 @@ a reason that names `file:line:col`:
 - dynamic `import()`, `import` declarations, `export ... from`;
 - a parse error, an unreadable file (anything that is not a regular file, such as a FIFO, is unreadable and is never opened with a blocking read: a hook that blocks past its timeout lets the call through), a script over 512 KB, a `workflow()` nested more than one level, an unknown `agentType`, an `agentType` whose definition is unreadable or ambiguous, a model Jev cannot rank, a `tool_input` with none of `script`, `scriptPath`, `name`.
 
-When a script has both an elevation and a fail-closed site, one permission dialog lists all of them.
+When a script has both an elevation and a fail-closed site, one deny (one dialog in dialog mode) lists all of them; the unverifiable sites are fixed first, then the elevation takes the choice flow. The deny reason says how many sites Jev cannot verify and what to change (a literal model at or below the session model or `inherit`, a literal effort of `low`, `medium` or `high`, no variables, spreads or computed values), and the log row carries `workflow_guard: "denied-unverifiable"` and `workflow_reasons` (the site count), never script text.
 
 **When the hook itself fails.** The guard's fail-closed decisions above hold only while the hook finishes inside its
 5 s timeout. A hook that crashes, times out or cannot start (for example, `bun` is missing) lets the `Workflow` call
@@ -1012,9 +1012,8 @@ or a failing state store. Under a Claude Code permission mode that approves with
 dialog would run the stronger model unseen, which is why a repeat is not asked about. The decisions log carries
 `elevation_attempt` (the per-delegation count of the choice-flow attempt counter, when it works). Older versions kept a
 per-prompt marker file (`<session>.clamp-<prompt_id>`) so that only the first call was clamped; it is no longer written, and
-markers an older version left behind are pruned after 7 days like the other session files. The one clamp that still asks is
-the one that cannot be done: a remapped session alias and a forced subagent model (see the table above), which are not
-choice or clamp decisions but a model the hook cannot rewrite. The default mode never returns `updatedInput`.
+markers an older version left behind are pruned after 7 days like the other session files. Two clamps cannot be done, and
+neither asks any more (2.3.18). A remapped session alias (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`) is denied with `the session alias '<alias>' is remapped by ANTHROPIC_DEFAULT_<ALIAS>_MODEL, so Jev cannot clamp to it; re-invoke with an explicit model at or below the session model` (the log keeps `clamp_skipped: "alias-remapped"`). A forced subagent model is the user's own environment and passes (`elevation: "instructed"`, `instructed_by: "env-force"`, `forced_model`). The default mode never returns `updatedInput`.
 
 Fail-open: a hook crash, invalid stdin or a timeout means no output, and the call runs unchanged (on the model it
 asked for).
@@ -1075,23 +1074,54 @@ model". Another file that claims the agent through a name only Claude Code can r
 plus a conservative rule for lines the fallback could re-quote.
 
 A definition that decides the model but cannot be read (front matter the strict reader cannot establish, or two files
-claiming the name) opens the permission dialog with the reason, on every such call; it never denies, so it cannot loop.
-The deny and dialog reasons say where the model came from. Under `JEV_ELEVATION=clamp`, a forced model cannot be
-clamped (the environment overrides the rewritten `model`), so it asks. The decisions log carries `model_source`
+claiming the name) is **denied** (2.3.18) with `re-invoke with an explicit model on the call`, naming the definition by its
+subagent type only: the reader's text may quote the file, so it is never put in the reason or the log (the log says
+`definition unreadable or ambiguous`). An explicit `model` on the call does not read the definition at all
+(`resolveAgentModel` looks the definition up only when the call names no model and nothing is forced), so the retry
+cannot loop: it passes, or takes the elevation flow when the model is above the session's. From the third attempt of
+the same delegation the reason adds the stop-retrying sentence. Only `JEV_ELEVATION=dialog` still opens the permission
+dialog for it. The deny and dialog reasons say where the model came from. A forced model
+(`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`) is the user's own environment, so in choice and clamp it **passes**, logged
+`elevation: "instructed"` with `instructed_by: "env-force"` and `forced_model`; dialog mode still asks about it. A model
+Jev cannot rank is denied with `Jev cannot rank '<model>' (not in the catalogue, unknown family); re-invoke with opus,
+sonnet or haiku, or omit model / inherit` (dialog mode asks). The decisions log carries `model_source`
 (`call`, `definition`, `env-force`, `ladder`, `env`, `inherit`) and never any definition text.
 
 **Effort (interim, narrow).** A literal `xhigh` or `max` on the call's `effort`, or on the `effort:` of the definition
-behind its `subagent_type`, opens the permission dialog (`effort_ask: true` in the log), with the Workflow guard's
-wording (`effortReason`). Dialog only: never the model choice flow and never a deny; when the same call also has a
-model verdict, that verdict goes first and the effort dialog follows on the retry. Unrecognised levels, non-string
+behind its `subagent_type`, is held for the user, with the Workflow guard's wording (`effortReason`). Since 2.3.18 it
+never asks outside dialog mode: choice and clamp take an **effort choice flow** built on the same approval store as the
+model elevation (`JEV_ELEVATION=dialog` keeps the permission dialog, `effort_ask: true` in the log):
+
+- **Deny with a prescribed question.** The reason tells the assistant to ask with `AskUserQuestion`, one question whose
+  text STARTS with the marker `[jev-elevate-effort:<level>]` (`xhigh` or `max`), with four options in this order:
+  `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, run at high`. A Yes: launch the delegation
+  again with the same effort. No: launch it with `effort: "high"`, which passes (a literal `low`, `medium` or `high` on the
+  call overrides a definition's `effort:`, so the re-invoke clears a definition that says `max`).
+- **The approval.** The `PostToolUse` recorder on `AskUserQuestion` records a Yes like an elevation answer, in the same
+  per-session approvals file under the same lock (`effortApprovals`, `effortDenied`): only for a question Jev prescribed
+  in the last 15 minutes, never in a mode without decisions (`modeBehaviour(mode).decisions`), never when the denial
+  predates the last mode change (`denialPredatesModeChange`). A `once` is consumed by the first launch, `5min` expires,
+  `session` stands. An approval of `max` covers `xhigh`; one of `xhigh` does not cover `max`. An effort answer never
+  approves a model and a model answer never approves an effort. A `No` records nothing.
+- **The next attempt** with a covering approval passes (`effort_decision: "approved"`, `effort_approval_scope`). Every
+  other attempt is denied again, never asked, and from the third attempt of the same delegation in one prompt the reason
+  adds the stop-retrying sentence (`stopRetryingText`, with `effort` as the field to set).
+- **An instruction passes.** A prompt that names the effort ("use max effort", "run it at xhigh effort", "set the effort
+  to max", `--effort max`) is the user's own instruction, parsed like a model instruction (imperative only; not in a
+  question, a negation, a quote or a description) and stored with the turn (`intent.effort`). It covers a delegation at that
+  level or below and logs `effort_decision: "instructed"`. It does not stand in for a model instruction.
+- **A model verdict goes first**, as before: the same call also naming a model above the session gets the elevation
+  question, and the effort question follows on the retry. Under clamp, a clamp's `allow` never hides an effort deny.
+
+Without an approvals store the deny is still returned (no counter, so no stop-retrying text). Unrecognised levels, non-string
 values and any comparison of a literal level with the session's effort are deliberately **not** checked on this path (cognitive-engine
 RFC 007 says do not build further), and the Workflow guard is unchanged. The model ceiling does not bound effort;
 the non-interim control is `maxEffortLevel: "high"` in the Claude Code settings.
 
 The Agent schema also accepts a relative `effort`, `"lower"` or `"higher"` (one step from the agent's normal effort).
 `"higher"` is evaluated when its base is known: the base is the definition's `effort:` when it sets a recognised one,
-else the session's effort from the hook input's `effort` field. The call asks (dialog, `effort_ask: true`) when one
-step up from that base is `xhigh` or `max`, so `"higher"` on a `high` (or higher) session asks and on `low` or
+else the session's effort from the hook input's `effort` field. The call takes the effort flow above (dialog mode: asks, `effort_ask: true`) when one
+step up from that base is `xhigh` or `max` (the question is for the level it reaches), so `"higher"` on a `high` (or higher) session asks and on `low` or
 `medium` passes. `"lower"` always passes. When the base is not available (the hook input carries no `effort`, or the
 level is not one of low, medium, high, xhigh, max) nothing is guessed and the call passes: relative values are not
 evaluated without a known base.
@@ -1100,6 +1130,16 @@ Not verified here: the permission dialog itself (it is shown by Claude Code), wh
 clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 
 ### Release notes
+
+- **2.3.18: Claude Code never asks outside dialog mode** (Claude Code `Agent`/`Task`/`Workflow` PreToolUse guard; Jev mode `on`; the version fields are bumped with the release, not in this change):
+  - In choice and clamp modes nothing returns `ask` any more: a harness that auto-approves (`permission_mode` `auto` or `bypassPermissions`) approves an `ask` without showing it, so every remaining path either passes or is denied with guidance. `JEV_ELEVATION=dialog` is the only mode that still asks, and it logs `auto_approve_warning`. This supersedes the "Still asking" list of 2.3.17.
+  - **Unranked model** (not in the catalogue, unknown family): denied with `Jev cannot rank '<model>' (not in the catalogue, unknown family); re-invoke with opus, sonnet or haiku, or omit model / inherit`.
+  - **Remapped session alias under clamp**: denied with `the session alias '<alias>' is remapped by ANTHROPIC_DEFAULT_<ALIAS>_MODEL, so Jev cannot clamp to it; re-invoke with an explicit model at or below the session model`; `clamp_skipped: "alias-remapped"` stays in the log.
+  - **Forced subagent model** (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`): passes in choice and clamp, as the user's own instruction (`elevation: "instructed"`, `instructed_by: "env-force"`, `forced_model`). It used to turn clamp into a dialog.
+  - **Unreadable or ambiguous agent definition**: denied with `re-invoke with an explicit model on the call`, naming the definition by subagent type only (the reader's text is never logged or put in the reason). An explicit model on the call does not read the definition, so the retry passes and cannot loop.
+  - **Effort `xhigh` / `max`** (the interim effort rule): a choice flow on the existing approval store. Deny with the prescribed `[jev-elevate-effort:<level>]` question (Yes once, Yes for the next 5 minutes, Yes for this session, No run at high); the `PostToolUse` recorder records a Yes like an elevation answer; the next attempt passes; a prompt that names the effort passes as instructed; a model verdict keeps priority. A `No` re-invokes at `high`, which passes. New log fields: `effort_level`, `effort_decision` (`denied`, `approved`, `instructed`), `effort_approval_scope`.
+  - **Workflow**: unverifiable scripts are denied with the sites and reasons (count and positions, never script text) and what to change; clamp applies the choice flow to an elevation (a script cannot be clamped); dialog mode keeps the dialog. `workflow_guard: "denied-unverifiable"`.
+  - Behaviour change: calls that used to open a dialog are now denied, and a forced model that used to be asked about now passes. A hook that returned `ask` for these in `auto` mode was approving them unseen.
 
 - **2.3.18: Antigravity Orchestrator execution worker** (Antigravity hooks; the version fields are bumped with the release, not in this change):
   - The Orchestrator reports two model ids in one conversation: planning turns run on the planner (`gemini-pro-orchestrator-g1-pro`, display name `Orchestrator (Argon)`) and execution turns on the worker (`gemini-flash-worker-agy`). Before this fix only the planner matched, so a `PreToolUse` carrying the worker id overwrote the stored session model with a non-Orchestrator one, which switched off the explicit-`Model` rule, the `flash` ceiling and the Orchestrator pools for the rest of the conversation.

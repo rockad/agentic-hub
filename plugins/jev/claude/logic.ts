@@ -17,6 +17,7 @@ import {
 import { STOP_RETRYING_FROM_ATTEMPT, stopRetryingText } from '../src/core/elevation-text.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
+import { EFFORT_LEVELS, effortCovers, type EffortLevel } from './agent-definitions.js';
 
 import { STAGE_RUBRIC_TEXT, TIER_CRITERIA, type ClaudeModelAlias, type JevTier } from '../src/stage-rubric.js';
 
@@ -232,6 +233,8 @@ export type UserIntent = {
   cost?: 'minimal';
   /** The words that matched, for the "You asked for ..." text. Never logged or stored. */
   phrase?: string;
+  /** The highest of `xhigh` / `max` the user asked for as an effort ("use max effort"); it covers a delegation at that level or below. */
+  effort?: EffortLevel;
 };
 
 export const NO_INTENT: UserIntent = { models: [] };
@@ -274,6 +277,12 @@ const NON_INSTRUCTION_SENTENCE = /^\W*(?:if|should|what|why|how|when|whenever)\s
 const DESCRIPTIVE_BEFORE = /\b(?:is|was|are|were|be|been|being|as|than|it's|that's|this's)\s+(?:the\s+|a\s+|an\s+)?$/i;
 // Literary uses of the two model names that are poetic forms: "a haiku about spring", "use haiku format", "sonnet 130".
 const LITERARY_TAIL = /^(?:[-\s]*(?:about|by|format|formats|style|styled|poem|poems|poetry|form|stanza|stanzas|syllable|syllables|contest|collection|sequence|cycle|writing|verse)\b|\s+\d{2,}\b(?!\.\d))/i;
+// An imperative that selects an effort level above the interim threshold ("use max effort", "run it at xhigh effort",
+// "set the effort to max"). Same discipline as a model instruction: a verb of choosing right before it, nothing in prose.
+const EFFORT_IMPERATIVE =
+  /\b(?:(?:use|using|run|launch|spawn|start|go|set|want|prefer|choose|pick|select|switch\s+to)|(?:(?:do|run|launch|start|proceed|go)\s+(?:it|this|that|them|these)?\s*(?:with|at|on))|(?<=^|[.!?\n,;:]\s*)(?:with|at))\s+(?:an?\s+|the\s+|only\s+)?(?:(?:(x-?high|max(?:imum)?)\s+(?:reasoning\s+|thinking\s+)?effort)|(?:(?:reasoning\s+|thinking\s+)?effort\s+(?:level\s+)?(?:to\s+|of\s+|at\s+|=\s*|:\s*)?(x-?high|max(?:imum)?)))\b/gi;
+const EFFORT_FLAG = /(?<![\w-])--effort(?:=|\s+)(x-?high|max(?:imum)?)\b/gi;
+const effortLevelOf = (word: string): EffortLevel => (word.toLowerCase().startsWith('max') ? 'max' : 'xhigh');
 const MINIMAL_COST =
   /\b(?:minimal|minimum)[\s-]+viable\b(?![\s-]+products?\b)|\b(?:minimal|minimum|smallest|lowest)[\s-]+(?:cost|tier|model)\b|\bcheapest\b|\bleast\s+expensive\b|\bas\s+cheap(?:ly)?\s+as\b|\bcheap(?:er)?\s+models?\b|\blowest[- ]cost\b/gi;
 
@@ -356,6 +365,8 @@ export function parseUserIntent(prompt: string | undefined | null): UserIntent {
   }
   const intent: UserIntent = { models: [...named.keys()] };
   if (named.size === 1) intent.phrase = [...named.values()][0];
+  const effort = parseEffortIntent(text);
+  if (effort) intent.effort = effort;
   for (const cost of text.matchAll(MINIMAL_COST)) {
     const before = text.slice(Math.max(0, cost.index! - 30), cost.index!);
     if (!instructive(text, cost.index!) || NEGATION.test(before) || DESCRIPTIVE_BEFORE.test(before)) continue;
@@ -366,9 +377,38 @@ export function parseUserIntent(prompt: string | undefined | null): UserIntent {
   return intent;
 }
 
+/**
+ * The effort level (`xhigh` or `max`; the higher when both are named) the prompt instructs, from text already stripped of
+ * quotes and code. The same filters as a model instruction: a question, a supposition, a pasted line, a negation or a
+ * description ("the agent will use max effort") is not an instruction.
+ */
+function parseEffortIntent(text: string): EffortLevel | null {
+  const candidates = [
+    ...[...text.matchAll(EFFORT_IMPERATIVE)].map((m) => ({ m, level: effortLevelOf(m[1] ?? m[2]), flag: false })),
+    ...[...text.matchAll(EFFORT_FLAG)].map((m) => ({ m, level: effortLevelOf(m[1]), flag: true }))
+  ];
+  let best: EffortLevel | null = null;
+  for (const { m, level, flag } of candidates) {
+    const at = m.index!;
+    if (!instructive(text, at)) continue;
+    if (NEGATION.test(text.slice(Math.max(0, at - 30), at))) continue;
+    const lead = text.slice(Math.max(0, at - 40), at);
+    if (STATEMENT_SUBJECT.test(lead) || MODAL_SUBJECT.test(lead)) continue;
+    if (!WISH_VERB.test(m[0].trim().split(/\s+/)[0]) && DIRECT_SUBJECT.test(lead)) continue;
+    if (flag && !FLAG_VERB.test(text.slice(Math.max(0, at - 60), at))) continue;
+    if (!best || EFFORT_LEVELS.indexOf(level) > EFFORT_LEVELS.indexOf(best)) best = level;
+  }
+  return best;
+}
+
+/** Does the user's own instruction in this prompt cover a delegation at `level` ("use max effort" covers xhigh and max)? */
+export function instructedEffort(intent: UserIntent | null | undefined, level: EffortLevel): boolean {
+  return !!intent && effortCovers(intent.effort, level);
+}
+
 /** The intent as it is stored and logged: the choice only, never the matched words. */
 export function storedIntent(intent: UserIntent): UserIntent {
-  return { models: [...intent.models], ...(intent.cost ? { cost: intent.cost } : {}) };
+  return { models: [...intent.models], ...(intent.cost ? { cost: intent.cost } : {}), ...(intent.effort ? { effort: intent.effort } : {}) };
 }
 
 /** The model the user named, only when they named exactly one (two names are a split, not an order). */
@@ -671,7 +711,7 @@ export type Elevation = {
   sessionAlias: ClaudeModelAlias;
   /**
    * Set only when a model catalogue is in use and neither it nor the family table knows the requested id: Jev
-   * cannot rank it, so the guard asks (the permission dialog, never the choice flow) instead of letting it pass.
+   * cannot rank it, so the guard stops it (choice and clamp: a deny with guidance; dialog: the permission dialog) instead of letting it pass.
    */
   unranked?: true;
   /**
@@ -768,8 +808,7 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
 }
 
 /**
- * The wording of the permission dialog for an elevating call (`JEV_ELEVATION=dialog`, and the calls the choice and clamp
- * flows cannot decide: an unrankable model, a remapped alias). It says what each answer does: in Claude Code No cancels
+ * The wording of the permission dialog for an elevating call (`JEV_ELEVATION=dialog`, the only mode that asks). It says what each answer does: in Claude Code No cancels
  * the call and stops the turn, and a comment typed with No lets the assistant continue.
  */
 export function elevationAskReason(e: Elevation): string {
@@ -782,6 +821,54 @@ export function elevationAskReason(e: Elevation): string {
   return (
     `[jev] This delegation asks for model "${e.requested}"${e.sourceNote ?? ''}, stronger than the session model "${e.sessionModel}". ` +
     `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").`
+  );
+}
+
+/** Model-supplied text that reaches a deny reason: only characters a model id can carry, clipped. */
+function safeModelText(model: unknown): string {
+  const clean = typeof model === 'string' ? model.replace(/[^A-Za-z0-9._:/@[\]-]/g, '').slice(0, 60) : '';
+  return clean || 'unknown';
+}
+
+/**
+ * The deny reason for a model Jev cannot rank (choice and clamp modes: they never ask, a harness that auto-approves would
+ * approve a dialog unseen). A model the call itself wrote is fixed by omitting it; one a definition, ladder pin or
+ * environment variable supplied is overridden by an explicit model on the call. From the third attempt of the same
+ * delegation it also says to stop retrying (`stopRetryingText`).
+ */
+export function elevationUnrankedDenyReason(e: Elevation, attempt?: number | null): string {
+  const stop = stopRetryingText(attempt, safeModelText(e.requested), e.sessionAlias, 'AskUserQuestion');
+  const fix = e.sourceNote
+    ? 're-invoke with an explicit model on the call (opus, sonnet or haiku, or inherit), which overrides it'
+    : 're-invoke with opus, sonnet or haiku, or omit model / inherit';
+  return `[jev] Jev cannot rank '${safeModelText(e.requested)}' (not in the catalogue, unknown family)${e.sourceNote ?? ''}; ${fix}.` + (stop ? ` ${stop}` : '');
+}
+
+/** The deny reason for a clamp that cannot run: the session alias is remapped, so the session model cannot be named. */
+export function elevationRemappedDenyReason(e: Elevation, attempt?: number | null): string {
+  const alias = safeModelText(e.sessionAlias);
+  const stop = stopRetryingText(attempt, safeModelText(e.requested), e.sessionAlias, 'AskUserQuestion');
+  return (
+    `[jev] "${safeModelText(e.requested)}"${e.sourceNote ?? ''} is stronger than the session model "${e.sessionModel}" and the user did not ask for it: ` +
+    `the session alias '${alias}' is remapped by ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL, so Jev cannot clamp to it; ` +
+    `re-invoke with an explicit model at or below the session model (or inherit).` +
+    (stop ? ` ${stop}` : '')
+  );
+}
+
+/**
+ * The deny reason for an agent definition Jev cannot read or that two files claim (choice and clamp modes). It names the
+ * definition by subagent type only (the reader's text may quote the file) and says what cannot loop: an explicit model on the
+ * call does not depend on the definition.
+ */
+export function unreadableDefinitionDenyReason(subagentType: unknown, sessionModel: string, attempt?: number | null): string {
+  const alias = modelAlias(sessionModel) ?? 'inherit';
+  const stop = stopRetryingText(attempt, `the "${safeTypeName(subagentType)}" definition`, alias, 'AskUserQuestion');
+  return (
+    `[jev] The agent definition for "${safeTypeName(subagentType)}" is unreadable or ambiguous, so Jev cannot tell which model this delegation runs on ` +
+    `(session model "${sessionModel}"). Re-invoke with an explicit model on the call (for example "${alias}", or "inherit"); ` +
+    `an explicit model on the call does not depend on the definition.` +
+    (stop ? ` ${stop}` : '')
   );
 }
 
@@ -878,9 +965,16 @@ export type Approval = { model: ClaudeModelAlias; scope: ApprovalScope; created_
  */
 export type ApprovalState = {
   approvals: Approval[];
+  /** Effort approvals (`[jev-elevate-effort:<level>]`), apart from the model approvals; same scopes, same lock, same file. */
+  effortApprovals?: EffortApproval[];
+  /** An effort level to the epoch ms Jev last prescribed the effort question for it. */
+  effortDenied?: Record<string, number>;
   denied?: Record<string, number>;
   attempts?: { prompt: string; count: number; counts?: Record<string, number>; at?: number };
 };
+
+/** What the user approved for the effort of a delegation: a level (`xhigh` or `max`; `max` covers both), for one launch, five minutes or the session. */
+export type EffortApproval = { level: EffortLevel; scope: ApprovalScope; created_at: number; expires_at?: number };
 
 export const ONCE_TTL_MS = 10 * 60 * 1000;
 export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
@@ -935,7 +1029,7 @@ export function parseElevationAnswer(input: unknown, nowMs: number): Approval | 
 const SCOPE_PREFERENCE: Readonly<Record<ApprovalScope, number>> = { session: 0, '5min': 1, once: 2 };
 
 /** Pure: an approval is valid while it has no expiry or the expiry is ahead. */
-export function approvalValid(a: Approval, nowMs: number): boolean {
+export function approvalValid(a: Pick<Approval, 'expires_at'>, nowMs: number): boolean {
   return a.expires_at === undefined || a.expires_at > nowMs;
 }
 
@@ -973,7 +1067,30 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     r?.denied && typeof r.denied === 'object' && !Array.isArray(r.denied)
       ? Object.fromEntries(Object.entries(r.denied).filter(([m, t]) => modelRank(m) !== null && typeof t === 'number' && Number.isFinite(t)))
       : undefined;
-  return { approvals, ...(attempts ? { attempts } : {}), ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {}) };
+  const effortApprovals = Array.isArray((r as { effortApprovals?: unknown } | null)?.effortApprovals)
+    ? ((r as { effortApprovals: unknown[] }).effortApprovals).filter((a): a is EffortApproval => {
+        const x = a as Partial<EffortApproval> | null;
+        return (
+          !!x &&
+          EFFORT_LEVELS.includes(x.level as EffortLevel) &&
+          (x.scope === 'once' || x.scope === '5min' || x.scope === 'session') &&
+          typeof x.created_at === 'number' &&
+          (x.expires_at === undefined || typeof x.expires_at === 'number')
+        );
+      })
+    : [];
+  const rawEffortDenied = (r as { effortDenied?: unknown } | null)?.effortDenied;
+  const effortDenied =
+    rawEffortDenied && typeof rawEffortDenied === 'object' && !Array.isArray(rawEffortDenied)
+      ? Object.fromEntries(Object.entries(rawEffortDenied).filter(([l, t]) => EFFORT_LEVELS.includes(l as EffortLevel) && typeof t === 'number' && Number.isFinite(t)))
+      : undefined;
+  return {
+    approvals,
+    ...(effortApprovals.length ? { effortApprovals } : {}),
+    ...(effortDenied && Object.keys(effortDenied).length ? { effortDenied: effortDenied as Record<string, number> } : {}),
+    ...(attempts ? { attempts } : {}),
+    ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {})
+  };
 }
 
 /** Pure: add an approval and drop the expired ones. */
@@ -1031,6 +1148,93 @@ export function claimApproval(
           .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
   const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
   return { state: { ...state, approvals }, approval: hit };
+}
+
+// ── Effort approvals: the same question, scopes and window as an elevation, for a level above the interim threshold ──
+
+/** The marker the effort question starts with, and the PostToolUse recorder's pattern for it. */
+export const EFFORT_MARKER_RE = /^\s*\[jev-elevate-effort:(xhigh|max)\]/;
+
+/** The last option of the effort question: it re-invokes the delegation at `high`, an effort that passes. */
+export const EFFORT_NO_LABEL = 'No, run at high';
+/** The effort a No re-invokes at. */
+export const EFFORT_FALLBACK = 'high';
+
+/** The marker question of a PostToolUse payload for AskUserQuestion and its answer, for the effort question. */
+function readEffortAnswer(input: unknown): { level: EffortLevel; label: string } | null {
+  try {
+    const i = input as { tool_name?: unknown; tool_input?: any; tool_response?: any } | null;
+    if (!i || typeof i !== 'object') return null;
+    if (i.tool_name !== undefined && i.tool_name !== 'AskUserQuestion') return null;
+    const question = i.tool_input?.questions?.[0]?.question;
+    if (typeof question !== 'string') return null;
+    const m = EFFORT_MARKER_RE.exec(question);
+    if (!m) return null;
+    const answer = i.tool_response?.answers?.[question];
+    return typeof answer === 'string' ? { level: m[1] as EffortLevel, label: answer.trim() } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pure: the effort approval a PostToolUse payload carries (a Yes to the effort question), or null; a No and anything else give null. */
+export function parseEffortAnswer(input: unknown, nowMs: number): EffortApproval | null {
+  const read = readEffortAnswer(input);
+  if (!read) return null;
+  const { level, label } = read;
+  if (label.startsWith(CHOICE_LABELS.once)) return { level, scope: 'once', created_at: nowMs, expires_at: nowMs + ONCE_TTL_MS };
+  if (label.startsWith(CHOICE_LABELS.fiveMin)) return { level, scope: '5min', created_at: nowMs, expires_at: nowMs + FIVE_MIN_TTL_MS };
+  if (label.startsWith(CHOICE_LABELS.session)) return { level, scope: 'session', created_at: nowMs };
+  return null;
+}
+
+/** Pure: note that the effort question was prescribed for `level` now, and drop the notes older than the window. */
+export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number): ApprovalState {
+  const kept = Object.entries(state.effortDenied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
+  return { ...state, effortDenied: { ...Object.fromEntries(kept), [level]: nowMs } };
+}
+
+/** Pure: was the effort question prescribed for `level`, or a higher one, within the window? A denial older than the last mode change does not count. */
+export function wasEffortDeniedRecently(state: ApprovalState, level: EffortLevel, nowMs: number, config?: ModeChangeConfigLike | null): boolean {
+  return Object.entries(state.effortDenied ?? {}).some(
+    ([l, t]) => effortCovers(l, level) && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code')
+  );
+}
+
+/** Pure: the state with the effort approval added, or null when no recent denial asked for it (the answer is then ignored). */
+export function recordEffortApproval(state: ApprovalState, approval: EffortApproval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
+  if (!wasEffortDeniedRecently(state, approval.level, nowMs, config)) return null;
+  const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
+  return { ...state, effortApprovals: [...live, approval] };
+}
+
+/** Pure: the effort approval that covers `level` (`max` covers `xhigh`), a standing one before a `once`, which is consumed. Expired ones are dropped. */
+export function claimEffortApproval(state: ApprovalState, level: EffortLevel, nowMs: number): { state: ApprovalState; approval: EffortApproval | null } {
+  const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
+  const hit = live.filter((a) => effortCovers(a.level, level)).sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  const effortApprovals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
+  const { effortApprovals: _drop, ...rest } = state;
+  return { state: { ...rest, ...(effortApprovals.length ? { effortApprovals } : {}) }, approval: hit };
+}
+
+/**
+ * The deny reason of the effort flow (xhigh and max, the interim rule): the same prescribed-question shape as the elevation
+ * choice, with the marker `[jev-elevate-effort:<level>]` and a No that re-invokes at `high`. `interim` is the finding's own
+ * wording. From the third attempt of the same delegation it also says to stop retrying (`stopRetryingText`).
+ */
+export function effortChoiceReason(level: EffortLevel, interim: string, subagentType?: unknown, attempt?: number | null): string {
+  const l = CHOICE_LABELS;
+  const stop = stopRetryingText(attempt, level, EFFORT_FALLBACK, 'AskUserQuestion', 'effort');
+  return (
+    `[jev] ${interim} The user has not approved it. ` +
+    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate-effort:${level}] followed by a short question ` +
+    `naming the subagent_type (${safeTypeName(subagentType)}), the requested effort, and a 10-word task summary; ` +
+    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${EFFORT_NO_LABEL}'. ` +
+    `If the user picks a Yes, launch the delegation again with the same effort; if No, launch it with effort: "${EFFORT_FALLBACK}" (or do the work directly); ` +
+    `If AskUserQuestion is not available, launch the delegation with effort: "${EFFORT_FALLBACK}" now and do not stop; ` +
+    `do not ask in any other form.` +
+    (stop ? ` ${stop}` : '')
+  );
 }
 
 /** All denied attempts of one prompt, over every delegation, after which every attempt counts as a repeat (the stop-retrying text) whatever the signatures say. */

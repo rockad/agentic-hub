@@ -58,20 +58,25 @@ describe('PreToolUse Agent as a process: the model the call will run on', () => 
     expect(JSON.stringify(log())).not.toContain('PRIVATE-BODY');
   });
 
-  it('CLAUDE_CODE_SUBAGENT_MODEL=opus is denied; FORCE replaces an explicit haiku', () => {
+  it('CLAUDE_CODE_SUBAGENT_MODEL=opus is denied; FORCE replaces an explicit haiku and the user\'s own environment passes', () => {
     const plain = run('pre-tool-use', agentCall({ description: 'd' }), { CLAUDE_CODE_SUBAGENT_MODEL: 'opus' });
     expect(hookOut(plain)).toMatchObject({ permissionDecision: 'deny' });
 
     const forced = run('pre-tool-use', agentCall({ description: 'd', model: 'haiku' }), { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' });
-    expect(hookOut(forced)).toMatchObject({ permissionDecision: 'deny' });
+    expect(forced.stdout).toBe('');
     expect(log().map((l) => l.model_source)).toEqual(['env', 'env-force']);
+    expect(log().at(-1)).toMatchObject({ decision: 'pass', elevation: 'instructed', instructed_by: 'env-force' });
   });
 
-  it('an unreadable definition asks, and a call with no definition at all prints nothing', () => {
+  it('an unreadable definition is denied with "re-invoke with an explicit model" (and that re-invoke passes), and a call with no definition at all prints nothing', () => {
     writeAgent('---\nname: deep\nmodel: [opus]\n---\n');
-    expect(hookOut(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'deep' })))).toMatchObject({ permissionDecision: 'ask' });
+    const o = hookOut(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'deep' })));
+    expect(o).toMatchObject({ permissionDecision: 'deny' });
+    expect(o.permissionDecisionReason).toContain('explicit model on the call');
+    // (the third agent call of a window also carries the staged-work reminder, which is context, never a decision)
+    expect(hookOut(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'deep', model: 'inherit' })))?.permissionDecision).toBeUndefined();
 
-    expect(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'ghost' })).stdout).toBe('');
+    expect(hookOut(run('pre-tool-use', agentCall({ description: 'd', subagent_type: 'ghost' })))?.permissionDecision).toBeUndefined();
   });
 
   it('mode off prints nothing', () => {

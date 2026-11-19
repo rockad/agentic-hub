@@ -200,11 +200,14 @@ describe('PreToolUse in choice mode: deny', () => {
     expect(logs.map((l) => l.elevation)).toEqual(['denied', 'denied', 'denied', 'denied']);
   });
 
-  it('the remapped-alias ask is kept in clamp mode', async () => {
+  it('the remapped alias is denied with guidance in clamp mode (never asked), keeping clamp_skipped in the log', async () => {
     const { d, logs } = setup({ env: { JEV_ELEVATION: 'clamp', ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-id' } });
 
-    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('ask');
-    expect(logs[0]).toMatchObject({ clamp_skipped: 'alias-remapped' });
+    const o = out(await onPreToolUse(call(), d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain("session alias 'sonnet' is remapped by ANTHROPIC_DEFAULT_SONNET_MODEL");
+    expect(logs[0]).toMatchObject({ decision: 'deny', elevation: 'denied', clamp_skipped: 'alias-remapped' });
   });
 });
 

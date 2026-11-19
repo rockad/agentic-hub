@@ -95,14 +95,14 @@ describe('PreToolUse Agent as a process: a type Claude Code matches loosely', ()
     expect(log().at(-1)).toMatchObject({ model_source: 'definition' });
   });
 
-  it('two files that normalise to the same name make the lookup ambiguous: the call asks', () => {
+  it('two files that normalise to the same name make the lookup ambiguous: the call is denied', () => {
     writeAgent('code-reviewer.md', 'code-reviewer', 'sonnet');
     writeAgent('Code_Reviewer.md', 'Code_Reviewer', 'opus');
 
     const o = hookOut(callType('CODE REVIEWER'));
 
-    expect(o).toMatchObject({ permissionDecision: 'ask' });
-    expect(o.permissionDecisionReason).toContain('code-reviewer');
+    expect(o).toMatchObject({ permissionDecision: 'deny' });
+    expect(o.permissionDecisionReason).toContain('explicit model on the call');
     // the exact names still resolve exactly, as Claude Code does
     expect(hookOut(callType('Code_Reviewer'))).toMatchObject({ permissionDecision: 'deny' });
     expect(decisionOf(callType('code-reviewer'))).toBeNull();
@@ -119,10 +119,10 @@ describe('PreToolUse Agent as a process: a type Claude Code matches loosely', ()
     for (const type of ['general purpose', 'EXPLORE', 'plan', 'Claude_Code_Guide']) expect(decisionOf(callType(type))).toBeNull();
   });
 
-  it('a file whose name normalises like a built-in makes the loose spelling ambiguous: it asks', () => {
+  it('a file whose name normalises like a built-in makes the loose spelling ambiguous: it is denied', () => {
     writeAgent('x.md', 'general_purpose', 'opus');
 
-    expect(hookOut(callType('generalpurpose'))).toMatchObject({ permissionDecision: 'ask' });
+    expect(hookOut(callType('generalpurpose'))).toMatchObject({ permissionDecision: 'deny' });
     // the exact built-in name is still the built-in, as Claude Code resolves it
     expect(decisionOf(callType('general-purpose'))).toBeNull();
   });

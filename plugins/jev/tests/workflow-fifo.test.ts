@@ -142,7 +142,7 @@ describe('the Workflow guard never blocks on a FIFO', () => {
 });
 
 describe('the real hook process with a FIFO scriptPath', () => {
-  fifoIt('answers ask within about 2 seconds', () => {
+  fifoIt('answers deny within about 2 seconds', () => {
     const fifo = path.join(tmp, 'script.fifo');
     mkfifo(fifo);
     fs.writeFileSync(path.join(tmp, 'config.json'), JSON.stringify({ defaults: { mode: 'on' } }));
@@ -159,6 +159,6 @@ describe('the real hook process with a FIFO scriptPath', () => {
 
     expect(r.code).toBe(0);
     expect(r.ms).toBeLessThan(2500);
-    expect(JSON.parse(r.stdout).hookSpecificOutput).toMatchObject({ permissionDecision: 'ask' });
+    expect(JSON.parse(r.stdout).hookSpecificOutput).toMatchObject({ permissionDecision: 'deny' });
   });
 });

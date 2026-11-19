@@ -114,11 +114,14 @@ describe('the model comes from the definition', () => {
     }
   });
 
-  it('an unreadable definition named like a built-in asks, like any other type', async () => {
+  it('an unreadable definition named like a built-in is denied, like any other type', async () => {
     setup();
     writeAgent('Explore.md', def('[opus]', 'Explore'));
 
-    expect(out(await onPreToolUse(call({ ...DELEGATION, subagent_type: 'Explore' }), r.d)).permissionDecision).toBe('ask');
+    const o = out(await onPreToolUse(call({ ...DELEGATION, subagent_type: 'Explore' }), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('"Explore"');
   });
 
   it('a definition that cannot be found passes, as before', async () => {
@@ -128,25 +131,77 @@ describe('the model comes from the definition', () => {
     expect(r.logs[0]).toMatchObject({ model_source: 'inherit' });
   });
 
-  it('an unreadable definition opens the permission dialog with the reason, every time, never a deny', async () => {
+  it('an unreadable definition is denied (never asked) with "re-invoke with an explicit model", naming the type and never the file, every time', async () => {
     setup();
     writeAgent('deep.md', def('[opus]'));
 
     for (let i = 0; i < 4; i++) {
       const o = out(await onPreToolUse(call(DELEGATION), r.d));
+      expect(o.permissionDecision).toBe('deny');
+      expect(o.permissionDecisionReason).toContain('"deep"');
+      expect(o.permissionDecisionReason).toContain('explicit model on the call');
+      expect(o.permissionDecisionReason).not.toContain('deep.md');
+      expect(o.permissionDecisionReason).not.toContain('[opus]');
+    }
+    expect(r.logs[0]).toMatchObject({ decision: 'deny', elevation: 'denied', model_source: 'definition', reason: 'definition unreadable or ambiguous' });
+    expect(r.logs.map((l) => l.elevation_attempt)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('the unreadable-definition deny adds the stop-retrying text from the third attempt of the same delegation', async () => {
+    setup();
+    writeAgent('deep.md', def('[opus]'));
+
+    const reasons: string[] = [];
+    for (let i = 0; i < 3; i++) reasons.push(out(await onPreToolUse(call(DELEGATION), r.d)).permissionDecisionReason);
+
+    expect(reasons[1]).not.toContain('stop retrying');
+    expect(reasons[2]).toContain('attempt 3 for the same delegation: stop retrying');
+  });
+
+  it.each(['choice', 'clamp'])('the re-invoke with an explicit model on the call passes the unreadable definition (%s mode)', async (mode) => {
+    setup({ env: { JEV_ELEVATION: mode } });
+    writeAgent('deep.md', def('[opus]'));
+    expect(out(await onPreToolUse(call(DELEGATION), r.d)).permissionDecision).toBe('deny');
+
+    // The deny says "an explicit model on the call": sonnet (the session model), haiku, and inherit all pass, so the retry cannot loop.
+    for (const model of ['sonnet', 'haiku', 'inherit']) {
+      expect(await onPreToolUse(call({ ...DELEGATION, model }), r.d)).toBeNull();
+      expect(r.logs.at(-1)).toMatchObject({ decision: 'pass', model_source: 'call' });
+    }
+  });
+
+  it('an explicit model above the session model on the re-invoke is not a loophole: it takes the elevation flow', async () => {
+    setup();
+    writeAgent('deep.md', def('[opus]'));
+
+    const o = out(await onPreToolUse(call({ ...DELEGATION, model: 'opus' }), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+  });
+
+  it('dialog mode keeps the permission dialog for an unreadable definition, every time', async () => {
+    setup({ env: { JEV_ELEVATION: 'dialog' } });
+    writeAgent('deep.md', def('[opus]'));
+
+    for (let i = 0; i < 2; i++) {
+      const o = out(await onPreToolUse(call(DELEGATION), r.d));
       expect(o.permissionDecision).toBe('ask');
       expect(o.permissionDecisionReason).toContain('deep.md');
-      expect(o.permissionDecisionReason).toContain('"deep"');
     }
     expect(r.logs[0]).toMatchObject({ elevation: 'asked', model_source: 'definition' });
   });
 
-  it('an ambiguous definition (two files claim the name) asks', async () => {
+  it('an ambiguous definition (two files claim the name) is denied with the same guidance', async () => {
     setup();
     writeAgent('deep.md', def('opus'));
     writeAgent('other.md', def('haiku'));
 
-    expect(out(await onPreToolUse(call(DELEGATION), r.d)).permissionDecision).toBe('ask');
+    const o = out(await onPreToolUse(call(DELEGATION), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('explicit model on the call');
+    expect(o.permissionDecisionReason).not.toContain('other.md');
   });
 
   it('an unreadable definition does not ask when the call names its own model', async () => {
@@ -190,22 +245,34 @@ describe('the model comes from the environment', () => {
     expect(r.logs[1]).toMatchObject({ model_source: 'definition' });
   });
 
-  it.each(['1', 'true', 'yes', 'on', 'TRUE'])('FORCE=%s replaces an explicit haiku on the call with CLAUDE_CODE_SUBAGENT_MODEL', async (flag) => {
+  it.each(['1', 'true', 'yes', 'on', 'TRUE'])('FORCE=%s replaces an explicit haiku on the call with CLAUDE_CODE_SUBAGENT_MODEL, and the user\'s own environment passes (instructed)', async (flag) => {
     setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: flag } });
+
+    expect(await onPreToolUse(call({ description: 'd', model: 'haiku' }), r.d)).toBeNull();
+
+    expect(r.logs[0]).toMatchObject({ decision: 'pass', model_source: 'env-force', elevation: 'instructed', instructed_by: 'env-force', forced_model: 'opus' });
+  });
+
+  it('FORCE also replaces inherit and a definition model, never reads the definition, and passes in choice and clamp alike', async () => {
+    for (const mode of ['choice', 'clamp']) {
+      setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: 'true', JEV_ELEVATION: mode } });
+      writeAgent('deep.md', def('[haiku]'));
+
+      expect(await onPreToolUse(call({ ...DELEGATION, model: 'inherit' }), r.d)).toBeNull();
+      expect(await onPreToolUse(call(DELEGATION), r.d)).toBeNull();
+      expect(r.logs.map((l) => l.elevation)).toEqual(['instructed', 'instructed']);
+      r.cleanup();
+    }
+  });
+
+  it('dialog mode keeps asking about a forced model above the session model', async () => {
+    setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', JEV_ELEVATION: 'dialog' } });
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'haiku' }), r.d));
 
-    expect(o.permissionDecision).toBe('deny');
-    expect(o.permissionDecisionReason).toContain('CLAUDE_CODE_SUBAGENT_MODEL_FORCE');
-    expect(r.logs[0]).toMatchObject({ model_source: 'env-force' });
-  });
-
-  it('FORCE also replaces inherit and a definition model, and never reads the definition', async () => {
-    setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: 'true' } });
-    writeAgent('deep.md', def('[haiku]'));
-
-    expect(out(await onPreToolUse(call({ ...DELEGATION, model: 'inherit' }), r.d)).permissionDecision).toBe('deny');
-    expect(out(await onPreToolUse(call(DELEGATION), r.d)).permissionDecision).toBe('deny');
+    expect(o.permissionDecision).toBe('ask');
+    expect(r.logs[0]).toMatchObject({ elevation: 'asked', model_source: 'env-force' });
+    expect(r.logs[0]).not.toHaveProperty('instructed_by');
   });
 
   it('FORCE with a forced model at or below the session model passes an explicit opus call', async () => {
@@ -226,13 +293,12 @@ describe('the model comes from the environment', () => {
     expect(await onPreToolUse(call({ description: 'd' }), r.d)).toBeNull();
   });
 
-  it('the opt-in clamp cannot override a forced model, so it asks', async () => {
+  it('the opt-in clamp cannot override a forced model, so it passes it untouched (no clamp, no ask)', async () => {
     setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', JEV_ELEVATION: 'clamp' } });
 
-    const o = out(await onPreToolUse(call({ description: 'd', model: 'haiku' }), r.d));
-
-    expect(o.permissionDecision).toBe('ask');
-    expect(o.updatedInput).toBeUndefined();
+    expect(await onPreToolUse(call({ description: 'd', model: 'haiku' }), r.d)).toBeNull();
+    expect(r.logs[0]).toMatchObject({ decision: 'pass', elevation: 'instructed', instructed_by: 'env-force' });
+    expect(r.logs[0]).not.toHaveProperty('clamped_to');
   });
 
   it('the shared candidate function is the one the Workflow guard uses', () => {

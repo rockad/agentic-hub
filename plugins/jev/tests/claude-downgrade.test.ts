@@ -734,8 +734,8 @@ describe('what is not evaluated', () => {
   it('a requested model nothing ranks is ignored by the downgrade logic', async () => {
     const { d, rated } = setup({ rankContext: () => ctx });
     const o = out(await onPreToolUse(call({ ...INPUT, model: 'claude-zephyr-1' }), d));
-    // the elevation guard asks about an unranked id; the downgrade never rates it
-    expect(o.permissionDecision === 'ask' || o.permissionDecision === undefined).toBe(true);
+    // the elevation guard denies an unranked id with guidance; the downgrade never rates it
+    expect(o.permissionDecision).toBe('deny');
     expect(rated).toHaveLength(0);
     const plain = setup({ rankContext: undefined });
     expect(await onPreToolUse(call({ ...INPUT, model: 'claude-zephyr-1' }), plain.d)).toBeNull();

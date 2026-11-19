@@ -185,14 +185,27 @@ def parse_qs:
 def clarify_cmd:
   test("(?:^|(?<=[\\s>\\[(\($sq)\"]))/(clarify|grill-me|cplain|celi5)(?:$|(?=[\\s.,;:!?<\\]\($sq)\"]))");
 
-def heading_match($clarify_seen):
+def heading_match:
   rtrimstr("\r")
   | capture("^##[ \\t]*Question[ \\t]+(?<n>[0-9]+)(?:[ \\t]*\\(of[ \\t]*(?<m>[0-9]+)\\)|[ \\t]*(?<sep>[—–\\-(]))")?
-  | select(.m != null or ($clarify_seen and .sep != null))
+  | select(.m != null or .sep != null)
   | {n: (.n | tonumber), m: (if .m != null then (.m | tonumber) else null end)};
 
+# Lines of a reply that sit outside fenced code blocks (``` or ~~~).
+def outside_fences:
+  reduce (split("\n")[]) as $l ({in: false, out: []};
+    if ($l | test("^[ \\t]*(```|~~~)")) then .in |= not
+    elif .in then .
+    else .out += [$l] end)
+  | .out;
+
+# Question headings count only inside a clarify session, and never inside a code block.
 def extract_headings($content; $clarify_seen; $step):
-  [ ($content | split("\n")[] | heading_match($clarify_seen)) + {step: $step} ];
+  if $clarify_seen then [ ($content | outside_fences[] | heading_match) + {step: $step} ] else [] end;
+
+# The closing Decision Table ends the clarify session (closing.md, plain-mode.md).
+def closes_series($content):
+  $content | outside_fences | any(.[]; test("^#{2,4}[ \\t]*(1\\.[ \\t]*)?Decision Table"));
 
 def flush_headings:
   if (.headings | length) == 0 then .
@@ -282,12 +295,12 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
      elif $e.type == "PLANNER_RESPONSE" then
        ($e.content | str) as $content
        | (if ($content | test("Target resolved:")) then true else .clarify_seen end) as $cseen
-       | .clarify_seen = $cseen
        | (if $content != "" then
             .text += ($content + "\n")
             | .rev += ($content + "\n")
             | .headings += extract_headings($content; $cseen; $step)
           else . end)
+       | .clarify_seen = (if closes_series($content) then false else $cseen end)
        | reduce (($e.tool_calls // []) | if type == "array" then .[] else empty end | select(type == "object" and .name == "ask_question")) as $tc (.;
            check_ask($step; $tc; .)
          )

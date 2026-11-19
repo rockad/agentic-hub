@@ -52,7 +52,8 @@ jq '. + {"clarify-require-tool-call": {"enabled": true, "Stop": [{"type": "comma
 
 What the hook does:
 - It acts only when a reply ends without a tool call (`terminationReason: "NO_TOOL_CALL"`) right after a `## Question N` heading in a clarify session. It then returns `{"decision":"continue", ...}`.
-- It cannot loop, because it stays silent while `continuationActive` is true. It also stays silent outside clarify.
+- A clarify session starts at a `/clarify` (or alias) command or a `Target resolved:` line, and ends at the closing `Decision Table` heading. Outside that window it stays silent, and headings inside fenced code blocks are ignored.
+- It cannot loop, because it stays silent while `continuationActive` is true.
 - It fails open (returns `{}`) if `jq` or the transcript is missing.
 - It needs `bash` and `jq`. It takes about 15 ms on a typical transcript and about 200 ms on an 11 MB one.
 

@@ -486,21 +486,25 @@ async function main() {
         ? input.modelName.trim()
         : undefined;
 
+    // The session model: what the store holds after this write. An Orchestrator conversation keeps its planner id when
+    // an execution turn reports the worker id (`turn_model` in the record, and `inputModelName` in the telemetry rows,
+    // still carry the model the turn ran on).
+    let sessionModel = trimmedModel;
     if (trimmedModel && input.conversationId) {
-      writeAntigravitySessionModel(input.conversationId, trimmedModel);
+      sessionModel = writeAntigravitySessionModel(input.conversationId, trimmedModel) ?? trimmedModel;
     }
 
     let activeModel: string | undefined;
     let quotaView: QuotaView | undefined;
     try {
       quotaView = await readQuotaView({ conversationId: input.conversationId });
-      const rawModel = trimmedModel || quotaView?.active_model;
+      const rawModel = sessionModel || quotaView?.active_model;
       activeModel = ceilingModelForHarness('antigravity', rawModel);
     } catch {
       // ignore
     }
-    if (!activeModel && trimmedModel) {
-      activeModel = ceilingModelForHarness('antigravity', trimmedModel);
+    if (!activeModel && sessionModel) {
+      activeModel = ceilingModelForHarness('antigravity', sessionModel);
     }
 
     let decision = evaluateAntigravitySubagentCall(input, {
@@ -547,6 +551,7 @@ async function main() {
       tool_name: input.toolCall?.name || 'invoke_subagent',
       requested_model: requestedModel,
       session_model: activeModel || null,
+      ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
       decision: decision.decision,
       elevation: decision.elevation || null,
       approval_scope: decision.approvalScope || null,

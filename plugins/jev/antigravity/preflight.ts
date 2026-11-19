@@ -180,8 +180,11 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
 
     try {
       // 3. Persist live modelName & flush any deferred subagent_served entries
+      // The session model is what the store holds after the write: an Orchestrator conversation keeps its planner id
+      // when an execution turn reports the worker id. Telemetry rows below keep the reported `modelName`.
+      let sessionModel: string | null = modelName;
       if (modelName && conversationId) {
-        writeAntigravitySessionModel(conversationId, modelName);
+        sessionModel = writeAntigravitySessionModel(conversationId, modelName) ?? modelName;
       }
       if (conversationId) {
         flushPendingServed(sessionsDir, conversationId, (entry) => {
@@ -220,7 +223,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
       const quota: QuotaView = await readQuotaView({ conversationId });
 
       // 5. Determine pool and evaluatePoolStrategy
-      const isOrchestrator = isOrchestratorModel(modelName || quota.active_model);
+      const isOrchestrator = isOrchestratorModel(sessionModel || quota.active_model);
       const routinePool = isOrchestrator
         ? (quota.pools?.execution ?? quota.active)
         : quota.active;
@@ -337,7 +340,7 @@ ${sessionHint}
               const tierChoice = dispatchData.answers.recommendedTier?.choice;
               const rawTier = typeof tierChoice === 'string' && tierChoice in TIER_CRITERIA ? tierChoice : 'flash';
 
-              const activeModel = modelName || quota.active_model || 'gemini-pro';
+              const activeModel = sessionModel || quota.active_model || 'gemini-pro';
               const { clampedTier } = clampTierToSessionCeiling(rawTier, activeModel, cleanTask);
               const recommendedTier = clampedTier;
               const recommendedSubagent = rawSubagent;

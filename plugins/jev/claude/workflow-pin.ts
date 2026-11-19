@@ -26,6 +26,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PRIVATE_FILE_MODE, privateDir, privateFile } from '../src/core/private-fs.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 import { safeSessionId } from './logic.js';
 import { readRegularFile } from './safe-read.js';
 import { MAX_SCRIPT_BYTES, type ScriptFact } from './workflow-guard.js';
@@ -126,8 +127,9 @@ export interface PinDeps {
 
 /**
  * PostToolUse for Workflow: re-hash every file the PreToolUse analysis read and compare. Consumes the pin. Never
- * throws. Silent (`no-pin`) when the guard did not run for this call. When Jev has been switched off since (`off`,
- * the pin dropped) there is no stdout, but drift is still logged.
+ * throws. Silent (`no-pin`) when the guard did not run for this call. When Jev has been switched to on-demand since (`off`,
+ * the pin dropped) there is no stdout, but drift is still logged. When it has been switched off, nothing is dropped
+ * or logged (mode off writes nothing; the orphaned pin is pruned by the next call made while Jev is not off).
  */
 export async function recordWorkflowPostToolUse(input: unknown, deps: PinDeps): Promise<PostToolUseResult> {
   try {
@@ -135,8 +137,11 @@ export async function recordWorkflowPostToolUse(input: unknown, deps: PinDeps): 
     if (i?.tool_name !== 'Workflow') return { status: 'ignored' };
     const pin = readPin(deps.dir, i.tool_use_id);
     if (!pin) return { status: 'no-pin' };
+    const mode = await deps.readMode();
+    // Off writes nothing: the pin is not dropped (the next prune takes it) and no drift is logged.
+    if (!modeBehaviour(mode).telemetry) return { status: 'off' };
     dropPin(deps.dir, i.tool_use_id);
-    const off = (await deps.readMode()) !== 'on';
+    const off = mode !== 'on';
     const drift: Array<{ file: string; analysed: string; current: string | null }> = [];
     for (const s of pin.scripts) {
       if (typeof s?.label !== 'string' || !path.isAbsolute(s.label)) continue; // inline: no file to re-check

@@ -9,7 +9,6 @@ import { describe, it, expect } from 'bun:test';
 import { onPreToolUse, onUserPromptSubmit, telemetryEvent, type HookDeps } from '../claude/hook.ts';
 import { resolveModelUsed } from '../src/core/telemetry.ts';
 import { flashRec } from './parity-helpers.ts';
-import { memoryClaim } from './elevation-helpers.ts';
 
 describe('resolveModelUsed (shared by both harnesses)', () => {
   it('clamped wins over everything', () => {
@@ -124,7 +123,6 @@ describe('through the real handlers', () => {
       readQuotaStrategy: async () => 'unknown',
       dispatch: async () => flashRec,
       log: (e) => logs.push(e as Record<string, unknown>),
-      claimClamp: memoryClaim(),
       readTurn: (s) => turns.get(s ?? '') ?? null,
       saveTurn: (s, st) => void turns.set(s ?? '', st),
       ...overrides,
@@ -213,7 +211,6 @@ describe('modelUsed follows the model the hook resolved (F1) and skips Workflow 
       readQuotaStrategy: async () => 'unknown',
       dispatch: async () => flashRec,
       log: (e) => logs.push(e as Record<string, unknown>),
-      claimClamp: memoryClaim(),
       readTurn: () => null,
       saveTurn: () => {},
       env: { ...env }

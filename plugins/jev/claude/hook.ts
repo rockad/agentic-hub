@@ -12,15 +12,18 @@
  *   pre-tool-use (matcher "Agent|Task|Workflow")
  *                                      Agent delegation above the ceiling. Default (JEV_ELEVATION=choice): denied with a
  *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
- *                                      the third attempt of one delegation in a prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
- *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
+ *                                      every attempt is denied (never asks: a harness that auto-approves would approve a dialog
+ *                                      unseen), and from the third attempt of one delegation in a prompt the reason says to stop
+ *                                      retrying. JEV_ELEVATION=dialog: asks (the 2.3.4 permission dialog), the only mode that
+ *                                      asks, and it logs `auto_approve_warning` when the permission mode approves without a
+ *                                      dialog. A model the user named passes (nothing else asks);
  *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): every delegation is rated on its own
  *                                      (its description and the start of its prompt go to the router, a tier probability per
  *                                      tier); when a cheaper catalogue step is enough and strictly cheaper by list price the call
  *                                      is denied once with the prescribed [jev-downgrade:<alias>] question (ask) or run on the
  *                                      cheapest such alias (auto); fails open on any router problem;
- *                                      opt-in JEV_ELEVATION=clamp runs the first one
- *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
+ *                                      opt-in JEV_ELEVATION=clamp runs every one
+ *                                      on the session model instead (allow + updatedInput), a repeat in the prompt too,
  *                                      log the call next to the last recommendation, and remind once before staged
  *                                      work when no dispatch call preceded it.
  *                                      A Workflow call: the agents a Workflow launches never reach this hook (verified on
@@ -86,7 +89,7 @@ import {
   parseElevationAnswer,
   parseElevationDecline,
   recordApproval,
-  CHOICE_DENIALS_BEFORE_ASK,
+  isAutoApprovePermissionMode,
   envNotice,
   hasRecentDispatch,
   isHostInjectedPrompt,
@@ -182,6 +185,8 @@ export type HookInput = {
   tool_response?: unknown;
   /** The session's effort level, as Claude Code reports it (a string or an object holding one); advisory context for the downgrade question. */
   effort?: unknown;
+  /** Claude Code's permission mode (`default`, `plan`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`); only read for the auto-approve warning of a dialog-mode `ask`. */
+  permission_mode?: string;
 };
 
 /**
@@ -249,14 +254,7 @@ export type HookDeps = {
   recentDispatch?: (windowMs: number) => boolean;
   /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
   recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
-  /**
-   * Atomically claim the one clamp of a prompt: `first` is true for the first caller with this key (session id
-   * plus prompt id) and false for every later one, which also gets the signature the first caller stored (the
-   * delegation that was clamped). Absent or throwing means the state is unavailable, and the call then asks
-   * (the 2.3.3 behaviour) instead of clamping.
-   */
-  claimClamp?: (sessionId: string, promptKey: string, signature: string) => { first: boolean; signature?: string };
-  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call opens the permission dialog. */
+  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call is denied (the attempt number is then unknown, so no stop-retrying text). */
   approvals?: ApprovalStore;
   /**
    * The downgrade choice store. Absent: no downgrade evaluation at all (nothing is denied, asked or rewritten), so a
@@ -507,9 +505,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   if (elevation && resolved && resolved.source !== 'call' && resolved.source !== 'inherit') {
     elevation.sourceNote = agentModelNote(resolved.source, call.subagent_type);
   }
-  // An elevating call (a model stronger than the session's, no instruction naming it) asks: a permission dialog
-  // on every such call, as in 2.3.3. Opt-in clamp (env JEV_ELEVATION=clamp, no config key): the first one per
-  // prompt runs on the session model (allow + updatedInput, no dialog) and only a repeat in the same prompt asks.
+  // An elevating call (a model stronger than the session's, no instruction naming it) is denied with the prescribed
+  // question (choice, the default), asked about in a permission dialog (JEV_ELEVATION=dialog, as in 2.3.3), or run on the
+  // session model (JEV_ELEVATION=clamp: allow + updatedInput, every call of a prompt alike). Choice and clamp never ask.
   // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
   let verdict: AgentDecision = null;
@@ -533,7 +531,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating' && elevMode === 'choice') {
     // Choice flow (default): a covering approval lets the call through; otherwise the call is denied with the
-    // prescribed question (a deny does not stop the turn), and the third attempt of one delegation in a prompt opens the dialog.
+    // prescribed question (a deny does not stop the turn). It never asks: a harness that auto-approves would approve a
+    // dialog unseen, so every attempt is denied, and from the third attempt of one delegation in a prompt the reason says
+    // to stop retrying (the same text as Antigravity).
     const nowMs = (deps.now ?? Date.now)();
     const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, elevation.requested, nowMs, rankCtx)) ?? null) : null;
     if (hit) {
@@ -544,37 +544,30 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       const signature = callSignature(call as Record<string, unknown>);
       const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
       attemptCount = typeof count === 'number' ? count : null;
-      // Without a working counter the deny could repeat for ever: fall back to the dialog.
-      if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
-        verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
-        elevationState = 'asked';
-      } else {
-        verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type) };
-        elevationState = 'denied';
-        // The question is now prescribed for this model: only an answer after this can record an approval.
-        if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
-      }
+      verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type, attemptCount) };
+      elevationState = 'denied';
+      // The question is now prescribed for this model: only an answer after this can record an approval.
+      if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
     verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating') {
-    const promptKey = (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || null;
-    const signature = callSignature(call as Record<string, unknown>);
-    let clampedEarlier = false;
     if (aliasRemapped(elevation.sessionAlias, deps.env)) {
       // The alias the clamp would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the session model.
       clampSkipped = 'alias-remapped';
-    } else if (sessionId && promptKey) {
-      // Anything that stops us proving this is the first call of the prompt (no id, no state, a failing store) asks.
-      const claim = safely(() => deps.claimClamp?.(sessionId, promptKey, signature));
-      if (claim?.first) clamp = clampElevation(call as Record<string, unknown>, elevation);
-      else clampedEarlier = !!claim && claim.signature === signature;
-    }
-    if (clamp) elevationState = 'clamped';
-    else {
-      verdict = { decision: 'ask', reason: elevationAskReason(elevation, clampedEarlier) };
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
       elevationState = 'asked';
+    } else {
+      // Clamp: every elevating call, a repeat in the same prompt too, runs on the session model (allow + updatedInput).
+      // It never asks: a harness that auto-approves would approve a dialog unseen and run the stronger model.
+      clamp = clampElevation(call as Record<string, unknown>, elevation);
+      elevationState = 'clamped';
+      if (sessionId) {
+        const signature = callSignature(call as Record<string, unknown>);
+        const count = safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, (deps.now ?? Date.now)(), attemptWindowMs));
+        attemptCount = typeof count === 'number' ? count : null;
+      }
     }
   }
 
@@ -687,6 +680,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
+    // A dialog-mode `ask` while the permission mode approves without showing it: informational only, the decision is unchanged.
+    ...(verdict?.decision === 'ask' && isAutoApprovePermissionMode(input.permission_mode) ? { auto_approve_warning: true } : {}),
     ...downgradeLog,
     ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
@@ -767,7 +762,7 @@ type WorkflowEvaluation = {
  *   threshold, a missing definition, a parse error): the permission dialog (`asked`), listing every site;
  * - only elevations: with `JEV_ELEVATION=choice` (default) the same flow as an Agent call, for the strongest model
  *   named: a covering approval passes (`allow`), otherwise a deny that prescribes the `[jev-elevate:<model>]` question
- *   (`denied`), and the third denied attempt of the same script in a prompt opens the dialog (`asked`). `dialog` and
+ *   (`denied`; never asks, and from the third attempt of the same script in a prompt the reason says to stop retrying). `dialog` and
  *   `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp.
  */
 function evaluateWorkflowCall(a: {
@@ -819,14 +814,10 @@ function evaluateWorkflowCall(a: {
     const signature = workflowSignature(d.scripts);
     const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), signature, nowMs, a.attemptWindowMs)) : undefined;
     const attemptCount = typeof count === 'number' ? count : null;
-    if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
-      const asked = dialog();
-      return { ...asked, attemptCount, log: { ...asked.log, workflow_highest: clip(top.requested) } };
-    }
     if (sessionId) safely(() => deps.approvals?.deny(sessionId, top.requested, nowMs));
     return finish(
       'denied',
-      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts) }, elevationState: 'denied', attemptCount },
+      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts, attemptCount) }, elevationState: 'denied', attemptCount },
       { workflow_highest: clip(top.requested) }
     );
   } catch {
@@ -979,8 +970,13 @@ async function evaluateDowngrade(a: {
  * question that does not start with the `[jev-elevate:<model>]` marker (the marker is not a secret: any such
  * question is accepted), a "No", malformed input, and an answer for a model Jev did not prescribe the question
  * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
+ *
+ * Approvals and downgrade answers are decisions, so a mode without decisions (on-demand, off) records none: an answer given
+ * there cannot approve a stale denial from an earlier mode `on`.
  */
-export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now'>): void {
+export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'approvals' | 'downgrades' | 'now'>): Promise<void> {
+  const mode = await safelyAsync(() => deps.readMode());
+  if (!modeBehaviour(mode).decisions) return;
   const sessionId = safeSessionId(input?.session_id);
   if (!sessionId) return;
   const nowMs = (deps.now ?? Date.now)();
@@ -1017,6 +1013,15 @@ export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals'
 function safely<T>(fn: () => T): T | undefined {
   try {
     return fn();
+  } catch {
+    return undefined;
+  }
+}
+
+/** `safely` for an async read. */
+async function safelyAsync<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
   } catch {
     return undefined;
   }
@@ -1080,33 +1085,6 @@ function saveTurn(sessionId: string | null, state: TurnState): void {
   privateDir(SESSIONS_DIR);
   fs.writeFileSync(turnFile(sessionId), JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
   privateFile(turnFile(sessionId));
-}
-
-/**
- * The one clamp of a prompt, claimed with an exclusive create (`wx`) so two Agent calls fired in parallel
- * cannot both be "first". One marker file per session; its content is the signature of the delegation that was
- * clamped, so a later call can tell whether it is that same delegation. A claim for another prompt id removes
- * the old marker; markers that are left are pruned after 7 days at SessionStart. Throws when the store cannot
- * be written; the caller treats that as "ask".
- */
-function claimClamp(sessionId: string, promptKey: string, signature: string): { first: boolean; signature?: string } {
-  privateDir(SESSIONS_DIR);
-  const prefix = `${sessionId}.clamp-`;
-  const mine = `${prefix}${promptKey}`;
-  for (const name of fs.readdirSync(SESSIONS_DIR)) {
-    if (name.startsWith(prefix) && name !== mine) fs.rmSync(path.join(SESSIONS_DIR, name), { force: true });
-  }
-  try {
-    const file = path.join(SESSIONS_DIR, mine);
-    fs.writeFileSync(file, signature, { flag: 'wx', mode: PRIVATE_FILE_MODE });
-    privateFile(file);
-    return { first: true };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // The first caller may still be writing: an empty marker means "unknown", which says nothing about the signature.
-    const stored = fs.readFileSync(path.join(SESSIONS_DIR, mine), 'utf8').trim();
-    return { first: false, ...(stored ? { signature: stored } : {}) };
-  }
 }
 
 const LOCK_WAIT_MS = 1500;
@@ -1469,7 +1447,6 @@ const liveDeps: HookDeps = {
   readTurn,
   saveTurn,
   forgetTurn,
-  claimClamp,
   approvals: approvalStore,
   downgrades: downgradeStore,
   downgradeConfig: loadDowngradeMode,
@@ -1496,19 +1473,23 @@ async function main(event: string | undefined): Promise<void> {
     return;
   }
   if (event === 'post-tool-use') {
-    // The elevation recorder: no output, no mode check. It accepts any question that starts with the marker, but
-    // records an approval only for a model Jev prescribed the question for in the last 15 minutes.
-    onPostToolUse(input, liveDeps);
+    // The elevation recorder: no output. It checks the mode itself (a mode without decisions records nothing), accepts any
+    // question that starts with the marker, but records an approval only for a model Jev prescribed the question for in
+    // the last 15 minutes.
+    await onPostToolUse(input, liveDeps);
     return;
   }
+  // Off: nothing runs and nothing is written, by any entry point below. The session model record is the one write that
+  // stays in on-demand (telemetry carries `sessionModel`); it is not a decision.
+  const mayWrite = modeBehaviour(await safelyAsync(() => liveDeps.readMode())).telemetry;
   const output =
     event === 'user-prompt-submit' ? await onUserPromptSubmit(input, liveDeps)
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
-  if (event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
-  if (event === 'session-start') safely(() => onSessionStartWithoutModel(input));
-  if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
-  if (event === 'session-start') maybeStartCatalogueRefresh();
+  if (mayWrite && event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
+  if (mayWrite && event === 'session-start') safely(() => onSessionStartWithoutModel(input));
+  if (mayWrite && (event === 'session-start' || event === 'post-model-switch')) onModelKnown(input);
+  if (event === 'session-start') maybeStartCatalogueRefresh(); // starts only in mode on (it checks)
   if (output) process.stdout.write(JSON.stringify(output));
 }
 

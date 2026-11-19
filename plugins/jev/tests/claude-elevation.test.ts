@@ -2,8 +2,8 @@
  * Jev 2.3.4. An Agent call whose model is stronger than the session model, with no instruction naming it,
  * ASKS by default (a permission dialog on every such call; see the 'default mode' block at the end). The
  * rest of this file is the OPT-IN elevation clamp (env JEV_ELEVATION=clamp):
- *  - first one in a prompt, no instruction naming it: allow + updatedInput on the session model, no dialog
- *  - a second one in the same prompt: ask (that dialog is the request to elevate)
+ *  - every elevating call, no instruction naming it: allow + updatedInput on the session model, no dialog
+ *  - a second one in the same prompt: clamped the same way (the clamp never asks: under an auto-approving harness a dialog would run the stronger model unseen)
  *  - the user named that model (or a stronger one) in the prompt: passes, logged as "instructed"
  *  - at or below the session model, no model, Workflow, unknown session model: untouched
  */
@@ -13,7 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { onUserPromptSubmit, onPreToolUse, telemetryEvent, type HookDeps, type HookInput } from '../claude/hook.ts';
 import { classifyElevation, modelAlias, parseUserIntent, type Dispatch } from '../claude/logic.ts';
-import { memoryClaim } from './elevation-helpers.ts';
+import { memoryApprovals } from './elevation-helpers.ts';
 
 const flashRec: Dispatch = { subagent: 'general-purpose', tier: 'flash', model: 'sonnet', effort: 'medium', confidence: 0.9 };
 
@@ -29,7 +29,6 @@ function setup(overrides: Partial<HookDeps> = {}, mode: 'clamp' | 'default' = 'c
     readQuotaStrategy: async () => 'unknown',
     dispatch: async () => flashRec,
     log: (e) => logs.push(e as Log),
-    claimClamp: memoryClaim(),
     readTurn: (s) => turns.get(s ?? '') ?? null,
     saveTurn: (s, st) => void turns.set(s ?? '', st),
     ...overrides,
@@ -58,7 +57,7 @@ const call = (tool_input: Record<string, unknown> = FULL_INPUT, extra: Partial<H
 
 const out = (o: Awaited<ReturnType<typeof onPreToolUse>>) => (o?.hookSpecificOutput ?? {}) as Record<string, any>;
 
-describe('1. the first elevating call of a prompt is clamped', () => {
+describe('1. an elevating call is clamped', () => {
   it('allows it with no dialog on the session model', async () => {
     const { d } = setup();
 
@@ -140,138 +139,102 @@ describe('1. the first elevating call of a prompt is clamped', () => {
   });
 });
 
-describe('2. a second elevating call in the same prompt asks', () => {
-  it('returns ask for the second call', async () => {
+describe('2. a repeated elevating call in the same prompt is clamped the same way (clamp never asks)', () => {
+  it('returns allow with the model overwritten for the second call, never ask', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
 
     const o = out(await onPreToolUse(call(), d));
 
-    expect(o.permissionDecision).toBe('ask');
-    expect(o.updatedInput).toBeUndefined();
+    expect([o.permissionDecision, o.updatedInput.model]).toEqual(['allow', 'sonnet']);
+    expect(o.updatedInput).toEqual({ ...FULL_INPUT, model: 'sonnet' });
   });
 
-  it('says what each answer does, and that the same delegation already ran when it did', async () => {
+  it('every attempt of a prompt is clamped, however many', async () => {
+    const { d } = setup();
+
+    const outs = [];
+    for (let i = 0; i < 5; i++) outs.push(out(await onPreToolUse(call(), d)));
+
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['allow', 'allow', 'allow', 'allow', 'allow']);
+    expect(outs.every((o) => o.updatedInput.model === 'sonnet')).toBe(true);
+  });
+
+  it('a repeat carries the same note for the assistant as the first attempt', async () => {
+    const { d } = setup();
+    const first = out(await onPreToolUse(call(), d));
+
+    const second = out(await onPreToolUse(call(), d));
+
+    expect(second.additionalContext).toBe(first.additionalContext);
+    expect(String(second.permissionDecisionReason)).toContain('Elevation clamped: opus to sonnet');
+  });
+
+  it('a different delegation, and any other stronger model, is clamped too', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
 
-    const reason = String(out(await onPreToolUse(call(), d)).permissionDecisionReason);
+    const other = out(await onPreToolUse(call({ ...FULL_INPUT, description: 'WS2: something else' }), d));
+    const fable = out(await onPreToolUse(call({ ...FULL_INPUT, model: 'fable' }), d));
 
-    expect(reason).toContain('Yes runs it on opus');
-    expect(reason).toContain('No cancels the call and stops the turn; type a comment with No to let the assistant continue');
-    expect(reason).toContain('The same delegation already ran on sonnet earlier in this prompt');
+    expect([other.permissionDecision, other.updatedInput.model]).toEqual(['allow', 'sonnet']);
+    expect([fable.permissionDecision, fable.updatedInput.model]).toEqual(['allow', 'sonnet']);
   });
 
-  it('does not say a run happened when the repeat is a different delegation', async () => {
+  it('with no prompt id and no stored turn, nothing to prove: it is still clamped', async () => {
     const { d } = setup();
-    await onPreToolUse(call(), d);
+    const bare = { session_id: 's1', tool_name: 'Agent', tool_input: FULL_INPUT };
 
-    const reason = String(out(await onPreToolUse(call({ ...FULL_INPUT, description: 'WS2: something else' }), d)).permissionDecisionReason);
+    const outs = [out(await onPreToolUse(bare, d)), out(await onPreToolUse(bare, d))];
 
-    expect(reason).toContain('Yes runs it on opus');
-    expect(reason).not.toContain('already ran');
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['allow', 'allow']);
   });
 
-  it('does not say a run happened when no clamp ran (no prompt key, failing store, absent store)', async () => {
-    const noKey = out(await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: FULL_INPUT }, setup().d));
-    const broken = out(
-      await onPreToolUse(call(), setup({ claimClamp: () => { throw new Error('disk full'); } }).d)
-    );
-    const absent = out(await onPreToolUse(call(), setup({ claimClamp: undefined }).d));
+  it('without a working attempt counter (no approvals store) it is clamped all the same, with no attempt count', async () => {
+    const { d, logs } = setup({ approvals: undefined });
 
-    for (const o of [noKey, broken, absent]) {
-      expect(o.permissionDecision).toBe('ask');
-      expect(String(o.permissionDecisionReason)).not.toContain('already ran');
-    }
+    const outs = [out(await onPreToolUse(call(), d)), out(await onPreToolUse(call(), d))];
+
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['allow', 'allow']);
+    expect(logs.every((l) => !('elevation_attempt' in l))).toBe(true);
   });
 
-  it('does not say a run happened when a parallel call cannot tell what the first one was', async () => {
-    const { d } = setup({ claimClamp: () => ({ first: false }) });
-
-    const reason = String(out(await onPreToolUse(call(), d)).permissionDecisionReason);
-
-    expect(reason).not.toContain('already ran');
-  });
-
-  it('keeps asking on a third call', async () => {
-    const { d } = setup();
+  it('logs the attempt count of each clamp, per delegation, and a new prompt_id starts again', async () => {
+    const { d, logs } = setup({ approvals: memoryApprovals() });
     await onPreToolUse(call(), d);
     await onPreToolUse(call(), d);
+    await onPreToolUse(call({ ...FULL_INPUT, description: 'WS2: something else' }), d);
+    await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p2' }), d);
 
-    const o = out(await onPreToolUse(call(), d));
-
-    expect(o.permissionDecision).toBe('ask');
+    expect(logs.map((l) => l.elevation)).toEqual(['clamped', 'clamped', 'clamped', 'clamped']);
+    expect(logs.map((l) => l.elevation_attempt)).toEqual([1, 2, 1, 1]);
   });
 
-  it('asks for any stronger model after a clamp, not only the same one', async () => {
-    const { d } = setup();
-    await onPreToolUse(call(), d);
-
-    const o = out(await onPreToolUse(call({ ...FULL_INPUT, model: 'fable' }), d));
-
-    expect(o.permissionDecision).toBe('ask');
-  });
-
-  it('a call at the session model in between does not use up or reset the clamp', async () => {
+  it('a call at the session model in between is untouched, and the next elevating call is clamped', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
     expect(await onPreToolUse(call({ ...FULL_INPUT, model: 'sonnet' }), d)).toBeNull();
 
     const o = out(await onPreToolUse(call(), d));
 
-    expect(o.permissionDecision).toBe('ask');
-  });
-
-  it('a different prompt_id resets: the first call of the new prompt is clamped again', async () => {
-    const { d } = setup();
-    await onPreToolUse(call(), d);
-    await onPreToolUse(call(), d);
-
-    const o = out(await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p2' }), d));
-
     expect(o.permissionDecision).toBe('allow');
   });
 
-  it('another session has its own clamp', async () => {
+  it('a different prompt_id and another session are clamped as well', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
 
-    const o = out(await onPreToolUse(call(FULL_INPUT, { session_id: 's2' }), d));
-
-    expect(o.permissionDecision).toBe('allow');
+    expect(out(await onPreToolUse(call(FULL_INPUT, { prompt_id: 'p2' }), d)).permissionDecision).toBe('allow');
+    expect(out(await onPreToolUse(call(FULL_INPUT, { session_id: 's2' }), d)).permissionDecision).toBe('allow');
   });
 
-  it('without a prompt_id, the stored turn id scopes the clamp', async () => {
-    const { d } = setup();
-    await onUserPromptSubmit({ session_id: 's1', prompt: 'wrap the findings in the docs and commit' }, d);
-    const bare = { session_id: 's1', tool_name: 'Agent', tool_input: FULL_INPUT };
+  it('the repeat row is decision allow with modelUsedSource clamped, and has the model it ran on', async () => {
+    const { d, logs } = setup();
+    await onPreToolUse(call(), d);
+    await onPreToolUse(call(), d);
 
-    const first = out(await onPreToolUse(bare, d));
-    const second = out(await onPreToolUse(bare, d));
-
-    expect([first.permissionDecision, second.permissionDecision]).toEqual(['allow', 'ask']);
-  });
-
-  it('asks when the clamp state cannot be read (no prompt id, no stored turn)', async () => {
-    const { d } = setup();
-
-    const o = out(await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: FULL_INPUT }, d));
-
-    expect(o.permissionDecision).toBe('ask');
-  });
-
-  it('asks, never clamps, when the claim store is absent or throws', async () => {
-    const absent = setup({ claimClamp: undefined });
-    const broken = setup({
-      claimClamp: () => {
-        throw new Error('disk full');
-      }
-    });
-
-    const a = out(await onPreToolUse(call(), absent.d));
-    const b = out(await onPreToolUse(call(), broken.d));
-
-    expect([a.permissionDecision, b.permissionDecision]).toEqual(['ask', 'ask']);
+    expect(logs[1]).toMatchObject({ decision: 'allow', elevation: 'clamped', clamped_from: 'opus', clamped_to: 'sonnet' });
+    expect(telemetryEvent(logs[1])).toMatchObject({ decision: 'allow', modelUsed: 'sonnet', modelUsedSource: 'clamped', requestedModel: 'opus' });
   });
 });
 
@@ -297,15 +260,6 @@ describe('2b. a remapped session alias asks instead of clamping', () => {
     const o = out(await onPreToolUse(call(), d));
 
     expect(o.permissionDecision).toBe('allow');
-  });
-
-  it('a remap does not use up the clamp claim', async () => {
-    const claims: string[] = [];
-    const { d } = setup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'x' }, claimClamp: (s, p, sig) => (claims.push(sig), { first: true }) });
-
-    await onPreToolUse(call(), d);
-
-    expect(claims).toEqual([]);
   });
 
   it('an empty variable is not a remap', async () => {
@@ -505,16 +459,6 @@ describe('5. the decisions-log record', () => {
     expect(logs[0]).toHaveProperty('preflight_reminder');
   });
 
-  it('a repeat logs elevation "asked" and no clamp fields', async () => {
-    const { d, logs } = setup();
-    await onPreToolUse(call(), d);
-
-    await onPreToolUse(call(), d);
-
-    expect(logs[1]).toMatchObject({ elevation: 'asked' });
-    expect(logs[1]).not.toHaveProperty('clamped_to');
-  });
-
   it('an untouched call has no elevation field', async () => {
     const { d, logs } = setup();
 
@@ -542,7 +486,7 @@ describe('pure helpers', () => {
   });
 });
 
-describe('the live hook process (private state dir, real claim)', () => {
+describe('the live hook process (private state dir)', () => {
   const HOOK = path.join(import.meta.dir, '..', 'claude', 'hook.ts');
   let home = '';
   beforeEach(() => {
@@ -560,7 +504,7 @@ describe('the live hook process (private state dir, real claim)', () => {
   const sessions = () => path.join(home, '.config', 'jev', 'claude-sessions');
   const mode = (p: string) => fs.statSync(p).mode & 0o777;
 
-  it('clamps the first call, asks the second, resets on a new prompt_id, with owner-only state', () => {
+  it('clamps every call of a prompt and of the next, never asks, and writes no clamp marker', () => {
     run('session-start', { session_id: 'sx', model: 'claude-sonnet-5' });
     const agent = (prompt_id: string) => ({ session_id: 'sx', prompt_id, tool_name: 'Agent', tool_input: FULL_INPUT });
 
@@ -568,11 +512,11 @@ describe('the live hook process (private state dir, real claim)', () => {
     const second = parse(run('pre-tool-use', agent('p1')));
     const third = parse(run('pre-tool-use', agent('p2')));
 
-    expect([first.permissionDecision, second.permissionDecision, third.permissionDecision]).toEqual(['allow', 'ask', 'allow']);
+    expect([first.permissionDecision, second.permissionDecision, third.permissionDecision]).toEqual(['allow', 'allow', 'allow']);
     expect(first.updatedInput).toEqual({ ...FULL_INPUT, model: 'sonnet' });
-    const markers = fs.readdirSync(sessions()).filter((n) => n.includes('.clamp-'));
-    expect(markers).toEqual(['sx.clamp-p2']);
-    expect([mode(sessions()), mode(path.join(sessions(), markers[0]))]).toEqual([0o700, 0o600]);
+    expect(second.updatedInput).toEqual({ ...FULL_INPUT, model: 'sonnet' });
+    expect(fs.readdirSync(sessions()).filter((n) => n.includes('.clamp-'))).toEqual([]);
+    expect([mode(sessions()), mode(path.join(sessions(), 'sx.approvals.json'))]).toEqual([0o700, 0o600]);
   });
 
   it('logs the clamp to the decisions file', () => {

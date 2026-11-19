@@ -95,6 +95,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import type * as AcornTypes from 'acorn';
 import { readRegularFile } from './safe-read.js';
+import { stopRetryingText } from '../src/core/elevation-text.js';
 import {
   clip,
   definitionOrBuiltin,
@@ -1190,8 +1191,9 @@ export function workflowSignature(scripts: readonly ScriptFact[]): string {
  * workflow by its script hash. A PreToolUse `deny` does not stop the turn: the assistant receives this text and is
  * told to ask the user the one prescribed question. The PostToolUse recorder reads the user's real answer.
  */
-export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[]): string {
+export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[], attempt?: number | null): string {
   const alias = modelAlias(e.requested) ?? e.requested;
+  const stop = stopRetryingText(attempt, alias, e.sessionAlias, 'AskUserQuestion');
   const l = CHOICE_LABELS;
   const ids = scripts.slice(0, 3).map((s) => `sha256:${s.sha256.slice(0, 12)}`).join(', ') || 'unhashed';
   return (
@@ -1201,6 +1203,7 @@ export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
     `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() calls to inherit the session model (or ${e.sessionAlias}) and call it again, or do the work directly; ` +
     `If AskUserQuestion is not available, edit the workflow to run on ${e.sessionAlias} and call it again now; ` +
-    `do not ask in any other form.`
+    `do not ask in any other form.` +
+    (stop ? ` ${stop}` : '')
   );
 }

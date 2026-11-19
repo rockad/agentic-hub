@@ -60,7 +60,6 @@ describe('Claude Code hooks in on-demand', () => {
       dispatch: boom('dispatch') as any,
       log: (e) => logs.push(e),
       saveTurn: boom('saveTurn') as any,
-      claimClamp: boom('claimClamp') as any,
       approvals: { claim: boom('claim'), attempt: boom('attempt'), deny: boom('deny'), record: boom('record') } as any,
       downgrades: boom('downgrades') as any,
       ...overrides

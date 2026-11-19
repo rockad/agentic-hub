@@ -237,7 +237,7 @@ describe('deny, answer, relaunch: the whole flow through the hooks', () => {
     it(`${label}: the relaunch passes, with no second question and no second router call`, async () => {
       const { d, logs, rated } = setup();
       expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
-      answer(d, label);
+      await answer(d, label);
       expect(await onPreToolUse(call({ ...INPUT, model: relaunchModel }), d)).toBeNull();
       expect(logs[1].downgrade).toBe('answered');
       expect(rated).toHaveLength(1);
@@ -246,17 +246,17 @@ describe('deny, answer, relaunch: the whole flow through the hooks', () => {
 
   it('an answer for another session does not count', async () => {
     const { d, downgrades } = setup();
-    answer(d, 'No, keep opus', 'haiku', 'other-session');
+    await answer(d, 'No, keep opus', 'haiku', 'other-session');
     expect(downgrades.states.get('other-session')!.entries[0].signature).toBeNull();
     expect(downgrades.states.has('s1')).toBe(false);
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
   });
 
-  it('the recorder prints nothing, never throws and ignores malformed input', () => {
+  it('the recorder prints nothing, never throws and ignores malformed input', async () => {
     const { d } = setup();
-    expect(() => answer(d, 'Yes, haiku')).not.toThrow();
+    await expect(answer(d, 'Yes, haiku')).resolves.toBeUndefined();
     for (const bad of [null, undefined, {}, { session_id: 's1' }, { session_id: 's1', tool_input: 7 }]) {
-      expect(() => onPostToolUse(bad as any, d)).not.toThrow();
+      await expect(onPostToolUse(bad as any, d)).resolves.toBeUndefined();
     }
     const broken: DowngradeStore = {
       ...memoryDowngrades(),
@@ -264,19 +264,19 @@ describe('deny, answer, relaunch: the whole flow through the hooks', () => {
         throw new Error('disk full');
       }
     };
-    expect(() => onPostToolUse({ ...answered(QUESTION(), 'Yes, haiku'), session_id: 's1' } as HookInput, { ...d, downgrades: broken })).not.toThrow();
+    await expect(onPostToolUse({ ...answered(QUESTION(), 'Yes, haiku'), session_id: 's1' } as HookInput, { ...d, downgrades: broken })).resolves.toBeUndefined();
   });
 
   it('a downgrade answer never grants an elevation, and an elevation approval never answers a downgrade', async () => {
     const { d, approvals, downgrades } = setup({ readSessionModel: () => 'claude-sonnet-5-5' });
-    answer(d, 'Yes, haiku');
-    answer(d, 'No, keep opus');
+    await answer(d, 'Yes, haiku');
+    await answer(d, 'No, keep opus');
     expect(approvals.states.size).toBe(0);
     expect(out(await onPreToolUse(call(), d)).permissionDecisionReason).toContain('[jev-elevate:opus]');
 
     const second = setup();
     second.d.approvals!.deny('s1', 'opus', T0);
-    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, second.d);
+    await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, second.d);
     expect(second.approvals.states.get('s1')?.approvals.length).toBe(1);
     expect(second.downgrades.states.size).toBe(0);
     expect(downgrades.states.get('s1')!.entries.every((e) => e.answered)).toBe(true);
@@ -296,7 +296,7 @@ describe('a call with no model runs on the session model', () => {
     expect(logs[0]).toMatchObject({ downgrade: 'asked', downgrade_from: 'claude-sonnet-5-5', requested_model: null });
     expect(rated).toHaveLength(1);
     // the answer, then the relaunch with the model set explicitly
-    answer(d, 'No, keep sonnet');
+    await answer(d, 'No, keep sonnet');
     expect(await onPreToolUse(call({ ...bare, model: 'sonnet' }), d)).toBeNull();
     // and the very same call again (the assistant did not set the model) passes too
     expect(await onPreToolUse(call(bare), d)).toBeNull();
@@ -326,7 +326,7 @@ describe('the session-off answer', () => {
   it('stops every later evaluation for the session: no rating, no question, whatever the delegation', async () => {
     const { d, logs, rated } = setup();
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
-    answer(d, SESSION_OFF_LABEL);
+    await answer(d, SESSION_OFF_LABEL);
     expect(await onPreToolUse(call({ ...INPUT, model: 'opus' }), d)).toBeNull();
     for (const description of ['WS2: something else', 'WS3: and another']) {
       expect(await onPreToolUse(call({ ...INPUT, description }), d)).toBeNull();
@@ -339,7 +339,7 @@ describe('the session-off answer', () => {
   it('lasts for the session, not ten minutes', async () => {
     const { d, advance } = setup();
     await onPreToolUse(call(), d);
-    answer(d, SESSION_OFF_LABEL);
+    await answer(d, SESSION_OFF_LABEL);
     advance(5 * 60 * MIN);
     expect(await onPreToolUse(call({ ...INPUT, description: 'a later delegation' }), d)).toBeNull();
   });
@@ -347,7 +347,7 @@ describe('the session-off answer', () => {
   it('is scoped to the session: another session is still asked', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
-    answer(d, SESSION_OFF_LABEL);
+    await answer(d, SESSION_OFF_LABEL);
     expect(out(await onPreToolUse(call(INPUT, { session_id: 's2' }), d)).permissionDecision).toBe('deny');
   });
 
@@ -359,7 +359,7 @@ describe('the session-off answer', () => {
     fs.writeFileSync(cfg, body);
     const { d } = setup({ downgradeConfig: () => loadDowngradeMode(cfg) });
     await onPreToolUse(call(), d);
-    answer(d, SESSION_OFF_LABEL);
+    await answer(d, SESSION_OFF_LABEL);
     expect(fs.readFileSync(cfg, 'utf8')).toBe(body);
     expect(loadDowngradeMode(cfg)).toBe('ask');
   });
@@ -404,7 +404,7 @@ describe('auto mode', () => {
 
   it('respects an earlier answer: a user who kept opus is not overridden', async () => {
     const { d } = setup(auto);
-    answer(d, 'No, keep opus');
+    await answer(d, 'No, keep opus');
     expect(await onPreToolUse(call(), d)).toBeNull();
   });
 
@@ -621,7 +621,7 @@ describe('once per call signature, ten minutes', () => {
   it('an answer expires after ten minutes too', async () => {
     const { d, advance } = setup();
     await onPreToolUse(call(), d);
-    answer(d, 'Yes, haiku');
+    await answer(d, 'Yes, haiku');
     advance(DOWNGRADE_TTL_MS - MIN);
     expect(await onPreToolUse(call(), d)).toBeNull();
     advance(2 * MIN);
@@ -630,7 +630,7 @@ describe('once per call signature, ten minutes', () => {
 
   it('with no pending question an answer covers that needed alias for the window', async () => {
     const { d, advance } = setup();
-    answer(d, 'No, keep opus');
+    await answer(d, 'No, keep opus');
     expect(await onPreToolUse(call(), d)).toBeNull();
     advance(DOWNGRADE_TTL_MS + 1);
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
@@ -765,7 +765,7 @@ describe('the elevation guard decides first', () => {
   it('an approved elevation is not asked a second question', async () => {
     const { d, logs, rated } = setup(sonnetSession);
     d.approvals!.deny('s1', 'opus', T0);
-    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+    await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
     expect(await onPreToolUse(call(), d)).toBeNull();
     expect(logs[0].elevation).toBe('approved');
     expect(logs[0].downgrade).toBeUndefined();
@@ -776,7 +776,7 @@ describe('the elevation guard decides first', () => {
     const { d, logs, rated } = setup(sonnetSession);
     const first = out(await onPreToolUse(call(), d));
     expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
-    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus (session sonnet)?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
+    await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus (session sonnet)?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
     expect(await onPreToolUse(call({ ...INPUT, model: 'sonnet' }), d)).toBeNull();
     expect(logs.map((l) => [l.elevation ?? null, l.downgrade ?? null])).toEqual([['denied', null], [null, 'answered']]);
     expect(rated).toHaveLength(0);
@@ -792,13 +792,13 @@ describe('the elevation guard decides first', () => {
 
   it('a Yes to the elevation question does not mark the downgrade answered', async () => {
     const { d, downgrades } = setup(sonnetSession);
-    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, once'), session_id: 's1' } as HookInput, d);
+    await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, once'), session_id: 's1' } as HookInput, d);
     expect(downgrades.states.size).toBe(0);
   });
 
   it('the No grants no elevation and its answer lasts the window only', async () => {
     const { d, approvals, advance } = setup(sonnetSession);
-    onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
+    await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
     expect(approvals.states.size).toBe(0);
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
     advance(DOWNGRADE_TTL_MS + 1000);
@@ -1037,36 +1037,36 @@ describe('ladder-agents', () => {
 });
 
 describe('the downgrade answer never stores free text', () => {
-  const stored = (label: string) => {
+  const stored = async (label: string) => {
     const { d, downgrades } = setup();
-    answer(d, label);
+    await answer(d, label);
     return downgrades.states.get('s1')!.entries;
   };
 
-  it('an Other answer is recorded as other, and its text is nowhere in the state', () => {
+  it('an Other answer is recorded as other, and its text is nowhere in the state', async () => {
     const text = 'refactor the secret billing parser and email it to bob@example.com';
-    const entries = stored(text);
+    const entries = await stored(text);
 
     expect(entries[0]).toMatchObject({ answered: true, chosen: 'other' });
     expect(JSON.stringify(entries)).not.toContain('billing');
     expect(JSON.stringify(entries)).not.toContain('example.com');
   });
 
-  it('a text that only starts like a prescribed label is still other', () => {
-    expect(stored('Yes, sonnet and also my password is hunter2')[0].chosen).toBe('other');
-    expect(stored('No, keep opus-secret-project')[0].chosen).toBe('other');
-    expect(stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5-private notes')[0].chosen).toBe('other');
+  it('a text that only starts like a prescribed label is still other', async () => {
+    expect((await stored('Yes, sonnet and also my password is hunter2'))[0].chosen).toBe('other');
+    expect((await stored('No, keep opus-secret-project'))[0].chosen).toBe('other');
+    expect((await stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5-private notes'))[0].chosen).toBe('other');
   });
 
-  it('the prescribed labels are kept, which one included', () => {
-    expect(stored('Yes, sonnet')[0].chosen).toBe('Yes, sonnet');
-    expect(stored('No, keep opus')[0].chosen).toBe('No, keep opus');
-    expect(stored('No, keep claude-opus-5-5')[0].chosen).toBe('No, keep claude-opus-5-5');
-    expect(stored('haiku')[0].chosen).toBe('haiku');
-    expect(stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5')[0].chosen).toBe('claude-sonnet-5 via ladder');
-    expect(stored('claude-sonnet-5 via jev:jev-ladder-claude-sonnet-5')[0].chosen).toBe('claude-sonnet-5 via ladder');
-    expect(stored('Yes, claude-sonnet-5 via jev-ladder-claude-sonnet-5')[0].chosen).toBe('Yes, claude-sonnet-5 via ladder');
-    expect(stored(SESSION_OFF_LABEL)[0].chosen).toBe('session off');
+  it('the prescribed labels are kept, which one included', async () => {
+    expect((await stored('Yes, sonnet'))[0].chosen).toBe('Yes, sonnet');
+    expect((await stored('No, keep opus'))[0].chosen).toBe('No, keep opus');
+    expect((await stored('No, keep claude-opus-5-5'))[0].chosen).toBe('No, keep claude-opus-5-5');
+    expect((await stored('haiku'))[0].chosen).toBe('haiku');
+    expect((await stored('claude-sonnet-5 via jev-ladder-claude-sonnet-5'))[0].chosen).toBe('claude-sonnet-5 via ladder');
+    expect((await stored('claude-sonnet-5 via jev:jev-ladder-claude-sonnet-5'))[0].chosen).toBe('claude-sonnet-5 via ladder');
+    expect((await stored('Yes, claude-sonnet-5 via jev-ladder-claude-sonnet-5'))[0].chosen).toBe('Yes, claude-sonnet-5 via ladder');
+    expect((await stored(SESSION_OFF_LABEL))[0].chosen).toBe('session off');
   });
 
   it('the cached rating holds tier probabilities only: no task text', async () => {

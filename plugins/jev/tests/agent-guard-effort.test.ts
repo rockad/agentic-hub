@@ -68,7 +68,7 @@ describe('call effort', () => {
   });
 
   it('under the opt-in clamp the effort dialog is not hidden by the clamp allow', async () => {
-    setup({ env: { JEV_ELEVATION: 'clamp' }, claimClamp: () => ({ first: true }) });
+    setup({ env: { JEV_ELEVATION: 'clamp' } });
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
 

@@ -227,7 +227,7 @@ describe('the model comes from the environment', () => {
   });
 
   it('the opt-in clamp cannot override a forced model, so it asks', async () => {
-    setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', JEV_ELEVATION: 'clamp' }, claimClamp: () => ({ first: true }) });
+    setup({ env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', JEV_ELEVATION: 'clamp' } });
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'haiku' }), r.d));
 
@@ -273,14 +273,15 @@ describe('the ladder pin and the choice flow stay as they were', () => {
     expect(r.logs.at(-1)).toMatchObject({ elevation: 'approved', model_source: 'definition' });
   });
 
-  it('the third attempt opens the dialog, as for an explicit model', async () => {
+  it('the third attempt is still a deny that says to stop retrying, as for an explicit model', async () => {
     setup();
     writeAgent('deep.md', def('opus'));
 
-    const decisions = [];
-    for (let i = 0; i < 3; i++) decisions.push(out(await onPreToolUse(call(DELEGATION), r.d)).permissionDecision);
+    const outs = [];
+    for (let i = 0; i < 3; i++) outs.push(out(await onPreToolUse(call(DELEGATION), r.d)));
 
-    expect(decisions).toEqual(['deny', 'deny', 'ask']);
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['deny', 'deny', 'deny']);
+    expect(outs.map((o) => String(o.permissionDecisionReason).includes('stop retrying'))).toEqual([false, false, true]);
   });
 
   it('a user instruction naming the model passes', async () => {

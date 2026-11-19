@@ -112,12 +112,49 @@ const EFFORT_LADDER: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max
  * is not guessed (null: no ask); `"lower"` and every other value pass here.
  */
 export function relativeEffortReason(effort: unknown, base: string | null | undefined, what: string): string | null {
+  const next = relativeEffortLevel(effort, base);
+  if (!next) return null;
+  return `${what}: effort "higher" is one step above ${JSON.stringify(base)}, which reaches ${next} and is above the interim effort threshold (xhigh and max ask; low, medium and high pass). The model ceiling does not bound effort, so this needs your approval.`;
+}
+
+/** The level a relative `"higher"` reaches when it is `xhigh` or `max`; null for anything that passes or cannot be checked. */
+export function relativeEffortLevel(effort: unknown, base: string | null | undefined): EffortLevel | null {
   if (effort !== 'higher' || typeof base !== 'string') return null;
   const at = EFFORT_LADDER.indexOf(base);
   if (at < 0) return null;
   const next = EFFORT_LADDER[Math.min(at + 1, EFFORT_LADDER.length - 1)];
-  if (!EFFORT_ASK.has(next)) return null;
-  return `${what}: effort "higher" is one step above ${JSON.stringify(base)}, which reaches ${next} and is above the interim effort threshold (xhigh and max ask; low, medium and high pass). The model ceiling does not bound effort, so this needs your approval.`;
+  return EFFORT_ASK.has(next) ? (next as EffortLevel) : null;
+}
+
+/** The two effort levels above the interim threshold, lowest first: an approval of `max` covers `xhigh`, never the other way round. */
+export type EffortLevel = 'xhigh' | 'max';
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['xhigh', 'max'];
+
+/** Does an approval (or an instruction) for `approved` cover a request at `requested`? */
+export function effortCovers(approved: unknown, requested: EffortLevel): boolean {
+  const have = EFFORT_LEVELS.indexOf(approved as EffortLevel);
+  return have >= 0 && have >= EFFORT_LEVELS.indexOf(requested);
+}
+
+/**
+ * The effort a delegation is held to, or null when it passes: the level (`xhigh` or `max`) and the interim reason. A literal
+ * level on the call (`low` ... `max`) is the call's own effort and overrides the definition's, so a retry at `high` clears a
+ * definition that says `max`; otherwise a literal `xhigh` or `max` on the call, then on its definition, then a relative
+ * `"higher"` from `relativeBase` (the definition's effort, else the session's), as before.
+ */
+export function agentEffortFinding(
+  callEffort: unknown,
+  definitionEffort: string | undefined,
+  definitionWhat: string,
+  relativeBase: string | null | undefined
+): { level: EffortLevel; reason: string } | null {
+  const viaCall = agentEffortReason(callEffort, 'Agent call');
+  if (viaCall) return { level: callEffort as EffortLevel, reason: viaCall };
+  if (typeof callEffort === 'string' && EFFORT_PASS.has(callEffort)) return null;
+  const viaDefinition = agentEffortReason(definitionEffort, definitionWhat);
+  if (viaDefinition) return { level: definitionEffort as EffortLevel, reason: viaDefinition };
+  const next = relativeEffortLevel(callEffort, relativeBase);
+  return next ? { level: next, reason: relativeEffortReason(callEffort, relativeBase, 'Agent call') as string } : null;
 }
 
 // ── Environment overrides of the subagent model ──

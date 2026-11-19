@@ -238,20 +238,44 @@ describe('2. a repeated elevating call in the same prompt is clamped the same wa
   });
 });
 
-describe('2b. a remapped session alias asks instead of clamping', () => {
+describe('2b. a remapped session alias is denied with guidance instead of clamping (never asked)', () => {
   it.each([
     ['sonnet', 'claude-sonnet-5', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
     ['haiku', 'claude-haiku-4', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
     ['opus', 'claude-opus-5-5', 'ANTHROPIC_DEFAULT_OPUS_MODEL']
-  ])('%s session with %s remapped: the first elevating call asks, never clamps', async (_alias, session, variable) => {
+  ])('%s session with %s remapped: the first elevating call is denied, never clamps, never asks', async (_alias, session, variable) => {
     const requested = session.includes('opus') ? 'fable' : 'opus';
-    const { d, logs } = setup({ readSessionModel: () => session, env: { [variable]: 'some-other-model-id' } });
+    const { d, logs } = setup({ readSessionModel: () => session, approvals: memoryApprovals(), env: { [variable]: 'some-other-model-id' } });
 
     const o = out(await onPreToolUse(call({ ...FULL_INPUT, model: requested }), d));
 
-    expect(o.permissionDecision).toBe('ask');
+    expect(o.permissionDecision).toBe('deny');
     expect(o.updatedInput).toBeUndefined();
-    expect(logs.at(-1)).toMatchObject({ elevation: 'asked', clamp_skipped: 'alias-remapped' });
+    expect(o.permissionDecisionReason).toContain(`session alias '${_alias}' is remapped by ${variable}, so Jev cannot clamp to it`);
+    expect(o.permissionDecisionReason).toContain('re-invoke with an explicit model at or below the session model');
+    expect(logs.at(-1)).toMatchObject({ decision: 'deny', elevation: 'denied', clamp_skipped: 'alias-remapped', elevation_attempt: 1 });
+  });
+
+  it('the re-invoke the deny asks for passes: an explicit model at or below the session model, or inherit', async () => {
+    const { d } = setup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-other-model-id' } });
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+
+    for (const model of ['sonnet', 'haiku', 'inherit']) expect(await onPreToolUse(call({ ...FULL_INPUT, model }), d)).toBeNull();
+  });
+
+  it('from the third attempt of the same delegation the deny adds the stop-retrying text', async () => {
+    const { d } = setup({ approvals: memoryApprovals(), env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-other-model-id' } });
+
+    const reasons = [out(await onPreToolUse(call(), d)), out(await onPreToolUse(call(), d)), out(await onPreToolUse(call(), d))].map((o) => o.permissionDecisionReason as string);
+
+    expect(reasons[1]).not.toContain('stop retrying');
+    expect(reasons[2]).toContain('attempt 3 for the same delegation: stop retrying');
+  });
+
+  it('dialog mode asks about every elevation, a remapped alias included', async () => {
+    const { d } = setup({ env: { JEV_ELEVATION: 'dialog', ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-other-model-id' } });
+
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('ask');
   });
 
   it('a remap of a different alias does not stop the clamp', async () => {

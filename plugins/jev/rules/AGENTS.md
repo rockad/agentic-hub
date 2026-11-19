@@ -56,6 +56,7 @@ This document governs System 1 decision-making, model tier governance, thinking 
   - If `jev_dispatch` recommends `pro`, prompt the user for explicit approval. If declined, execute on `flash` or cheaper.
 - **Thinking Effort**:
   - Match reasoning effort to task complexity. High thinking effort should be reserved for ambiguous architectural decisions, while routine transformations run with minimal or zero thinking overhead.
+  - Claude Code, mode `on`: an `Agent` call with effort `xhigh` or `max` is denied until the user approves it with the prescribed `AskUserQuestion` (marker `[jev-elevate-effort:<level>]`: Yes once, Yes for the next 5 minutes, Yes for this session, No run at high), or names that effort in the prompt. Outside `JEV_ELEVATION=dialog` Jev never uses a permission dialog for it, or for an unranked model, an unreadable agent definition or an unverifiable Workflow: those are denied with guidance.
 
 ## 5. Quality Gates (`jev_judge`)
 

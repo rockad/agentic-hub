@@ -1,4 +1,13 @@
-import { bumpAttempts, claimApproval, noteDenied, recordApproval, type ApprovalState } from '../claude/logic.ts';
+import {
+  bumpAttempts,
+  claimApproval,
+  claimEffortApproval,
+  noteDenied,
+  noteEffortDenied,
+  recordApproval,
+  recordEffortApproval,
+  type ApprovalState
+} from '../claude/logic.ts';
 import type { ApprovalStore } from '../claude/hook.ts';
 
 /**
@@ -24,6 +33,16 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       const { state, count } = bumpAttempts(get(s), promptKey, signature, nowMs, windowMs);
       states.set(s, state);
       return count;
+    },
+    recordEffort: (s, approval, config) => {
+      const next = recordEffortApproval(get(s), approval, approval.created_at, config);
+      if (next) states.set(s, next);
+    },
+    denyEffort: (s, level, nowMs) => void states.set(s, noteEffortDenied(get(s), level, nowMs)),
+    claimEffort: (s, level, nowMs) => {
+      const { state, approval } = claimEffortApproval(get(s), level, nowMs);
+      states.set(s, state);
+      return approval;
     }
   };
 }

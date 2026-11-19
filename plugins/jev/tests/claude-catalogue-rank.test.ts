@@ -201,8 +201,34 @@ describe('PreToolUse with a catalogue', () => {
   const call = (model: string): HookInput => ({ session_id: 's1', prompt_id: 'p1', tool_name: 'Agent', tool_input: { description: 'd', prompt: 'p', subagent_type: 'code-engineer', model } });
   const out = (o: Awaited<ReturnType<typeof onPreToolUse>>) => (o?.hookSpecificOutput ?? {}) as Record<string, any>;
 
-  it('an unknown model id opens the permission dialog when a catalogue is in use', async () => {
-    const { deps, logs } = base({ rankContext: () => ctx() });
+  it.each([['choice'], ['clamp']])('an unknown model id is denied with guidance (never asked) when a catalogue is in use (%s mode)', async (mode) => {
+    const { deps, logs } = base({ rankContext: () => ctx(), env: { JEV_ELEVATION: mode } });
+    const o = out(await onPreToolUse(call('claude-zephyr-1'), deps));
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain("Jev cannot rank 'claude-zephyr-1' (not in the catalogue, unknown family)");
+    expect(o.permissionDecisionReason).toContain('re-invoke with opus, sonnet or haiku, or omit model / inherit');
+    expect(logs[0]).toMatchObject({ decision: 'deny', elevation: 'denied' });
+  });
+
+  it('the re-invoke the unranked deny asks for passes: opus, sonnet, haiku at or below the session, or inherit; never an approval loop', async () => {
+    const { deps } = base({ rankContext: () => ctx() });
+    expect(out(await onPreToolUse(call('claude-zephyr-1'), deps)).permissionDecision).toBe('deny');
+
+    for (const model of ['sonnet', 'haiku', 'inherit']) expect(await onPreToolUse(call(model), deps)).toBeNull();
+  });
+
+  it('the third attempt of the same unranked delegation adds the stop-retrying text', async () => {
+    const { deps } = base({ rankContext: () => ctx() });
+
+    const reasons: string[] = [];
+    for (let i = 0; i < 3; i++) reasons.push(out(await onPreToolUse(call('claude-zephyr-1'), deps)).permissionDecisionReason);
+
+    expect(reasons[1]).not.toContain('stop retrying');
+    expect(reasons[2]).toContain('attempt 3 for the same delegation: stop retrying');
+  });
+
+  it('dialog mode keeps asking about an unknown model id', async () => {
+    const { deps, logs } = base({ rankContext: () => ctx(), env: { JEV_ELEVATION: 'dialog' } });
     const o = out(await onPreToolUse(call('claude-zephyr-1'), deps));
     expect(o.permissionDecision).toBe('ask');
     expect(o.permissionDecisionReason).toContain('does not know');

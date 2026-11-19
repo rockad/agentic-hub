@@ -16,7 +16,10 @@
  *                                      unseen), and from the third attempt of one delegation in a prompt the reason says to stop
  *                                      retrying. JEV_ELEVATION=dialog: asks (the 2.3.4 permission dialog), the only mode that
  *                                      asks, and it logs `auto_approve_warning` when the permission mode approves without a
- *                                      dialog. A model the user named passes (nothing else asks);
+ *                                      dialog. A model the user named passes. Choice and clamp never ask: an unranked model, a
+ *                                      remapped session alias, an unreadable definition and an effort above the interim threshold
+ *                                      are denied with guidance (the effort one with its own [jev-elevate-effort:<level>] question
+ *                                      and approvals), a forced subagent model (the user's environment) passes;
  *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): every delegation is rated on its own
  *                                      (its description and the start of its prompt go to the router, a tier probability per
  *                                      tier); when a cheaper catalogue step is enough and strictly cheaper by list price the call
@@ -28,8 +31,9 @@
  *                                      work when no dispatch call preceded it.
  *                                      A Workflow call: the agents a Workflow launches never reach this hook (verified on
  *                                      Claude Code 2.1.323), so the script is analysed instead (workflow-guard.ts): a
- *                                      literal model above the session model takes the same choice flow as an Agent call, and
- *                                      anything the analysis cannot prove opens the permission dialog; no downgrade rating
+ *                                      literal model above the session model takes the same choice flow as an Agent call (in
+ *                                      clamp too: a script cannot be clamped), anything the analysis cannot prove is denied with
+ *                                      what to fix, and only dialog mode opens the permission dialog; no downgrade rating
  *   post-tool-use (matcher "Workflow") drift recorder: re-hashes the script files the guard analysed and logs
  *                                      `workflow_changed` when one differs (workflow-pin.ts); no prompt
  *
@@ -88,11 +92,20 @@ import {
   elevationAskReason,
   elevationChoiceReason,
   elevationMode,
+  elevationRemappedDenyReason,
+  elevationUnrankedDenyReason,
+  effortChoiceReason,
+  claimEffortApproval,
+  instructedEffort,
   noteDenied,
+  noteEffortDenied,
   normalizeApprovalState,
+  parseEffortAnswer,
   parseElevationAnswer,
   parseElevationDecline,
   recordApproval,
+  recordEffortApproval,
+  unreadableDefinitionDenyReason,
   isAutoApprovePermissionMode,
   envNotice,
   hasRecentDispatch,
@@ -116,13 +129,14 @@ import {
   type AgentDecision,
   type Approval,
   type ApprovalState,
+  type EffortApproval,
   type Dispatch,
   type ElevationMode,
   type RankContext,
   type TurnState,
   type UserIntent
 } from './logic.js';
-import { agentEffortReason, relativeEffortReason, resolveAgentModel, type ResolvedAgentModel } from './agent-definitions.js';
+import { agentEffortFinding, resolveAgentModel, type EffortLevel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
   answerDowngrade,
@@ -156,7 +170,7 @@ import { taskFingerprint } from '../src/core/telemetry.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { createSessionModelLearner, isAuthoritative, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 import { clip } from './agent-definitions.js';
-import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, type WorkflowResolver } from './workflow-guard.js';
+import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, workflowUnverifiableReason, type WorkflowResolver } from './workflow-guard.js';
 import { pruneWorkflowPins, recordWorkflowPostToolUse, writeWorkflowPin, type PostToolUseResult } from './workflow-pin.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
@@ -229,6 +243,10 @@ export type ApprovalStore = {
    * id: a counter quiet for longer than that starts again.
    */
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
+  /** The effort question (`[jev-elevate-effort:<level>]`, xhigh or max), in the same state file and under the same lock. Absent: no effort approval is ever found, so the delegation is denied every time. */
+  recordEffort?: (sessionId: string, approval: EffortApproval, config?: ModeChangeConfigLike | null) => void;
+  denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => void;
+  claimEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => EffortApproval | null;
 };
 
 export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
@@ -531,19 +549,37 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let clampSkipped: string | null = null;
   let approvalScope: string | null = null;
   let attemptCount: number | null = null;
-  // A forced model (CLAUDE_CODE_SUBAGENT_MODEL_FORCE) replaces whatever the clamp would set on the call: nothing to clamp, so it asks.
-  const elevModeEnv = elevationMode(deps.env ?? process.env);
-  const elevMode: ElevationMode = elevModeEnv === 'clamp' && resolved?.source === 'env-force' ? 'dialog' : elevModeEnv;
+  const elevMode: ElevationMode = elevationMode(deps.env ?? process.env);
   // The attempt counter's key: the host's prompt id; without one, the stored turn (a hash of the prompt text, so two
   // prompts with the same text share it) plus the time that turn was stored, and without a turn the literal 'none'.
   // Only those two fallbacks (`windowMs` set) also expire after a quiet window.
   const hostPromptId = typeof input.prompt_id === 'string' ? safeSessionId(input.prompt_id) : null;
   const promptKeyOf = (): string => hostPromptId || (state?.turn ? `${state.turn}@${state.at ?? ''}` : 'none');
   const attemptWindowMs = hostPromptId ? undefined : ATTEMPT_FALLBACK_WINDOW_MS;
-  if (elevation?.kind === 'elevating' && elevation.unranked) {
-    // A model nothing in Jev can rank (not in the catalogue, not a known family): the choice flow's marker cannot name it, so the dialog asks.
-    verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
-    elevationState = 'asked';
+  // One denied attempt of this delegation for a gate that is not the model choice (unranked, remapped, unreadable, effort),
+  // counted under its own signature so the stop-retrying text still follows a call that ignores the guidance.
+  const denyAttempt = (kind: string): number | null => {
+    if (!sessionId) return null;
+    const count = safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), `${callSignature(call as Record<string, unknown>)}:${kind}`, (deps.now ?? Date.now)(), attemptWindowMs));
+    return typeof count === 'number' ? count : null;
+  };
+  let instructedBy: string | null = null;
+  if (elevation?.kind === 'elevating' && resolved?.source === 'env-force' && elevMode !== 'dialog') {
+    // CLAUDE_CODE_SUBAGENT_MODEL_FORCE: the user's own environment picks the model and replaces the call's own, so there is
+    // nothing to clamp and nothing to ask: it is their instruction, and the call passes (dialog mode still asks, below).
+    elevationState = 'instructed';
+    instructedBy = 'env-force';
+  } else if (elevation?.kind === 'elevating' && elevation.unranked) {
+    if (elevMode === 'dialog') {
+      // A model nothing in Jev can rank: the choice flow's marker cannot name it, so only the dialog mode asks.
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+      elevationState = 'asked';
+    } else {
+      // Choice and clamp never ask (a harness that auto-approves would approve the dialog unseen): the call is denied with what to change.
+      attemptCount = denyAttempt('unranked');
+      verdict = { decision: 'deny', reason: elevationUnrankedDenyReason(elevation, attemptCount) };
+      elevationState = 'denied';
+    }
   } else if (elevation?.kind === 'elevating' && elevMode === 'choice') {
     // Choice flow (default): a covering approval lets the call through; otherwise the call is denied with the
     // prescribed question (a deny does not stop the turn). It never asks: a harness that auto-approves would approve a
@@ -569,10 +605,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating') {
     if (aliasRemapped(elevation.sessionAlias, deps.env)) {
-      // The alias the clamp would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the session model.
+      // The alias the clamp would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the session model,
+      // so there is nothing to clamp to. Never a dialog: the call is denied with what to change.
       clampSkipped = 'alias-remapped';
-      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
-      elevationState = 'asked';
+      attemptCount = denyAttempt('remapped');
+      verdict = { decision: 'deny', reason: elevationRemappedDenyReason(elevation, attemptCount) };
+      elevationState = 'denied';
     } else {
       // Clamp: every elevating call, a repeat in the same prompt too, runs on the session model (allow + updatedInput).
       // It never asks: a harness that auto-approves would approve a dialog unseen and run the stronger model.
@@ -587,27 +625,57 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   }
 
   // A definition that decides the model but cannot be established (unreadable front matter, two files claiming the
-  // name): nothing to rank, so the permission dialog asks, every time (a deny here could only loop).
+  // name): nothing to rank. Choice and clamp deny with "re-invoke with an explicit model on the call" (an explicit model
+  // does not read the definition, so the retry cannot loop); only dialog mode asks.
   let logReason: string | null = null;
   if (resolved?.unreadable && sessionModel) {
-    verdict = { decision: 'ask', reason: unreadableDefinitionReason(call.subagent_type, resolved.unreadable, sessionModel) };
-    elevationState = 'asked';
-    logReason = 'definition unreadable or ambiguous'; // the reader's text quotes the definition: it is shown to the user, never logged
+    if (elevMode === 'dialog') {
+      verdict = { decision: 'ask', reason: unreadableDefinitionReason(call.subagent_type, resolved.unreadable, sessionModel) };
+      elevationState = 'asked';
+    } else {
+      attemptCount = denyAttempt('unreadable');
+      verdict = { decision: 'deny', reason: unreadableDefinitionDenyReason(call.subagent_type, sessionModel, attemptCount) };
+      elevationState = 'denied';
+    }
+    logReason = 'definition unreadable or ambiguous'; // the reader's text quotes the definition: it is shown to the user (dialog), never logged
   }
 
-  // INTERIM effort rule (Agent/Task only): a literal xhigh or max on the call, or on its definition, opens the dialog.
-  // Dialog only, never the choice flow, never a deny; a model verdict above keeps priority (the ask follows on the retry).
+  // INTERIM effort rule (Agent/Task only): a literal xhigh or max on the call, or on its definition, or a "higher" that
+  // reaches one. Dialog mode opens the dialog (never the choice flow). Choice and clamp take the effort choice flow: a user
+  // prompt that names the effort passes as instructed, a covering approval passes, otherwise the call is denied with the
+  // prescribed `[jev-elevate-effort:<level>]` question (never an ask). A model verdict above keeps priority (the effort
+  // follows on the retry).
   let effortAsk = false;
+  let effortLog: Record<string, unknown> = {};
   if (resolved && !verdict) {
     const definitionWhat = `agent definition "${safeTypeName(call.subagent_type)}"`;
     // A relative effort ("higher") is one step from the agent's normal effort: its definition's, else the session's.
     const relativeBase = resolved.definitionEffort !== undefined ? resolved.definitionEffort : readEffort(input.effort);
-    const reason = agentEffortReason(call.effort, 'Agent call') ?? agentEffortReason(resolved.definitionEffort, definitionWhat) ?? relativeEffortReason(call.effort, relativeBase, 'Agent call');
-    if (reason) {
-      verdict = { decision: 'ask', reason: `[jev] ${reason} Yes runs it as it is. No cancels the call and stops the turn.` };
-      elevationState = 'asked';
-      effortAsk = true;
-      clamp = null; // the dialog is stricter than a clamp: the clamp's allow must not hide it
+    const finding = agentEffortFinding(call.effort, resolved.definitionEffort, definitionWhat, relativeBase);
+    if (finding) {
+      const level = finding.level;
+      if (elevMode === 'dialog') {
+        verdict = { decision: 'ask', reason: `[jev] ${finding.reason} Yes runs it as it is. No cancels the call and stops the turn.` };
+        elevationState = 'asked';
+        effortAsk = true;
+        clamp = null; // the dialog is stricter than a clamp: the clamp's allow must not hide it
+      } else if (instructedEffort(intent, level)) {
+        effortLog = { effort_level: level, effort_decision: 'instructed' };
+      } else {
+        const nowMs = (deps.now ?? Date.now)();
+        const hit = sessionId ? (safely(() => deps.approvals?.claimEffort?.(sessionId, level, nowMs)) ?? null) : null;
+        if (hit) {
+          effortLog = { effort_level: level, effort_decision: 'approved', effort_approval_scope: hit.scope };
+        } else {
+          attemptCount = denyAttempt('effort');
+          verdict = { decision: 'deny', reason: effortChoiceReason(level, finding.reason, call.subagent_type, attemptCount) };
+          elevationState = 'denied';
+          effortLog = { effort_level: level, effort_decision: 'denied' };
+          clamp = null; // a deny cannot share an output with the clamp's allow
+          // The question is now prescribed for this level: only an answer after this can record an approval.
+          if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs));
+        }
+      }
     }
   }
 
@@ -690,6 +758,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     session_model_source: sessionModelSource,
     ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
     ...(effortAsk ? { effort_ask: true } : {}),
+    ...effortLog,
+    ...(instructedBy ? { instructed_by: instructedBy, forced_model: clip(resolved?.model ?? '') } : {}),
     reason:
       logReason ??
       verdict?.reason ??
@@ -742,7 +812,7 @@ function agentModelNote(source: ResolvedAgentModel['source'], subagentType: unkn
   }
 }
 
-/** The dialog text for a definition Jev cannot read: it cannot tell what model the agent runs on. */
+/** The dialog-mode text for a definition Jev cannot read: it cannot tell what model the agent runs on (choice and clamp deny instead). */
 function unreadableDefinitionReason(subagentType: unknown, why: string, sessionModel: string): string {
   const what = why.length > 300 ? `${why.slice(0, 300)}…` : why;
   return (
@@ -773,12 +843,14 @@ type WorkflowEvaluation = {
  * a script the analysis cannot parse or understand is not an internal error: it asks.
  *
  * - nothing found: pass (`allow`; `passed-instructed` when a model above the session model passed because the prompt named it);
+ * - `JEV_ELEVATION=dialog`: anything found (an elevation or not) opens the permission dialog (`asked`), listing every site;
  * - anything the analysis could not establish (a fail-closed shape, an unrankable model, an effort above the interim
- *   threshold, a missing definition, a parse error): the permission dialog (`asked`), listing every site;
- * - only elevations: with `JEV_ELEVATION=choice` (default) the same flow as an Agent call, for the strongest model
- *   named: a covering approval passes (`allow`), otherwise a deny that prescribes the `[jev-elevate:<model>]` question
- *   (`denied`; never asks, and from the third attempt of the same script in a prompt the reason says to stop retrying). `dialog` and
- *   `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp.
+ *   threshold, a missing definition, a parse error) in choice and clamp: a deny with what to fix (`denied-unverifiable`: the
+ *   sites by position and reason, no script text), never an ask;
+ * - only elevations, in choice and clamp alike (a script cannot be run on another model, so there is nothing to clamp): the same
+ *   flow as an Agent call, for the strongest model named: a covering approval passes (`allow`), otherwise a deny that
+ *   prescribes the `[jev-elevate:<model>]` question (`denied`; never asks, and from the third attempt of the same script in a
+ *   prompt the reason says to stop retrying).
  */
 function evaluateWorkflowCall(a: {
   input: HookInput;
@@ -818,8 +890,18 @@ function evaluateWorkflowCall(a: {
       pin('ask');
       return finish('asked', { verdict: { decision: 'ask', reason: d.message }, elevationState: 'asked' }, { workflow_reasons: d.sites.length });
     };
+    // Dialog mode keeps its dialog for everything the guard found. Choice and clamp never ask (a harness that auto-approves
+    // would approve it unseen): a script cannot be clamped, so an elevation takes the choice flow in both, and anything the
+    // analysis cannot prove is denied with what to fix.
+    if (a.elevMode === 'dialog') return dialog();
     const top = d.highestElevation;
-    if (d.unverifiable.length > 0 || !top || a.elevMode !== 'choice') return dialog();
+    if (d.unverifiable.length > 0 || !top) {
+      return finish(
+        'denied-unverifiable',
+        { verdict: { decision: 'deny', reason: workflowUnverifiableReason(d, a.sessionModel) }, elevationState: 'denied' },
+        { workflow_reasons: d.sites.length }
+      );
+    }
     const nowMs = (deps.now ?? Date.now)();
     const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, top.requested, nowMs, a.rankCtx)) ?? null) : null;
     if (hit) {
@@ -1013,6 +1095,9 @@ export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'read
     if (deps.approvals) {
       const approval = parseElevationAnswer(input, nowMs);
       if (approval) deps.approvals.record(sessionId, approval, config);
+      // The effort question ([jev-elevate-effort:<level>]) is recorded the same way, in the same state.
+      const effort = parseEffortAnswer(input, nowMs);
+      if (effort) deps.approvals.recordEffort?.(sessionId, effort, config);
     }
   } catch {
     // best-effort: a failed record only means the assistant is denied again and asks again
@@ -1215,6 +1300,20 @@ const approvalStore: ApprovalStore = {
       const { state, count } = bumpAttempts(readApprovalState(sessionId), promptKey, signature, nowMs, windowMs);
       writeApprovalState(sessionId, state);
       return count;
+    }),
+  recordEffort: (sessionId, approval, config) =>
+    withApprovalsLock(sessionId, () => {
+      const next = recordEffortApproval(readApprovalState(sessionId), approval, approval.created_at, config);
+      if (next) writeApprovalState(sessionId, next);
+    }),
+  denyEffort: (sessionId, level, nowMs) =>
+    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteEffortDenied(readApprovalState(sessionId), level, nowMs))),
+  claimEffort: (sessionId, level, nowMs) =>
+    withApprovalsLock(sessionId, () => {
+      const before = readApprovalState(sessionId);
+      const { state, approval } = claimEffortApproval(before, level, nowMs);
+      if (approval?.scope === 'once' || (state.effortApprovals?.length ?? 0) !== (before.effortApprovals?.length ?? 0)) writeApprovalState(sessionId, state);
+      return approval;
     })
 };
 

@@ -1179,6 +1179,22 @@ export function evaluateWorkflowInput(
   return finish(sites);
 }
 
+/**
+ * The deny reason for a Workflow the analysis cannot clear (choice and clamp modes; only dialog mode asks): the sites it could not
+ * verify, by script position and reason, and what to change so the next call can be analysed. It carries the guard's own
+ * reasons and counts, never script text.
+ */
+export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | 'unverifiable'>, sessionModel: string | null): string {
+  const shown = d.sites.slice(0, MAX_LISTED).map((s) => `- ${s.file}:${s.line}:${s.col} ${s.reason}`);
+  if (d.sites.length > MAX_LISTED) shown.push(`- and ${d.sites.length - MAX_LISTED} more`);
+  return (
+    `[jev] This Workflow cannot be cleared against the session model ${sessionModel ? `"${sessionModel}"` : '(unknown)'}: ` +
+    `${d.sites.length} site(s) Jev cannot verify (${d.unverifiable.length} unverifiable):\n${shown.join('\n')}\n` +
+    'Change the Workflow so every agent() call names a literal model at or below the session model (or inherits it) and a literal effort of low, medium or high ' +
+    '(no variables, spreads or computed values, a script and agent definitions Jev can read), then call it again.'
+  );
+}
+
 /** A stable signature of a workflow call for the choice flow's attempt counter: the hashes of the analysed texts, never the text. */
 export function workflowSignature(scripts: readonly ScriptFact[]): string {
   const h = crypto.createHash('sha1');

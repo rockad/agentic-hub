@@ -7,8 +7,8 @@
  * - `off`:       nothing runs, nothing is written.
  * - `on-demand`: the MCP tools are available and telemetry rows are written. No decisions (no deny, ask, allow or
  *                overwrite, no approvals read or recorded, no attempt counted), no routing advice (no router call at
- *                prompt time, no directive, no tier advice). A short informational notice is injected only when a
- *                quota pool is low or exhausted.
+ *                prompt time, no directive, no tier advice), no memory context (no Recall call, no memory block). A
+ *                short informational notice is injected only when a quota pool is low or exhausted.
  * - `on`:        everything.
  */
 import type { JevMode } from './config.js';
@@ -22,6 +22,12 @@ export interface ModeBehaviour {
   decisions: boolean;
   /** Prompt-time routing: the router call, the directive and any tier advice. */
   routingAdvice: boolean;
+  /**
+   * The cross-harness memory block (`[CROSS-HARNESS MEMORY ...]`) is injected into the prompt, which costs a Recall call
+   * (up to two 800 ms reads) per prompt. It is context for the advisor, so only mode `on`; `on-demand` makes no Recall
+   * call and injects no block, in every harness.
+   */
+  memoryContext: boolean;
   /** Telemetry rows (prompt rows and `agent_call` rows) are written. */
   telemetry: boolean;
   /**
@@ -31,9 +37,9 @@ export interface ModeBehaviour {
   quotaNotice: QuotaNoticeMode;
 }
 
-const OFF: ModeBehaviour = { tools: false, decisions: false, routingAdvice: false, telemetry: false, quotaNotice: 'none' };
-const ON_DEMAND: ModeBehaviour = { tools: true, decisions: false, routingAdvice: false, telemetry: true, quotaNotice: 'low-only' };
-const ON: ModeBehaviour = { tools: true, decisions: true, routingAdvice: true, telemetry: true, quotaNotice: 'always' };
+const OFF: ModeBehaviour = { tools: false, decisions: false, routingAdvice: false, memoryContext: false, telemetry: false, quotaNotice: 'none' };
+const ON_DEMAND: ModeBehaviour = { tools: true, decisions: false, routingAdvice: false, memoryContext: false, telemetry: true, quotaNotice: 'low-only' };
+const ON: ModeBehaviour = { tools: true, decisions: true, routingAdvice: true, memoryContext: true, telemetry: true, quotaNotice: 'always' };
 
 /** The behaviour of a mode. An unknown value is treated as `off` (nothing runs). */
 export function modeBehaviour(mode: JevMode | string | null | undefined): ModeBehaviour {

@@ -177,7 +177,10 @@ toggle_jev() {
 
   mkdir -p "$(dirname "$jcfg")"
   [ -f "$jcfg" ] || echo '{}' > "$jcfg"
-  if ! jq --arg m "$mode" '.defaults.mode = $m | if .harnesses.antigravity then .harnesses.antigravity.mode = $m else . end' "$jcfg" > "$tmp" 2>/dev/null; then
+  # Every mode change is stamped (modeChangedAt, ISO UTC): a Jev denial issued before it is never approved by a later answer.
+  local stamp
+  stamp=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  if ! jq --arg m "$mode" --arg t "$stamp" '.defaults.mode = $m | .defaults.modeChangedAt = $t | if .harnesses.antigravity then .harnesses.antigravity.mode = $m | .harnesses.antigravity.modeChangedAt = $t else . end' "$jcfg" > "$tmp" 2>/dev/null; then
     rm -f "$tmp"
     echo -e "\033[31m✘ $jcfg is not valid JSON, jev mode unchanged\033[0m" >&2
     return 1

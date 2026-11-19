@@ -15,6 +15,7 @@ import {
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
+import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
@@ -55,8 +56,8 @@ export type AntigravityHookDecision = {
   clampedTo?: string;
   /** `true` on a dialog-mode `ask` while Antigravity auto-approve is detected: the dialog is approved without being shown. Informational only. */
   autoApproveWarning?: true;
-  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. */
-  pullFallback?: true | 'record_failed' | 'claim_lost';
+  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. `'mode_changed'`: the pending denial is older than the last mode change, so no answer was read and the call was denied again with a fresh question. */
+  pullFallback?: true | 'record_failed' | 'claim_lost' | 'mode_changed';
 };
 
 export type AntigravityLogicDeps = {
@@ -65,6 +66,11 @@ export type AntigravityLogicDeps = {
   elevationMode?: 'choice' | 'dialog' | 'clamp';
   quotaView?: QuotaView;
   mode?: JevMode;
+  /**
+   * The Jev config (for the `modeChangedAt` stamp). A pending denial older than the last mode change is never approved from
+   * an answer (see `denialPredatesModeChange`). Absent, or with no stamp: no restriction.
+   */
+  config?: ModeChangeConfigLike;
   now?: () => number;
 };
 
@@ -677,6 +683,7 @@ type ChoiceElevationContext = {
   transcriptPath: string | undefined;
   promptHash: string;
   signature: string;
+  config?: ModeChangeConfigLike;
 };
 
 /**
@@ -688,10 +695,14 @@ type ChoiceElevationContext = {
 function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
   const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-  let pullFallback: 'record_failed' | 'claim_lost' | undefined;
+  let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
   if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
     const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
-    if (typeof deniedAtMs === 'number') {
+    if (typeof deniedAtMs === 'number' && denialPredatesModeChange(deniedAtMs, ctx.config, 'antigravity')) {
+      // The mode changed after this denial (on, then on-demand or off, then on again): an answer to it may have been
+      // given where nothing is recorded, so it is not read. The denial below is issued afresh, with a fresh question.
+      pullFallback = 'mode_changed';
+    } else if (typeof deniedAtMs === 'number') {
       // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
       let answerStepIdx: number | null = null;
       let answerQuestionIdx: number | null = null;
@@ -938,7 +949,8 @@ export function evaluateAntigravitySubagentCall(
     nowMs,
     transcriptPath: input.transcriptPath,
     promptHash,
-    signature
+    signature,
+    config: deps.config
   });
 }
 

@@ -14,6 +14,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { onPostToolUse, onPreToolUse, type DowngradeStore, type HookDeps, type HookInput } from '../claude/hook.ts';
 import { isAutoApprovePermissionMode, type Dispatch } from '../claude/logic.ts';
+import { answerDowngrade, claimDowngrade } from '../claude/downgrade.ts';
+import { voidStalePending } from '../src/core/downgrade-state.ts';
 import { memoryApprovals } from './elevation-helpers.ts';
 
 const SAMPLE = JSON.parse(fs.readFileSync(path.join(import.meta.dir, 'fixtures', 'posttooluse-askuserquestion.json'), 'utf8'));
@@ -223,6 +225,30 @@ describe('the real hook process by mode', () => {
     expect(approvalsOf('sx')).toEqual([]);
   });
 
+  it('a denial, then on-demand and back in on (the mode change is stamped), then the answer: no approval; the fresh question counts', () => {
+    run('session-start', { session_id: 'sx', model: 'claude-sonnet-5' });
+    expect(decision(run('pre-tool-use', agent()))).toBe('deny');
+
+    Bun.sleepSync(25);
+    fs.writeFileSync(configFile(), JSON.stringify({ defaults: { mode: 'on', modeChangedAt: new Date().toISOString() } }));
+    Bun.sleepSync(25);
+    run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
+    expect(approvalsOf('sx')).toEqual([]);
+
+    expect(decision(run('pre-tool-use', agent()))).toBe('deny'); // asked again with a fresh question
+    run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
+    expect(approvalsOf('sx')).toHaveLength(1);
+  });
+
+  it('control: with no mode change the late answer approves as before', () => {
+    run('session-start', { session_id: 'sx', model: 'claude-sonnet-5' });
+    expect(decision(run('pre-tool-use', agent()))).toBe('deny');
+
+    run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
+
+    expect(approvalsOf('sx')).toHaveLength(1);
+  });
+
   it('on-demand keeps the session model record (telemetry needs it) and records no approval', () => {
     setMode('on-demand');
 
@@ -273,5 +299,110 @@ describe('the real hook process by mode', () => {
     }
 
     expect(snapshot(home)).toEqual(before);
+  });
+});
+
+describe('a mode change voids a pending denial (Claude Code, unit)', () => {
+  const T0 = 1_800_000_000_000;
+  const stampAt = (ms: number) => ({ defaults: { modeChangedAt: new Date(ms).toISOString() } });
+
+  function clocked(config: { value: Record<string, unknown> }) {
+    const clock = { t: T0 };
+    const s = setup({ value: 'on' }, { now: () => clock.t, readConfig: () => config.value as any });
+    return { ...s, clock };
+  }
+
+  it('deny in on, a mode change stamped after it, a "Yes, for this session" answer, back in on: no approval, denied again with a fresh question', async () => {
+    const config = { value: {} as Record<string, unknown> };
+    const { d, approvals, clock } = clocked(config);
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny'); // the denial is on record at T0
+
+    config.value = stampAt(T0 + 500); // on -> on-demand -> on
+    clock.t = T0 + 1000;
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+    expect(approvals.states.get('s1')?.approvals ?? []).toEqual([]);
+
+    clock.t = T0 + 2000;
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny'); // asked again, as for a first attempt
+    expect(approvals.states.get('s1')?.denied?.opus).toBe(T0 + 2000);
+
+    // The fresh question's own answer counts.
+    clock.t = T0 + 3000;
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+    expect(approvals.states.get('s1')?.approvals).toHaveLength(1);
+  });
+
+  it('control: no mode change since the denial, the answer still approves exactly as before', async () => {
+    const config = { value: stampAt(T0 - 500) }; // the last change is older than the denial
+    const { d, approvals, clock } = clocked(config);
+    await onPreToolUse(call(), d);
+
+    clock.t = T0 + 1000;
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+
+    expect(approvals.states.get('s1')?.approvals).toHaveLength(1);
+  });
+
+  it('control: a config with no stamp puts no restriction on the answer', async () => {
+    const config = { value: { defaults: { mode: 'on' } } as Record<string, unknown> };
+    const { d, approvals, clock } = clocked(config);
+    await onPreToolUse(call(), d);
+
+    clock.t = T0 + 1000;
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, once'), session_id: 's1' } as HookInput, d);
+
+    expect(approvals.states.get('s1')?.approvals).toHaveLength(1);
+  });
+
+  it('a change made for another harness does not void a Claude Code denial', async () => {
+    const config = { value: { harnesses: { antigravity: { modeChangedAt: new Date(T0 + 500).toISOString() } } } as Record<string, unknown> };
+    const { d, approvals, clock } = clocked(config);
+    await onPreToolUse(call(), d);
+
+    clock.t = T0 + 1000;
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, once'), session_id: 's1' } as HookInput, d);
+
+    expect(approvals.states.get('s1')?.approvals).toHaveLength(1);
+  });
+
+  it('the downgrade recorder is handed the stale test: a question asked before the change does not count', async () => {
+    const config = { value: stampAt(T0 + 500) };
+    const { d, answers, clock } = clocked(config);
+    clock.t = T0 + 1000;
+
+    await onPostToolUse({ ...answered(DOWNGRADE_Q, 'Yes, haiku'), session_id: 's1' } as HookInput, d);
+
+    expect(answers).toHaveLength(1);
+    const stale = answers[0][4] as (askedAt: number) => boolean;
+    expect([stale(T0), stale(T0 + 600)]).toEqual([true, false]);
+  });
+
+  it('answerDowngrade: an answer to a question asked before the change records nothing; the delegation is asked afresh', () => {
+    const asked = claimDowngrade({ entries: [] }, 'sig-a', 'haiku', T0, true).state;
+    const before = (t: number) => t < T0 + 500;
+
+    const voided = answerDowngrade(asked, 'haiku', 'Yes, haiku', T0 + 1000, before);
+    expect(voided.entries).toEqual([]); // the stale question is gone and nothing was recorded for the answer
+    expect(claimDowngrade(voided, 'sig-a', 'haiku', T0 + 1000, true).result).toBe('first');
+
+    // Control: with no stamp the same answer closes the question.
+    const closed = answerDowngrade(asked, 'haiku', 'Yes, haiku', T0 + 1000);
+    expect(closed.entries.map((e) => e.answered)).toEqual([true]);
+  });
+
+  it('voidStalePending drops only the unanswered questions the test rejects', () => {
+    const state = {
+      entries: [
+        { kind: 'downgrade' as const, from: 'haiku', answered: false, signature: 'old', asked_at: T0, expires_at: T0 + 600_000 },
+        { kind: 'downgrade' as const, from: 'haiku', answered: false, signature: 'new', asked_at: T0 + 900, expires_at: T0 + 600_000 },
+        { kind: 'downgrade' as const, from: 'haiku', answered: true, signature: 'done', asked_at: T0, chosen: 'x', expires_at: T0 + 600_000 }
+      ]
+    };
+
+    const { state: next, voided } = voidStalePending(state, (t) => t < T0 + 500);
+
+    expect(voided).toBe(1);
+    expect(next.entries.map((e) => e.signature)).toEqual(['new', 'done']);
+    expect(voidStalePending(next, (t) => t < T0 + 500).voided).toBe(0);
   });
 });

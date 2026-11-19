@@ -39,6 +39,8 @@ export interface WriteGuardConfig {
 
 export interface HarnessConfig {
   mode: JevMode;
+  /** ISO time of the last mode change made for this harness only (see `src/core/mode-change.ts`). */
+  modeChangedAt?: string;
   models?: Partial<HarnessModelMap>;
   freePool?: string[];
   routing?: HarnessRoutingConfig;
@@ -63,6 +65,8 @@ export interface JevCacheConfig {
 
 export interface JevConfigDefaults {
   mode: JevMode;
+  /** ISO time of the last mode change made for every harness (stamped by the mode writers; see `src/core/mode-change.ts`). */
+  modeChangedAt?: string;
   requireUpgradeApproval?: boolean;
   swap?: boolean;
   availableSubagents?: string[];
@@ -597,21 +601,26 @@ export async function writeModeState(mode: JevMode, harness?: string): Promise<s
   if (!cfg.harnesses) cfg.harnesses = {};
   if (!cfg.defaults) cfg.defaults = {};
 
+  // Every mode change is stamped (`modeChangedAt`): a denial issued before it can no longer be approved by an answer
+  // (see src/core/mode-change.ts). The stamp is the instant the function returns as `updatedAt`.
+  const updatedAt = new Date().toISOString();
   if (harness) {
     if (!cfg.harnesses[harness]) cfg.harnesses[harness] = {};
     cfg.harnesses[harness].mode = mode;
+    cfg.harnesses[harness].modeChangedAt = updatedAt;
   } else {
     cfg.defaults.mode = mode;
+    cfg.defaults.modeChangedAt = updatedAt;
     if (cfg.harnesses && typeof cfg.harnesses === 'object') {
       for (const h of Object.keys(cfg.harnesses)) {
         if (cfg.harnesses[h] && typeof cfg.harnesses[h] === 'object') {
           cfg.harnesses[h].mode = mode;
+          cfg.harnesses[h].modeChangedAt = updatedAt;
         }
       }
     }
   }
 
-  const updatedAt = new Date().toISOString();
   await fs.writeFile(configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   clearConfigCacheForTesting();
   return updatedAt;

@@ -19,3 +19,4 @@ export * from './private-fs.js';
 export * from './claude-session.js';
 export * from './mode-policy.js';
 export * from './elevation-text.js';
+export * from './mode-change.js';

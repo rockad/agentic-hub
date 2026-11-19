@@ -18,6 +18,8 @@ import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
+import { loadJevConfigSync } from '../src/core/config.js';
+import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
@@ -184,6 +186,8 @@ async function main() {
     if (mode === 'off') {
       passThrough(event);
     }
+    // The config carries the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved.
+    const jevConfig = loadJevConfigSync();
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
@@ -230,7 +234,7 @@ async function main() {
         let rowFound = false;
         let answerStepRecorded = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
-        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
+        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'mode_changed' | 'no_session' | 'error' = 'error';
 
         // A downgrade question (`[jev-downgrade:flash_lite:<sig8>]` or the plain marker, text starts with the marker) is
         // recorded by its own branch, EVERY such question of the call (each answer line belongs to its own delegation).
@@ -238,6 +242,14 @@ async function main() {
         const downgradeQuestions = findDowngradeQuestions(input.toolCall?.args?.questions);
         const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
         if (downgradeQuestions.length > 0 && !carriesElevation) {
+          // A question asked before the last mode change is dropped first: an answer to it records nothing.
+          if (conversationId && modeChangedAtMs(jevConfig, 'antigravity') !== null) {
+            try {
+              downgrades.voidStale?.(conversationId, (askedAt) => denialPredatesModeChange(askedAt, jevConfig, 'antigravity'));
+            } catch {
+              // fail-open: the answer is then matched as before
+            }
+          }
           let dRow = false;
           let dStepRecorded = false;
           let dChoice: 'yes' | 'keep' | 'off' | null = null;
@@ -371,12 +383,19 @@ async function main() {
               const consumedKeys: string[] = [];
               if (typeof input.stepIdx === 'number') consumedKeys.push(`step:${input.stepIdx}#${markerIndex}`);
               if (typeof input.toolCall?.id === 'string' && input.toolCall.id) consumedKeys.push(`${input.toolCall.id}#${markerIndex}`);
-              const recorded = approvals.record(
-                conversationId,
-                { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
-                consumedKeys.length > 0 ? consumedKeys : undefined
-              );
-              outcome = recorded ? 'recorded' : 'not_denied';
+              // A denial from before the last mode change is never approved by an answer (the answer may have been given in
+              // on-demand, where nothing is recorded): the call is denied again with a fresh question instead.
+              const deniedAt = approvals.wasDeniedRecently(conversationId, elevateModel, Date.now());
+              if (typeof deniedAt === 'number' && denialPredatesModeChange(deniedAt, jevConfig, 'antigravity')) {
+                outcome = 'mode_changed';
+              } else {
+                const recorded = approvals.record(
+                  conversationId,
+                  { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
+                  consumedKeys.length > 0 ? consumedKeys : undefined
+                );
+                outcome = recorded ? 'recorded' : 'not_denied';
+              }
             }
           }
         } catch {
@@ -488,7 +507,8 @@ async function main() {
       approvals,
       sessionModelOverride: activeModel,
       quotaView,
-      mode
+      mode,
+      config: jevConfig
     });
 
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
@@ -499,6 +519,7 @@ async function main() {
       const downgraded = await applyAntigravityDowngrade(input, decision, {
         store: downgrades,
         jevMode: mode,
+        config: jevConfig,
         sessionModel: activeModel,
         env: process.env,
         downgradeConfig: loadDowngradeMode,

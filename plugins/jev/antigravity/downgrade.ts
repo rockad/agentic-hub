@@ -17,6 +17,7 @@ import { parseDowngradeMode } from '../src/core/downgrade-config.js';
 import { downgradeMode, neededTier, parseTierRating, resolveMinProbability, SESSION_OFF_LABEL, type TierRating } from '../src/core/downgrade-state.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
+import { denialPredatesModeChange, modeChangedAtMs, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { callJev } from '../src/core/client.js';
 import { DOWNGRADE_ALIAS, DOWNGRADE_MARKER_SIG_CHARS, type DowngradeChoice, type DowngradeStore } from './approvals.js';
@@ -176,6 +177,8 @@ export type DowngradeDeps = {
   store?: DowngradeStore;
   /** The Jev mode. The downgrade makes a decision, so it runs only in a mode with decisions (`on`, as on Claude Code); `on-demand` and `off` leave the call alone. */
   jevMode?: JevMode;
+  /** The Jev config (for the `modeChangedAt` stamp): a question asked before the last mode change is dropped, so the call is asked afresh. */
+  config?: ModeChangeConfigLike;
   /** The session model the call would inherit (the one the ceiling uses). */
   sessionModel?: string | null;
   env?: Record<string, string | undefined>;
@@ -273,6 +276,11 @@ export async function applyAntigravityDowngrade(
     const nowMs = (deps.now ?? Date.now)();
     const signature = downgradeSignature(args);
 
+    // A question asked before the last mode change belongs to an earlier mode (the answer may have been given where nothing
+    // is recorded): it is dropped, so this call is asked afresh and an answer to the old question finds nothing pending.
+    if (deps.config && modeChangedAtMs(deps.config, 'antigravity') !== null) {
+      safely(() => store.voidStale?.(sessionId, (askedAt) => denialPredatesModeChange(askedAt, deps.config, 'antigravity')));
+    }
     const peek = safely(() => store.peek(sessionId, signature, nowMs));
     if (!peek) return skip('store-error');
     if (peek.off) return skip('session-off');

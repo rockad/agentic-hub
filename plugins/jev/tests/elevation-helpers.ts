@@ -10,8 +10,8 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
   const get = (s: string): ApprovalState => states.get(s) ?? { approvals: [] };
   return {
     states,
-    record: (s, approval) => {
-      const next = recordApproval(get(s), approval, approval.created_at);
+    record: (s, approval, config) => {
+      const next = recordApproval(get(s), approval, approval.created_at, config);
       if (next) states.set(s, next);
     },
     deny: (s, model, nowMs) => void states.set(s, noteDenied(get(s), model, nowMs)),

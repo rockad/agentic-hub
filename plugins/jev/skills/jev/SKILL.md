@@ -41,21 +41,23 @@ To inspect the active operating mode, configuration state, and mode characterist
 
 To switch modes directly:
 
+> **Every mode change must be stamped.** Prefer `jev_set_mode`: it writes the mode and `modeChangedAt` together. When you edit `~/.config/jev/config.json` yourself, set `defaults.modeChangedAt` to the current time as an ISO UTC string in the same edit (for example `jq --arg m on --arg t "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '.defaults.mode = $m | .defaults.modeChangedAt = $t'`). A pending Jev denial or question issued before that time is never approved by a later answer (an answer given in `on-demand` cannot approve a mode-`on` denial after switching back); a config without the stamp puts no restriction on anything.
+
 #### Switching to `on` (Aggressive System 1):
 - **Via Skill / Command**:
-  Update `defaults.mode: "on"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
+  Update `defaults.mode: "on"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool (When enabled)**:
   Call `jev_set_mode` with argument `{"mode": "on"}`.
 
 #### Switching to `on-demand` (Passive Coprocessor):
 - **Via Skill / Command**:
-  Update `defaults.mode: "on-demand"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
+  Update `defaults.mode: "on-demand"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "on-demand"}`.
 
 #### Switching to `off` (Zero Overhead):
 - **Via Skill / Command**:
-  Update `defaults.mode: "off"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp disable jev` via `run_command`.
+  Update `defaults.mode: "off"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp disable jev` via `run_command`.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "off"}`.
 
@@ -87,9 +89,9 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 
 When invoked via `/jev` or `/jev <mode>`:
 - `/jev` or `/jev status`: Inspect current mode from `~/.config/jev/config.json`.
-- `/jev on`: Sets mode to `on` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
-- `/jev on-demand`: Sets mode to `on-demand` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
-- `/jev off`: Sets mode to `off` in `~/.config/jev/config.json` and disables MCP server (`agy mcp disable jev`) for zero overhead.
+- `/jev on`: Sets mode to `on` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev on-demand`: Sets mode to `on-demand` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev off`: Sets mode to `off` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and disables MCP server (`agy mcp disable jev`) for zero overhead.
 
 ## Underlying State & Files
 

@@ -235,3 +235,16 @@ export function claimDowngrade(
   return { state: withRatings(state, [...entries, added].slice(-MAX_ENTRIES), nowMs), result: 'first' };
 }
 
+
+/**
+ * Pure: drop the questions that are still waiting for an answer and were asked at a time `stale` rejects (a question
+ * that predates the last mode change, see `denialPredatesModeChange`). Answered entries and ratings are kept. With no
+ * such question the state is returned as it is and `voided` is 0, so a caller writes only when something changed. The
+ * next call for the delegation is then asked afresh, as for a first attempt, and an answer to the old question finds
+ * nothing pending.
+ */
+export function voidStalePending(state: DowngradeState, stale: (askedAtMs: number) => boolean): { state: DowngradeState; voided: number } {
+  const entries = state.entries.filter((e) => !(!e.answered && typeof e.asked_at === 'number' && stale(e.asked_at)));
+  const voided = state.entries.length - entries.length;
+  return voided === 0 ? { state, voided: 0 } : { state: { ...state, entries }, voided };
+}

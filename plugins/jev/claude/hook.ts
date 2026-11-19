@@ -56,6 +56,10 @@ import {
   lowQuotaNotice,
   quotaPoolLabel,
   type LowQuotaPool,
+  denialPredatesModeChange,
+  loadJevConfigSync,
+  modeChangedAtMs,
+  type ModeChangeConfigLike,
   checkEgress,
   egressContextDirs,
   discoverWorkspaceAgents,
@@ -145,6 +149,7 @@ import {
   type DowngradeState,
   type TierRating
 } from './downgrade.js';
+import { voidStalePending } from '../src/core/downgrade-state.js';
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
@@ -201,8 +206,10 @@ export type DowngradeStore = {
   remember: (sessionId: string, signature: string, rating: TierRating, nowMs: number) => void;
   /** What to do with a call of this signature and needed alias; with `record` the question is written down atomically (one parallel caller is first). */
   claim: (sessionId: string, signature: string, from: string, nowMs: number, opts: { record: boolean }) => DowngradeClaim;
+  /** Drop the pending (unanswered) questions that `stale` rejects by the time they were asked: the ones that predate the last mode change. Returns how many were dropped; writes only when above 0. */
+  voidStale?: (sessionId: string, stale: (askedAtMs: number) => boolean) => number;
   /** Record the user's answer to the question about needed alias `from` (`*`: every delegation); the session-off answer also sets the session's off entry. */
-  answer: (sessionId: string, from: string, chosen: string, nowMs: number) => void;
+  answer: (sessionId: string, from: string, chosen: string, nowMs: number, stale?: (askedAtMs: number) => boolean) => void;
 };
 
 /**
@@ -210,8 +217,8 @@ export type DowngradeStore = {
  * hook: a failing store means "no approval" (the call is denied, then asks on the third attempt).
  */
 export type ApprovalStore = {
-  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. Throws when the store fails: nothing is recorded then. */
-  record: (sessionId: string, approval: Approval) => void;
+  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. With `config`, a denial from before the last mode change (its `modeChangedAt` stamp) does not count. Throws when the store fails: nothing is recorded then. */
+  record: (sessionId: string, approval: Approval, config?: ModeChangeConfigLike | null) => void;
   /** Note that Jev prescribed the choice question for `model` (a deny, or the turn directive): the only thing that lets an answer record an approval. */
   deny: (sessionId: string, model: string, nowMs: number) => void;
   /** Find the approval covering `requested` and, for a `once`, consume it atomically (one parallel caller wins). */
@@ -236,6 +243,13 @@ export type HookDeps = {
    */
   learnSessionModel?: SessionModelLearner;
   readQuotaStrategy: () => Promise<string>;
+  /**
+   * The Jev config, for the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved by
+   * an answer (see `denialPredatesModeChange`). Absent, or with no stamp: no restriction.
+   */
+  readConfig?: () => ModeChangeConfigLike | null;
+  /** The Recall memory read (`fetchRecallMemory`); stubbed in tests so no network is touched. Never called when the mode has no memory context. */
+  fetchMemory?: () => Promise<any>;
   /**
    * The routine quota pool as the notice needs it (label, strategy, minimum remaining). Used only by a mode without routing
    * advice (on-demand) for its low-quota notice; absent: the strategy from `readQuotaStrategy` stands in, without a percentage.
@@ -442,8 +456,9 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     }
   }
   if (staged) additionalContext += ` ${STAGE_PLAN_REMINDER}`;
+  // Cross-harness memory is a Recall call and a context block: mode `on` only (`modeBehaviour(mode).memoryContext`).
   try {
-    const memory = await withTimeout(fetchRecallMemory(), 600);
+    const memory = behaviour.memoryContext ? await withTimeout((deps.fetchMemory ?? fetchRecallMemory)(), 600) : null;
     if (memory && memory.activeGoal) {
       additionalContext += `\n\n[CROSS-HARNESS MEMORY]\nActive Goal: ${memory.activeGoal}\nCurrent Milestone: ${memory.currentMilestone || 'none'}\nNext Action: ${memory.nextAction || 'none'}`;
     }
@@ -867,6 +882,12 @@ async function evaluateDowngrade(a: {
     if (!sessionId) return skip('no-session');
     const nowMs = (deps.now ?? Date.now)();
     const signature = callSignature(call as Record<string, unknown>);
+    // A question asked before the last mode change belongs to an earlier mode (the answer may have been given where nothing
+    // is recorded): it is dropped, so this call is asked afresh instead of passing as "already asked".
+    const cfg = safely(() => deps.readConfig?.()) ?? null;
+    if (cfg && modeChangedAtMs(cfg, 'claude-code') !== null) {
+      safely(() => downgrades.voidStale?.(sessionId, (askedAt) => denialPredatesModeChange(askedAt, cfg, 'claude-code')));
+    }
     const peek = safely(() => downgrades.peek(sessionId, signature, nowMs));
     if (!peek) return skip('store-error');
     if (peek.off) return skip('session-off');
@@ -972,18 +993,26 @@ async function evaluateDowngrade(a: {
  * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
  *
  * Approvals and downgrade answers are decisions, so a mode without decisions (on-demand, off) records none: an answer given
- * there cannot approve a stale denial from an earlier mode `on`.
+ * there cannot approve a stale denial from an earlier mode `on`. Nor can one given after the mode went back to `on`: a denial
+ * or question older than the last mode change (the `modeChangedAt` stamp) is never approved, see `denialPredatesModeChange`.
  */
-export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'approvals' | 'downgrades' | 'now'>): Promise<void> {
+export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'readConfig' | 'approvals' | 'downgrades' | 'now'>): Promise<void> {
   const mode = await safelyAsync(() => deps.readMode());
   if (!modeBehaviour(mode).decisions) return;
   const sessionId = safeSessionId(input?.session_id);
   if (!sessionId) return;
   const nowMs = (deps.now ?? Date.now)();
+  // A denial or question from before the last mode change is never approved by an answer: the user may have answered it
+  // while the mode was on-demand (nothing recorded) and switched back to on afterwards. The call is then denied again
+  // with a fresh question. No stamp (an older config) means no restriction.
+  const config = safely(() => deps.readConfig?.()) ?? null;
+  const stale = config && modeChangedAtMs(config, 'claude-code') !== null
+    ? (askedAt: number): boolean => denialPredatesModeChange(askedAt, config, 'claude-code')
+    : undefined;
   try {
     if (deps.approvals) {
       const approval = parseElevationAnswer(input, nowMs);
-      if (approval) deps.approvals.record(sessionId, approval);
+      if (approval) deps.approvals.record(sessionId, approval, config);
     }
   } catch {
     // best-effort: a failed record only means the assistant is denied again and asks again
@@ -1002,7 +1031,7 @@ export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'read
   try {
     if (deps.downgrades) {
       const answer = parseDowngradeAnswer(input);
-      if (answer) deps.downgrades.answer(sessionId, answer.from, answer.label, nowMs);
+      if (answer) deps.downgrades.answer(sessionId, answer.from, answer.label, nowMs, stale);
     }
   } catch {
     // best-effort: without the record the retried call passes anyway (asked once per delegation)
@@ -1166,10 +1195,10 @@ function writeApprovalState(sessionId: string, state: ApprovalState): void {
 }
 
 const approvalStore: ApprovalStore = {
-  record: (sessionId, approval) =>
+  record: (sessionId, approval, config) =>
     withApprovalsLock(sessionId, () => {
       // An unreadable state file reads as empty, which has no denial: nothing is recorded then.
-      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at);
+      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at, config);
       if (next) writeApprovalState(sessionId, next);
     }),
   deny: (sessionId, model, nowMs) =>
@@ -1227,8 +1256,18 @@ const downgradeStore: DowngradeStore = {
       },
       'downgrade'
     ),
-  answer: (sessionId, from, chosen, nowMs) =>
-    withApprovalsLock(sessionId, () => writeDowngradeState(sessionId, answerDowngrade(readDowngradeState(sessionId), from, chosen, nowMs)), 'downgrade')
+  answer: (sessionId, from, chosen, nowMs, stale) =>
+    withApprovalsLock(sessionId, () => writeDowngradeState(sessionId, answerDowngrade(readDowngradeState(sessionId), from, chosen, nowMs, stale)), 'downgrade'),
+  voidStale: (sessionId, stale) =>
+    withApprovalsLock(
+      sessionId,
+      () => {
+        const { state, voided } = voidStalePending(readDowngradeState(sessionId), stale);
+        if (voided > 0) writeDowngradeState(sessionId, state);
+        return voided;
+      },
+      'downgrade'
+    )
 };
 
 /** One catalogue read per hook run (the catalogue and the overrides are two small files); null when there is no usable catalogue. */
@@ -1427,6 +1466,7 @@ const liveDeps: HookDeps = {
   readMode: () => readJevMode('claude-code'),
   readSessionModel,
   learnSessionModel,
+  readConfig: () => loadJevConfigSync(),
   readQuotaStrategy: async () => {
     try {
       return (await readQuotaView()).strategy;

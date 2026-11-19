@@ -15,6 +15,7 @@ import {
   type ThinkingEffort
 } from '../src/shared.js';
 import { STOP_RETRYING_FROM_ATTEMPT, stopRetryingText } from '../src/core/elevation-text.js';
+import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 
 import { STAGE_RUBRIC_TEXT, TIER_CRITERIA, type ClaudeModelAlias, type JevTier } from '../src/stage-rubric.js';
@@ -989,16 +990,24 @@ export function noteDenied(state: ApprovalState, model: string, nowMs: number): 
   return { ...state, denied: { ...Object.fromEntries(kept), [modelAlias(model) ?? model]: nowMs } };
 }
 
-/** Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? */
-export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+/**
+ * Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? With `config`, a denial
+ * older than the last mode change (its `modeChangedAt` stamp) does not count: an answer to it must not approve it.
+ */
+export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number, config?: ModeChangeConfigLike | null): boolean {
   const want = modelRank(model);
   if (want === null) return false;
-  return Object.entries(state.denied ?? {}).some(([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS);
+  return Object.entries(state.denied ?? {}).some(
+    ([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code')
+  );
 }
 
-/** Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). */
-export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
-  return wasDeniedRecently(state, approval.model, nowMs) ? addApproval(state, approval, nowMs) : null;
+/**
+ * Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). With
+ * `config`, a denial from before the last mode change asks for nothing (see `wasDeniedRecently`).
+ */
+export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
+  return wasDeniedRecently(state, approval.model, nowMs, config) ? addApproval(state, approval, nowMs) : null;
 }
 
 /**

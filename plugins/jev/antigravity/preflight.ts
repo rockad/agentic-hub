@@ -129,11 +129,14 @@ export type PreflightDeps = {
   autoHeal?: (mode: string) => void;
   /** The Decisions API call; stubbed in tests so no network is touched. */
   callJev?: typeof callJev;
+  /** The Recall memory read (`fetchRecallMemory`); stubbed in tests so no network is touched. Never called when the mode has no memory context. */
+  fetchMemory?: typeof fetchRecallMemory;
 };
 
 export async function runPreflight(inputJson?: string, deps: PreflightDeps = {}): Promise<void> {
   const autoHeal = deps.autoHeal ?? ((m: string) => autoHealAgyMcp(m));
   const callJevFn = deps.callJev ?? callJev;
+  const fetchMemoryFn = deps.fetchMemory ?? fetchRecallMemory;
   try {
     let hookInput: PreInvocationInput | null = null;
     if (inputJson && inputJson.trim().length > 0) {
@@ -423,22 +426,25 @@ ${sessionHint}
         }
       }
 
-      // Check cross-harness memory
-      try {
-        const wsPath = hookInput?.workspacePaths?.[0] || process.cwd();
-        const ws = path.basename(wsPath) || 'default';
-        const memory = await fetchRecallMemory(ws);
-        if (memory && memory.lastHarness === 'opencode' && memory.activeGoal) {
-          parts.push(
-            `[CROSS-HARNESS MEMORY from OpenCode (${memory.updatedAt || 'recent'})]\n` +
-            `Active Goal: ${memory.activeGoal}\n` +
-            `Next Action: ${memory.nextAction || 'none'}\n` +
-            `Current Milestone: ${memory.currentMilestone || 'none'}\n` +
-            `(Synced via Recall)`
-          );
+      // Cross-harness memory: a Recall call and a context block, so mode `on` only (`modeBehaviour(mode).memoryContext`).
+      // On-demand makes no Recall call and injects no block.
+      if (behaviour.memoryContext) {
+        try {
+          const wsPath = hookInput?.workspacePaths?.[0] || process.cwd();
+          const ws = path.basename(wsPath) || 'default';
+          const memory = await fetchMemoryFn(ws);
+          if (memory && memory.lastHarness === 'opencode' && memory.activeGoal) {
+            parts.push(
+              `[CROSS-HARNESS MEMORY from OpenCode (${memory.updatedAt || 'recent'})]\n` +
+              `Active Goal: ${memory.activeGoal}\n` +
+              `Next Action: ${memory.nextAction || 'none'}\n` +
+              `Current Milestone: ${memory.currentMilestone || 'none'}\n` +
+              `(Synced via Recall)`
+            );
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
 
       if (!parts.length) {

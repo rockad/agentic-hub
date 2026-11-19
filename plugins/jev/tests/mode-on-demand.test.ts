@@ -13,9 +13,9 @@ import { runPreflight } from '../antigravity/preflight.ts';
 
 describe('modeBehaviour', () => {
   it('describes the three modes', () => {
-    expect(modeBehaviour('off')).toEqual({ tools: false, decisions: false, routingAdvice: false, telemetry: false, quotaNotice: 'none' });
-    expect(modeBehaviour('on-demand')).toEqual({ tools: true, decisions: false, routingAdvice: false, telemetry: true, quotaNotice: 'low-only' });
-    expect(modeBehaviour('on')).toEqual({ tools: true, decisions: true, routingAdvice: true, telemetry: true, quotaNotice: 'always' });
+    expect(modeBehaviour('off')).toEqual({ tools: false, decisions: false, routingAdvice: false, memoryContext: false, telemetry: false, quotaNotice: 'none' });
+    expect(modeBehaviour('on-demand')).toEqual({ tools: true, decisions: false, routingAdvice: false, memoryContext: false, telemetry: true, quotaNotice: 'low-only' });
+    expect(modeBehaviour('on')).toEqual({ tools: true, decisions: true, routingAdvice: true, memoryContext: true, telemetry: true, quotaNotice: 'always' });
   });
 
   it('treats an unknown mode as off', () => {
@@ -185,6 +185,37 @@ describe('Claude Code hooks in on-demand', () => {
       expect(await onUserPromptSubmit(prompt, deps)).toBeNull();
       expect(logs).toEqual([]);
     });
+
+    describe('cross-harness memory', () => {
+      const memory = { activeGoal: 'ship the parser', currentMilestone: 'tests', nextAction: 'review' };
+      const rec = { subagent: 'general-purpose', tier: 'flash', model: 'sonnet', effort: 'medium', confidence: 0.9 } as const;
+
+      it('on-demand makes no Recall call and injects no memory block, for a healthy and for a low pool', async () => {
+        for (const pool of [undefined, { label: 'Gemini', strategy: 'conserve', minRemaining: 0.15 }]) {
+          const { deps } = make('on-demand', {
+            fetchMemory: boom('fetchMemory') as any,
+            ...(pool ? { readQuotaPool: async () => pool } : {})
+          });
+          const out = await onUserPromptSubmit(prompt, deps);
+          expect(JSON.stringify(out ?? '')).not.toContain('CROSS-HARNESS MEMORY');
+        }
+      });
+
+      it('mode on still injects it', async () => {
+        let calls = 0;
+        const { deps } = make('on', {
+          dispatch: async () => rec as any,
+          saveTurn: () => {},
+          fetchMemory: async () => {
+            calls++;
+            return memory;
+          }
+        });
+        const out = await onUserPromptSubmit(prompt, deps);
+        expect(calls).toBe(1);
+        expect(out?.hookSpecificOutput.additionalContext).toContain('[CROSS-HARNESS MEMORY]\nActive Goal: ship the parser');
+      });
+    });
   });
 });
 
@@ -230,7 +261,7 @@ describe('Antigravity pre-flight in on-demand', () => {
 
   const input = { conversationId: 'c-od', modelName: 'gemini-3.8-flash-low', lastUserInput: 'please refactor the billing module', invocationNum: 1 };
 
-  async function capture(deps: { callJev?: any } = {}): Promise<{ out: any; dispatches: number }> {
+  async function capture(deps: { callJev?: any; fetchMemory?: any } = {}): Promise<{ out: any; dispatches: number }> {
     let dispatches = 0;
     let stdout = '';
     const origLog = console.log;
@@ -278,6 +309,38 @@ describe('Antigravity pre-flight in on-demand', () => {
     expect(msg).not.toContain('QUOTA CONSERVE');
     expect(msg).not.toContain('JEV MODE');
     expect(rows().filter((r) => r.toolOrHook === 'PreInvocation')).toHaveLength(1);
+  });
+
+  const memory = { lastHarness: 'opencode', activeGoal: 'ship the parser', nextAction: 'review', currentMilestone: 'tests', updatedAt: 'now' };
+
+  it('on-demand makes no Recall call and injects no memory block, for a healthy and for a low pool', async () => {
+    for (const remaining of [0.9, 0.05]) {
+      writeQuota(remaining);
+      let recallCalls = 0;
+      const { out } = await capture({
+        fetchMemory: (async () => {
+          recallCalls++;
+          return memory;
+        }) as any
+      });
+      expect(recallCalls).toBe(0);
+      expect(JSON.stringify(out)).not.toContain('CROSS-HARNESS MEMORY');
+    }
+  });
+
+  it('mode on still injects the memory block', async () => {
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode: 'on' } }));
+    clearConfigCacheForTesting();
+    writeQuota(0.9);
+    let recallCalls = 0;
+    const { out } = await capture({
+      fetchMemory: (async () => {
+        recallCalls++;
+        return memory;
+      }) as any
+    });
+    expect(recallCalls).toBe(1);
+    expect(out.injectSteps[0].ephemeralMessage).toContain('[CROSS-HARNESS MEMORY from OpenCode (now)]\nActive Goal: ship the parser');
   });
 
   it('mode on keeps the full directive (not a notice)', async () => {

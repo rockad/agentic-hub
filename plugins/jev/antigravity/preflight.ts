@@ -27,7 +27,8 @@ import {
   type QuotaView
 } from '../src/shared.js';
 import { withTimeout } from '../src/core/with-timeout.js';
-import { lowQuotaNotice, modeBehaviour, quotaPoolLabel } from '../src/core/mode-policy.js';
+import { isModeOff, lowQuotaNotice, modeBehaviour, quotaPoolLabel } from '../src/core/mode-policy.js';
+import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import {
   cleanUserInput,
   turnId,
@@ -109,7 +110,7 @@ export function autoHealAgyMcp(mode: string, deps: AutoHealDeps = {}): void {
     const raw = JSON.parse(fsSync.readFileSync(mcpConfigPath, 'utf8'));
     const jevServer = raw?.mcpServers?.jev;
     const isDisabled = jevServer ? jevServer.disabled === true : true;
-    const shouldBeDisabled = mode === 'off';
+    const shouldBeDisabled = isModeOff(mode);
     if (isDisabled !== shouldBeDisabled) {
       const args = ['mcp', shouldBeDisabled ? 'disable' : 'enable', 'jev'];
       const runAgy =
@@ -210,7 +211,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
   let activeMode: string = 'off';
   /** A step that was late or skipped; mode `off` never gets here (it writes nothing). Fail open, one row per step. */
   const logSkipped = (step: string, reason: string) => {
-    if (activeMode === 'off') return;
+    if (isModeOff(activeMode)) return;
     try {
       const jevDir = process.env.JEV_CONFIG_FILE
         ? path.dirname(process.env.JEV_CONFIG_FILE)
@@ -274,7 +275,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
 
       // Mode off: nothing else runs and nothing is written (no session model file, no quota read, no injection,
       // no telemetry). The auto-heal above is the only side effect.
-      if (mode === 'off') {
+      if (isModeOff(mode)) {
         emit();
         return;
       }
@@ -481,7 +482,7 @@ ${sessionHint}
                 const tierChoice = dispatchData.answers.recommendedTier?.choice;
                 const rawTier = typeof tierChoice === 'string' && tierChoice in TIER_CRITERIA ? tierChoice : 'flash';
 
-                const activeModel = sessionModel || quota.active_model || 'gemini-pro';
+                const activeModel = sessionModel || quota.active_model || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
                 const { clampedTier } = clampTierToSessionCeiling(rawTier, activeModel, cleanTask);
                 const recommendedTier = clampedTier;
                 const recommendedSubagent = rawSubagent;

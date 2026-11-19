@@ -17,7 +17,7 @@ import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
-import { modeBehaviour } from '../src/core/mode-policy.js';
+import { isModeOff, modeBehaviour } from '../src/core/mode-policy.js';
 import { loadJevConfigSync } from '../src/core/config.js';
 import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
@@ -28,6 +28,7 @@ import {
   pollForAskAnswer,
   pollForAskAnswers,
   askAnswerKey,
+  askQuestionCount,
   extractChildConversationId,
   findServedModelFromTranscript,
   recordPendingServed,
@@ -183,7 +184,7 @@ async function main() {
     }
 
     const mode: JevMode = await readJevMode('antigravity');
-    if (mode === 'off') {
+    if (isModeOff(mode)) {
       passThrough(event);
     }
     // The config carries the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved.
@@ -274,7 +275,8 @@ async function main() {
             // from that one row (N questions must not cost N wait windows: the hook has a timeout).
             const rawAnswers = await pollForAskAnswers(
               input,
-              downgradeQuestions.map((q) => q.index)
+              downgradeQuestions.map((q) => q.index),
+              { questionCount: askQuestionCount(input.toolCall?.args) }
             );
             downgradeQuestions.forEach((q, n) => {
               const rawAnswer = rawAnswers[n] ?? null;
@@ -330,6 +332,8 @@ async function main() {
 
           if (Array.isArray(questions)) {
             questions.forEach((q, index) => {
+              // The first marker question wins, as in the transcript pull (the earliest open question of the ask).
+              if (elevateModel !== undefined) return;
               const qText = typeof q === 'string' ? q : (q && typeof q === 'object' ? (q as Record<string, unknown>).question : '');
               if (typeof qText === 'string' && qText.includes(ELEVATE_MARKER_PREFIX)) {
                 const m = qText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
@@ -359,7 +363,7 @@ async function main() {
 
           // Only an elevation question is worth waiting for: a bounded wait (~150 ms polls, <= 2 s) for the answer row
           // when content is not on stdin and transcriptPath + stepIdx are given. Any other question returns at once.
-          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex) : null;
+          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex, { questionCount: askQuestionCount(input.toolCall?.args) }) : null;
           rowFound = rawAnswer !== null;
 
           const parsedResult = parseElevationAnswer(rawAnswer);
@@ -543,12 +547,15 @@ async function main() {
     const promptHash = promptLength > 0 ? fingerprint.taskHash : null;
 
     const callKey = antigravityCallKey(input);
-    appendDecisionLog({
+    // An agent_call row is the record of an invoke_subagent call and of nothing else: any other tool name that reaches
+    // this hook (a missing name included) writes no row and no telemetry.
+    const isSubagentCall = input.toolCall?.name === 'invoke_subagent';
+    if (isSubagentCall) appendDecisionLog({
       event: 'agent_call',
       harness: 'antigravity',
       session_id: input.conversationId || null,
       call_key: callKey,
-      tool_name: input.toolCall?.name || 'invoke_subagent',
+      tool_name: 'invoke_subagent',
       requested_model: requestedModel,
       session_model: activeModel || null,
       ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
@@ -565,7 +572,7 @@ async function main() {
       ...downgradeLog
     });
 
-    if (input.toolCall?.name === 'invoke_subagent' && modeBehaviour(mode).telemetry) {
+    if (isSubagentCall && modeBehaviour(mode).telemetry) {
       const cleaned = cleanUserInput(input.lastUserInput || '');
       const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
       const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>

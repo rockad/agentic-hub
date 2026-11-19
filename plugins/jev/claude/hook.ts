@@ -103,6 +103,8 @@ import {
   parseEffortAnswer,
   parseElevationAnswer,
   parseElevationDecline,
+  elevationDeclinedModel,
+  lastDeniedAtMs,
   recordApproval,
   recordEffortApproval,
   unreadableDefinitionDenyReason,
@@ -246,6 +248,8 @@ export type ApprovalStore = {
   /** The effort question (`[jev-elevate-effort:<level>]`, xhigh or max), in the same state file and under the same lock. Absent: no effort approval is ever found, so the delegation is denied every time. */
   recordEffort?: (sessionId: string, approval: EffortApproval, config?: ModeChangeConfigLike | null) => void;
   denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => void;
+  /** When the choice question was last prescribed for `model` or a stronger one (epoch ms), or null when there is no note of one. Absent: unknown. */
+  deniedAt?: (sessionId: string, model: string) => number | null;
   claimEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => EffortApproval | null;
 };
 
@@ -1106,8 +1110,16 @@ export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'read
   // the relaunch on the session model must not be asked again about a cheaper one (two questions in a row). It is recorded
   // as an answered downgrade question for every delegation (`*`: the answer carries no call signature), for the same window;
   // it grants nothing.
+  // Like the approval recorders, a question from before the last mode change is not answered by this answer: the user may
+  // have answered it while the mode was on-demand or off (nothing recorded), so no decline is noted for it.
   try {
-    if (deps.downgrades && parseElevationDecline(input)) deps.downgrades.answer(sessionId, '*', ELEVATION_DECLINED, nowMs);
+    const declined = deps.downgrades ? elevationDeclinedModel(input) : null;
+    if (deps.downgrades && declined) {
+      const askedAt = config ? safely(() => deps.approvals?.deniedAt?.(sessionId, declined)) ?? null : null;
+      if (askedAt === null || !denialPredatesModeChange(askedAt, config, 'claude-code')) {
+        deps.downgrades.answer(sessionId, '*', ELEVATION_DECLINED, nowMs);
+      }
+    }
   } catch {
     // best-effort: without the record the relaunch is asked about the cheaper model once
   }
@@ -1288,6 +1300,7 @@ const approvalStore: ApprovalStore = {
     }),
   deny: (sessionId, model, nowMs) =>
     withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteDenied(readApprovalState(sessionId), model, nowMs))),
+  deniedAt: (sessionId, model) => withApprovalsLock(sessionId, () => lastDeniedAtMs(readApprovalState(sessionId), model)),
   claim: (sessionId, requested, nowMs, ctx) =>
     withApprovalsLock(sessionId, () => {
       const { state, approval } = claimApproval(readApprovalState(sessionId), requested, nowMs, ctx);

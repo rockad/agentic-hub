@@ -1003,8 +1003,13 @@ function readElevationAnswer(input: unknown): { model: ClaudeModelAlias; label: 
  * It lets the hook treat the user's decision to stay on the session model as final for the downgrade question too.
  */
 export function parseElevationDecline(input: unknown): boolean {
+  return elevationDeclinedModel(input) !== null;
+}
+
+/** Pure: the model alias of the elevation question that was answered with its No option, or null (see `parseElevationDecline`). */
+export function elevationDeclinedModel(input: unknown): ClaudeModelAlias | null {
   const answer = readElevationAnswer(input);
-  return !!answer && answer.label.startsWith(CHOICE_LABELS.no(''));
+  return answer && answer.label.startsWith(CHOICE_LABELS.no('')) ? answer.model : null;
 }
 
 /**
@@ -1105,6 +1110,19 @@ export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
 export function noteDenied(state: ApprovalState, model: string, nowMs: number): ApprovalState {
   const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
   return { ...state, denied: { ...Object.fromEntries(kept), [modelAlias(model) ?? model]: nowMs } };
+}
+
+/**
+ * Pure: when Jev last prescribed the choice question for `model` or a stronger one (epoch ms), whatever the window, or
+ * null when it has no note of one. It lets a caller tell an answer to a question from before the last mode change.
+ */
+export function lastDeniedAtMs(state: ApprovalState, model: string): number | null {
+  const want = modelRank(model);
+  if (want === null) return null;
+  const times = Object.entries(state.denied ?? {})
+    .filter(([m]) => (modelRank(m) ?? -1) >= want)
+    .map(([, t]) => t);
+  return times.length ? Math.max(...times) : null;
 }
 
 /**

@@ -141,7 +141,8 @@ export async function recordWorkflowPostToolUse(input: unknown, deps: PinDeps): 
     // Off writes nothing: the pin is not dropped (the next prune takes it) and no drift is logged.
     if (!modeBehaviour(mode).telemetry) return { status: 'off' };
     dropPin(deps.dir, i.tool_use_id);
-    const off = mode !== 'on';
+    // Mode on only speaks (stdout); on-demand drops the pin and logs the drift silently.
+    const off = !modeBehaviour(mode).decisions;
     const drift: Array<{ file: string; analysed: string; current: string | null }> = [];
     for (const s of pin.scripts) {
       if (typeof s?.label !== 'string' || !path.isAbsolute(s.label)) continue; // inline: no file to re-check

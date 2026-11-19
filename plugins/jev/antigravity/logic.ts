@@ -14,6 +14,7 @@ import {
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
+import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
@@ -243,10 +244,21 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
 export const TRANSCRIPT_TAIL_WINDOW_BYTES = 1024 * 1024; // 1 MB
 export const MAX_TRANSCRIPT_READ_BYTES = TRANSCRIPT_TAIL_WINDOW_BYTES;
 
+/**
+ * How many questions an ask_question call carries (`args.questions`: an array of strings or objects, or one string),
+ * or undefined when the payload does not say. Used so a bare answer is never read for one question of several.
+ */
+export function askQuestionCount(args: unknown): number | undefined {
+  const questions = args && typeof args === 'object' ? (args as Record<string, unknown>).questions : undefined;
+  if (Array.isArray(questions)) return questions.length;
+  return typeof questions === 'string' ? 1 : undefined;
+}
+
 export function extractAskAnswer(
   input: AntigravityHookInput | undefined,
   questionIndex = 0,
-  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES
+  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES,
+  questionCount?: number
 ): string | null {
   let content = input?.content;
   if ((!content || typeof content !== 'string') && input?.transcriptPath && typeof input?.stepIdx === 'number') {
@@ -305,6 +317,9 @@ export function extractAskAnswer(
     }
   }
   if (answers.size === 0) {
+    // A bare one-line answer (no `A<n>:` prefix) belongs to a lone question. With several questions it could be any of
+    // them, so it is nobody's: only question 0 of an ask not known to carry more than one reads it.
+    if (questionIndex !== 0 || (typeof questionCount === 'number' && questionCount > 1)) return null;
     const bare = content.trim();
     return bare.includes('\n') ? null : bare;
   }
@@ -314,13 +329,14 @@ export function extractAskAnswer(
 export async function pollForAskAnswer(
   input: AntigravityHookInput | undefined,
   questionIndex = 0,
-  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number; questionCount?: number }
 ): Promise<string | null> {
   const maxWaitMs = opts?.maxWaitMs ?? 2000;
   const pollIntervalMs = opts?.pollIntervalMs ?? 150;
   const maxBytes = opts?.maxBytes;
+  const questionCount = opts?.questionCount;
 
-  let answer = extractAskAnswer(input, questionIndex, maxBytes);
+  let answer = extractAskAnswer(input, questionIndex, maxBytes, questionCount);
   if (answer !== null) return answer;
 
   const contentOnStdin = typeof input?.content === 'string' && input.content.trim().length > 0;
@@ -335,7 +351,7 @@ export async function pollForAskAnswer(
     if (remaining <= 0) break;
     const delay = Math.min(pollIntervalMs, remaining);
     await new Promise((resolve) => setTimeout(resolve, delay));
-    answer = extractAskAnswer(input, questionIndex, maxBytes);
+    answer = extractAskAnswer(input, questionIndex, maxBytes, questionCount);
     if (answer !== null) return answer;
   }
   return null;
@@ -484,6 +500,8 @@ export function pullAskAnswerFromTranscript(
       markerIndex: number;
       /** How many tool calls the planner step made: 0 for a prose match. */
       toolCallCount: number;
+      /** How many questions the matched ask carries (undefined for a prose match). */
+      questionCount?: number;
     };
 
     let latestToolMatch: AskMatch | null = null;
@@ -524,6 +542,7 @@ export function pullAskAnswerFromTranscript(
       let matchedProse = false;
       let toolCallId: string | undefined;
       let markerIndex = 0;
+      let questionCount: number | undefined;
 
       const toolCalls = Array.isArray(step.tool_calls)
         ? step.tool_calls
@@ -556,12 +575,14 @@ export function pullAskAnswerFromTranscript(
                     if (isConsumed(askAnswerKey(callId, keyIdx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
                     matchedTool = true;
                     markerIndex = idx;
+                    questionCount = questions.length;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
                   }
                 });
               } else if (typeof questions === 'string' && questionMatches(questions)) {
                 matchedTool = true;
                 markerIndex = 0;
+                questionCount = 1;
                 if (typeof rec.id === 'string') toolCallId = rec.id;
               }
             }
@@ -598,7 +619,8 @@ export function pullAskAnswerFromTranscript(
           stepIndexInArray: i,
           toolCallId,
           markerIndex,
-          toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0
+          toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0,
+          questionCount
         };
       } else if (matchedProse) {
         latestProseMatch = {
@@ -661,7 +683,7 @@ export function pullAskAnswerFromTranscript(
     // A row the recorded step named is read at the recorded question, not at the matched call's own.
     const questionIndex =
       !latestMatch.toolCallId && typeof opts.answerStepIdx === 'number' && recordedQuestion !== undefined ? recordedQuestion : latestMatch.markerIndex;
-    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex);
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex, undefined, latestMatch.questionCount);
     return {
       raw: rawAnswer,
       questionIndex,
@@ -797,7 +819,7 @@ export function evaluateAntigravitySubagentCall(
   const rawId = input.conversationId;
   const approvalStore = typeof rawId === 'string' && rawId.length > 0 && !safeSessionId(rawId) ? undefined : deps.approvals;
   const nowMs = (deps.now ?? Date.now)();
-  const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
+  const sessionModel = deps.sessionModelOverride || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
   const mode: JevMode = deps.mode ?? 'on';
 
   // A mode without decisions (on-demand; the hook never calls this for off) makes none: every invoke_subagent passes
@@ -1292,9 +1314,9 @@ export function askAnswerKey(toolCallId: string | undefined, questionIndex: numb
 export async function pollForAskAnswers(
   input: AntigravityHookInput | undefined,
   questionIndexes: number[],
-  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number; questionCount?: number }
 ): Promise<Array<string | null>> {
-  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes));
+  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes, opts?.questionCount));
   const anyAnswer = (list: Array<string | null>) => list.some((a) => a !== null);
 
   let answers = readAll();

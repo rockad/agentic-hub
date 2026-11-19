@@ -664,6 +664,114 @@ export function pullAskAnswerFromTranscript(
     return null;
   }
 }
+type ChoiceElevationContext = {
+  approvalStore: ApprovalStore | undefined;
+  sessionId: string;
+  requestedModel: string;
+  typeName: string;
+  sessionCeilingTier: string;
+  isOrchestrator: boolean;
+  nowMs: number;
+  transcriptPath: string | undefined;
+  promptHash: string;
+  signature: string;
+};
+
+/**
+ * The choice flow's tail, shared by choice mode and by on-demand mode under Antigravity auto-approve: count the
+ * attempt, pull a late answer from the transcript on every attempt, otherwise deny. It never returns `ask`: under
+ * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
+ * unapproved.
+ */
+function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
+  const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
+  const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+  let pullFallback: 'record_failed' | 'claim_lost' | undefined;
+  if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
+    const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
+    if (typeof deniedAtMs === 'number') {
+      // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
+      let answerStepIdx: number | null = null;
+      let answerQuestionIdx: number | null = null;
+      let consumedKeys: string[] = [];
+      try {
+        answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
+        answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
+        consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
+      } catch {
+        // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
+        answerStepIdx = null;
+        answerQuestionIdx = null;
+        consumedKeys = [];
+      }
+      const pull = pullElevationAnswerDetailed(
+        ctx.transcriptPath,
+        requestedModel,
+        deniedAtMs,
+        answerStepIdx,
+        answerQuestionIdx,
+        consumedKeys
+      );
+      if (pull?.approved && pull.scope) {
+        // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
+        // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
+        // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
+        // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
+        // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
+        // allows.
+        const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
+        const keys = pull.answerKey ? [pull.answerKey] : undefined;
+        let stored = false;
+        let claimed = false;
+        try {
+          if (typeof approvalStore.recordAndClaim === 'function') {
+            const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
+            stored = res.stored === true;
+            claimed = stored && res.approval !== null;
+          } else {
+            stored = approvalStore.record(sessionId, pulled, keys) === true;
+            claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
+          }
+        } catch {
+          stored = false;
+          claimed = false;
+        }
+        if (claimed) {
+          return {
+            decision: 'allow',
+            elevation: 'approved',
+            approvalScope: pull.scope,
+            pullFallback: true
+          };
+        }
+        pullFallback = stored ? 'claim_lost' : 'record_failed';
+      }
+    }
+  }
+
+  approvalStore?.deny(sessionId, requestedModel, nowMs);
+  // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
+  // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
+  const baseReason = buildElevationReason({
+    typeName,
+    requestedModel,
+    sessionCeilingTier,
+    isOrchestrator
+  });
+  const reason =
+    count >= 3
+      ? `${baseReason} This is attempt ${count} for the same delegation: stop retrying '${requestedModel}'. ` +
+        `Proceed with an explicit Model: "${sessionCeilingTier}", or ask the user again with ask_question.`
+      : baseReason;
+  return {
+    decision: 'deny',
+    reason,
+    elevation: 'denied',
+    attemptCount: count,
+    ...(pullFallback ? { pullFallback } : {})
+  };
+}
+
 
 export function evaluateAntigravitySubagentCall(
   input: AntigravityHookInput,
@@ -789,17 +897,22 @@ export function evaluateAntigravitySubagentCall(
   const typeName = String(args.TypeName || args.Role || 'subagent');
 
   // On-demand: the native dialog decides. No approvals are read or recorded and no attempt is counted.
-  if (mode === 'on-demand') {
+  // Exception: under Antigravity auto-approve (permission preset TURBO, tool permission always-proceed) that dialog is
+  // approved without being shown, so an `ask` would run the stronger model unapproved. Then on-demand takes the choice
+  // flow below (override, approvals, pull fallback, deny), whatever JEV_ELEVATION says, and marks its decisions.
+  const onDemandAutoApprove = mode === 'on-demand' && detectAntigravityAutoApprove();
+  if (mode === 'on-demand' && !onDemandAutoApprove) {
     return {
       decision: 'ask',
       reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' (tier '${rankToTierName(requestedRank)}'), above the session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
       elevation: 'asked'
     };
   }
+  const autoApproveMark = onDemandAutoApprove ? { autoApproveWarning: true as const } : {};
 
   // Check explicit override in user prompt
   if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
-    return { decision: 'allow', elevation: 'instructed' };
+    return { decision: 'allow', elevation: 'instructed', ...autoApproveMark };
   }
 
   // Check covering approval
@@ -808,11 +921,14 @@ export function evaluateAntigravitySubagentCall(
     return {
       decision: 'allow',
       elevation: 'approved',
-      approvalScope: approval.scope
+      approvalScope: approval.scope,
+      ...autoApproveMark
     };
   }
 
-  const elevationMode = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
+  const elevationMode = onDemandAutoApprove
+    ? 'choice'
+    : deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
 
   if (elevationMode === 'dialog') {
     // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.
@@ -841,92 +957,20 @@ export function evaluateAntigravitySubagentCall(
     };
   }
 
-  // Choice mode (default):
-  const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-  let pullFallback: 'record_failed' | 'claim_lost' | undefined;
-  if (approvalStore && input.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
-    const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
-    if (typeof deniedAtMs === 'number') {
-      // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
-      let answerStepIdx: number | null = null;
-      let answerQuestionIdx: number | null = null;
-      let consumedKeys: string[] = [];
-      try {
-        answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
-        answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
-        consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
-      } catch {
-        // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
-        answerStepIdx = null;
-        answerQuestionIdx = null;
-        consumedKeys = [];
-      }
-      const pull = pullElevationAnswerDetailed(
-        input.transcriptPath,
-        requestedModel,
-        deniedAtMs,
-        answerStepIdx,
-        answerQuestionIdx,
-        consumedKeys
-      );
-      if (pull?.approved && pull.scope) {
-        // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
-        // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
-        // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
-        // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
-        // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
-        // allows.
-        const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
-        const keys = pull.answerKey ? [pull.answerKey] : undefined;
-        let stored = false;
-        let claimed = false;
-        try {
-          if (typeof approvalStore.recordAndClaim === 'function') {
-            const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
-            stored = res.stored === true;
-            claimed = stored && res.approval !== null;
-          } else {
-            stored = approvalStore.record(sessionId, pulled, keys) === true;
-            claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
-          }
-        } catch {
-          stored = false;
-          claimed = false;
-        }
-        if (claimed) {
-          return {
-            decision: 'allow',
-            elevation: 'approved',
-            approvalScope: pull.scope,
-            pullFallback: true
-          };
-        }
-        pullFallback = stored ? 'claim_lost' : 'record_failed';
-      }
-    }
-  }
-
-  approvalStore?.deny(sessionId, requestedModel, nowMs);
-  // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
-  // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
-  const baseReason = buildElevationReason({
-    typeName,
+  // Choice mode (default), and on-demand under auto-approve.
+  const choice = resolveChoiceElevation({
+    approvalStore,
+    sessionId,
     requestedModel,
+    typeName,
     sessionCeilingTier,
-    isOrchestrator
+    isOrchestrator,
+    nowMs,
+    transcriptPath: input.transcriptPath,
+    promptHash,
+    signature
   });
-  const reason =
-    count >= 3
-      ? `${baseReason} This is attempt ${count} for the same delegation: stop retrying '${requestedModel}'. ` +
-        `Proceed with an explicit Model: "${sessionCeilingTier}", or ask the user again with ask_question.`
-      : baseReason;
-  return {
-    decision: 'deny',
-    reason,
-    elevation: 'denied',
-    attemptCount: count,
-    ...(pullFallback ? { pullFallback } : {})
-  };
+  return onDemandAutoApprove ? { ...choice, ...autoApproveMark } : choice;
 }
 
 const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';

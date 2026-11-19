@@ -1850,3 +1850,173 @@ describe('Antigravity elevation never asks in choice and clamp modes (auto-appro
     });
   });
 });
+
+describe('Antigravity on-demand elevation under auto-approve', () => {
+  let testDir = '';
+  let savedHome: string | undefined;
+  let approvals: ApprovalStore;
+
+  const proCall = (overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
+    conversationId: 'c-ondemand',
+    lastUserInput: 'run subagent on pro',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'solve it', Model: 'pro' } },
+    ...overrides
+  });
+
+  const writeHomeJson = (rel: string, body: string) => {
+    const file = path.join(testDir, 'home', rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  const turbo = () =>
+    writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO' }));
+
+  const sessionFiles = () => {
+    const dir = path.join(testDir, 'sessions');
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  };
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ondemand-test-'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(testDir, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const run = (input: AntigravityHookInput, now = 1000, extra: Record<string, unknown> = {}) =>
+    evaluateAntigravitySubagentCall(input, {
+      approvals,
+      sessionModelOverride: 'gemini-3.8-flash-low',
+      mode: 'on-demand',
+      now: () => now,
+      ...extra
+    });
+
+  describe('auto-approve detected (TURBO preset)', () => {
+    it('denies attempts 1..3 with the warning and never asks', () => {
+      turbo();
+      const decisions = [1, 2, 3, 4].map((n) => run(proCall(), 1000 + n * 50));
+      for (const d of decisions) {
+        expect(d.decision).toBe('deny');
+        expect(d.elevation).toBe('denied');
+        expect(d.autoApproveWarning).toBe(true);
+        expect(d.reason).toContain('[jev-elevate:pro]');
+      }
+      expect(decisions.map((d) => d.attemptCount)).toEqual([1, 2, 3, 4]);
+      expect(decisions[0].reason).not.toContain('stop retrying');
+      expect(decisions[1].reason).not.toContain('stop retrying');
+      expect(decisions[2].reason).toContain('stop retrying');
+      expect(decisions[2].reason).toContain('Model: "flash"');
+    });
+
+    it('also detects toolPermission always-proceed', () => {
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'always-proceed' }));
+      const d = run(proCall());
+      expect(d.decision).toBe('deny');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('ignores JEV_ELEVATION modes: neither dialog nor clamp can return ask or allow here', () => {
+      turbo();
+      for (const elevationMode of ['dialog', 'clamp'] as const) {
+        const d = run(proCall(), 1000, { elevationMode });
+        expect(d.decision).toBe('deny');
+        expect(d.overwrite).toBeUndefined();
+        expect(d.autoApproveWarning).toBe(true);
+      }
+    });
+
+    it('honours a late "Yes, once" answer once and does not replay it', () => {
+      turbo();
+      const transcriptFile = path.join(testDir, 'transcript.jsonl');
+      const nowMs = 1_000_000;
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"call_q","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow expert?"]}}]}\n' +
+          '{"step_index":2,"type":"GENERIC","toolCallId":"call_q","content":"A1: Yes, once"}\n'
+      );
+      const empty = path.join(testDir, 'empty.jsonl');
+      fs.writeFileSync(empty, '');
+      const d1 = run(proCall({ transcriptPath: empty }), nowMs);
+      const d2 = run(proCall({ transcriptPath: empty }), nowMs + 1000);
+      expect(d1.decision).toBe('deny');
+      expect(d2.decision).toBe('deny');
+
+      const d3 = run(proCall({ transcriptPath: transcriptFile }), nowMs + 2000);
+      expect(d3.decision).toBe('allow');
+      expect(d3.elevation).toBe('approved');
+      expect(d3.approvalScope).toBe('once');
+      expect(d3.pullFallback).toBe(true);
+      expect(d3.autoApproveWarning).toBe(true);
+
+      const d4 = run(proCall({ transcriptPath: transcriptFile }), nowMs + 3000);
+      expect(d4.decision).toBe('deny');
+      expect(d4.autoApproveWarning).toBe(true);
+      expect(d4.reason).toContain('stop retrying');
+    });
+
+    it('honours an explicit pro instruction in the prompt, as choice mode does', () => {
+      turbo();
+      const d = run(proCall({ lastUserInput: 'use gemini pro for this' }));
+      expect(d.decision).toBe('allow');
+      expect(d.elevation).toBe('instructed');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('leaves a call within the ceiling unchanged', () => {
+      turbo();
+      const call = proCall({ toolCall: { id: 't2', name: 'invoke_subagent', args: { TypeName: 'w', Prompt: 'p', Model: 'flash' } } });
+      expect(run(call).decision).toBe('pass');
+    });
+  });
+
+  describe('no auto-approve', () => {
+    it('asks as before with no approval-store writes and no attempt counted', () => {
+      for (const n of [1, 2, 3, 4]) {
+        const d = run(proCall(), 1000 + n);
+        expect(d.decision).toBe('ask');
+        expect(d.elevation).toBe('asked');
+        expect(d.autoApproveWarning).toBeUndefined();
+        expect(d.attemptCount).toBeUndefined();
+      }
+      expect(sessionFiles()).toEqual([]);
+    });
+
+    it('asks for a non-turbo preset', () => {
+      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_DEFAULT' }));
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'ask' }));
+      const d = run(proCall());
+      expect(d.decision).toBe('ask');
+      expect(d.autoApproveWarning).toBeUndefined();
+    });
+
+    it('does not honour a prompt override or a stored approval: the dialog decides', () => {
+      approvals.record('c-ondemand', { model: 'pro', scope: 'session', created_at: 1000 });
+      const d = run(proCall({ lastUserInput: 'use gemini pro for this' }));
+      expect(d.decision).toBe('ask');
+      expect(d.elevation).toBe('asked');
+    });
+  });
+
+  describe('malformed config', () => {
+    it('asks and does not throw for malformed or non-object JSON', () => {
+      for (const body of ['{not json', '', '[]', 'null', '"AGENT_PERMISSION_PRESET_TURBO"']) {
+        writeHomeJson('.gemini/config/config.json', body);
+        writeHomeJson('.gemini/antigravity-cli/settings.json', body);
+        const d = run(proCall());
+        expect(d.decision).toBe('ask');
+        expect(d.autoApproveWarning).toBeUndefined();
+      }
+      expect(sessionFiles()).toEqual([]);
+    });
+  });
+});

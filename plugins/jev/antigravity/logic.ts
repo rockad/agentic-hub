@@ -1166,7 +1166,8 @@ export function flushPendingServed(
   logFn: (entry: Record<string, unknown>) => void,
   homedir = jevHomeDir(),
   nowMs = Date.now(),
-  clock: () => number = Date.now
+  clock: () => number = Date.now,
+  lockWaitMs = PENDING_SERVED_LOCK_WAIT_MS
 ): void {
   if (!sessionId) return;
   const file = pendingServedFile(sessionsDir, sessionId);
@@ -1260,7 +1261,7 @@ export function flushPendingServed(
           // logging is best-effort
         }
       },
-      { waitMs: PENDING_SERVED_LOCK_WAIT_MS }
+      { waitMs: lockWaitMs }
     );
   } catch {
     // fail-open
@@ -1529,7 +1530,8 @@ export function claimTurnRecommendation(
 export function commitAntigravityTurn(
   sessionsDir: string,
   sessionId: string | undefined | null,
-  state: AntigravityTurnState
+  state: AntigravityTurnState,
+  lockWaitMs = TURN_LOCK_WAIT_MS
 ): PendingRecommendationCall[] {
   if (!sessionId) return [];
   const lock = turnLock(sessionsDir, sessionId);
@@ -1552,7 +1554,7 @@ export function commitAntigravityTurn(
       () => {
         // lock busy: written unlocked below
       },
-      { waitMs: TURN_LOCK_WAIT_MS }
+      { waitMs: lockWaitMs }
     );
     if (taken) return taken;
   } catch {

@@ -52,9 +52,11 @@ jq '. + {"clarify-require-tool-call": {"enabled": true, "Stop": [{"type": "comma
 
 What the hook does:
 - It acts only when a reply ends without a tool call (`terminationReason: "NO_TOOL_CALL"`) right after a `## Question N` heading in a clarify session. It then returns `{"decision":"continue", ...}`.
-- A clarify session starts at a `/clarify` (or alias, any case) command, a `Target resolved:` line, an `Identified N orthogonal` or `Decomposing into N orthogonal` line, or an `ask_question` call tagged `[Question N of M]`.
-- It ends at a `Decision Table` heading (any case, optional number prefix or `Final`, as a heading or bold line) that is the whole reply, once the last question (`N = M`) has been asked. A table recap in the middle of a series does not end it. Outside the session the hook stays silent, and headings inside fenced code blocks are ignored.
+- A clarify session starts at a `/clarify` (or alias, any case) command, a `Target resolved:` line, an `Identified N orthogonal` or `Decomposing into N orthogonal` line, or an `ask_question` call tagged `[Question N of M]` or `[Fork N of M]`. Any mention of the command arms it, including in unrelated prose.
+- It ends at a `Decision Table` heading (any case; optional number, emoji, `Final`, quote marker or bold) in a reply with no `## Question` heading, once the last question has been asked (`N >= M`), or when the closing sections (`Final Architecture Artifact`, `Gated Execution`) show the run ended early. `Fork map revised: N → M` updates the total. A table recap in the middle of a series does not end it.
+- Outside the session the hook stays silent. Headings inside fenced code blocks are ignored (CommonMark fence rules, CRLF handled). Only `## Question N (of M)` or `## Question N —` headings count.
 - Known gap: after an abandoned clarify (no `Decision Table`), an unrelated reply with a `## Question N (of M)` heading can still trigger the hook (#82).
+- Tests set `CLARIFY_HOOK_STRICT=1` so a broken jq program exits 3 instead of failing open. Normal use never sets it.
 - It cannot loop, because it stays silent while `continuationActive` is true.
 - It fails open (returns `{}`) if `jq` or the transcript is missing.
 - It needs `bash` and `jq`. It takes about 15 ms on a typical transcript and about 200 ms on an 11 MB one.

@@ -4,6 +4,7 @@
 #
 # Requires: bash, jq, grep. Exits non-zero when any case fails.
 
+# shellcheck disable=SC2016  # jq programs and literal backticks are single-quoted on purpose
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,13 +30,16 @@ record() { # record <ok|x> <message>; counters live in files because cases run o
 
 # run_hook <name> <expect: continue|silent> [extra payload jq filter] < transcript
 run_hook() {
-  local name="$1" expect="$2" extra="${3:-.}" file="$tmp/$1.jsonl" out got=silent
+  local name="$1" expect="$2" extra="${3:-.}" file="$tmp/$1.jsonl" out got=silent rc
   cat > "$file"
+  # CLARIFY_HOOK_STRICT makes a broken jq program exit 3 instead of failing open, so a
+  # "silent" expectation cannot pass just because the hook crashed.
   out="$(jq -nc --arg p "$file" '{terminationReason: "NO_TOOL_CALL", transcriptPath: $p}' \
-    | jq -c "$extra" | bash "$hook")"
+    | jq -c "$extra" | CLARIFY_HOOK_STRICT=1 bash "$hook")"
+  rc=$?
   if [ "$(printf '%s' "$out" | jq -r '.decision // ""')" = "continue" ]; then got="continue"; fi
-  if [ "$got" = "$expect" ]; then record ok "PASS $name"
-  else record x "FAIL $name: expected $expect, got $got ($out)"; fi
+  if [ "$rc" -eq 0 ] && [ "$got" = "$expect" ]; then record ok "PASS $name"
+  else record x "FAIL $name: expected $expect, got $got (exit $rc, $out)"; fi
 }
 
 # run_checker <name> <expected failed count> < transcript
@@ -111,13 +115,46 @@ done
 # 20. ~~~ does not close a backtick fence.
 { user "/clarify storage"; reply "$(printf '%s\n~~~\n## Question 2 (of 4) — Naming\n%s' "$BT" "$BT")"; } | run_hook 20-tilde-does-not-close-backtick silent
 
-# 21. one very large reply must stay fast (the hook has a 5 s timeout).
-{ user "/clarify storage"; jq -nc '{type: "PLANNER_RESPONSE", content: ([range(40000) | "line \(.)"] | join("\n"))}'; } > "$tmp/big.jsonl"
-start=$SECONDS
-out="$(jq -nc --arg p "$tmp/big.jsonl" '{terminationReason: "NO_TOOL_CALL", transcriptPath: $p}' | bash "$hook")"
-took=$((SECONDS - start))
-if [ "$took" -lt 3 ] && [ "$out" = "{}" ]; then record ok "PASS 21-large-reply-fast (${took}s)"
-else record x "FAIL 21-large-reply-fast: ${took}s, output $out"; fi
+# 21. a series that ends before the last fork still closes: retired fork, then early stop.
+Q4OF5=$'## Question 4 (of 5) — Rollout\n\nWhich rollout?'
+REV=$'Fork map revised: 5 → 4 (retired the rollout fork).\n\n### 1. Decision Table\n\n| # | Topic |\n|---|---|\n| 1 | Storage |'
+{ user "/clarify x"; reply_ask "$Q4OF5" "Question 4 of 5"; user "B, retire fork 5"; reply "$REV"; user "unrelated FAQ"; reply "$FAQ"; } \
+  | run_hook 21a-retired-fork-closes silent
+EARLY=$'### 1. Decision Table\n\n| # | Topic |\n|---|---|\n| 1 | Storage |\n\n### 2. Final Architecture Artifact\n\nThe design.\n\n### 4. Gated Execution Transition\n\nGo?'
+{ user "/clarify x"; reply_ask "$Q1BARE" "Question 2 of 5"; user "enough, give me the table"; reply "$EARLY"; user "unrelated FAQ"; reply "$FAQ"; } \
+  | run_hook 21b-early-stop-closes silent
+# 22. CRLF replies: a heading after a closed fence still counts.
+{ user "/clarify x"; reply "$(printf 'Example:\r\n\r\n%smd\r\n## Question 9 (of 9) — x\r\n%s\r\n\r\n## Question 1 (of 3) — Storage\r\n' "$BT" "$BT")"; } \
+  | run_hook 22-crlf-heading-after-fence continue
+# 23. more command and closing wordings.
+{ user "run (/clarify) on storage"; reply "$Q1BARE"; } | run_hook 23a-paren-command continue
+{ user 'run `/clarify` on storage'; reply "$Q1BARE"; } | run_hook 23b-backtick-command continue
+for h in '## 📋 Decision Table' '## 1 · Decision Table' '> ### 1. Decision Table' '## Decisions Table'; do
+  n=$((n + 1))
+  { finished; reply "$h"; user "unrelated"; reply "$SEP"; } | run_hook "23.$n-closing-wording" silent
+done
+# 24. tag and heading disagree on M: the larger M wins, so a recap does not close early.
+{ user "/clarify x"; reply_ask $'## Question 3 (of 4) — Naming\n\nWhich name?' "Question 3 of 3"; user "A"; reply "$RECAP"; user "go on"; reply $'## Question 4 (of 4) — Rollout'; } \
+  | run_hook 24-tag-heading-m-disagree continue
+# 25. positive controls for the "silent" cases: the same transcripts minus the guard must continue.
+{ user "write me an interview FAQ"; reply "$FAQ"; user "/clarify x"; reply "$FAQ"; } | run_hook 25a-control-faq-in-clarify continue
+{ user "/clarify storage"; reply "$(printf 'The format looks like this:\n\n## Question 2 (of 4) — Naming\n')"; } | run_hook 25b-control-unfenced-heading continue
+# 26. big replies stay fast in every shape (the hook has a 5 s timeout); armed session, worst case.
+big() { # big <name> <jq expression producing one line per $i> <lines>
+  { user "/clarify storage"; jq -nc --argjson n "$3" "{type: \"PLANNER_RESPONSE\", content: ([range(\$n) | . as \$i | $2] | join(\"\\n\"))}"; } > "$tmp/$1.jsonl"
+  local start=$SECONDS rc
+  jq -nc --arg p "$tmp/$1.jsonl" '{terminationReason: "NO_TOOL_CALL", transcriptPath: $p}' | CLARIFY_HOOK_STRICT=1 bash "$hook" >/dev/null
+  rc=$?
+  local took=$((SECONDS - start))
+  if [ "$rc" -eq 0 ] && [ "$took" -lt 4 ]; then record ok "PASS 26-fast-$1 (${took}s)"
+  else record x "FAIL 26-fast-$1: ${took}s, exit $rc"; fi
+}
+big plain '"line \($i)"' 40000
+big hashes '"# line \($i)"' 40000
+big bold '"**bold \($i)**"' 40000
+big quotes '"> quote \($i)"' 40000
+big fences '"```"' 40000
+big headings '"## Question \($i) (of 9) — x"' 20000
 
 # The offline checker must agree on the same cases.
 { user "write me an interview FAQ"; reply "$FAQ"; } | run_checker 3-no-clarify-faq 0

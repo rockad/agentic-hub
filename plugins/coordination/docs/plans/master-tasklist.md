@@ -9,16 +9,16 @@ The full text of the old tasklist (decision records, workstream checklist, every
 ### 0.1 Start here (copy this into a new Antigravity or Claude Code session)
 
 ```
-You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way. Ten of the 19 S1 streams are merged to main: SCAF (PR #32), PG (PR #37), BKP (PR #42), STORE (PR #61), OBS (PR #62), and on 2026-11-17 AUTH (PR #65), STATE (PR #67), MCP (PR #68), A2A (PR #69) and ADMIN (PR #71), together with the image-build fix (PR #70) and a CI job that builds and starts the image (PR #74). Waves W1 to W4b are complete. Wave W5a started on 2026-11-17: S1-ID is being built in worktree agentic-hub-wt-id (branch feat/coordination-id from main `503fb93`); S1-WAKE follows, stacked on feat/coordination-id (worktree agentic-hub-wt-wake, branch feat/coordination-wake). The docs were reorganised on 2026-11-15 into two live documents. Section 0.7 says how to continue without the original session. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
+You are continuing the A2A coordination plugin work (repo agentic-hub, folder plugins/coordination). Planning is done and S1 implementation is under way. Ten of the 19 S1 streams are merged to main: SCAF (PR #32), PG (PR #37), BKP (PR #42), STORE (PR #61), OBS (PR #62), and on 2026-11-17 AUTH (PR #65), STATE (PR #67), MCP (PR #68), A2A (PR #69) and ADMIN (PR #71), together with the image-build fix (PR #70) and a CI job that builds and starts the image (PR #74). Waves W1 to W4b are complete. Wave W5a started on 2026-11-17 and is paused since 2026-11-19 on the user's word until the jev work (PR #77 and its T24c re-check) is done: do not resume it before then. S1-ID is built and pushed (feat/coordination-id at `be74a9c`, worktree agentic-hub-wt-id); S1-WAKE is built and rebased onto it (feat/coordination-wake at `04231ad`, local only in worktree agentic-hub-wt-wake, needs a force-with-lease push), and decision Z18 is not built yet. The docs were reorganised on 2026-11-15 into two live documents. Section 0.7 says how to continue without the original session. The plan is docs/plans/master-plan.md (streams in section 4, waves and workflow in section 13); the status and todo are docs/plans/master-tasklist.md (this file). Check a PR's state with `gh pr view`, not with `git merge-base --is-ancestor`: squash-merged PRs report "not merged" there.
 1. Read plugins/coordination/AGENTS.md, docs/README.md, then this file, sections 1 to 5.
 2. Verify the state before acting: git fetch; git log --oneline -8 origin/main; git status; gh pr list. Check every claim in a doc against its evidence file. The S1 entry gate is satisfied (2026-11-11, docs/research/spike-results-2026-11-10-sp3-sp4.md); the user approved the S1 kickoff on 2026-11-11 (Y10). The decision tables Y1 to Y10 and Z1 to Z9 are final (master-plan section 12).
 3. Work only in your own git worktree: git worktree add ../agentic-hub-wt-<you> -b <branch> origin/main. Never commit in ~/projects/agentic-hub (it is shared with another session) and never touch the worktrees of a running build (agentic-hub-wt-id, agentic-hub-wt-wake). Stage explicit paths only. Never push main, tag or release without the user's go.
-4. First action: read section 0.7 (resuming without the original session), then check where W5a stands (gh pr list; read-only git status and git log in the worktrees agentic-hub-wt-id and agentic-hub-wt-wake). S1-ID and S1-WAKE are built one after the other on stacked branches; open one PR per stream against the previous branch, retarget to main as each earlier one merges, and merge only on the user's word. The brief is in section 0.7 ("W5a brief"). Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
+4. First action: read section 0.7 (resuming without the original session), then check where W5a stands (gh pr list; read-only git status and git log in the worktrees agentic-hub-wt-id and agentic-hub-wt-wake). S1-ID and S1-WAKE are built on stacked branches; follow the resume steps of section 0.7 (Z18, suites, push), then open one PR per stream against the previous branch, retarget to main as each earlier one merges, and merge only on the user's word. The brief is in section 0.7 ("W5a brief"). Tests use throwaway secrets; running the real stack needs two secret files from the user at W6 (database password and dump_ro secret, each mode 0600 and outside the repo; ask for them, never print or create their values). Then take the first unticked item of section 4 that needs no user input. Ask the user before anything marked (user): agy runs, attended tests, the <storage-host> crontab, hygiene items and the other user-only actions.
 5. Decisions in the plan's decision tables are final: do not reopen them. Anything the docs leave open stays marked [design] or [unverified]; do not invent it.
 6. Label every statement verified, reported or unverified. Never print a secret or a token. Use vertical lists, absolute dates, and the editor's Edit tool for file changes.
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
 8. When you finish a step: update sections 1 to 4 of this file (status, milestones, stream tables, todo), commit, then tell the user what changed and what is next. Docs updates go straight to main (user decision, 2026-11-15; no PR for docs); stream code goes one PR per stream.
-9. Quota rule (user): when a workflow finishes, or when the weekly quota nears its limit, stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
+9. Quota rule (user): when a workflow finishes, or when the weekly quota reaches 65 percent used (keep at least 30 percent free), stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
 ```
 
 ### 0.2 Read in this order
@@ -58,7 +58,7 @@ You are continuing the A2A coordination plugin work (repo agentic-hub, folder pl
 - A background Claude Code job has `CLAUDE_CODE_SESSION_ATTENDED=0`, which breaks the wake-listener tests; those need an attended session.
 - Listener owner pid is `$CLAUDE_PID`, not `$PPID`. Details are in `docs/research/spike-results-2026-11-05-sp1.md`.
 
-### 0.7 Resuming without the original session (state of 2026-11-17)
+### 0.7 Resuming without the original session (state of 2026-11-19)
 
 Why this section exists: the main session that runs the waves may stop (quota). Anything not written here or in git is lost. Labels: [verified] was observed by the main session, [reported] comes from a build agent.
 
@@ -102,17 +102,19 @@ W4a and W4b are done (decisions Z6 and Z10 to Z16). Short note of what was built
 - S1-A2A: wire tests against the pinned spec commit `4735f48`; front desk per Z13; TCK allowlist reviewed by the user (Z16) and the TCK CI job enabled.
 - S1-ADMIN: admin socket and `a2a-coord key|review|status|card|db`; `key create` requires `--expires` (Z14).
 
-W5a parked 2026-11-18 (weekly quota rule) [verified]. Resume in this order:
+W5a parked 2026-11-18 (weekly quota rule) [verified]. Resumed on 2026-11-19 and paused again the same day on the user's word ("pause until the jev work is done"): resume only after the jev work (PR #77 and the T24c re-check by Antigravity) is finished. State of 2026-11-19, 18:20 UTC [verified]:
 
-1. Both streams are built and independently checked, pushed, no PR yet. Worktrees `agentic-hub-wt-id` and `agentic-hub-wt-wake`, both clean.
-   - S1-ID: `feat/coordination-id` at `be74a9c`. That is `330aa3f` (checker passed all, 1273 passed, 3 skipped) plus the decision Z17 commit (revive, rebind, lifecycle audit, live-only listing; 1283 passed, 3 skipped [reported by its agent]).
-   - S1-WAKE: `feat/coordination-wake` at `cd25787`, built on `330aa3f`, not on `be74a9c` (checker passed all, 1353 passed, 3 skipped). Its open defaults are listed in `docs/specs/wake.md`.
-2. Rebase `feat/coordination-wake` onto `be74a9c` and resolve conflicts in `mcp/` and `identity/` (WAKE added confirm calls; Z17 changed binding and revive).
-3. Decision Z18 (user, 2026-11-18): start the TTL sweep (`service.run_forever`) in the app lifespan. When adding it:
-   - make the sweep end idle sessions through `IdentityService.end_idle`, so the end hooks fire (WAKE answers 410) and `session_ended{via: idle_ttl}` is written. Today `CoordinationService.sweep` calls `Directory.end_idle`, which does neither.
+1. Both streams are built and independently checked, no PR yet.
+   - S1-ID: `feat/coordination-id` at `be74a9c`, pushed, worktree `agentic-hub-wt-id` clean. That is `330aa3f` (checker passed all, 1273 passed, 3 skipped) plus the decision Z17 commit (revive, rebind, lifecycle audit, live-only listing; 1283 passed, 3 skipped [reported by its agent]).
+   - S1-WAKE: rebased onto `be74a9c` on 2026-11-19 (step 2 done). The rebased commit is `04231ad`, **local only** in worktree `agentic-hub-wt-wake` (tree clean); `origin/feat/coordination-wake` is still the old `cd25787` built on `330aa3f`. Pushing it needs `git push --force-with-lease`. Only two docs files conflicted (`docs/specs/identity.md`, `docs/specs/mcp.md`), resolved by keeping the S1-ID Z17 text and adding the S1-WAKE "Done by" notes; the code merged without conflicts. The suite has **not** been run on `04231ad`: the run was stopped for the pause before it finished (its test container was removed). Its open defaults are listed in `docs/specs/wake.md`.
+2. Done 2026-11-19 (see step 1): rebase of `feat/coordination-wake` onto `be74a9c`.
+3. Decision Z18 (user, 2026-11-18, recorded in master-plan 12.3 on 2026-11-19): start the TTL sweep (`service.run_forever`) in the app lifespan. Not started in code. Planned shape, as a new commit on `feat/coordination-wake`:
+   - `CoordinationService.bind_idle_ender(fn)` (the same pattern as `wake.bind`, since `IdentityService` is built after the task service in `build_server_app`); `sweep` calls the bound `IdentityService.end_idle` and falls back to `Directory.end_idle` only when nothing is bound. Today `sweep` calls `Directory.end_idle`, which fires no end hooks and writes no `session_ended{via: idle_ttl}` row.
+   - the lifespan in `app.py` starts `service.run_forever` as a task after `admin.start()` and cancels it first in `finally`, before `table.begin_shutdown()`. There is no sweep-interval setting; `run_forever` defaults to 60 s.
    - fix `cli/render.py`, which still prints "(null until S1-WAKE)".
-   - record Z18 in master-plan 12.3.
-4. Re-run both suites with Docker, push, then open PRs: S1-ID against `main`, S1-WAKE against `feat/coordination-id`. Merge on the user's word.
+   - tests: through the real wiring, an idle session with a parked listener is ended by a sweep, the listener gets `410`, and one `session_ended` row with `via` `idle_ttl` is written; the lifespan starts and stops the sweep task.
+   - update the "Not started" and "Gap, handed on" sub-bullets of `docs/specs/identity.md` section 6 and the docstring of `IdentityService.end_idle`.
+4. Re-run both suites with Docker (`A2A_TEST_REQUIRE_DOCKER=1 uv run pytest -q` in `plugins/coordination/servers/coordination`), push (WAKE with `--force-with-lease`), then open PRs: S1-ID against `main`, S1-WAKE against `feat/coordination-id`. Merge on the user's word.
 5. Then the end-to-end wake test with the user (paused at step 1). Helper scripts are in `~/.config/a2a-coord/` (`register.sh`, `listen.sh`, `pending.sh`, `send.sh`, `probe.sh`). The flow: register a session, park a listener, the peer sends a task that is held for review, the user releases it, and the listener wakes with the count.
 
 W5a brief (started 2026-11-17; the brief for the account or Antigravity session that runs it):
@@ -123,21 +125,30 @@ W5a brief (started 2026-11-17; the brief for the account or Antigravity session 
 4. Handed over from earlier streams: the rest of S1-ID, wake confirmation (S1-WAKE), parked-listener close on key revoke and the `status` listener and budget fields (S1-WAKE).
 5. Per stream: scope = its own module plus `app.py` mounting, `config.py`, tests, `docs/specs/`; nothing under `docs/plans` (status goes in this file, committed to `main`). One PR per stream, the WAKE PR opened against the ID branch and retargeted to `main` when ID merges. Merge only on the user's word.
 6. After each stream: update sections 0.1, 1, 3.2 and 4.2 of this file and commit to `main`. Next wave: W5b (CLAUDE and AGY, then the user's live checks), master-plan section 13.
-- Peers: `claude-cp` (Remote Control, built SCAF, PG and BKP; offline most of the time), `ce-research`, `jev-update`. Do not edit their branches. The scratch status file `~/scratch/a2a-spikes/s1-todo.md` on <workstation> is only an agent log; this file is the status.
+- Ownership (user, 2026-11-19): the background Claude Code session named `coordination` that took over on 2026-11-19 is the main driver of this work, and no other session takes it over. The session `cognitive-engine` is responsible for the work in the `cognitive-engine` repository and messages the main driver before changing an interface shared with this plugin (for example the LT status adapter, D13) [verified, its reply]. The earlier `coordination` session (it ran W3a to W5a) handed over on 2026-11-19 and stopped; its handover is recorded below.
+- Handover of 2026-11-19 from the earlier session [reported by it, checked at its reply time]:
+  - Its two W5a workflows have finished; no agents, monitors, quota crons, coordination containers or volumes are left, and nothing listens on 18120 (the A8c stub is not running). The workflow script `coordination-s1-w5a.js` (args `{"streams":["wake"]}` or `["id"]`) lives outside the repo, in that session's Claude Code project directory, beside `coordination-s1-w4a.js` and `coordination-tck-review.js`.
+  - Its worktrees are only `agentic-hub-wt-id` and `agentic-hub-wt-wake`; the other `agentic-hub-wt-*` trees belong to the Jev and `ce-research` sessions. Open PRs #77 and #80 are Jev work.
+  - Local files on <workstation>, outside the repo, kept for the next run (user decision): `~/.config/a2a-coord/secrets/a2a_db_password` (throwaway, mode 0600, never print it), `config/cards.yaml` (throwaway card), the helper scripts `register.sh`, `listen.sh`, `pending.sh`, `send.sh`, `probe.sh`, and `handrun-steps.md` (stale: the ADMIN hand run passed and is recorded in `docs/specs/admin.md` section 11). The `keys/` directory was deleted on purpose, so the end-to-end test needs new keys.
+  - End-to-end wake test, paused at step 1 (user): create the harness and peer keys with `a2a-coord key create` in the user's own terminal and save each secret to `~/.config/a2a-coord/keys/*.key` with `(umask 077; cat > file)`; then `register.sh`, `listen.sh`, `send.sh`; the user releases the held task with `a2a-coord review release`; `listen.sh` returns `200` and a count.
+  - User decisions not written down before: park agent work at 65 percent weekly quota used, keeping at least 30 percent free (this replaces the 3 percent rule of item 9 in section 0.1); no periodic quota-check cron; PR branches are rebased, not merged.
+  - The S1-WAKE open defaults stand as built until the user says otherwise (the user did not answer): anti-loop state in memory; the `200` body is the pending count clamped to 1 to 9999; `429` above 30 parks in 60 s; re-check every 20 s; the p99 gate measured at 100 wakes per second, not a 200-wake burst. They go to the user with the WAKE PR (`docs/specs/wake.md`).
+  - Still waiting on the user: merge words for the ID and WAKE PRs, the end-to-end wake test, A8c in agy (not blocking), and the `asyncRewake` and GUI-launched `A2A_API_KEY` checks (need the S1-CLAUDE hooks).
+- Peers: `claude-cp` (Remote Control, built SCAF, PG and BKP; offline most of the time), `ce-research`, `jev-updates`, `cognitive-engine`. Do not edit their branches. The scratch status file `~/scratch/a2a-spikes/s1-todo.md` on <workstation> is only an agent log; this file is the status.
 - Antigravity pickup: the user starts agy; a helper never drives or probes it (A8c, hooks and any live agy check are the user's). The session model is the ceiling for subagents; `pro` needs the user's approval.
 
-## 1. Status at a glance (as of 2026-11-17)
+## 1. Status at a glance (as of 2026-11-19)
 
 - Stage S0 (spikes) is closed for the S1 entry gate (2026-11-11). Open from it: A8c, and two attended tests that run inside S1.
 - Stage S1: 10 of the 19 streams are merged to `main`: SCAF, PG, BKP, STORE, OBS, AUTH, STATE, MCP, A2A and ADMIN. Counted against the streams table in section 3.2 (20 rows, the two S1-TEST rows being one stream); the image fix (PR #70, PR #74) is not a stream. Waves W1 to W4b are complete.
 - All of W4a and W4b merged on 2026-11-17 (PRs #65, #67, #70, #68, #69, #71, #73, #74; list and merge commits in section 0.7). Full suite on the top of the stack before the merges: 1173 passed, 3 skipped; CI "Run Test Suites" passes on each merge commit [verified, main session]. The new image CI job (PR #74) builds both images and starts the stack; plain CI had never built the image.
 - The S1-ADMIN hand run (`docs/specs/admin.md` section 11) passed on 2026-11-17, including `/dev/tty` under `docker compose exec -it` [verified, user]. Client compatibility of MCP with Claude Code and agy is still unverified (S1-GATE and the user's live checks).
 - The upstream TCK issue was not posted: both problems are already reported upstream (a2aproject/a2a-tck #202 and #273); the user added a +1 to each.
-- Wave W5a started on 2026-11-17: S1-ID is being built (worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from `503fb93`), S1-WAKE follows stacked on it. No PR yet.
-- Quota: the main session parks agent work when the weekly quota nears its limit (user rule); see section 0.7.
+- Wave W5a started on 2026-11-17 and is **paused** (2026-11-19, the user's word, until the jev work is done). S1-ID is built and pushed (`be74a9c`). S1-WAKE is built and rebased onto it (`04231ad`, local only, suite not yet re-run). Z18 (the sweep in the lifespan) is decided and not built. No PR yet. Resume steps are in section 0.7.
+- Quota: agent work parks at 65 percent weekly used (user rule, section 0.1 item 9). On 2026-11-19 the weekly gauge read 68 percent used [reported by the quota file], so W5a stays parked on quota as well as for the jev work until the weekly reset; resuming earlier needs the user's word.
 - Not started: TEST-skel (planned beside W3a, not done), S1-CLAUDE to S1-GATE (W5b and W6), all of S2, S3, go-live and the later tracks.
 - Docs updates go straight to `main` from 2026-11-15 (user decision, no PR for docs); stream code goes one PR per stream, merged on the user's word.
-- Open for the user: merge words for the S1-ID and S1-WAKE PRs when they are opened, A8c in agy, the attended tests, the W5b and W6 live checks, the secret files at W6, and the user-only items in section 4.7. Two [design] questions are open for S1-ID and get a conservative default (section 0.7); no other design question is open for the agents.
+- Open for the user: merge words for the S1-ID and S1-WAKE PRs when they are opened, A8c in agy, the attended tests, the W5b and W6 live checks, the secret files at W6, and the user-only items in section 4.7. The two S1-ID [design] questions were decided as Z17 and the sweep placement as Z18 (master-plan 12.3); no design question is open for the agents.
 
 ## 2. Milestones
 
@@ -167,7 +178,7 @@ Done:
 
 Planned, in order (a sequence, not dates), with the gate condition of each:
 
-- **S1 remaining waves:** W5a (ID, then WAKE; running), W5b (CLAUDE and AGY, then the user's live checks), W6 (INST, DOC, SEC, TEST full, opus review of SEC).
+- **S1 remaining waves:** W5a (ID, then WAKE; paused until the jev work is done), W5b (CLAUDE and AGY, then the user's live checks), W6 (INST, DOC, SEC, TEST full, opus review of SEC).
 - **S1 exit gate (S1-GATE), dev on <workstation>:** two-way task round trip, Claude idle wake, agy surfacing, API key refusal, quarantine end to end; the `asyncRewake` re-arm and GUI-launched Claude tests pass; a `pg_dump -Fc` backup restores into a scratch Postgres with equal counts; `dump_age_h` shows in `/status`; one opus final verification.
 - **S2 deploy and gate, production on <storage-host>:** API keys and scopes live, cross-host wake works, and the public-listener tests on the loopback 8121 listener pass (R8). S2-LISTEN and the S3-FUZZ run against it come before the S2 gate.
 - **S3 gate, public front door:** quarantine live, rate limits and fuzz pass, honest card, final extension URI, then the user's explicit go. Order after the gate: `a2a-coord expose check` (exit 0), the user flips `A2A_EXPOSURE_STAGE=s3` and restarts, then the user creates the tunnel route. The GL-IMPORT code must be finished before S3-GATE (D36).
@@ -212,8 +223,8 @@ Deliverables and acceptance of each stream are under its heading in [`master-pla
 | S1-MCP | done (W4b) | PR #68, merged 2026-11-17, `552f00d` | S1-AUTH, S1-STATE | 12-18 | checker 12 of 12; client compatibility with Claude Code and agy unverified; handed on: rest of S1-ID, wake confirmation (S1-WAKE); details in `docs/specs/mcp.md` |
 | S1-A2A | done (W4b) | PR #69, merged 2026-11-17, `7444c79` | S1-AUTH, S1-STATE | 16-24 | TCK allowlist reviewed by the user (Z16): 13 entries; TCK gate: 263 cases, 97 passed, 13 failed (all allowed), 153 skipped, 0 blocking, 0 stale [verified]; TCK CI job `.github/workflows/coordination-tck.yml`; front-desk scope per Z13 |
 | S1-ADMIN | done (W4b) | PR #71, merged 2026-11-17, `86069be` | S1-AUTH, S1-STATE | 12-18 | admin socket, `a2a-coord`; lean verification (Z12); key-create scope per Z14; the user's hand run (`docs/specs/admin.md` section 11) passed on 2026-11-17, including `/dev/tty` under `docker compose exec -it` [verified]; handed to WAKE: parked-listener close on revoke and `status` listener and budget fields |
-| S1-ID | building (W5a) | none yet | S1-MCP | 8-12 | worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from `503fb93`; independent check and up to 2 repair rounds; identity, binding, `/sessions`; migration m0003 only if it needs schema; open [design]: unnamed-session form (api 3.5) and whether a resumed ended session revives (conservative default, reported) |
-| S1-WAKE | next (W5a, after ID) | none | S1-ID | 12-18 | worktree `agentic-hub-wt-wake`, branch `feat/coordination-wake`, stacked on `feat/coordination-id`; wake, pending, budget; migration m0004 if it needs schema |
+| S1-ID | built and checked, paused (W5a) | branch `feat/coordination-id`, `be74a9c`, pushed, no PR | S1-MCP | 8-12 | worktree `agentic-hub-wt-id`, branch `feat/coordination-id` from `503fb93`; independent check and up to 2 repair rounds; identity, binding, `/sessions`; migration m0003 only if it needs schema; open [design]: unnamed-session form (api 3.5) and whether a resumed ended session revives (conservative default, reported) |
+| S1-WAKE | built and checked, rebased onto ID, Z18 to build, paused (W5a) | branch `feat/coordination-wake`, `04231ad` local (origin still `cd25787`), no PR | S1-ID | 12-18 | worktree `agentic-hub-wt-wake`, branch `feat/coordination-wake`, stacked on `feat/coordination-id`; wake, pending, budget; migration m0004 if it needs schema |
 | S1-CLAUDE | not started (W5b) | none | S1-WAKE | 6-10 | hooks in `bin/` and `hooks/`; the user runs live checks |
 | S1-AGY | not started (W5b) | none | S1-ID, S1-WAKE | 6-10 | live checks by the user in own agy session; a helper never drives agy |
 | S1-INST | not started (W6) | none | S1-CLAUDE, S1-AGY, S1-ADMIN | 12-18 | the user runs it; the A8c result sets how the plugin is placed |
@@ -301,7 +312,7 @@ Off by default; contract in `docs/specs/status-client.md`. `status_runs` and `st
   - Separator check: `#` and `~` validated across URL query (`%23` for `#`), shell quoting, JSON and Postgres; verdict X1: `#` needs `%23` in URL queries, `~` adopted by user decision 2026-11-10.
 - SP5b follow-up (2026-11-10, non-gating, `docs/research/spike-results-2026-11-10-sp5b-followup.md`, Claude Code's check in its section 7): (a) PASS for the mechanism, (b) PASS, (c) cause UNVERIFIED. The agy-reported items without a saved log are carried as exit tests of S1-PG and S1-BKP (section 4).
 - The docs commits of 2026-11-10 on `main`: `db17ada` (`name#sid8` grammar, separator replaced by `~` in round 4, X1), `946f198` (SP5b pass; the message predates C1: SP5b satisfies the S1 storage gate only), `c17402b` (S1 design items; values replaced by X2 to X5), `3a2bea8` (handoff update; its gate wording and "settled" statements corrected by C1 and C5), `74f6c0e` (round-4 decisions X1 to X5 and corrections C1 to C5).
-- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP merged; no later stream had started; the lost `claude-cp` session left no code beyond these. State 2026-11-15: S1-STORE (PR #61) and S1-OBS (PR #62) merged; the main-session suite on merged `main` gave 313 passed, 3 skipped [verified]. State 2026-11-17: AUTH, STATE, MCP, A2A and ADMIN merged, W5a running; see section 0.7.
+- State 2026-11-14: S1-SCAF, S1-PG and S1-BKP merged; no later stream had started; the lost `claude-cp` session left no code beyond these. State 2026-11-15: S1-STORE (PR #61) and S1-OBS (PR #62) merged; the main-session suite on merged `main` gave 313 passed, 3 skipped [verified]. State 2026-11-17: AUTH, STATE, MCP, A2A and ADMIN merged, W5a running. State 2026-11-19: W5a paused (WAKE rebased locally, Z18 not built); see section 0.7.
 
 ## 4. Todo
 
@@ -328,7 +339,7 @@ Tick a box when it is done and say so in the commit that changes it. Items marke
 - [x] (user) TCK allowlist reviewed and the TCK CI job enabled (Z16, 2026-11-16; PR #69)
 - [x] (user) Upstream TCK issue: the draft was not posted, because both problems are already reported upstream (a2aproject/a2a-tck #202, CORE-SEND-003 has no `expected_error`, and #273, HTTP_JSON-ERR-001 versus SVC-001); the user added a +1 to each (2026-11-17)
 - [x] (user) S1-ADMIN hand run (`docs/specs/admin.md` section 11), all steps passed 2026-11-17
-- [ ] W5a: S1-ID building in `agentic-hub-wt-id` (branch `feat/coordination-id`), then S1-WAKE stacked on it; open one PR each
+- [ ] W5a (paused until the jev work is done): build Z18 on `feat/coordination-wake`, re-run both suites, push WAKE with `--force-with-lease`, open one PR each (section 0.7 steps 3 and 4)
 - [ ] TEST-skel (planned beside W3a, not done; no dependency blocks it)
 
 Main-session steps after each workflow (no user needed):
@@ -355,7 +366,7 @@ Waiting on the user:
 Blocked until their dependencies merge:
 
 - [x] W4b: MCP, then A2A, then ADMIN (merged 2026-11-17)
-- [ ] W5a: ID, then WAKE (running, see above)
+- [ ] W5a: ID, then WAKE (paused, see above)
 - [ ] W5b: CLAUDE and AGY (after WAKE; AGY also after ID)
 - [ ] W6: INST, DOC, SEC suite, TEST full, opus review of SEC, then GATE
 - [ ] S1 exit gate (S1-GATE) passed: two-way task round trip, Claude idle wake, agy surfacing, API key refusal, quarantine end to end

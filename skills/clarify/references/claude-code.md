@@ -1,6 +1,6 @@
 # clarify reference: Claude Code (`AskUserQuestion`)
 
-Read this once before the first question when the `AskUserQuestion` tool exists. The core `SKILL.md` rules still apply on every question, and its Claude Code summary repeats the dialog rules below: the Per-fork invariant, the Same-Reply Invariant, the mandatory tool call rule, the option naming rule, the counter prefix rule and the `→ next:` line.
+Read this once before the first question when the `AskUserQuestion` tool exists. The core `SKILL.md` rules still apply on every question, and the dialog rules below add to them: the Per-fork invariant, the Same-Reply Invariant, the option naming rule, the counter prefix rule and the `→ next:` line.
 
 Uses `AskUserQuestion` with a short `header` and `label`, a self-sufficient `description` and `preview` on every option, and `"multiSelect": false` (strictly required by Claude Code; `preview` renders only on single-select forks). Claude Code may show the user only the dialog, so the dialog carries the argument in addition to the prose step above it:
 

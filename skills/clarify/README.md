@@ -9,7 +9,7 @@ Works in Claude Code, Google Antigravity and OpenCode.
 
 ## Files
 
-- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (per-fork invariant, same-reply invariant, tool-call, naming and counter rules, Mode A step format, after-answer order, style, anti-patterns, gotchas).
+- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (same-reply, per-fork, option naming, counter prefix, locked fork count, terse styles), target resolution, the fork taxonomy, the Mode A step format, the CLI fallback, after-answer order and anti-patterns.
 - `references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`: the dialog format and examples for one harness. The session reads only its own.
 - `references/plain-mode.md`: the Mode B (`/cplain`, `/celi5`) step format, decision table and artifact. Read only in Mode B.
 - `references/closing.md`: the decision table, artifact, workstream table and execution handoff. Read only after the last fork.
@@ -95,3 +95,11 @@ scripts/check-clarify-transcript.sh --format antigravity \
 - Exit codes: `0` all pass, `1` a failure, `2` no clarify questions found, `3` usage error.
 
 Background and test history: `docs/plans/clarify-claude-code-option-explanations.md` and issue #79.
+
+## Relationship to the native `/grill-me`
+
+In Google Antigravity, `/grill-me` is a built-in command that injects the native `<GRILL_ME>` prompt. This skill does not shadow or replace it. It treats `/grill-me` as a trigger and adds exhaustive fork decomposition (no 4-fork cap), codebase pre-flight, prose-first previews, a recommended Option A and a Jev-aware handoff. In Claude Code and OpenCode, where there is no native `/grill-me`, the skill provides the same interview under the same command.
+
+## Keeping the skill light
+
+`SKILL.md` loads in full on every trigger, so it has a line cap enforced in CI by `scripts/check-clarify-skill.sh`, which also checks that the strings the Stop hook and the transcript checker depend on are still present. Add a rule once, in the rules block, not again in an anti-pattern or a note. Put long examples and conditional formats in `references/`.

@@ -1,6 +1,6 @@
 # clarify reference: OpenCode (`question`)
 
-Read this once before the first question when the `question` tool exists. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the mandatory tool call rule, the option naming rule and the counter prefix rule.
+Read this once before the first question when the `question` tool exists. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the option naming rule and the counter prefix rule.
 
 Uses `question` following standard option schema with `Option A:` labels:
 

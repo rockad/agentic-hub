@@ -14,6 +14,8 @@ import {
   editCapableSubagent,
   type ThinkingEffort
 } from '../src/shared.js';
+import { STOP_RETRYING_FROM_ATTEMPT, stopRetryingText } from '../src/core/elevation-text.js';
+import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 
 import { STAGE_RUBRIC_TEXT, TIER_CRITERIA, type ClaudeModelAlias, type JevTier } from '../src/stage-rubric.js';
@@ -766,12 +768,11 @@ export function aliasRemapped(alias: string, env: Record<string, string | undefi
 }
 
 /**
- * The wording of the permission dialog for an elevating call: every one by default, and a repeat in the same
- * prompt under the opt-in clamp (`JEV_ELEVATION=clamp`, see `clampElevation`). It says what each answer does: in Claude Code No cancels the call and stops the turn,
- * and a comment typed with No lets the assistant continue. `clamped` is true only when a clamp ran for the
- * same delegation in this prompt; only then does the reason say that a run on the session model happened.
+ * The wording of the permission dialog for an elevating call (`JEV_ELEVATION=dialog`, and the calls the choice and clamp
+ * flows cannot decide: an unrankable model, a remapped alias). It says what each answer does: in Claude Code No cancels
+ * the call and stops the turn, and a comment typed with No lets the assistant continue.
  */
-export function elevationAskReason(e: Elevation, clamped = false): string {
+export function elevationAskReason(e: Elevation): string {
   if (e.unranked) {
     return (
       `[jev] This delegation asks for model "${e.requested}"${e.sourceNote ?? ''}, which Jev's model catalogue does not know, so Jev cannot tell whether it is stronger than the session model "${e.sessionModel}". ` +
@@ -780,8 +781,7 @@ export function elevationAskReason(e: Elevation, clamped = false): string {
   }
   return (
     `[jev] This delegation asks for model "${e.requested}"${e.sourceNote ?? ''}, stronger than the session model "${e.sessionModel}". ` +
-    `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").` +
-    (clamped ? ` The same delegation already ran on ${e.sessionAlias} earlier in this prompt.` : '')
+    `Yes runs it on ${e.requested}. No cancels the call and stops the turn; type a comment with No to let the assistant continue (for example "continue on ${e.sessionAlias}").`
   );
 }
 
@@ -792,6 +792,18 @@ export type ElevationMode = 'choice' | 'dialog' | 'clamp';
 export function elevationMode(env: Record<string, string | undefined> | undefined): ElevationMode {
   const v = env?.JEV_ELEVATION;
   return v === 'dialog' || v === 'clamp' ? v : 'choice';
+}
+
+/**
+ * Claude Code's permission modes (the `permission_mode` field of every hook input) in which a hook `ask` is answered without
+ * showing the user a dialog: `bypassPermissions` skips permission prompts altogether, and `auto` hands them to a classifier.
+ * The others still show it or never approve it: `default` and `plan` show it, `acceptEdits` approves file edits only (an
+ * Agent call still prompts), `dontAsk` denies whatever is not pre-approved. Used for a warning only (`auto_approve_warning`
+ * on the decision row of a dialog-mode `ask`); it never changes a decision. An unknown or missing value is not auto-approve.
+ */
+const AUTO_APPROVE_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'auto']);
+export function isAutoApprovePermissionMode(permissionMode: unknown): boolean {
+  return typeof permissionMode === 'string' && AUTO_APPROVE_PERMISSION_MODES.has(permissionMode);
 }
 
 /** The marker the choice question starts with, and the PostToolUse recorder's pattern for it. */
@@ -805,9 +817,6 @@ export const CHOICE_LABELS = {
   no: (sessionAlias: string): string => `No, proceed on ${sessionAlias}`
 } as const;
 
-/** Elevating attempts of one prompt that are denied before the permission dialog opens (the third one asks). */
-export const CHOICE_DENIALS_BEFORE_ASK = 2;
-
 /** A subagent type is model-supplied text that reaches the deny reason: keep only safe characters. */
 export function safeTypeName(type: unknown): string {
   const clean = typeof type === 'string' ? type.replace(/[^A-Za-z0-9:_.-]/g, '').slice(0, 60) : '';
@@ -818,10 +827,15 @@ export function safeTypeName(type: unknown): string {
  * The deny reason of the choice flow. A PreToolUse `deny` does not stop the turn: the assistant receives this
  * text, keeps working, and is told to ask the user the one prescribed question. The recorder
  * (`parseElevationAnswer`) reads the user's real answer from the harness, not from the assistant's text.
+ *
+ * The choice flow never ends in a permission dialog (a harness that auto-approves would approve it without showing it), so
+ * from the third attempt of the same delegation (`attempt`) the reason also says to stop retrying (the text Antigravity
+ * shares, see `stopRetryingText`).
  */
-export function elevationChoiceReason(e: Elevation, subagentType?: unknown): string {
+export function elevationChoiceReason(e: Elevation, subagentType?: unknown, attempt?: number | null): string {
   const alias = modelAlias(e.requested) ?? e.requested;
   const l = CHOICE_LABELS;
+  const stop = stopRetryingText(attempt, alias, e.sessionAlias, 'AskUserQuestion');
   return (
     `[jev] "${alias}"${e.sourceNote ?? ''} is stronger than the session model "${e.sessionModel}" and the user has not approved it. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}] followed by a short question ` +
@@ -829,7 +843,8 @@ export function elevationChoiceReason(e: Elevation, subagentType?: unknown): str
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
     `If the user picks a Yes, launch the delegation again with the same model; if No, launch it on ${e.sessionAlias} (or do the work directly); ` +
     `If AskUserQuestion is not available, launch the delegation on ${e.sessionAlias} now and do not stop; ` +
-    `do not ask in any other form.`
+    `do not ask in any other form.` +
+    (stop ? ` ${stop}` : '')
   );
 }
 
@@ -975,16 +990,24 @@ export function noteDenied(state: ApprovalState, model: string, nowMs: number): 
   return { ...state, denied: { ...Object.fromEntries(kept), [modelAlias(model) ?? model]: nowMs } };
 }
 
-/** Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? */
-export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number): boolean {
+/**
+ * Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? With `config`, a denial
+ * older than the last mode change (its `modeChangedAt` stamp) does not count: an answer to it must not approve it.
+ */
+export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number, config?: ModeChangeConfigLike | null): boolean {
   const want = modelRank(model);
   if (want === null) return false;
-  return Object.entries(state.denied ?? {}).some(([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS);
+  return Object.entries(state.denied ?? {}).some(
+    ([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code')
+  );
 }
 
-/** Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). */
-export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState | null {
-  return wasDeniedRecently(state, approval.model, nowMs) ? addApproval(state, approval, nowMs) : null;
+/**
+ * Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). With
+ * `config`, a denial from before the last mode change asks for nothing (see `wasDeniedRecently`).
+ */
+export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
+  return wasDeniedRecently(state, approval.model, nowMs, config) ? addApproval(state, approval, nowMs) : null;
 }
 
 /**
@@ -1010,7 +1033,7 @@ export function claimApproval(
   return { state: { ...state, approvals }, approval: hit };
 }
 
-/** All denied attempts of one prompt, over every delegation, after which the dialog opens whatever the signatures say. */
+/** All denied attempts of one prompt, over every delegation, after which every attempt counts as a repeat (the stop-retrying text) whatever the signatures say. */
 export const ATTEMPT_TOTAL_CAP = 20;
 
 /**
@@ -1023,7 +1046,7 @@ export const ATTEMPT_FALLBACK_WINDOW_MS = 5 * 60 * 1000;
  * Pure: count one denied elevating attempt of delegation `signature` in `prompt`, and return the count of that
  * delegation (a different prompt starts again at one). Counting per delegation means three different workstreams
  * that are each denied, answered and retried are three first attempts, not a third attempt; only the same
- * delegation ignored again and again (or `ATTEMPT_TOTAL_CAP` denials of the prompt) reaches the dialog.
+ * delegation ignored again and again (or `ATTEMPT_TOTAL_CAP` denials of the prompt) gets the stop-retrying text.
  *
  * With `windowMs` (the key is a fallback, not the host's prompt id) a counter whose last attempt is older than the
  * window starts again, so two prompts with the same text do not share one.
@@ -1042,7 +1065,7 @@ export function bumpAttempts(
   const counts = same ? { ...(prev.counts ?? {}) } : {};
   const mine = (counts[signature] ?? 0) + 1;
   if (signature in counts || Object.keys(counts).length < ATTEMPT_TOTAL_CAP) counts[signature] = mine;
-  const count = total > ATTEMPT_TOTAL_CAP ? Math.max(mine, CHOICE_DENIALS_BEFORE_ASK + 1) : mine;
+  const count = total > ATTEMPT_TOTAL_CAP ? Math.max(mine, STOP_RETRYING_FROM_ATTEMPT) : mine;
   return { state: { ...state, attempts: { prompt, count: total, counts, ...(nowMs !== undefined ? { at: nowMs } : {}) } }, count };
 }
 
@@ -1078,10 +1101,10 @@ export function clampElevation(call: Record<string, unknown>, e: Elevation): { h
  * stronger, so it passes, and so does a model pinned at or below the session model. A model the user
  * named in the current prompt (or a stronger one) is their explicit request and is not asked about.
  *
- * Every such call asks (the default, as in 2.3.3). Claude Code shows `ask` as a permission dialog with Yes and
- * No. No cancels the call and stops the turn, and a comment typed with No lets the assistant continue, so
- * the reason says what each answer does. Opt-in (`JEV_ELEVATION=clamp`, read by the hook): the first such
- * call of a prompt is clamped to the session model (`clampElevation`) and only a repeat asks.
+ * Every such call asks here (the 2.3.3 behaviour, now `JEV_ELEVATION=dialog`). Claude Code shows `ask` as a permission
+ * dialog with Yes and No. No cancels the call and stops the turn, and a comment typed with No lets the assistant
+ * continue, so the reason says what each answer does. The hook itself does not call this: its default is the choice flow
+ * (a deny) and the opt-in `JEV_ELEVATION=clamp` clamps every such call to the session model (`clampElevation`).
  *
  * Jev's tier rating of the task is deliberately not a gate. It is advice (the UserPromptSubmit
  * directive) and telemetry (`recommended_model` in the PreToolUse log). A `pro` rating is not a
@@ -1091,7 +1114,7 @@ export function clampElevation(call: Record<string, unknown>, e: Elevation): { h
 export function decideAgentCall(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): AgentDecision {
   const e = classifyElevation(call, sessionModel, intent);
   if (!e || e.kind !== 'elevating') return null;
-  return { decision: 'ask', reason: elevationAskReason(e, false) };
+  return { decision: 'ask', reason: elevationAskReason(e) };
 }
 
 /**

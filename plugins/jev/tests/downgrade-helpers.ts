@@ -12,6 +12,7 @@ import {
   rememberRating,
   type TierRating
 } from '../claude/downgrade.ts';
+import { voidStalePending } from '../src/core/downgrade-state.ts';
 import type { DowngradeStore } from '../claude/hook.ts';
 import type { RankContext } from '../claude/logic.ts';
 
@@ -67,6 +68,11 @@ export function memoryDowngrades(): DowngradeStore & { states: Map<string, Retur
       if (opts.record) states.set(s, state);
       return result;
     },
-    answer: (s, from, chosen, nowMs) => void states.set(s, answerDowngrade(get(s), from, chosen, nowMs))
+    answer: (s, from, chosen, nowMs, stale) => void states.set(s, answerDowngrade(get(s), from, chosen, nowMs, stale)),
+    voidStale: (s, stale) => {
+      const { state, voided } = voidStalePending(get(s), stale);
+      if (voided > 0) states.set(s, state);
+      return voided;
+    }
   };
 }

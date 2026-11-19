@@ -162,9 +162,10 @@ describe('recommended and used share one key (5.7)', () => {
     expect(JSON.stringify(logged)).not.toContain('quota file');
   });
 
-  it('renames the telemetry field and keeps the old one as a deprecated alias', () => {
+  it('the prompt telemetry carries modelRecommended only: the deprecated modelUsed alias is gone', () => {
     const event = telemetryEvent({ hook: 'UserPromptSubmit', session_id: 's1', turn: 'abc', subagent: 'Explore', tier: 'flash', recommended_model: 'sonnet', quota: 'unknown' });
 
-    expect(event).toMatchObject({ harness: 'claude', turn: 'abc', modelRecommended: 'sonnet', modelUsed: 'sonnet', tierRecommended: 'flash', sessionId: 's1' });
+    expect(event).toMatchObject({ harness: 'claude', turn: 'abc', modelRecommended: 'sonnet', tierRecommended: 'flash', sessionId: 's1' });
+    expect('modelUsed' in event).toBe(false);
   });
 });

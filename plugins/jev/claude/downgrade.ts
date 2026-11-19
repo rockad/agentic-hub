@@ -438,8 +438,22 @@ export function prescribedChoice(answer: string): string {
  * the answer is kept without a signature and covers that alias (`*`: every delegation) for the window. The session-off
  * answer also sets the session's off entry, which holds until the session ends.
  */
-export function answerDowngrade(state: DowngradeState, from: string, chosen: string, nowMs: number): DowngradeState {
-  const entries = live(state, nowMs);
+export function answerDowngrade(
+  state: DowngradeState,
+  from: string,
+  chosen: string,
+  nowMs: number,
+  stale?: (askedAtMs: number) => boolean
+): DowngradeState {
+  let entries = live(state, nowMs);
+  // A question asked before the last mode change (`stale`, see `denialPredatesModeChange`) is dropped and is not answered by
+  // this answer: when it was the only one pending nothing is recorded, so the delegation is asked afresh.
+  let dropped = 0;
+  if (stale) {
+    const kept = entries.filter((e) => !(!e.answered && e.from === from && typeof e.asked_at === 'number' && stale(e.asked_at)));
+    dropped = entries.length - kept.length;
+    entries = kept;
+  }
   const label = prescribedChoice(chosen);
   let matched = false;
   const next = entries.map((e) => {
@@ -447,6 +461,7 @@ export function answerDowngrade(state: DowngradeState, from: string, chosen: str
     matched = true;
     return { ...e, answered: true, chosen: label, expires_at: nowMs + DOWNGRADE_TTL_MS };
   });
+  if (!matched && dropped > 0) return withRatings(state, next.slice(-MAX_ENTRIES), nowMs);
   if (!matched) {
     next.push({ kind: 'downgrade', from, answered: true, signature: null, chosen: label, expires_at: nowMs + DOWNGRADE_TTL_MS });
   }

@@ -94,6 +94,38 @@ describe('Antigravity per-conversation session store', () => {
     expect(fs.existsSync(latestFile)).toBe(true);
     expect(fs.existsSync(path.join(sessionsDir, '.prune-stamp'))).toBe(true);
   });
+
+  it('expires *.turn.json by mtime with the session TTL, and keeps a fresh one', () => {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const nowSec = 1_900_000_000;
+    const old = path.join(sessionsDir, '00000000-old.turn.json');
+    const fresh = path.join(sessionsDir, '00000000-new.turn.json');
+    fs.writeFileSync(old, '{}');
+    fs.writeFileSync(fresh, '{}');
+    fs.utimesSync(old, nowSec - ANTIGRAVITY_SESSION_TTL_SEC - 10, nowSec - ANTIGRAVITY_SESSION_TTL_SEC - 10);
+    fs.utimesSync(fresh, nowSec - 5, nowSec - 5);
+
+    pruneExpiredSessionModels(sessionsDir, nowSec, true);
+
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+
+  it('expires *.turn-pending.json by mtime with the session TTL, and keeps a fresh one', () => {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const nowSec = 1_900_000_000;
+    const old = path.join(sessionsDir, '00000000-old.turn-pending.json');
+    const fresh = path.join(sessionsDir, '00000000-new.turn-pending.json');
+    fs.writeFileSync(old, '{}');
+    fs.writeFileSync(fresh, '{}');
+    fs.utimesSync(old, nowSec - ANTIGRAVITY_SESSION_TTL_SEC - 10, nowSec - ANTIGRAVITY_SESSION_TTL_SEC - 10);
+    fs.utimesSync(fresh, nowSec - 5, nowSec - 5);
+
+    pruneExpiredSessionModels(sessionsDir, nowSec, true);
+
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
 });
 
 describe('readQuotaView per-field precedence', () => {

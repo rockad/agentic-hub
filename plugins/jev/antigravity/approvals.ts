@@ -6,6 +6,7 @@ import { withDirLock } from '../src/core/dir-lock.js';
 import {
   DOWNGRADE_TTL_MS,
   MAX_ENTRIES,
+  voidStalePending,
   claimDowngrade,
   downgradeOff,
   live,
@@ -600,6 +601,11 @@ export type DowngradeStore = {
   answer: (sessionId: string, choice: DowngradeChoice, askId: string | undefined, nowMs: number, sig?: string | null) => boolean;
   /** Record the answer row's step_index against the pending question(s) of the ask (see `noteAskAnswerStep`); false when none is pending. */
   noteAnswerStep?: (sessionId: string, stepIdx: number, nowMs: number, sig?: string | null, questionIndex?: number) => boolean;
+  /**
+   * Drop the pending (unanswered) questions that `stale` rejects, by the time they were asked: the ones that predate the last
+   * mode change (`denialPredatesModeChange`). Returns how many were dropped; writes only when that is above 0.
+   */
+  voidStale?: (sessionId: string, stale: (askedAtMs: number) => boolean) => number;
   choiceFor: (sessionId: string, signature: string, nowMs: number) => DowngradeChoice | null;
   pending: (sessionId: string, signature: string, nowMs: number) => ReturnType<typeof pendingDowngradeAsk>;
 };
@@ -660,6 +666,12 @@ export function createAntigravityDowngradeStore(sessionsDir: string): DowngradeS
         const { state, recorded } = noteAskAnswerStep(read(sessionId), stepIdx, nowMs, sig, questionIndex);
         if (recorded) write(sessionId, state);
         return recorded;
+      }),
+    voidStale: (sessionId, stale) =>
+      locked(sessionId, () => {
+        const { state, voided } = voidStalePending(read(sessionId), stale);
+        if (voided > 0) write(sessionId, state);
+        return voided;
       }),
     choiceFor: (sessionId, signature, nowMs) => answeredDowngradeChoice(read(sessionId), signature, nowMs),
     pending: (sessionId, signature, nowMs) => pendingDowngradeAsk(read(sessionId), signature, nowMs)

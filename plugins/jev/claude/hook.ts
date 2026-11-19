@@ -12,15 +12,18 @@
  *   pre-tool-use (matcher "Agent|Task|Workflow")
  *                                      Agent delegation above the ceiling. Default (JEV_ELEVATION=choice): denied with a
  *                                      reason that prescribes the AskUserQuestion, passes while a covering approval is valid,
- *                                      the third attempt of one delegation in a prompt opens the permission dialog. JEV_ELEVATION=dialog: asks
- *                                      (the 2.3.4 permission dialog). A model the user named passes (nothing else asks);
+ *                                      every attempt is denied (never asks: a harness that auto-approves would approve a dialog
+ *                                      unseen), and from the third attempt of one delegation in a prompt the reason says to stop
+ *                                      retrying. JEV_ELEVATION=dialog: asks (the 2.3.4 permission dialog), the only mode that
+ *                                      asks, and it logs `auto_approve_warning` when the permission mode approves without a
+ *                                      dialog. A model the user named passes (nothing else asks);
  *                                      Downgrade (JEV_DOWNGRADE=ask|auto|off, default ask): every delegation is rated on its own
  *                                      (its description and the start of its prompt go to the router, a tier probability per
  *                                      tier); when a cheaper catalogue step is enough and strictly cheaper by list price the call
  *                                      is denied once with the prescribed [jev-downgrade:<alias>] question (ask) or run on the
  *                                      cheapest such alias (auto); fails open on any router problem;
- *                                      opt-in JEV_ELEVATION=clamp runs the first one
- *                                      in a prompt on the session model instead (allow + updatedInput), a repeat asks,
+ *                                      opt-in JEV_ELEVATION=clamp runs every one
+ *                                      on the session model instead (allow + updatedInput), a repeat in the prompt too,
  *                                      log the call next to the last recommendation, and remind once before staged
  *                                      work when no dispatch call preceded it.
  *                                      A Workflow call: the agents a Workflow launches never reach this hook (verified on
@@ -30,7 +33,10 @@
  *   post-tool-use (matcher "Workflow") drift recorder: re-hashes the script files the guard analysed and logs
  *                                      `workflow_changed` when one differs (workflow-pin.ts); no prompt
  *
- * Active only in Jev mode "on" (config.json, or the file JEV_CONFIG_FILE names). Every path is
+ * Mode (config.json, or the file JEV_CONFIG_FILE names), as defined once in src/core/mode-policy.ts for every harness:
+ * "off" does nothing and writes nothing; "on-demand" makes no decisions and gives no routing advice (no router call, no
+ * directive, no deny, ask, clamp, downgrade or approval) but writes the prompt and agent_call telemetry rows and injects a
+ * one-line informational notice when a quota pool is low; "on" does everything described here. Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
  * carries on as if Jev were not installed.
  */
@@ -45,6 +51,15 @@ import {
   loadEnvFile,
   fetchRecallMemory,
   logJevTelemetry,
+  resolveModelUsed,
+  modeBehaviour,
+  lowQuotaNotice,
+  quotaPoolLabel,
+  type LowQuotaPool,
+  denialPredatesModeChange,
+  loadJevConfigSync,
+  modeChangedAtMs,
+  type ModeChangeConfigLike,
   checkEgress,
   egressContextDirs,
   discoverWorkspaceAgents,
@@ -78,7 +93,7 @@ import {
   parseElevationAnswer,
   parseElevationDecline,
   recordApproval,
-  CHOICE_DENIALS_BEFORE_ASK,
+  isAutoApprovePermissionMode,
   envNotice,
   hasRecentDispatch,
   isHostInjectedPrompt,
@@ -134,6 +149,7 @@ import {
   type DowngradeState,
   type TierRating
 } from './downgrade.js';
+import { voidStalePending } from '../src/core/downgrade-state.js';
 import { loadCatalogue, loadOverrides } from '../src/core/catalogue.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
@@ -174,6 +190,8 @@ export type HookInput = {
   tool_response?: unknown;
   /** The session's effort level, as Claude Code reports it (a string or an object holding one); advisory context for the downgrade question. */
   effort?: unknown;
+  /** Claude Code's permission mode (`default`, `plan`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`); only read for the auto-approve warning of a dialog-mode `ask`. */
+  permission_mode?: string;
 };
 
 /**
@@ -188,8 +206,10 @@ export type DowngradeStore = {
   remember: (sessionId: string, signature: string, rating: TierRating, nowMs: number) => void;
   /** What to do with a call of this signature and needed alias; with `record` the question is written down atomically (one parallel caller is first). */
   claim: (sessionId: string, signature: string, from: string, nowMs: number, opts: { record: boolean }) => DowngradeClaim;
+  /** Drop the pending (unanswered) questions that `stale` rejects by the time they were asked: the ones that predate the last mode change. Returns how many were dropped; writes only when above 0. */
+  voidStale?: (sessionId: string, stale: (askedAtMs: number) => boolean) => number;
   /** Record the user's answer to the question about needed alias `from` (`*`: every delegation); the session-off answer also sets the session's off entry. */
-  answer: (sessionId: string, from: string, chosen: string, nowMs: number) => void;
+  answer: (sessionId: string, from: string, chosen: string, nowMs: number, stale?: (askedAtMs: number) => boolean) => void;
 };
 
 /**
@@ -197,8 +217,8 @@ export type DowngradeStore = {
  * hook: a failing store means "no approval" (the call is denied, then asks on the third attempt).
  */
 export type ApprovalStore = {
-  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. Throws when the store fails: nothing is recorded then. */
-  record: (sessionId: string, approval: Approval) => void;
+  /** Record the user's answer as an approval, only when the question was prescribed for that model (or a stronger one) within the last 15 minutes; otherwise ignore it. With `config`, a denial from before the last mode change (its `modeChangedAt` stamp) does not count. Throws when the store fails: nothing is recorded then. */
+  record: (sessionId: string, approval: Approval, config?: ModeChangeConfigLike | null) => void;
   /** Note that Jev prescribed the choice question for `model` (a deny, or the turn directive): the only thing that lets an answer record an approval. */
   deny: (sessionId: string, model: string, nowMs: number) => void;
   /** Find the approval covering `requested` and, for a `once`, consume it atomically (one parallel caller wins). */
@@ -223,6 +243,18 @@ export type HookDeps = {
    */
   learnSessionModel?: SessionModelLearner;
   readQuotaStrategy: () => Promise<string>;
+  /**
+   * The Jev config, for the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved by
+   * an answer (see `denialPredatesModeChange`). Absent, or with no stamp: no restriction.
+   */
+  readConfig?: () => ModeChangeConfigLike | null;
+  /** The Recall memory read (`fetchRecallMemory`); stubbed in tests so no network is touched. Never called when the mode has no memory context. */
+  fetchMemory?: () => Promise<any>;
+  /**
+   * The routine quota pool as the notice needs it (label, strategy, minimum remaining). Used only by a mode without routing
+   * advice (on-demand) for its low-quota notice; absent: the strategy from `readQuotaStrategy` stands in, without a percentage.
+   */
+  readQuotaPool?: () => Promise<LowQuotaPool | null>;
   dispatch: (task: string, quotaStrategy: string, criteria?: Record<string, string>) => Promise<Dispatch | null>;
   log: (entry: Record<string, unknown>) => void;
   /** Egress policy for the hook's working directory; absent means no policy. */
@@ -236,14 +268,7 @@ export type HookDeps = {
   recentDispatch?: (windowMs: number) => boolean;
   /** This session's recent `agent_call` records in the decisions log, and whether one already carried a reminder. */
   recentAgentCalls?: (sessionId: string | null) => { count: number; reminded: boolean };
-  /**
-   * Atomically claim the one clamp of a prompt: `first` is true for the first caller with this key (session id
-   * plus prompt id) and false for every later one, which also gets the signature the first caller stored (the
-   * delegation that was clamped). Absent or throwing means the state is unavailable, and the call then asks
-   * (the 2.3.3 behaviour) instead of clamping.
-   */
-  claimClamp?: (sessionId: string, promptKey: string, signature: string) => { first: boolean; signature?: string };
-  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call opens the permission dialog. */
+  /** Approvals and the denied-attempt counter of the choice flow (the default elevation mode). Absent (or failing): no approval is ever found and no attempt is counted, so every elevating call is denied (the attempt number is then unknown, so no stop-retrying text). */
   approvals?: ApprovalStore;
   /**
    * The downgrade choice store. Absent: no downgrade evaluation at all (nothing is denied, asked or rewritten), so a
@@ -289,12 +314,75 @@ function sessionModelOf(input: HookInput, sessionId: string | null, deps: HookDe
 // The timeout race lives in src/core/with-timeout.ts (the Antigravity downgrade uses it too); re-exported for existing imports.
 export { withTimeout };
 
+/**
+ * UserPromptSubmit of a mode without routing advice (on-demand): no router call, no directive and no turn state. It
+ * writes the prompt telemetry row (session model, quota strategy, no recommendation fields) and, only when the quota
+ * pool is low or exhausted, injects the shared one-line informational notice. A healthy pool injects nothing.
+ */
+async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId: string | null): Promise<HookOutput> {
+  const task = (input.prompt || '').trim();
+  // The same prompts the advised mode would act on: a host-injected turn, a short prompt or a pasted blob is not a task.
+  if (isHostInjectedPrompt(task) || task.length < 8 || isNonTaskPrompt(task)) return null;
+  let pool: LowQuotaPool | null | undefined;
+  try {
+    pool = await deps.readQuotaPool?.();
+  } catch {
+    pool = null;
+  }
+  pool ??= { label: 'Gemini', strategy: await deps.readQuotaStrategy(), minRemaining: null };
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
+  deps.log({
+    hook: 'UserPromptSubmit',
+    session: sessionId,
+    session_id: sessionId,
+    turn: turnId(task),
+    quota: pool.strategy ?? 'unknown',
+    sessionModel,
+    session_model_source: sessionModelSource
+  });
+  const notice = lowQuotaNotice(pool);
+  if (!notice) return null;
+  return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notice } };
+}
+
+/**
+ * PreToolUse of a mode without decisions (on-demand): the call is left exactly as it is (no output) and the `agent_call`
+ * row is written as for a call the advised mode lets through unchanged: decision `pass`, the model the call asked for,
+ * the model it is expected to run on (via the same resolution), the session model. No approvals, elevation state,
+ * clamp, downgrade or recommendation fields.
+ */
+function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: string): void {
+  const call = input.tool_input || {};
+  const sessionId = safeSessionId(input.session_id);
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
+  const rankCtx = safely(() => deps.rankContext?.()) ?? null;
+  const resolved: ResolvedAgentModel | null =
+    tool === 'Workflow'
+      ? null
+      : (safely(() => resolveAgentModel(call, input.cwd, deps.env ?? process.env, pinnedLadderModel(call.subagent_type, rankCtx))) ?? null);
+  deps.log({
+    hook: 'PreToolUse',
+    event: 'agent_call',
+    session: sessionId,
+    session_id: sessionId,
+    tool_name: tool,
+    decision: 'pass',
+    subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
+    model: call.model ?? null,
+    requested_model: typeof call.model === 'string' ? call.model : null,
+    sessionModel,
+    session_model_source: sessionModelSource,
+    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {})
+  });
+}
+
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
   const sessionId = safeSessionId(input.session_id);
-  if ((await deps.readMode()) !== 'on') {
+  const behaviour = modeBehaviour(await deps.readMode());
+  if (!behaviour.routingAdvice) {
     // This turn runs without the advisor: nothing stored for an earlier turn may speak for it.
     safely(() => deps.forgetTurn?.(sessionId));
-    return null;
+    return behaviour.telemetry ? onPromptWithoutAdvice(input, deps, sessionId) : null;
   }
   const task = (input.prompt || '').trim();
   // A host-injected turn (a task notification, a local command) is not a new user turn: it keeps the
@@ -368,8 +456,9 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     }
   }
   if (staged) additionalContext += ` ${STAGE_PLAN_REMINDER}`;
+  // Cross-harness memory is a Recall call and a context block: mode `on` only (`modeBehaviour(mode).memoryContext`).
   try {
-    const memory = await withTimeout(fetchRecallMemory(), 600);
+    const memory = behaviour.memoryContext ? await withTimeout((deps.fetchMemory ?? fetchRecallMemory)(), 600) : null;
     if (memory && memory.activeGoal) {
       additionalContext += `\n\n[CROSS-HARNESS MEMORY]\nActive Goal: ${memory.activeGoal}\nCurrent Milestone: ${memory.currentMilestone || 'none'}\nNext Action: ${memory.nextAction || 'none'}`;
     }
@@ -389,7 +478,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const tool = input.tool_name;
   if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Workflow') return null;
   const mode = await deps.readMode();
-  if (mode !== 'on') return null;
+  const behaviour = modeBehaviour(mode);
+  if (!behaviour.decisions) {
+    // No decisions (on-demand): the call is left as it is; only the telemetry row is written. Off writes nothing.
+    if (behaviour.telemetry) recordAgentCallWithoutDecision(input, deps, tool);
+    return null;
+  }
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
   const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
@@ -426,9 +520,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   if (elevation && resolved && resolved.source !== 'call' && resolved.source !== 'inherit') {
     elevation.sourceNote = agentModelNote(resolved.source, call.subagent_type);
   }
-  // An elevating call (a model stronger than the session's, no instruction naming it) asks: a permission dialog
-  // on every such call, as in 2.3.3. Opt-in clamp (env JEV_ELEVATION=clamp, no config key): the first one per
-  // prompt runs on the session model (allow + updatedInput, no dialog) and only a repeat in the same prompt asks.
+  // An elevating call (a model stronger than the session's, no instruction naming it) is denied with the prescribed
+  // question (choice, the default), asked about in a permission dialog (JEV_ELEVATION=dialog, as in 2.3.3), or run on the
+  // session model (JEV_ELEVATION=clamp: allow + updatedInput, every call of a prompt alike). Choice and clamp never ask.
   // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
   let verdict: AgentDecision = null;
@@ -452,7 +546,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating' && elevMode === 'choice') {
     // Choice flow (default): a covering approval lets the call through; otherwise the call is denied with the
-    // prescribed question (a deny does not stop the turn), and the third attempt of one delegation in a prompt opens the dialog.
+    // prescribed question (a deny does not stop the turn). It never asks: a harness that auto-approves would approve a
+    // dialog unseen, so every attempt is denied, and from the third attempt of one delegation in a prompt the reason says
+    // to stop retrying (the same text as Antigravity).
     const nowMs = (deps.now ?? Date.now)();
     const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, elevation.requested, nowMs, rankCtx)) ?? null) : null;
     if (hit) {
@@ -463,37 +559,30 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       const signature = callSignature(call as Record<string, unknown>);
       const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
       attemptCount = typeof count === 'number' ? count : null;
-      // Without a working counter the deny could repeat for ever: fall back to the dialog.
-      if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
-        verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
-        elevationState = 'asked';
-      } else {
-        verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type) };
-        elevationState = 'denied';
-        // The question is now prescribed for this model: only an answer after this can record an approval.
-        if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
-      }
+      verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type, attemptCount) };
+      elevationState = 'denied';
+      // The question is now prescribed for this model: only an answer after this can record an approval.
+      if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
     verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating') {
-    const promptKey = (typeof input.prompt_id === 'string' && safeSessionId(input.prompt_id)) || state?.turn || null;
-    const signature = callSignature(call as Record<string, unknown>);
-    let clampedEarlier = false;
     if (aliasRemapped(elevation.sessionAlias, deps.env)) {
       // The alias the clamp would set is remapped (ANTHROPIC_DEFAULT_<ALIAS>_MODEL): it would not run on the session model.
       clampSkipped = 'alias-remapped';
-    } else if (sessionId && promptKey) {
-      // Anything that stops us proving this is the first call of the prompt (no id, no state, a failing store) asks.
-      const claim = safely(() => deps.claimClamp?.(sessionId, promptKey, signature));
-      if (claim?.first) clamp = clampElevation(call as Record<string, unknown>, elevation);
-      else clampedEarlier = !!claim && claim.signature === signature;
-    }
-    if (clamp) elevationState = 'clamped';
-    else {
-      verdict = { decision: 'ask', reason: elevationAskReason(elevation, clampedEarlier) };
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
       elevationState = 'asked';
+    } else {
+      // Clamp: every elevating call, a repeat in the same prompt too, runs on the session model (allow + updatedInput).
+      // It never asks: a harness that auto-approves would approve a dialog unseen and run the stronger model.
+      clamp = clampElevation(call as Record<string, unknown>, elevation);
+      elevationState = 'clamped';
+      if (sessionId) {
+        const signature = callSignature(call as Record<string, unknown>);
+        const count = safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, (deps.now ?? Date.now)(), attemptWindowMs));
+        attemptCount = typeof count === 'number' ? count : null;
+      }
     }
   }
 
@@ -588,6 +677,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     session: sessionId,
     session_id: sessionId,
     tool_name: tool,
+    // What the hook did with the call: the verdict (ask or deny), allow for a clamp or an applied downgrade, else pass.
+    decision: verdict ? verdict.decision : clamp || downgradeOut ? 'allow' : 'pass',
     turn: state?.turn ?? null,
     subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
     model: call.model ?? null,
@@ -597,13 +688,15 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     user_intent: state?.intent ?? null,
     sessionModel,
     session_model_source: sessionModelSource,
-    ...(resolved ? { model_source: resolved.source } : {}),
+    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
     ...(effortAsk ? { effort_ask: true } : {}),
     reason:
       logReason ??
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
+    // A dialog-mode `ask` while the permission mode approves without showing it: informational only, the decision is unchanged.
+    ...(verdict?.decision === 'ask' && isAutoApprovePermissionMode(input.permission_mode) ? { auto_approve_warning: true } : {}),
     ...downgradeLog,
     ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
@@ -684,7 +777,7 @@ type WorkflowEvaluation = {
  *   threshold, a missing definition, a parse error): the permission dialog (`asked`), listing every site;
  * - only elevations: with `JEV_ELEVATION=choice` (default) the same flow as an Agent call, for the strongest model
  *   named: a covering approval passes (`allow`), otherwise a deny that prescribes the `[jev-elevate:<model>]` question
- *   (`denied`), and the third denied attempt of the same script in a prompt opens the dialog (`asked`). `dialog` and
+ *   (`denied`; never asks, and from the third attempt of the same script in a prompt the reason says to stop retrying). `dialog` and
  *   `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp.
  */
 function evaluateWorkflowCall(a: {
@@ -736,14 +829,10 @@ function evaluateWorkflowCall(a: {
     const signature = workflowSignature(d.scripts);
     const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), signature, nowMs, a.attemptWindowMs)) : undefined;
     const attemptCount = typeof count === 'number' ? count : null;
-    if (count === undefined || count > CHOICE_DENIALS_BEFORE_ASK) {
-      const asked = dialog();
-      return { ...asked, attemptCount, log: { ...asked.log, workflow_highest: clip(top.requested) } };
-    }
     if (sessionId) safely(() => deps.approvals?.deny(sessionId, top.requested, nowMs));
     return finish(
       'denied',
-      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts) }, elevationState: 'denied', attemptCount },
+      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts, attemptCount) }, elevationState: 'denied', attemptCount },
       { workflow_highest: clip(top.requested) }
     );
   } catch {
@@ -793,6 +882,12 @@ async function evaluateDowngrade(a: {
     if (!sessionId) return skip('no-session');
     const nowMs = (deps.now ?? Date.now)();
     const signature = callSignature(call as Record<string, unknown>);
+    // A question asked before the last mode change belongs to an earlier mode (the answer may have been given where nothing
+    // is recorded): it is dropped, so this call is asked afresh instead of passing as "already asked".
+    const cfg = safely(() => deps.readConfig?.()) ?? null;
+    if (cfg && modeChangedAtMs(cfg, 'claude-code') !== null) {
+      safely(() => downgrades.voidStale?.(sessionId, (askedAt) => denialPredatesModeChange(askedAt, cfg, 'claude-code')));
+    }
     const peek = safely(() => downgrades.peek(sessionId, signature, nowMs));
     if (!peek) return skip('store-error');
     if (peek.off) return skip('session-off');
@@ -896,15 +991,28 @@ async function evaluateDowngrade(a: {
  * question that does not start with the `[jev-elevate:<model>]` marker (the marker is not a secret: any such
  * question is accepted), a "No", malformed input, and an answer for a model Jev did not prescribe the question
  * for in the last 15 minutes (see `ApprovalStore.deny`). A failing store records nothing. Never throws and prints nothing.
+ *
+ * Approvals and downgrade answers are decisions, so a mode without decisions (on-demand, off) records none: an answer given
+ * there cannot approve a stale denial from an earlier mode `on`. Nor can one given after the mode went back to `on`: a denial
+ * or question older than the last mode change (the `modeChangedAt` stamp) is never approved, see `denialPredatesModeChange`.
  */
-export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals' | 'downgrades' | 'now'>): void {
+export async function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'readConfig' | 'approvals' | 'downgrades' | 'now'>): Promise<void> {
+  const mode = await safelyAsync(() => deps.readMode());
+  if (!modeBehaviour(mode).decisions) return;
   const sessionId = safeSessionId(input?.session_id);
   if (!sessionId) return;
   const nowMs = (deps.now ?? Date.now)();
+  // A denial or question from before the last mode change is never approved by an answer: the user may have answered it
+  // while the mode was on-demand (nothing recorded) and switched back to on afterwards. The call is then denied again
+  // with a fresh question. No stamp (an older config) means no restriction.
+  const config = safely(() => deps.readConfig?.()) ?? null;
+  const stale = config && modeChangedAtMs(config, 'claude-code') !== null
+    ? (askedAt: number): boolean => denialPredatesModeChange(askedAt, config, 'claude-code')
+    : undefined;
   try {
     if (deps.approvals) {
       const approval = parseElevationAnswer(input, nowMs);
-      if (approval) deps.approvals.record(sessionId, approval);
+      if (approval) deps.approvals.record(sessionId, approval, config);
     }
   } catch {
     // best-effort: a failed record only means the assistant is denied again and asks again
@@ -923,7 +1031,7 @@ export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals'
   try {
     if (deps.downgrades) {
       const answer = parseDowngradeAnswer(input);
-      if (answer) deps.downgrades.answer(sessionId, answer.from, answer.label, nowMs);
+      if (answer) deps.downgrades.answer(sessionId, answer.from, answer.label, nowMs, stale);
     }
   } catch {
     // best-effort: without the record the retried call passes anyway (asked once per delegation)
@@ -934,6 +1042,15 @@ export function onPostToolUse(input: HookInput, deps: Pick<HookDeps, 'approvals'
 function safely<T>(fn: () => T): T | undefined {
   try {
     return fn();
+  } catch {
+    return undefined;
+  }
+}
+
+/** `safely` for an async read. */
+async function safelyAsync<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
   } catch {
     return undefined;
   }
@@ -997,33 +1114,6 @@ function saveTurn(sessionId: string | null, state: TurnState): void {
   privateDir(SESSIONS_DIR);
   fs.writeFileSync(turnFile(sessionId), JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
   privateFile(turnFile(sessionId));
-}
-
-/**
- * The one clamp of a prompt, claimed with an exclusive create (`wx`) so two Agent calls fired in parallel
- * cannot both be "first". One marker file per session; its content is the signature of the delegation that was
- * clamped, so a later call can tell whether it is that same delegation. A claim for another prompt id removes
- * the old marker; markers that are left are pruned after 7 days at SessionStart. Throws when the store cannot
- * be written; the caller treats that as "ask".
- */
-function claimClamp(sessionId: string, promptKey: string, signature: string): { first: boolean; signature?: string } {
-  privateDir(SESSIONS_DIR);
-  const prefix = `${sessionId}.clamp-`;
-  const mine = `${prefix}${promptKey}`;
-  for (const name of fs.readdirSync(SESSIONS_DIR)) {
-    if (name.startsWith(prefix) && name !== mine) fs.rmSync(path.join(SESSIONS_DIR, name), { force: true });
-  }
-  try {
-    const file = path.join(SESSIONS_DIR, mine);
-    fs.writeFileSync(file, signature, { flag: 'wx', mode: PRIVATE_FILE_MODE });
-    privateFile(file);
-    return { first: true };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // The first caller may still be writing: an empty marker means "unknown", which says nothing about the signature.
-    const stored = fs.readFileSync(path.join(SESSIONS_DIR, mine), 'utf8').trim();
-    return { first: false, ...(stored ? { signature: stored } : {}) };
-  }
 }
 
 const LOCK_WAIT_MS = 1500;
@@ -1105,10 +1195,10 @@ function writeApprovalState(sessionId: string, state: ApprovalState): void {
 }
 
 const approvalStore: ApprovalStore = {
-  record: (sessionId, approval) =>
+  record: (sessionId, approval, config) =>
     withApprovalsLock(sessionId, () => {
       // An unreadable state file reads as empty, which has no denial: nothing is recorded then.
-      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at);
+      const next = recordApproval(readApprovalState(sessionId), approval, approval.created_at, config);
       if (next) writeApprovalState(sessionId, next);
     }),
   deny: (sessionId, model, nowMs) =>
@@ -1166,8 +1256,18 @@ const downgradeStore: DowngradeStore = {
       },
       'downgrade'
     ),
-  answer: (sessionId, from, chosen, nowMs) =>
-    withApprovalsLock(sessionId, () => writeDowngradeState(sessionId, answerDowngrade(readDowngradeState(sessionId), from, chosen, nowMs)), 'downgrade')
+  answer: (sessionId, from, chosen, nowMs, stale) =>
+    withApprovalsLock(sessionId, () => writeDowngradeState(sessionId, answerDowngrade(readDowngradeState(sessionId), from, chosen, nowMs, stale)), 'downgrade'),
+  voidStale: (sessionId, stale) =>
+    withApprovalsLock(
+      sessionId,
+      () => {
+        const { state, voided } = voidStalePending(readDowngradeState(sessionId), stale);
+        if (voided > 0) writeDowngradeState(sessionId, state);
+        return voided;
+      },
+      'downgrade'
+    )
 };
 
 /** One catalogue read per hook run (the catalogue and the overrides are two small files); null when there is no usable catalogue. */
@@ -1241,10 +1341,11 @@ export async function liveRateTask(task: string, signal?: AbortSignal): Promise<
 }
 
 /**
- * Telemetry record for one decisions-log entry. On UserPromptSubmit the model is the
- * recommended one (`modelRecommended`, which replaces the old, misleading `modelUsed`);
- * on PreToolUse it is the model the delegation requested (`modelUsed`) next to the
- * recommended one. Both carry the `turn` id so the two can be joined.
+ * Telemetry record for one decisions-log entry. Every record that knows the session model carries `sessionModel` and
+ * `sessionModelSource` (the baseline). On UserPromptSubmit the model is the recommended one (`modelRecommended`) and
+ * there is no `modelUsed`: nothing has been delegated yet. On PreToolUse (`agent_call`) `modelUsed` is the model the
+ * delegation is expected to run on and `modelUsedSource` says why (see `resolveModelUsed`), next to the recommended one.
+ * Both carry the `turn` id so the two can be joined. A record never holds prompt text.
  */
 export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
@@ -1256,19 +1357,37 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
     taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
     tierRecommended: str(entry.tier),
     turn: str(entry.turn),
+    ...sessionModelFields(entry),
     ...(isPrompt
-      ? {
-          modelRecommended: str(entry.recommended_model) ?? str(entry.model),
-          // Deprecated alias kept for one release (case study 5.7): same value as modelRecommended.
-          modelUsed: str(entry.recommended_model) ?? str(entry.model)
-        }
+      ? // The prompt only advises: nothing is delegated yet, so there is no modelUsed (the old alias is gone).
+        { modelRecommended: str(entry.recommended_model) ?? str(entry.model) }
       : {
-          modelUsed:
-            str(entry.clamped_to) ?? (entry.downgrade === 'applied' ? str(entry.downgrade_to) : undefined) ?? str(entry.requested_model) ?? str(entry.model),
-          modelRecommended: str(entry.recommended_model)
+          // A Workflow carries no model of its own (the agents it launches choose theirs), so it has no modelUsed.
+          // A denied call never ran: no modelUsed either (the model it asked for stays in the decisions log).
+          ...(entry.hook === 'PreToolUse' && entry.tool_name !== 'Workflow' && entry.decision !== 'deny'
+            ? resolveModelUsed({
+                clampedTo: entry.clamped_to,
+                downgradedTo: entry.downgrade === 'applied' ? entry.downgrade_to : undefined,
+                // The model the hook resolved (forced environment model, the call's own, the definition's, a ladder pin,
+                // the subagent-model environment) is what the call runs on; the call's own model is the fallback.
+                requested: str(entry.resolved_model) ?? entry.requested_model ?? entry.model,
+                sessionModel: entry.sessionModel
+              })
+            : {}),
+          modelRecommended: str(entry.recommended_model),
+          ...(entry.hook === 'PreToolUse' && str(entry.decision) ? { decision: str(entry.decision) } : {}),
+          // The model the call asked for stays on a denied row, where modelUsed is unset.
+          ...(entry.hook === 'PreToolUse' && str(entry.requested_model) ? { requestedModel: str(entry.requested_model) } : {})
         }),
     quotaStrategy: str(entry.quota)
   };
+}
+
+/** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */
+function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource'> {
+  if (!('sessionModel' in entry)) return {};
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+  return { sessionModel: str(entry.sessionModel), sessionModelSource: str(entry.session_model_source) };
 }
 
 /** Telemetry appends in flight: the process must wait for them before it exits, or the lines are lost. */
@@ -1347,6 +1466,7 @@ const liveDeps: HookDeps = {
   readMode: () => readJevMode('claude-code'),
   readSessionModel,
   learnSessionModel,
+  readConfig: () => loadJevConfigSync(),
   readQuotaStrategy: async () => {
     try {
       return (await readQuotaView()).strategy;
@@ -1354,12 +1474,19 @@ const liveDeps: HookDeps = {
       return 'unknown';
     }
   },
+  readQuotaPool: async () => {
+    try {
+      const view = await readQuotaView();
+      return { label: quotaPoolLabel(view.active, view.active_model), strategy: view.active.strategy, minRemaining: view.active.min_remaining };
+    } catch {
+      return null;
+    }
+  },
   dispatch: liveDispatch,
   log: appendLog,
   readTurn,
   saveTurn,
   forgetTurn,
-  claimClamp,
   approvals: approvalStore,
   downgrades: downgradeStore,
   downgradeConfig: loadDowngradeMode,
@@ -1386,19 +1513,23 @@ async function main(event: string | undefined): Promise<void> {
     return;
   }
   if (event === 'post-tool-use') {
-    // The elevation recorder: no output, no mode check. It accepts any question that starts with the marker, but
-    // records an approval only for a model Jev prescribed the question for in the last 15 minutes.
-    onPostToolUse(input, liveDeps);
+    // The elevation recorder: no output. It checks the mode itself (a mode without decisions records nothing), accepts any
+    // question that starts with the marker, but records an approval only for a model Jev prescribed the question for in
+    // the last 15 minutes.
+    await onPostToolUse(input, liveDeps);
     return;
   }
+  // Off: nothing runs and nothing is written, by any entry point below. The session model record is the one write that
+  // stays in on-demand (telemetry carries `sessionModel`); it is not a decision.
+  const mayWrite = modeBehaviour(await safelyAsync(() => liveDeps.readMode())).telemetry;
   const output =
     event === 'user-prompt-submit' ? await onUserPromptSubmit(input, liveDeps)
     : event === 'pre-tool-use' ? await onPreToolUse(input, liveDeps)
     : null;
-  if (event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
-  if (event === 'session-start') safely(() => onSessionStartWithoutModel(input));
-  if (event === 'session-start' || event === 'post-model-switch') onModelKnown(input);
-  if (event === 'session-start') maybeStartCatalogueRefresh();
+  if (mayWrite && event === 'pre-tool-use' && input.tool_name === 'Workflow') safely(() => pruneWorkflowPins(WORKFLOW_PINS_DIR));
+  if (mayWrite && event === 'session-start') safely(() => onSessionStartWithoutModel(input));
+  if (mayWrite && (event === 'session-start' || event === 'post-model-switch')) onModelKnown(input);
+  if (event === 'session-start') maybeStartCatalogueRefresh(); // starts only in mode on (it checks)
   if (output) process.stdout.write(JSON.stringify(output));
 }
 

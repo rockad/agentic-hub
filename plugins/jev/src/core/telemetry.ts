@@ -28,8 +28,17 @@ export interface JevTelemetryEvent {
   sessionId?: string | null;
   taskSummary?: string;
   tierRecommended?: string;
-  /** The model a delegation actually requested (PreToolUse). */
+  /** The model the session itself runs on (the baseline), on every record that knows it; null when it is not known. */
+  sessionModel?: string | null;
+  /** Where `sessionModel` was read from (hook input, stored file, transcript, quota state); null when not known. */
+  sessionModelSource?: string | null;
+  /**
+   * The model an Agent / subagent call is expected to run on (PreToolUse `agent_call` only, never on a prompt record):
+   * the clamp's, else the applied downgrade's, else the one the call named, else the session model.
+   */
   modelUsed?: string;
+  /** Why `modelUsed` is what it is: 'clamped' | 'downgraded' | 'requested' | 'inherited' (see {@link resolveModelUsed}). */
+  modelUsedSource?: ModelUsedSource;
   /** The model Jev recommended (UserPromptSubmit and PreToolUse). */
   modelRecommended?: string;
   /** Short id of the user turn, shared by the prompt and the Agent calls it caused. */
@@ -39,6 +48,36 @@ export interface JevTelemetryEvent {
   tokensSaved?: number;
   quotaStrategy?: string;
   [key: string]: unknown;
+}
+
+/** Where the model an Agent / subagent call ran on came from; see {@link resolveModelUsed}. */
+export type ModelUsedSource = 'clamped' | 'downgraded' | 'requested' | 'inherited';
+
+/**
+ * The model an Agent / subagent call is expected to run on, and why, shared by the Claude Code and Antigravity hooks so
+ * both harnesses write the same value rules:
+ *
+ *   modelUsed = clampedTo ?? downgradedTo ?? requested ?? sessionModel
+ *
+ * `downgradedTo` is only passed when a downgrade was actually applied. A call that named no model (or the literal
+ * `inherit`) is `inherited`: it runs on the session model. When the session model is unknown too, `modelUsed` is absent
+ * and the source is still `inherited`, so the record says the call named nothing instead of guessing.
+ */
+export function resolveModelUsed(input: {
+  clampedTo?: unknown;
+  downgradedTo?: unknown;
+  requested?: unknown;
+  sessionModel?: unknown;
+}): { modelUsed?: string; modelUsedSource: ModelUsedSource } {
+  const name = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
+  const clamped = name(input.clampedTo);
+  if (clamped) return { modelUsed: clamped, modelUsedSource: 'clamped' };
+  const downgraded = name(input.downgradedTo);
+  if (downgraded) return { modelUsed: downgraded, modelUsedSource: 'downgraded' };
+  const requested = name(input.requested);
+  if (requested && requested.toLowerCase() !== 'inherit') return { modelUsed: requested, modelUsedSource: 'requested' };
+  const session = name(input.sessionModel);
+  return session ? { modelUsed: session, modelUsedSource: 'inherited' } : { modelUsedSource: 'inherited' };
 }
 
 /**

@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { onPostToolUse, onPreToolUse, type HookDeps } from '../claude/hook.ts';
-import { CHOICE_DENIALS_BEFORE_ASK, parseElevationAnswer, type RankContext } from '../claude/logic.ts';
+import { parseElevationAnswer, type RankContext } from '../claude/logic.ts';
 import { workflowSignature } from '../claude/workflow-guard.ts';
 import { out, rig, wf, type Rig } from './workflow-helpers.ts';
 
@@ -29,9 +29,9 @@ const setup = (overrides: Partial<HookDeps> = {}, session?: string) => (r = rig(
 
 const OPUS = `export const meta = { name: 'x', description: 'y' }\nconst a = await agent('SECRET-PROMPT', { model: 'opus' })\nreturn a`;
 const INHERIT = `const a = await agent('p')\nreturn a`;
-const answer = (label: string, model = 'opus') => {
+const answer = async (label: string, model = 'opus') => {
   r.d.approvals!.deny('s1', model, r.d.now!());
-  onPostToolUse({ ...answered(MARKED(model), label), session_id: 's1' } as any, r.d);
+  await onPostToolUse({ ...answered(MARKED(model), label), session_id: 's1' } as any, r.d);
 };
 
 describe('the elevation choice flow for a Workflow', () => {
@@ -89,7 +89,7 @@ describe('the elevation choice flow for a Workflow', () => {
   it.each([['once'], ['5min'], ['session']] as const)('an approved opus passes (%s), then the retried call is the same script', async (scope) => {
     setup();
     expect(out(await onPreToolUse(wf({ script: OPUS }, r), r.d)).permissionDecision).toBe('deny');
-    answer(scope === 'once' ? 'Yes, once' : scope === '5min' ? 'Yes, for the next 5 minutes' : 'Yes, for this session');
+    await answer(scope === 'once' ? 'Yes, once' : scope === '5min' ? 'Yes, for the next 5 minutes' : 'Yes, for this session');
 
     const retry = await onPreToolUse(wf({ script: OPUS }, r, {}, 'toolu_02'), r.d);
 
@@ -100,7 +100,7 @@ describe('the elevation choice flow for a Workflow', () => {
   it('an approval of opus covers a sonnet-or-lower script, a "once" is consumed by the first launch', async () => {
     setup();
     await onPreToolUse(wf({ script: OPUS }, r), r.d);
-    answer('Yes, once');
+    await answer('Yes, once');
 
     expect(await onPreToolUse(wf({ script: OPUS }, r, {}, 'toolu_02'), r.d)).toBeNull();
     expect(out(await onPreToolUse(wf({ script: OPUS }, r, {}, 'toolu_03'), r.d)).permissionDecision).toBe('deny');
@@ -109,20 +109,22 @@ describe('the elevation choice flow for a Workflow', () => {
   it('an approval of sonnet does not cover opus', async () => {
     setup();
     await onPreToolUse(wf({ script: OPUS }, r), r.d);
-    answer('Yes, for this session', 'sonnet');
+    await answer('Yes, for this session', 'sonnet');
 
     expect(out(await onPreToolUse(wf({ script: OPUS }, r), r.d)).permissionDecision).toBe('deny');
   });
 
-  it('the third denied attempt of the same script in a prompt opens the permission dialog; a different script counts on its own', async () => {
+  it('every attempt of the same script is denied (never asked); from the third the reason says to stop retrying; a different script counts on its own', async () => {
     setup();
-    const decisions: string[] = [];
-    for (let i = 1; i <= CHOICE_DENIALS_BEFORE_ASK + 1; i++) decisions.push(out(await onPreToolUse(wf({ script: OPUS }, r, {}, `toolu_${i}`), r.d)).permissionDecision);
+    const outs = [];
+    for (let i = 1; i <= 4; i++) outs.push(out(await onPreToolUse(wf({ script: OPUS }, r, {}, `toolu_${i}`), r.d)));
     const other = out(await onPreToolUse(wf({ script: `${OPUS}\n// another` }, r, {}, 'toolu_9'), r.d));
 
-    expect(decisions).toEqual(['deny', 'deny', 'ask']);
-    expect(r.logs[2]).toMatchObject({ workflow_guard: 'asked', elevation: 'asked', elevation_attempt: 3 });
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['deny', 'deny', 'deny', 'deny']);
+    expect(outs.map((o) => String(o.permissionDecisionReason).includes('stop retrying'))).toEqual([false, false, true, true]);
+    expect(r.logs[2]).toMatchObject({ workflow_guard: 'denied', elevation: 'denied', elevation_attempt: 3 });
     expect(other.permissionDecision).toBe('deny');
+    expect(String(other.permissionDecisionReason)).not.toContain('stop retrying');
   });
 
   it('the attempt counter is keyed by a signature of the script hashes', () => {
@@ -133,10 +135,13 @@ describe('the elevation choice flow for a Workflow', () => {
     expect(a).not.toBe(b);
   });
 
-  it('without a working approvals store the deny cannot loop: it asks', async () => {
+  it('without a working approvals store it still denies, never asks (no counter, so no stop-retrying text)', async () => {
     setup({ approvals: undefined });
 
-    expect(out(await onPreToolUse(wf({ script: OPUS }, r), r.d)).permissionDecision).toBe('ask');
+    const o = out(await onPreToolUse(wf({ script: OPUS }, r), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(String(o.permissionDecisionReason)).not.toContain('stop retrying');
   });
 
   it('JEV_ELEVATION=dialog and =clamp ask at once (a script cannot be run on another model)', async () => {
@@ -178,13 +183,15 @@ describe('what passes', () => {
     expect(await onPreToolUse(wf({ script: OPUS }, r), r.d)).toBeNull();
   });
 
-  it('mode off and on-demand leave a Workflow alone, whatever it holds', async () => {
+  it('mode off and on-demand leave a Workflow alone (on-demand only records a pass row), whatever it holds', async () => {
     setup();
     for (const mode of ['off', 'on-demand']) {
       r.mode.value = mode;
       expect(await onPreToolUse(wf({ script: OPUS }, r), r.d)).toBeNull();
     }
-    expect(r.logs).toEqual([]);
+    // Off writes nothing; on-demand leaves the Workflow alone (no output) and only records the pass row.
+    expect(r.logs).toHaveLength(1);
+    expect(r.logs[0]).toMatchObject({ event: 'agent_call', tool_name: 'Workflow', decision: 'pass' });
   });
 
   it('an unknown session model leaves the call alone', async () => {

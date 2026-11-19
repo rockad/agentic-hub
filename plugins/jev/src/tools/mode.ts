@@ -41,12 +41,14 @@ export function getModeDetails(mode: string): ModeDetails {
     return {
       mode: 'on-demand',
       title: 'ON-DEMAND',
-      explanation: 'MCP server enabled as a passive System 1 coprocessor. Invoked selectively for complex multi-role workflows and ad-hoc free-tier generation.',
+      explanation: 'MCP server enabled as a passive System 1 coprocessor. Invoked selectively for complex multi-role workflows and ad-hoc free-tier generation. Telemetry and low-quota notices only: Jev enforces nothing in this mode (no decisions, no guards, no routing advice); only mode on enforces.',
       characteristics: [
         'Passive System 1 coprocessor',
         'Invoked selectively for complex multi-role workflows and routing',
         'Free-tier generative execution available on request (openrouter/free)',
-        'No mandatory pre-flight dispatch on routine tasks'
+        'No mandatory pre-flight dispatch on routine tasks',
+        'Telemetry rows are written; a one-line quota notice appears only when a pool is low or exhausted',
+        'No decisions (no deny, ask, clamp, approvals, downgrade or guards) and no routing advice: a pro subagent runs without any Jev approval prompt'
       ]
     };
   }
@@ -74,14 +76,14 @@ export async function readCurrentMode(): Promise<{ mode: JevMode; updatedAt?: st
 export const setModeInputSchema = strictObject({
   mode: z
     .enum(['off', 'on-demand', 'on'])
-    .describe('The operating mode to set: "off" (disabled, 0 overhead), "on-demand" (passive coprocessor), or "on" (aggressive System 1 enforcement)')
+    .describe('The operating mode to set: "off" (disabled, 0 overhead), "on-demand" (passive coprocessor: tools, telemetry and low-quota notices only; no decisions, no guards, no routing advice), or "on" (aggressive System 1 enforcement)')
 });
 
 export const getModeInputSchema = strictObject({});
 
 export const setModeToolDefinition: Tool = {
   name: 'jev_set_mode',
-  description: 'Switch TypeSafe Jev operating mode ("off" | "on-demand" | "on"). Updates ~/.config/jev/config.json directly in-process.',
+  description: 'Switch TypeSafe Jev operating mode ("off" | "on-demand" | "on"). Updates ~/.config/jev/config.json directly in-process. "on-demand" enforces nothing (no decisions, no routing advice); only "on" enforces.',
   inputSchema: inputJsonSchema(setModeInputSchema)
 };
 

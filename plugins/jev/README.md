@@ -28,13 +28,20 @@ Jev acts as three things in a single layer:
 ## ✨ Key Features
 
 ### ⚙️ Operating Modes
-Control the coprocessor's behavior via a toggleable state machine, persisted across sessions in `~/.config/jev/config.json`:
+Control the coprocessor's behavior via a toggleable state machine, persisted across sessions in `~/.config/jev/config.json`. The three modes mean the same in every harness (Claude Code, Antigravity, and any later one):
 
-| Mode | Behavior | Use Case |
-| :--- | :--- | :--- |
-| `OFF` *(default)* | **Disabled.** No offloading, no dispatching, zero token overhead. Direct pass-through to primary model. | Default unconfigured state; emergency high-complexity tasks. |
-| `ON-DEMAND` | **Manual Trigger.** Passive coprocessor; engages only when explicitly invoked or requested. | Auditing, debugging, or selective manual control over costs. |
-| `ON` | **Always Active.** Jev automatically dispatches eligible tasks, offloads free-tier work, and guards quotas. | Daily development workflows; automatic quota protection and offloading. |
+| Mode | MCP tools | Telemetry rows | Quota notice | Decisions (deny, ask, clamp, approvals, downgrade, guards) | Routing advice (router call, directive, tier advice) | Cross-harness memory block (Recall call) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `off` *(default)* | disabled | none | none | none | none | none |
+| `on-demand` | available | written (`PreInvocation` / `UserPromptSubmit` and `agent_call` rows) | one informational line, only when a pool is `conserve`, `free_only` or at 0 remaining | **none** | **none** | **none** |
+| `on` | available | written | full quota directives | everything | everything | injected |
+
+Mode `off` does nothing and writes nothing. Mode `on-demand` is a passive coprocessor: the `jev_*` tools answer when called, the hooks record what happens and, only for a low pool, add one line such as `[JEV] quota notice: Gemini is conserve (15% remaining). Informational only.` (the same text in every harness). Mode `on` is everything: pre-flight routing, the elevation and downgrade flows, the quota guards and the `run_command` / write guards. A mode change voids pending denials: every mode writer stamps `modeChangedAt` in `config.json`, and a denial or downgrade question issued before it is never approved by a later answer (an answer given in `on-demand` cannot approve a mode-`on` denial after switching back); the call is denied again with a fresh question.
+
+> [!WARNING]
+> **In on-demand Jev enforces nothing: a pro (Claude Code: opus) subagent runs without any approval prompt from Jev. The pro-approval rule then depends only on the agent following its instructions. Use mode `on` to have Jev enforce it.** This includes Antigravity: on-demand no longer sends a `pro` request to the native permission dialog (it did before 2.3.17), and a conserve or `free_only` pool, an unknown or `openrouter_free` Model and an omitted Model under Orchestrator pass too.
+
+**One definition for every harness.** What a mode does is defined once, in `src/core/mode-policy.ts` (`modeBehaviour(mode)` returns `{ tools, decisions, routingAdvice, memoryContext, telemetry, quotaNotice }`, and `lowQuotaNotice(pool)` builds the one-line notice). The Claude Code and Antigravity hooks consult it instead of comparing the mode to `'on'` or `'on-demand'` themselves. **Any future harness adapter (OpenCode, Codex) must use it too**, so a mode cannot drift between harnesses.
 
 > [!IMPORTANT]
 > **Default OFF (Opt-In Intent):** Jev is strictly **OFF by default** when unconfigured. No background decisions or external network calls occur until explicitly enabled by the user.
@@ -511,11 +518,12 @@ Guards `invoke_subagent` calls against the session model ceiling (`active_model`
      - Four vertical choices: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session ceiling>`.
   2. The assistant asks the user via `ask_question`. The user's answer is captured by `PostToolUse` on `ask_question` and recorded as an approval in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (mode 0600, directory 0700, atomic write with lock). Antigravity's real `PostToolUse` stdin carries `transcriptPath` and `stepIdx` (verified live; `content` is not sent directly on stdin). The hook reads the step content from the session transcript at `stepIdx` (or from `content` when present). For large transcripts, it reads a bounded tail window (last 1 MB, `TRANSCRIPT_TAIL_WINDOW_BYTES`) directly from disk without reading the full file, dropping any leading partial line. It matches against the prescribed labels exactly, after stripping the `A1:` prefix and `(Recommended)` tag: `Yes, once` (scope `once`), `Yes, for the next 5 minutes` (`5min`), `Yes, for this session` (`session`). `No, proceed on <model>`, free text such as "No, not even once", an unrecorded answer and anything else record nothing. The rest of the payload is never read as an answer: `toolCall.args` holds the option list the assistant wrote, so reading it would approve from the options alone. An approval is also recorded only after a denial for that model in the last 15 minutes.
   3. On a Yes answer, the retried `invoke_subagent` finds the approval and is **allowed**. On No, the assistant proceeds on the session model.
-  4. **Backstop**: If the assistant retries an unapproved elevation without asking, the 3rd attempt falls back to the harness permission dialog (`ask`).
+  4. **No dialog backstop**: the choice flow never returns `ask`. Under Antigravity auto-approve (permission preset TURBO, tool permission `always-proceed`) every `ask` is approved without a dialog being shown, so an `ask` on a repeated attempt would run the `pro` subagent unapproved (seen live at attempt 3). If the assistant retries an unapproved elevation without asking, every attempt is denied. From the 3rd attempt of the same delegation the reason also says plainly to stop retrying `pro` and to proceed with an explicit `Model: "<session ceiling>"` (for example `flash`) or ask the user again with `ask_question`. The pull fallback (reading the answer from the transcript) runs on every attempt, so a `Yes` answer that was recorded late is still honoured at attempt 3 and later, and is consumed once.
 - **Prompt Overrides**: If the user prompt explicitly requests pro (e.g. `manual pro approval`, `gemini pro`, `gemini argon`, `claude opus`, `deep reasoning`, `cross-system architecture`), the call passes directly (`elevation: "instructed"`). Negated clauses (e.g. `I don't want you to use gemini pro`, `never let a subagent use gemini pro`, `Do not, under any circumstances, use gemini pro`) are detected and do not override. Bare `argon` is dropped to prevent collisions with hashing ("hash it with argon") or chemical names. The named model's rank and family must cover the requested subagent model ("use gemini pro" does not approve a Claude Opus request).
 - **`JEV_ELEVATION` Overrides**:
-  - `JEV_ELEVATION=dialog`: Immediately prompts the user via the permission dialog (`ask`).
-  - `JEV_ELEVATION=clamp`: Rewrites `Model` to the session ceiling on the first attempt via `overwrite: { Model: "<ceiling>" }` (`elevation: "clamped"`).
+  - `JEV_ELEVATION=dialog`: Immediately prompts the user via the permission dialog (`ask`). This is the only path that returns `ask` for an elevation, and the decision is never changed by what follows: when Antigravity auto-approve is detected (`permissionPreset` is `AGENT_PERMISSION_PRESET_TURBO` in `~/.gemini/config/config.json`, or `toolPermission` is `always-proceed` in `~/.gemini/antigravity-cli/settings.json`; best effort, a missing or malformed file counts as not detected) the decision row in `antigravity_decisions.jsonl` carries `auto_approve_warning: true`, because the dialog is then approved without being shown.
+  - `JEV_ELEVATION=clamp`: Rewrites `Model` to the session ceiling on every attempt via `overwrite: { Model: "<ceiling>" }` (`elevation: "clamped"`, with `attempt_count`); a repeated attempt is clamped too, never asked.
+- **On-demand makes no elevation decision**: in Jev mode `on-demand` every `invoke_subagent` passes, before any check: no deny, no `ask`, no `allow` with an overwrite, no approval read or recorded, no attempt counted, and `JEV_ELEVATION` has no effect. That covers a `pro` request above the session ceiling, an unknown or `openrouter_free` Model, an omitted or `inherit` Model under Orchestrator and a `conserve` or `free_only` pool. The hook still writes the `agent_call` telemetry row (`decision: "pass"`). Antigravity auto-approve detection (see above) is used only for the dialog-mode `auto_approve_warning`. Use mode `on` to have Jev enforce the pro-approval rule.
 - **Conversation id**: the id on hook stdin is normalised once (`safeSessionId`: characters outside `A-Za-z0-9_-` are dropped) before it is used in a file name, and the approval store normalises it again; an id with nothing safe in it means no stored state and no file I/O, and the decision is made as usual. Log rows carry the normalised id.
 - **Pull fallback**: when the `PostToolUse` recorder missed the answer, the retried `invoke_subagent` reads the answer to its own question from the transcript. A question that carries a tool call id is matched to the result row with that id; if that row is not there yet nothing is pulled (another tool's output is never read as the answer). The approval is stored and claimed in one locked store operation (`recordAndClaim`), so one answer allows exactly one run even when two pro calls evaluate in parallel; the call is allowed only when that claim returns the approval. If storing fails (a lock timeout) the call is denied as usual and the decision log row says `pull_fallback: "record_failed"`; if a parallel call claimed the approval first (a store without `recordAndClaim`, which falls back to record then claim) it says `pull_fallback: "claim_lost"`.
 - **Mode `on` guards (`PreToolUse`)**: `run_command` commit gate (conflict markers in the staged, working-tree or untracked diff) and the multi-file write guard. The commit gate finds every `git commit` / `git add` in the command line with one segment walker, also used to resolve where each commit runs (quotes, `-C "dir with space"`, `-c k=v`, `env [-C dir]` / `VAR=` prefixes, `sh -c '...'`, `eval` and `$( )` / backtick bodies handled; a wrapper the walker does not know (`timeout 60 git commit`, `nice -n 5`, `xargs`, `flock f`) is still found by a later `git` word, so detection is never narrower than a plain text match). Every commit on the line is checked, not only the first. Quoted text such as `echo "git commit"` is not a commit, but an `echo` / `printf` (or a here-string) piped into a shell is: `echo 'git commit -m x' | sh` is walked as a command line.
@@ -536,6 +544,23 @@ The mirror of the Claude Code downgrade choice (see "Downgrade choice" above). W
 - **State and logs**: `<conversationId>.downgrade.json` in `~/.config/jev/antigravity-sessions/` (0600, its own lock; never the approvals file). The `agent_call` row in `antigravity_decisions.jsonl` gains `downgrade` (`asked`, `answered`, `applied`, `skipped`), `downgrade_skip`, `downgrade_from`, `downgrade_to`, `downgrade_via` (`auto` or `answer`), `downgrade_needed`, `downgrade_probability`, `downgrade_rated`, `downgrade_rating` (`cached`), `downgrade_rating_ms`, `downgrade_pull`, and the task's `taskLen` and `taskHash`, never the task text. The `ask_answer` row for a downgrade question carries `marker: "downgrade"`, `parsed: { choice }` and the outcome `recorded`, `no_row`, `rejected`, `not_asked` or `error`; an ask with several downgrade questions also logs `downgrade_questions` and `outcomes` (one outcome per question, in order).
 - Printing nothing remains the pass-through: a candidate that is not downgraded exits 0 with empty stdout.
 
+### Telemetry: `agent_call` rows and the recommendation (both harnesses)
+
+Rows go to `jev_telemetry.jsonl`; the agent-usage collector snake-cases the keys. No row holds prompt text.
+
+- **`agent_call`** (`PreToolUse`): `turn`, `sessionModel`, `sessionModelSource`, `decision`, `requestedModel`, `modelUsed`, `modelUsedSource`, `modelRecommended`, `recommendedTier`.
+  - **`modelUsed` and `modelUsedSource` only when the call goes ahead** (`pass`, `allow`, and the native `ask`, where the run may or may not happen). A `decision: "deny"` row leaves both unset; `requestedModel` stays. On Claude Code the row also carries `decision` (`deny`, `ask`, `allow` for a clamp or an applied downgrade, else `pass`) and `requestedModel`; its recommendation fields are `modelRecommended` and `tierRecommended`.
+  - **`modelRecommended` / `recommendedTier`** are attached whenever the turn's recommendation is known when the call arrives, whatever the decision.
+  - **`callKey`** (Antigravity): the tool call id, else `step:<stepIdx>`, else a one-off `call:<time>-<random>`; also `call_key` in `antigravity_decisions.jsonl`.
+  - **`recommendationPending: true`** (Antigravity, mode `on`): the row was written before the turn's recommendation existed (the `PreInvocation` hook is still running; hooks of one turn are not serialised). A late row follows when the pre-flight finishes. If it never does (the router timed out, no key), the row stays pending and no late row comes.
+- **`agent_call_recommendation`** (Antigravity, `toolOrHook: "PreToolUse"`): written by the pre-flight for each pending call of the same `turn`. It repeats `callKey`, `decision`, `requestedModel` (and `modelUsed` / `modelUsedSource` when the call had them) and adds `modelRecommended`, `recommendedTier` and `recommendationLate: true`, so it needs no join. Pending calls are kept in `<conversationId>.turn-pending.json` (newest 20, 10 minutes) under `<conversationId>.turn.lock`, together with the turn state, so recording a call and writing the recommendation cannot cross. A lock timeout skips the record (fail open).
+- **Claude Code** needs no late row: `UserPromptSubmit` is a blocking hook that stores the recommendation before the model can call a tool, so an `agent_call` has it or never will (Jev off, a short or pasted prompt, a status turn, Jev unreachable, a host-injected turn).
+
+```json
+{"harness":"antigravity","toolOrHook":"PreToolUse","event":"agent_call","turn":"0123456789ab","callKey":"call_1","decision":"deny","requestedModel":"pro","sessionModel":"gemini-3.8-flash-low","recommendationPending":true}
+{"harness":"antigravity","toolOrHook":"PreToolUse","event":"agent_call_recommendation","turn":"0123456789ab","callKey":"call_1","decision":"deny","requestedModel":"pro","modelRecommended":"flash","recommendedTier":"flash","recommendationLate":true}
+```
+
 ---
 
 ## 🤖 Claude Code
@@ -551,18 +576,22 @@ Put the key where the hooks and the MCP server both find it: `~/.config/jev/env`
 `JEV_OPENROUTER_API_KEY=...`. `bun` must be on `PATH`.
 
 The plugin brings the `jev_*` MCP tools and its hooks (`claude/hooks.json` → `claude/hook.ts`).
-The hooks act only in mode `on`. In `on-demand` and `off` they stay silent, and the MCP tools
-remain callable on request.
+The hooks decide and advise only in mode `on`. In `on-demand` they make no decision and give no advice (no
+router call, no directive, no deny, ask, clamp, downgrade or approval; `UserPromptSubmit` adds one informational
+line only when a quota pool is low) but still write the telemetry rows: the prompt row and one `agent_call` row
+with `decision: "pass"` for every `Agent`, `Task` and `Workflow` call. In `off` they stay silent and write
+nothing. The MCP tools remain callable on request in `on-demand`. In `on-demand` an `opus` subagent runs
+without any approval prompt from Jev: use mode `on` to have Jev enforce the approval rule.
 
 | Event | What Jev does |
 | :--- | :--- |
-| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/`. It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
+| `SessionStart`, `PostModelSwitch` | Remembers the session model in `~/.config/jev/claude-sessions/` (mode `on` and `on-demand`; mode `off` writes nothing). It is the ceiling for delegations. A session these never reached learns it from the transcript tail (see "How the session model is learned"). |
 | `UserPromptSubmit` | Asks Jev (1.5 s budget) for a Claude subagent (`Explore`, `general-purpose`, `Plan`, `self`), a model (`openrouter_free`/`flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`) and an effort, and adds them to the turn as context. |
-| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. The third attempt of the same delegation in one prompt opens the permission dialog instead (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call, `JEV_ELEVATION=clamp` the opt-in clamp. Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
+| `PreToolUse` on `Agent` | Before a subagent runs on a stronger model than the session's (the model written on the call, or the one its definition's `model:`, `CLAUDE_CODE_SUBAGENT_MODEL` / `_FORCE` or a ladder name gives it: see "The model an `Agent` call will actually run on"), when the prompt did not name that model and no approval covers it: **denies the call with a reason that prescribes one question to the user** (Yes once, Yes for 5 minutes, Yes for this session, or No and proceed on the session model); the turn goes on. A model the user named passes. It never asks: every attempt is denied, and from the third attempt of the same delegation in one prompt the reason says to stop retrying (see "Elevation choice (default)" below). `JEV_ELEVATION=dialog` is the 2.3.4 permission dialog on every such call (the only mode that asks; it logs `auto_approve_warning` when `permission_mode` is `bypassPermissions` or `auto`), `JEV_ELEVATION=clamp` the opt-in clamp (every call is clamped, a repeat too). Nothing else asks: Jev's tier rating never opens a dialog, it is logged next to the model the call used. |
 | `PreToolUse` on `Agent` (downgrade) | Rates **the delegation itself** (its description and the start of its prompt, one router call, fail-open). When a cheaper model is enough and strictly cheaper by list price (and no instruction names the model): denies once with a reason that prescribes a question offering it, or, with `JEV_DOWNGRADE=auto`, runs the call on the cheapest sufficient alias. See "Downgrade choice" below. |
-| `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session). Prints nothing. |
-| `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, the third attempt opens the dialog); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
-| `PostToolUse` on `Workflow` | Drift recorder: re-hashes the script files the guard analysed and logs `workflow_changed` when one differs; prints a message while Jev is on. No prompt. |
+| `PostToolUse` on `AskUserQuestion` | Records the user's real answer to the elevation question as an approval, and the answer to the downgrade question as "answered" (the fourth answer also switches the downgrade question off for the session), in mode `on` only: approvals and downgrade answers are decisions, so on-demand and off record nothing. Prints nothing. |
+| `PreToolUse` on `Workflow` | The agents a workflow launches never reach `PreToolUse`, so the **script is analysed** (acorn, fail-closed): a literal model above the session model takes the same choice flow as an `Agent` call (deny with the prescribed `[jev-elevate:<model>]` question, approvals, never a dialog: the third attempt adds the stop-retrying sentence); anything the analysis cannot prove (a model from a variable, aliasing, spread, a parse error, ...) opens the permission dialog. A model the user named passes. See "Workflow guard" below. |
+| `PostToolUse` on `Workflow` | Drift recorder: re-hashes the script files the guard analysed and logs `workflow_changed` when one differs; prints a message while Jev is on. No prompt. Mode `off` does nothing at all (no log row, the pin is left for the next prune). |
 
 What the hooks do **not** do:
 
@@ -666,26 +695,34 @@ approval covers a `sonnet` call on a `haiku` session; a `sonnet` approval does n
 approvals cover a call, a standing one (session, then 5 minutes) is used before a `once`, so the `once` is kept.
 Approvals of one session never apply to another.
 
-**Third-attempt backstop.** If the assistant does not ask the prescribed question, the hook counts denied
-elevating attempts per session, `prompt_id` and delegation (subagent type and description). The first two attempts
-of one delegation are denied; the **third attempt of the same delegation without an approval in the same prompt opens
-the permission dialog** (the 2.3.4 reason: Yes runs it on the stronger model; No
-cancels the call and stops the turn; a comment typed with No lets the assistant continue), logged
-`elevation: "asked"`. A delegation whose description is reworded on every retry is a new delegation each time, so it
-never reaches the dialog; it is still denied every time, and 20 denials in one prompt open the dialog whatever the
-wording. Different delegations count separately, so several workstreams that are each denied, answered and
-retried never reach it; twenty denials in one prompt open it whatever they were. **A new `prompt_id` resets the count**,
-and background agent completions start new prompts, so the count restarts after each of those. A host that sends no
-`prompt_id` is keyed on the stored turn and the time it was stored, and that counter also restarts after five quiet
-minutes. If the counter cannot be written, the call asks instead of being denied again.
+**No dialog backstop: the choice flow never asks.** If the assistant does not ask the prescribed question, the hook counts denied
+elevating attempts per session, `prompt_id` and delegation (subagent type and description). Every attempt without an
+approval is denied (`elevation: "denied"`). A hook `ask` is answered without a dialog being shown under the Claude Code
+permission modes `bypassPermissions` and `auto`, so an `ask` on a repeated attempt would run the stronger model
+unapproved. From the **third attempt of the same delegation in the same prompt** the deny reason also says plainly
+to stop retrying that model and to proceed with an explicit model at or below the session model, or to ask the user
+again with `AskUserQuestion` (the same sentence as Antigravity, from `stopRetryingText` in `src/core`, apart from the
+tool name). Different delegations count separately, so several workstreams that are each denied, answered and
+retried never reach it; twenty denials in one prompt reach it whatever they were. **A new `prompt_id` resets the
+count**, and background agent completions start new prompts, so the count restarts after each of those. A host that
+sends no `prompt_id` is keyed on the stored turn and the time it was stored, and that counter also restarts after five
+quiet minutes. If the counter cannot be written the call is still denied (the attempt number is then unknown, so
+there is no stop-retrying sentence). An answer recorded late by the `PostToolUse` recorder still allows one run, on
+any attempt.
 
 **`JEV_ELEVATION`** (environment only, read by the hook; there is no config key):
 
 | Value | Behaviour |
 | :--- | :--- |
-| unset, `choice`, or any other value | The choice flow described here. |
-| `dialog` | The 2.3.4 behaviour: the permission dialog on every elevating call (see "Elevation (2.3.4)" below). |
-| `clamp` | The 2.3.4 opt-in clamp (see "Opt-in clamp" below). |
+| unset, `choice`, or any other value | The choice flow described here. It never asks. |
+| `dialog` | The 2.3.4 behaviour: the permission dialog on every elevating call (see "Elevation (2.3.4)" below). **The only mode that asks.** The decision is never changed by what follows: when the hook input's `permission_mode` is `bypassPermissions` or `auto` (the dialog is then answered without being shown to you) the `agent_call` row carries `auto_approve_warning: true`. |
+| `clamp` | The opt-in clamp (see "Opt-in clamp" below): every elevating call, a repeat in the same prompt too, runs on the session model (`allow` + `updatedInput`). It never asks. |
+
+`auto_approve_warning` treats `bypassPermissions` (permission prompts are skipped) and `auto` (a classifier answers them) as
+the modes that approve without asking. `default` and `plan` show the dialog, `acceptEdits` approves file edits only (an
+`Agent` call still prompts) and `dontAsk` denies whatever is not pre-approved, so none of those is flagged. Choice and clamp
+never ask in either harness; dialog is the only mode that asks, and it warns when the harness auto-approves (Claude Code
+`permission_mode`; Antigravity: permission preset TURBO or tool permission `always-proceed`).
 
 Unchanged: a call at or below the session model, with no model, an unknown or missing session
 model (a `Workflow` is read by the Workflow guard, see "Workflow guard" below); a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
@@ -701,14 +738,15 @@ always exits 0, prints nothing, and ignores any question without the marker and 
 **Limits, said plainly.**
 
 - The flow needs the assistant to ask the prescribed question. If it asks in another form, or in plain chat, no
-  approval is recorded and the call is denied again, until the third attempt opens the dialog.
+  approval is recorded and the call is denied again (from the third attempt with the stop-retrying sentence).
 - The recorder trusts the answer the harness reports for a question that starts with the marker, not the
   assistant's text about it; an assistant that fabricates a question still cannot answer for the user. It does
   not check that the question's wording or options match the prescription, only the marker and the label.
 - A multi-select answer and a free-text "Other" answer record nothing.
 - Interactive and headless: the flow needs a user to answer `AskUserQuestion`. In a headless run (`claude -p`)
-  there is nobody to ask, so the assistant's question gets no real answer and the call keeps being denied until the
-  dialog backstop. Use `JEV_ELEVATION=dialog` or `clamp` there, or name the model in the prompt.
+  there is nobody to ask, so the assistant's question gets no real answer and the call keeps being denied (the
+  stop-retrying sentence tells the assistant to proceed on an explicit model at or below the session model). Use
+  `JEV_ELEVATION=dialog` or `clamp` there, or name the model in the prompt.
 - Not verified here: the whole flow end to end in a real interactive session (the pieces were verified
   separately: the deny keeps the turn going, and the answer reaches the `PostToolUse` hook), whether the assistant
   follows the prescription reliably, and how a hook `ask` dialog behaves in `auto` permission mode. (Claude Code does not fire
@@ -888,7 +926,7 @@ and `workflow` is visited. Comments and strings that mention a model are never r
 | Script | Result |
 | :--- | :--- |
 | `agent(p)` with no model, `model: 'inherit'`, a literal at or below the session model | Passes. |
-| A literal `model` above the session model (family-first order, the same as the `Agent` guard), no instruction naming it | The `Agent` choice flow, for the strongest model named: a covering approval passes; otherwise the call is **denied with the prescribed `[jev-elevate:<model>]` question** (the reason names the workflow by its script hash); the third denied attempt of the same script (a signature of the script hashes) in one prompt opens the permission dialog. `JEV_ELEVATION=dialog` and `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp. |
+| A literal `model` above the session model (family-first order, the same as the `Agent` guard), no instruction naming it | The `Agent` choice flow, for the strongest model named: a covering approval passes; otherwise the call is **denied with the prescribed `[jev-elevate:<model>]` question** (the reason names the workflow by its script hash); every denied attempt of the same script (a signature of the script hashes) in one prompt is denied again, never asked, and from the third the reason says to stop retrying. `JEV_ELEVATION=dialog` and `clamp` ask at once: a script cannot be run on another model, so there is nothing to clamp (an `ask` here is the one place `clamp` still asks). |
 | The prompt names that model or a stronger one | Passes (`workflow_guard: "passed-instructed"`). |
 | An `agentType` | Its definition's `model` and `effort` are read from `.claude/agents/*.md` (project up to the git root or `CLAUDE_PROJECT_DIR`, then the user config dir, then installed plugins); a built-in type runs on the session model; an explicit `model` on the call wins over the definition. |
 | `effort` | A literal `xhigh` or `max` asks (an interim threshold with no spec behind it, cognitive-engine RFC 007); `low`, `medium`, `high` pass; any other value asks. |
@@ -950,7 +988,7 @@ happens depends on what the user said in the current prompt, and on one opt-in s
 | Model at or below the session model, no model, `inherit`, unknown session model | Untouched. (A `Workflow` is read by the Workflow guard.) |
 | The prompt names that model or a stronger one (`use opus`, `run an opus subagent`) | Passes unchanged, no dialog (the instruction is the approval). Logged as `elevation: "instructed"`. |
 | **`JEV_ELEVATION=dialog`:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
-| The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in both modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. |
+| The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in dialog and clamp modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. The choice flow is not affected. |
 
 The instruction check is `>=`: a model the user named covers a request for that model or a weaker one (`use opus`
 covers an `opus` call and a `sonnet` call). A stored instruction counts only for its own prompt: the turn state
@@ -961,25 +999,22 @@ marker alone decides, as before. The advice in the turn context stays capped at 
 #### Opt-in clamp: `JEV_ELEVATION=clamp`
 
 Set the environment variable `JEV_ELEVATION=clamp` (the hook reads it from its environment; there is no config
-key) and the first elevating call per session and prompt id is not asked about: the hook returns `allow` with
+key) and no elevating call is asked about, the first of a prompt or a repeat: the hook returns `allow` with
 `updatedInput` (every original field, `model` set to the session model alias, for example `sonnet`) and a short
 note for the assistant, so the work runs on the session model with no dialog. Logged as `elevation: "clamped"`
 with `clamped_from` and `clamped_to`; the telemetry `modelUsed` is the model it ran on. The note says Jev ran the
 delegation on the session model, that the assistant must not call again on its own, and that it should report the
 result and ask the user in chat; a reply naming the stronger model passes.
 
-**Limit, said plainly:** in an interactive session the clamp restarts on every new prompt. A background agent's
-completion notification starts a new prompt with a new `prompt_id`, so the next elevating call is a "first" call
-again and is clamped again. The dialog therefore appears only for a repeat inside the same prompt, and a user who
-never types a prompt of their own between calls may never be asked. That is why the clamp is off by default.
-
-The "once per prompt" state is one marker file per session in `~/.config/jev/claude-sessions/`
-(`<session>.clamp-<prompt_id>`, mode 0600 like the other state, holding a hash of the clamped delegation, never
-task text). It is created exclusively so parallel calls cannot both be first, and replaced when the prompt
-changes; markers left behind are pruned after 7 days at SessionStart. When the state cannot be read or written,
-or there is no prompt id, the call asks instead of clamping. A repeat's dialog mentions an earlier run on the
-session model only when a clamp ran for the same `subagent_type` and `description` in this prompt. The default
-mode never creates a marker and never returns `updatedInput`.
+**The clamp never asks.** A repeated attempt in the same prompt is clamped exactly like the first (the same `allow` and
+`updatedInput`, `decision: "allow"` and `modelUsedSource: "clamped"` in the telemetry), and so is a call with no prompt id
+or a failing state store. Under a Claude Code permission mode that approves without asking (`bypassPermissions`, `auto`) a
+dialog would run the stronger model unseen, which is why a repeat is not asked about. The decisions log carries
+`elevation_attempt` (the per-delegation count of the choice-flow attempt counter, when it works). Older versions kept a
+per-prompt marker file (`<session>.clamp-<prompt_id>`) so that only the first call was clamped; it is no longer written, and
+markers an older version left behind are pruned after 7 days like the other session files. The one clamp that still asks is
+the one that cannot be done: a remapped session alias and a forced subagent model (see the table above), which are not
+choice or clamp decisions but a model the hook cannot rewrite. The default mode never returns `updatedInput`.
 
 Fail-open: a hook crash, invalid stdin or a timeout means no output, and the call runs unchanged (on the model it
 asked for).
@@ -988,7 +1023,7 @@ asked for).
 
 The hook does not rank only the `model` written on the call. `claude/agent-definitions.ts` (`resolveAgentModel`)
 works out the model the call will run on, in this order, and that model goes through the same choice flow as an
-explicit one (deny with the prescribed question, approvals, the attempt counter, the dialog backstop):
+explicit one (deny with the prescribed question, approvals, the attempt counter and its stop-retrying text):
 
 1. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes`, `on`) with `CLAUDE_CODE_SUBAGENT_MODEL` set: that model
    replaces the call's and the definition's (`model_source: "env-force"`). Forced with no model variable: the session model.
@@ -1067,11 +1102,17 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 ### Release notes
 
 - **2.3.17: Antigravity downgrade choice** (`[jev-downgrade:flash_lite]`, parity with the Claude Code downgrade choice; Antigravity `invoke_subagent` hooks, Jev mode `on` only; see "`invoke_subagent` Downgrade Choice" in the Antigravity section):
+  - **A mode change voids pending denials, and on-demand has no memory injection (both harnesses).** `jev_set_mode`, the `/jev` skill and `mcp-toggle` stamp `modeChangedAt` (`defaults.modeChangedAt`, or `harnesses.<harness>.modeChangedAt` for one harness) in `config.json`; the Antigravity pull fallback and recorder and the Claude Code `PostToolUse` recorder (elevation and downgrade alike) refuse a denial or question older than the stamp (`denialPredatesModeChange`, `src/core/mode-change.ts`), so an answer given in on-demand cannot approve a mode-`on` denial after switching back, and a config without the stamp puts no restriction on anything. On-demand makes no Recall call and injects no `[CROSS-HARNESS MEMORY]` block in either harness (`modeBehaviour(mode).memoryContext`, true only for `on`).
   - A subagent invoked with `Model: "flash"` (or with `Model` omitted or `inherit` on a standard `flash` session, when a downgrade mode is configured) is rated on its role and the first 1000 characters of its prompt through the decisions router (1500 ms, fail-open, cached 10 minutes per SHA-256 signature). When `P(openrouter_free) + P(flash_lite)` reaches `0.6`, mode `ask` (default) denies once with a prescribed `ask_question` (`Yes, flash_lite`, `No, keep flash`, `No, and don't ask again this session`) and mode `auto` rewrites the call with `allow` + `overwrite: { Model: "flash_lite" }`. Antigravity honours that overwrite for an explicit, an omitted and an `inherit` Model (live probe, 2026-11-18).
   - It runs only after the 2.3.16 checks (invalid tier, Orchestrator omitted or `inherit`, quota, ceiling and approval) have passed the call, so it never turns a deny into an allow, and under Orchestrator the explicit-`Model` rule still comes first. `JEV_DOWNGRADE=ask|auto|off` overrides `models.downgrade.mode`; Jev mode `off` and `on-demand` do nothing.
   - The answer is recorded by the `PostToolUse` recorder on `ask_question` (exact labels only) and, if the row arrives after `PostToolUse` returned, pulled from the transcript tail at the next `PreToolUse`. An answer is bound to one delegation (the question's marker carries `<sig8>` of its signature: `[jev-downgrade:flash_lite:<sig8>]`) and closes its pending question once, so it is never replayed and never decides another delegation, and an answer to a question nobody asked records nothing. A question stays answerable for an hour.
   - Shared with the Claude Code flow, moved to `src/core/`: the rating and the per-session state (`downgrade-state.ts`) and the timeout race (`with-timeout.ts`). `claude/downgrade.ts` re-exports them, so existing imports are unchanged. The approval store and the new `<conversationId>.downgrade.json` store both use the shared `withDirLock` from `src/core/dir-lock.ts` (from #72).
   - The `ask_answer` row of a downgrade question carries `marker: "downgrade"`; the `agent_call` row gains the `downgrade*` fields. The task text is never logged (length and a short hash only).
+  - Elevation never returns `ask` in choice and clamp modes, in either harness (auto-approve safety): with auto-approve on, every hook `ask` is approved without a dialog, so the choice flow's attempt-3 dialog backstop let a `Model: "pro"` subagent run unapproved. Choice mode now denies on every attempt (the pull fallback runs on every attempt in Antigravity, so a late `Yes` answer is still honoured; Claude Code's `PostToolUse` recorder does the same), and from attempt 3 the deny reason tells the agent to stop retrying and proceed on an explicit session-ceiling model or ask the user again (`ask_question` in Antigravity, `AskUserQuestion` in Claude Code: one sentence, `stopRetryingText` in `src/core/elevation-text.ts`). Clamp mode clamps every attempt (`allow` + `overwrite` / `updatedInput`), with `attempt_count` / `elevation_attempt`; a repeat is no longer asked about. Dialog mode (`JEV_ELEVATION=dialog`) is the only mode that asks, and logs `auto_approve_warning: true` when the harness approves without showing the dialog (Antigravity: permission preset TURBO or tool permission `always-proceed`; Claude Code: the hook input's `permission_mode` is `bypassPermissions` or `auto`; the decision is unchanged). The Claude Code `Workflow` choice flow follows the same rule. Still asking, because the call cannot be clamped or decided: an unrankable model, an unreadable definition, an interim effort ask, a remapped session alias or a forced subagent model under clamp, and a `Workflow` under `dialog` or `clamp`. Jev mode `on-demand` no longer decides anything (see the next bullet). There is no Antigravity doctor or status output to carry the warning.
+  - **Behaviour change: on-demand makes no decisions, in both harnesses.** In on-demand Jev enforces nothing: a pro (Claude Code: opus) subagent runs without any approval prompt from Jev. The pro-approval rule then depends only on the agent following its instructions. Use mode `on` to have Jev enforce it. Previously on-demand in Antigravity asked through the native dialog (an elevation above the ceiling, an Orchestrator with Model omitted or `inherit`, a `conserve` or `free_only` pool) and denied an unknown or `openrouter_free` Model; an interim change in this release denied under detected auto-approve, and that is superseded and removed. Now:
+    - Antigravity: `evaluateAntigravitySubagentCall` returns `pass` for every `invoke_subagent` in on-demand, before any check (no deny, ask, overwrite, approval read or recorded, or attempt counted). The `agent_call` telemetry row is still written (`decision: "pass"`, `requestedModel`, `modelUsed` / `modelUsedSource` as for a pass in mode `on`, `sessionModel`; no recommendation fields and no `recommendationPending`). The `PreInvocation` hook runs no router call and injects no directive or tier advice; it writes the prompt telemetry row (no recommendation fields) and, only for a low pool, the one-line notice `[JEV] quota notice: <pool> is <conserve|free_only|exhausted> (<n>% remaining). Informational only.` instead of the former `QUOTA CONSERVE` / `QUOTA EMERGENCY` directives (mode `on` keeps those). The Argon-exhausted frontier pool follows the same rule: in on-demand it gets one shared notice line (`[JEV] quota notice: Argon is <free_only|exhausted> (<n>% remaining). Informational only.`, no `/model` advice, one line per low pool when the execution pool is low too), and the full `ARGON EXHAUSTED WARNING` with the model-switch advice is mode `on` only. The `PostToolUse` `ask_question` recorder records nothing in on-demand (no approval, no downgrade answer), so an answer given there cannot approve a stale denial from an earlier mode `on`; and `PreToolUse` skips the downgrade step entirely in on-demand, so its `agent_call` row has no `downgrade` or `downgrade_skip` field. The `run_command` / write guards were already mode `on` only. `detectAntigravityAutoApprove` is kept only for the dialog-mode `auto_approve_warning`.
+    - Claude Code: `UserPromptSubmit` makes no dispatch call and injects no directive; it writes the prompt row (`sessionModel`, `sessionModelSource`, quota strategy) and the notice line only for a low pool. `PreToolUse` on `Agent`, `Task` and `Workflow` returns no output, as before, and writes an `agent_call` row with `decision: "pass"`, `requested_model`, `sessionModel` and, in the telemetry record, `modelUsed` / `modelUsedSource` from the shared `resolveModelUsed`. No approvals, elevation state, clamp or downgrade. The `PostToolUse` `AskUserQuestion` recorder records no approval, elevation decline or downgrade answer in on-demand or off. Mode `off` writes nothing from any hook entry point (`SessionStart` / `PostModelSwitch` leave the session-model record alone, the Workflow drift recorder writes no row and keeps the pin, the pin prune does not run); on-demand keeps the session-model record, because telemetry reports `sessionModel`. The `PostToolUse` Workflow drift recorder still only reports a changed script file, and in on-demand there is no pin to compare (pins are written only by the mode `on` guard).
+    - One shared definition: `src/core/mode-policy.ts` (`modeBehaviour`, `lowQuotaNotice`, `quotaPoolLabel`) is consulted by both harnesses; see "Operating Modes".
   - Review fixes (#76, after the restack onto the reviewed #72):
     - One ask with several signed downgrade questions (one tool call id): each answer is consumed per question (`<tool call id>#<question index>`), so a late `PreToolUse` pull for delegation B still finds its own answer after A's was pulled.
     - `PostToolUse` polls once for the whole ask, not once per question.
@@ -1079,11 +1120,12 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     - The `ask_answer` row lists every question's outcome (`outcomes`).
     - `preflight.ts` uses the shared `withTimeout`; the lock timeout message names the lock (`dir lock timeout: <name>.downgrade.lock`), from the shared `src/core/dir-lock.ts` helper.
     - Tests no longer read real API keys under plain `bun test` (see "Hermetic tests").
+  - Telemetry, both harnesses (same value rules, shared `resolveModelUsed` in `src/core/telemetry.ts`): every record that knows the session model carries `sessionModel` and `sessionModelSource`; the prompt record (`UserPromptSubmit` on Claude Code, `PreInvocation` on Antigravity) carries `modelRecommended` only, and the deprecated Claude Code `modelUsed` alias is removed; the `agent_call` record (unless its decision is `deny`: then neither field is set) carries `modelUsed` = the clamp's model, else the applied downgrade's, else the model the call will run on (on Claude Code the model the hook resolved: the forced subagent-model environment, the one the call named, the subagent definition's, a ladder pin or the subagent-model environment, reported as `requested`), else the session model, with `modelUsedSource` = `clamped`, `downgraded`, `requested` or `inherited` (`inherited` also when no model is known, and then `modelUsed` is absent). Claude Code `Workflow` rows carry no `modelUsed` or `modelUsedSource` (the agents a workflow launches choose their own models). The Antigravity `subagent_served` row carries `sessionModel` and `sessionModelSource` (null when unknown) and is written only when a served model was found (the decisions log keeps the row either way). `<conversationId>.turn.json` and `<conversationId>.turn-pending.json` expire with the session TTL, like `.write-guard.json`. Antigravity `agent_call` also carries `modelRecommended` and `recommendedTier` (from the per-conversation `<conversationId>.turn.json`, written atomically and only for a safe conversation id), joined to the `PreInvocation` row by `turn`; a call written before the pre-flight finished is marked `recommendationPending` and gets a late `agent_call_recommendation` row (see "Telemetry: `agent_call` rows and the recommendation"). No telemetry line holds prompt text.
 - **2.3.16: Antigravity Orchestrator pools, preflight and write guards** (Antigravity hooks; the on-demand and `on` rules below apply to `invoke_subagent` only):
   - Orchestrator sessions read two pools from `quota-state.json`: execution (Gemini 5h and weekly) and frontier (the Argon or Carbon weekly bucket). `flash` and `flash_lite` are judged against the execution pool, `pro` against the more constrained of the two, and the Orchestrator subagent ceiling is `flash`.
-  - A `PreInvocation` hook (`antigravity/preflight.ts`, a flat handler list in `hooks.json`; `PreToolUse` and `PostToolUse` keep the matcher plus hooks shape) persists the live session model, injects the quota directive (pool strategy and the actual remaining percentage, no hard-coded thresholds) and, in mode `on`, a pre-flight recommendation. Telemetry lines carry only the task length and fingerprint.
+  - A `PreInvocation` hook (`antigravity/preflight.ts`, a flat handler list in `hooks.json`; `PreToolUse` and `PostToolUse` keep the matcher plus hooks shape) persists the live session model, injects the quota directive (pool strategy and the actual remaining percentage, no hard-coded thresholds) and, in mode `on`, a pre-flight recommendation. In mode `on-demand` it injects only the one-line low-quota notice instead of the directive (2.3.17). Telemetry lines carry only the task length and fingerprint.
   - Mode `off` runs only the MCP auto-heal in that hook and prints `{}`: no session model file, no quota read, no injection, no telemetry.
-  - Mode `on-demand` never denies an `invoke_subagent` call except for an invalid or `openrouter_free` model. A tier above the session ceiling, and an omitted or `inherit` Model under Orchestrator, open the native permission dialog (`ask`) with a reason naming the requested tier and the ceiling; no approval is recorded and no attempt is counted. Mode `on` is unchanged (deny plus the `[jev-elevate:<model>]` question, dialog on the third attempt, quota hard).
+  - Mode `on-demand` (as redefined in 2.3.17: no decisions in either harness) passes every `invoke_subagent` call; the deny, ask and quota rules described here are mode `on` only. It still writes the `agent_call` telemetry row.
   - The `ask_question` recorder waits for an answer row only when the question carries the `[jev-elevate:<model>]` marker; any other question returns at once with outcome `not_elevation`.
   - The served-model lookup never takes the parent conversation id as the child id, and reads the model of the first transcript row that names one (bounded head read).
   - Mode `on` guards (`antigravity/guards.ts`): the commit gate looks at added conflict-marker lines only (`<<<<<<< ` or `>>>>>>> `), diffs against `HEAD` for `-a`, `--all`, `-am` or a command that also runs `git add`, and runs the diff with `--no-color --no-ext-diff --no-textconv` so a `color.ui = always`, `diff.external` or textconv setting cannot hide a marker. When the command line runs `git add`, it also scans the repository's untracked, non-ignored text files (the hook runs before the add, so `git diff` cannot see them), capped at 2000 files, 1 MiB per file and 16 MiB in total (a cap is logged as `commit_gate` / `untracked_limit`). Git runs with a 3 s timeout and a 16 MiB buffer, and the gate passes through on any git error (logged as `commit_gate` / `git_error`). The multi-file write guard matches exempt paths as path segments, never records an empty path, passes through with a `write_guard` / `no_conversation_id` log line when the hook input has no conversation id, and prunes `*.write-guard.json` files older than two hours with the same throttled pass as the session model files.
@@ -1144,10 +1186,10 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
   - Guards `invoke_subagent` calls against the session model ceiling (`active_model` from `quota-state.json`).
   - Flat `args.Model` (and legacy `args.Subagents[].Model` array shape) are checked against the session ceiling.
   - Omitted and `inherit` models resolve to the session model (empirically settled by 4-call live control) and pass without elevation.
-  - Explicit `Model: pro` on a Flash session triggers elevation choice flow: 1st/2nd attempts are denied with prescribed `ask_question` options (`[jev-elevate:pro]`: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session model>`); 3rd attempt falls back to permission dialog (`ask`).
+  - Explicit `Model: pro` on a Flash session triggers elevation choice flow: 1st/2nd attempts are denied with prescribed `ask_question` options (`[jev-elevate:pro]`: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session model>`); every further attempt is denied too (never `ask`), with a stop-retrying hint from the 3rd.
   - User approvals are recorded in `~/.config/jev/antigravity-sessions/<conversationId>.approvals.json` (0600 file mode, atomic write with lock).
   - Explicit `pro` override in user prompt passes (`elevation: "instructed"`).
-  - `JEV_ELEVATION=dialog` asks immediately; `JEV_ELEVATION=clamp` rewrites `Model` to session ceiling on 1st attempt via `overwrite: { Model: <ceiling> }`.
+  - `JEV_ELEVATION=dialog` asks immediately; `JEV_ELEVATION=clamp` rewrites `Model` to session ceiling on every attempt via `overwrite: { Model: <ceiling> }`.
   - Decisions logged to `antigravity_decisions.jsonl` with the prompt length and the 12-hex task fingerprint (never raw prompt text).
   - Fail-open on any error (never aborts an agent session) by printing `{}`, not `allow`, so the harness's own permission check stays in force; `allow` only where Jev deliberately approves.
   - The elevation answer is read only from the `content` field and must equal a prescribed label exactly (review fix: substring matching on the whole payload let the option list approve by itself). The hook no longer loads `~/.config/jev/env` or the plugin `.env`.
@@ -1163,7 +1205,7 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     `agent(..., {model: 'opus'})` in a script bypassed the elevation guard. `PreToolUse` on `Workflow` now reads the
     script (inline, `scriptPath`, a saved `name`, nested `workflow()` one level) with `acorn` and ranks every literal
     model against the session model. An elevation takes the `Agent` choice flow (deny with the prescribed
-    `[jev-elevate:<model>]` question, approvals, a per-script attempt counter, the dialog on the third attempt); an
+    `[jev-elevate:<model>]` question, approvals, a per-script attempt counter; since 2.3.17 never a dialog); an
     instruction naming the model passes; everything the analysis cannot prove opens the permission dialog.
     See "Workflow guard".
   - Ported from cognitive-engine's `workflow-guard.ts` / `workflow-pin.ts` (same owner, same design, same fail-closed
@@ -1266,7 +1308,8 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     user's real answer as an approval: `once` (10 minutes to use it, consumed atomically), `5min`, `session`. An
     approval covers its model and anything below it above the session model. State is
     `<session_id>.approvals.json` (0600 in a 0700 directory), written atomically under a lock.
-  - The third attempt of the same delegation without an approval in one prompt opens the 2.3.4 permission dialog; a new
+  - The third attempt of the same delegation without an approval in one prompt opened the 2.3.4 permission dialog (changed in
+    2.3.17: it is a deny with a stop-retrying sentence, never a dialog); a new
     `prompt_id` resets the count (background agent completions start new prompts).
   - The turn directive prescribes the same question and options for a rating above the session model.
   - `JEV_ELEVATION=dialog` is the 2.3.4 behaviour (the old default); `clamp` is unchanged. Any other value means
@@ -1297,7 +1340,8 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     per session and prompt id runs on the session model (`allow` plus `updatedInput`, no dialog) and a repeat in
     the same prompt asks. In interactive sessions it restarts on every new prompt (a background agent's
     notification is a new prompt), so it asks only for a repeat inside one prompt; that is why it is not the
-    default. A remapped session alias asks instead of clamping.
+    default. A remapped session alias asks instead of clamping. (Changed in 2.3.17: a repeat in the same prompt is
+    clamped too, never asked.)
   - The decisions log gains `elevation` (`asked`, `clamped`, `instructed`), `clamped_from`, `clamped_to`,
     `clamp_skipped` and `intent_stale`; the telemetry `modelUsed` of a clamped call is the model it ran on.
   - A stored instruction is tied to its `prompt_id`: a different prompt id (a host-injected turn) does not

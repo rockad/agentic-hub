@@ -13,9 +13,13 @@ import {
   type JevMode,
   type QuotaView
 } from '../src/shared.js';
-import { taskFingerprint } from '../src/core/telemetry.js';
+import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
+import { withTimeout } from '../src/core/with-timeout.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
+import { loadJevConfigSync } from '../src/core/config.js';
+import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
@@ -28,6 +32,13 @@ import {
   findServedModelFromTranscript,
   recordPendingServed,
   flushPendingServed,
+  readAntigravityTurn,
+  buildAntigravityTelemetryEvent,
+  antigravityCallKey,
+  claimTurnRecommendation,
+  pendingCallFromEvent,
+  cleanUserInput,
+  turnId,
   TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
   type AntigravityHookInput
@@ -131,6 +142,18 @@ function passThrough(event: string): void {
 
 async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
+  const pendingTelemetry: Promise<unknown>[] = [];
+  const trackTelemetry = (p: Promise<unknown>): void => {
+    pendingTelemetry.push(p);
+  };
+  const flushTelemetry = async (): Promise<void> => {
+    if (pendingTelemetry.length === 0) return;
+    try {
+      await withTimeout(Promise.allSettled(pendingTelemetry.splice(0)), 1000);
+    } catch {
+      // best-effort
+    }
+  };
 
   try {
     // The only network call this hook can make is the downgrade rating at PreToolUse (one router call, 1.5 s, fail-open);
@@ -163,15 +186,46 @@ async function main() {
     if (mode === 'off') {
       passThrough(event);
     }
+    // The config carries the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved.
+    const jevConfig = loadJevConfigSync();
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
     const downgrades = createAntigravityDowngradeStore(sessionsDir);
-    flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
+    flushPendingServed(
+      sessionsDir,
+      input.conversationId,
+      (entry) => {
+        appendDecisionLog(entry);
+        if (entry.event === 'subagent_served' && entry.child_conversation_id && entry.served_model) {
+          trackTelemetry(
+            logJevTelemetry(
+              buildAntigravityTelemetryEvent({
+                kind: 'subagent_served',
+                conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
+                inputModelName: input.modelName,
+                childConversationId: String(entry.child_conversation_id),
+                requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
+                servedModel: String(entry.served_model),
+                backfilled: entry.backfilled === true
+              })
+            )
+          );
+        }
+      },
+      jevHomeDir()
+    );
 
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;
       if (toolName === 'ask_question') {
+        // Answers feed approvals and downgrade choices, which are decisions: a mode without decisions (on-demand) records
+        // none, so a stale denial from an earlier mode `on` cannot be approved from an answer given now.
+        if (!modeBehaviour(mode).decisions) {
+          await flushTelemetry();
+          console.log('{}');
+          process.exit(0);
+        }
         const conversationId = noSession ? null : input.conversationId || 'default-session';
         const contentOnStdin = typeof input.content === 'string' && input.content.trim().length > 0;
         const transcriptReadable = isTranscriptReadable(input.transcriptPath);
@@ -180,7 +234,7 @@ async function main() {
         let rowFound = false;
         let answerStepRecorded = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
-        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
+        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'mode_changed' | 'no_session' | 'error' = 'error';
 
         // A downgrade question (`[jev-downgrade:flash_lite:<sig8>]` or the plain marker, text starts with the marker) is
         // recorded by its own branch, EVERY such question of the call (each answer line belongs to its own delegation).
@@ -188,6 +242,14 @@ async function main() {
         const downgradeQuestions = findDowngradeQuestions(input.toolCall?.args?.questions);
         const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
         if (downgradeQuestions.length > 0 && !carriesElevation) {
+          // A question asked before the last mode change is dropped first: an answer to it records nothing.
+          if (conversationId && modeChangedAtMs(jevConfig, 'antigravity') !== null) {
+            try {
+              downgrades.voidStale?.(conversationId, (askedAt) => denialPredatesModeChange(askedAt, jevConfig, 'antigravity'));
+            } catch {
+              // fail-open: the answer is then matched as before
+            }
+          }
           let dRow = false;
           let dStepRecorded = false;
           let dChoice: 'yes' | 'keep' | 'off' | null = null;
@@ -255,6 +317,7 @@ async function main() {
             ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length, outcomes: dOutcomes } : {}),
             outcome: dOutcome
           });
+          await flushTelemetry();
           console.log('{}');
           process.exit(0);
         }
@@ -320,12 +383,19 @@ async function main() {
               const consumedKeys: string[] = [];
               if (typeof input.stepIdx === 'number') consumedKeys.push(`step:${input.stepIdx}#${markerIndex}`);
               if (typeof input.toolCall?.id === 'string' && input.toolCall.id) consumedKeys.push(`${input.toolCall.id}#${markerIndex}`);
-              const recorded = approvals.record(
-                conversationId,
-                { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
-                consumedKeys.length > 0 ? consumedKeys : undefined
-              );
-              outcome = recorded ? 'recorded' : 'not_denied';
+              // A denial from before the last mode change is never approved by an answer (the answer may have been given in
+              // on-demand, where nothing is recorded): the call is denied again with a fresh question instead.
+              const deniedAt = approvals.wasDeniedRecently(conversationId, elevateModel, Date.now());
+              if (typeof deniedAt === 'number' && denialPredatesModeChange(deniedAt, jevConfig, 'antigravity')) {
+                outcome = 'mode_changed';
+              } else {
+                const recorded = approvals.record(
+                  conversationId,
+                  { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
+                  consumedKeys.length > 0 ? consumedKeys : undefined
+                );
+                outcome = recorded ? 'recorded' : 'not_denied';
+              }
             }
           }
         } catch {
@@ -345,6 +415,7 @@ async function main() {
           outcome
         });
 
+        await flushTelemetry();
         console.log('{}');
         process.exit(0);
       } else if (toolName === 'invoke_subagent') {
@@ -372,6 +443,23 @@ async function main() {
             requested_model: requestedModel || null,
             served_model: servedModel || null
           });
+          // Telemetry only for a served model that was found, as the backfill paths do; the decisions-log row above
+          // stays as the audit trail for a call where nothing could be read.
+          if (childConvId && servedModel) {
+            trackTelemetry(
+              logJevTelemetry(
+                buildAntigravityTelemetryEvent({
+                  kind: 'subagent_served',
+                  conversationId,
+                  inputModelName: input.modelName,
+                  childConversationId: childConvId,
+                  requestedModel: requestedModel || null,
+                  servedModel,
+                  backfilled: false
+                })
+              )
+            );
+          }
         } else {
           recordPendingServed(sessionsDir, conversationId, {
             stepIdx: input.stepIdx,
@@ -383,9 +471,11 @@ async function main() {
           }, appendDecisionLog);
         }
 
+        await flushTelemetry();
         console.log('{}');
         process.exit(0);
       }
+      await flushTelemetry();
       console.log('{}');
       process.exit(0);
     }
@@ -417,16 +507,19 @@ async function main() {
       approvals,
       sessionModelOverride: activeModel,
       quotaView,
-      mode
+      mode,
+      config: jevConfig
     });
 
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
     // fails open: its log carries the `downgrade*` fields of the row below.
     let downgradeLog: Record<string, unknown> = {};
-    if (decision.decision === 'pass') {
+    // A mode without decisions (on-demand) does not even look at it: no downgrade or downgrade_skip field on the row.
+    if (decision.decision === 'pass' && modeBehaviour(mode).decisions) {
       const downgraded = await applyAntigravityDowngrade(input, decision, {
         store: downgrades,
         jevMode: mode,
+        config: jevConfig,
         sessionModel: activeModel,
         env: process.env,
         downgradeConfig: loadDowngradeMode,
@@ -445,10 +538,12 @@ async function main() {
     const promptLength = fingerprint.taskLen;
     const promptHash = promptLength > 0 ? fingerprint.taskHash : null;
 
+    const callKey = antigravityCallKey(input);
     appendDecisionLog({
       event: 'agent_call',
       harness: 'antigravity',
       session_id: input.conversationId || null,
+      call_key: callKey,
       tool_name: input.toolCall?.name || 'invoke_subagent',
       requested_model: requestedModel,
       session_model: activeModel || null,
@@ -461,8 +556,45 @@ async function main() {
       prompt_length: promptLength,
       prompt_hash: promptHash,
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
+      ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
       ...downgradeLog
     });
+
+    if (input.toolCall?.name === 'invoke_subagent' && modeBehaviour(mode).telemetry) {
+      const cleaned = cleanUserInput(input.lastUserInput || '');
+      const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+      const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>
+        buildAntigravityTelemetryEvent({
+          kind: 'agent_call',
+          conversationId: input.conversationId,
+          inputModelName: input.modelName,
+          quotaView,
+          lastUserInput: input.lastUserInput,
+          toolName: 'invoke_subagent',
+          args: input.toolCall?.args,
+          turnState,
+          decision,
+          downgradeLog,
+          callKey,
+          recommendationPending
+        });
+      // A mode without routing advice (on-demand) makes no recommendation, so no turn state speaks for this call.
+      const advice = modeBehaviour(mode).routingAdvice;
+      let event = build(advice ? readAntigravityTurn(sessionsDir, input.conversationId) : null, false);
+      // No recommendation for this turn yet. Only a mode with routing advice (`on`) runs the pre-flight that makes one, and it may still be running
+      // (hooks of one turn are not serialised): record the call under the turn lock, atomically with a re-check of the
+      // state, so the pre-flight can append a late `agent_call_recommendation` row when it finishes. Mark the row either way.
+      if (!event.recommendedTier && advice) {
+        const pendingEvent = build(null, true);
+        const claim = turn
+          ? claimTurnRecommendation(sessionsDir, input.conversationId, turn, pendingCallFromEvent(pendingEvent, callKey))
+          : { turnState: null, recorded: false };
+        event = claim.turnState ? build(claim.turnState, false) : pendingEvent;
+      }
+      trackTelemetry(logJevTelemetry(event));
+    }
+
+    await flushTelemetry();
 
     if (decision.decision === 'pass') {
       passThrough(event);
@@ -485,6 +617,7 @@ async function main() {
     process.exit(0);
   } catch {
     // Fail-open: never block an Antigravity session on hook failure, and never approve on its behalf either
+    await flushTelemetry();
     passThrough(event);
   }
 }

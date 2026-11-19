@@ -352,10 +352,12 @@ describe('recommended versus used logging (5.7)', () => {
     expect(logs.some((l) => l.hook === 'PreToolUse')).toBe(true);
   });
 
-  it('adds modelRecommended on UserPromptSubmit and keeps modelUsed as a deprecated alias for one release', () => {
+  it('adds modelRecommended on UserPromptSubmit and no modelUsed', () => {
     const event = telemetryEvent({ hook: 'UserPromptSubmit', session: 's1', turn: 't1', tier: 'flash', model: 'sonnet', recommended_model: 'sonnet' });
 
-    expect([event.modelRecommended, event.modelUsed]).toEqual(['sonnet', 'sonnet']);
+    expect(event.modelRecommended).toBe('sonnet');
+    expect('modelUsed' in event).toBe(false);
+    expect('modelUsedSource' in event).toBe(false);
   });
 
   it('keeps modelUsed for the PreToolUse requested model and adds the recommended one', () => {

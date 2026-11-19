@@ -13,9 +13,8 @@ import { decideAgentCall, type Dispatch } from '../claude/logic.ts';
 const flashRec: Dispatch = { subagent: 'general-purpose', tier: 'flash', model: 'sonnet', effort: 'medium', confidence: 0.9 };
 type Log = Record<string, unknown>;
 
-function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[]; claims: string[] } {
+function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[] } {
   const logs: Log[] = [];
-  const claims: string[] = [];
   const turns = new Map<string, any>();
   const d: HookDeps = {
     readMode: async () => 'on',
@@ -23,15 +22,13 @@ function setup(overrides: Partial<HookDeps> = {}): { d: HookDeps; logs: Log[]; c
     readQuotaStrategy: async () => 'unknown',
     dispatch: async () => flashRec,
     log: (e) => logs.push(e as Log),
-    // A spy: the default must never touch the clamp store.
-    claimClamp: (_s, _p, sig) => (claims.push(sig), { first: true }),
     readTurn: (s) => turns.get(s ?? '') ?? null,
     saveTurn: (s, st) => void turns.set(s ?? '', st),
     ...overrides,
     // These tests cover the 2.3.4 dialog behaviour: it is no longer the default, so it is selected explicitly.
     env: 'env' in overrides && overrides.env === undefined ? undefined : { JEV_ELEVATION: 'dialog', ...(overrides.env ?? {}) }
   };
-  return { d, logs, claims };
+  return { d, logs };
 }
 
 const FULL_INPUT = { description: 'WS1: build the skill', prompt: 'Build it.', subagent_type: 'code-engineer', model: 'opus', run_in_background: true };
@@ -118,24 +115,24 @@ describe('default mode: every elevating call asks', () => {
   });
 });
 
-describe('default mode: the clamp store is never used', () => {
-  it('never claims a clamp, in any elevating call', async () => {
-    const { d, claims } = setup();
+describe('dialog mode never clamps', () => {
+  it('never returns an allow or an updatedInput, in any elevating call', async () => {
+    const { d } = setup();
 
-    await onPreToolUse(call(), d);
-    await onPreToolUse(call(), d);
+    const outs = [out(await onPreToolUse(call(), d)), out(await onPreToolUse(call(), d))];
 
-    expect(claims).toEqual([]);
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['ask', 'ask']);
+    expect(outs.every((o) => !('updatedInput' in o))).toBe(true);
   });
 
   it.each([['off'], ['CLAMP'], [''], ['true'], ['1']])('JEV_ELEVATION=%j is not the opt-in', async (value) => {
-    const { d, claims } = setup({ env: { JEV_ELEVATION: value } });
+    const { d } = setup({ env: { JEV_ELEVATION: value } });
 
     const o = out(await onPreToolUse(call(), d));
 
-    // These values mean "choice" now (not "dialog"); this file has no approvals store, so the call falls back to the dialog.
+    // These values mean "choice" now (not "dialog"); this file has no approvals store, so the call is denied (never asked).
     // What matters here is that none of them is the clamp.
-    expect([o.permissionDecision, claims]).toEqual(['ask', []]);
+    expect([o.permissionDecision, 'updatedInput' in o]).toEqual(['deny', false]);
   });
 
   describe('with no injected env, the process environment decides', () => {

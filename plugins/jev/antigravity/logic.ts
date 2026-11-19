@@ -9,12 +9,17 @@ import {
   subagentCeilingRank,
   poolForTier,
   safeSessionId,
+  type ActiveModelSource,
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
+import { stopRetryingText } from '../src/core/elevation-text.js';
+import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
-import { readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
+import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
+import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
 export type AntigravityHookInput = {
@@ -49,8 +54,10 @@ export type AntigravityHookDecision = {
   approvalScope?: ApprovalScope;
   attemptCount?: number;
   clampedTo?: string;
-  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. */
-  pullFallback?: true | 'record_failed' | 'claim_lost';
+  /** `true` on a dialog-mode `ask` while Antigravity auto-approve is detected: the dialog is approved without being shown. Informational only. */
+  autoApproveWarning?: true;
+  /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. `'mode_changed'`: the pending denial is older than the last mode change, so no answer was read and the call was denied again with a fresh question. */
+  pullFallback?: true | 'record_failed' | 'claim_lost' | 'mode_changed';
 };
 
 export type AntigravityLogicDeps = {
@@ -59,6 +66,11 @@ export type AntigravityLogicDeps = {
   elevationMode?: 'choice' | 'dialog' | 'clamp';
   quotaView?: QuotaView;
   mode?: JevMode;
+  /**
+   * The Jev config (for the `modeChangedAt` stamp). A pending denial older than the last mode change is never approved from
+   * an answer (see `denialPredatesModeChange`). Absent, or with no stamp: no restriction.
+   */
+  config?: ModeChangeConfigLike;
   now?: () => number;
 };
 
@@ -173,6 +185,34 @@ export function buildElevationReason(opts: {
     `If the user approves, re-invoke with '${opts.requestedModel}'; ${noAction}; ` +
     `do not ask in any other form.`
   );
+}
+
+/**
+ * Whether Antigravity is set to approve tool calls without asking: the global permission preset is TURBO
+ * (`~/.gemini/config/config.json`, `permissionPreset`) or the CLI tool permission is `always-proceed`
+ * (`~/.gemini/antigravity-cli/settings.json`, `toolPermission`). Best effort and read-only: a missing, unreadable,
+ * oversized or malformed file counts as "not detected", and it never throws. HOME is read at call time (see
+ * `jevHomeDir`) so a hermetic run never reaches the real home. Used for a warning only; it never changes a decision.
+ */
+export function detectAntigravityAutoApprove(home: string = jevHomeDir()): boolean {
+  const flagged = (file: string, key: string, value: string): boolean => {
+    try {
+      const read = readRegularFile(file, 256 * 1024);
+      if (read.kind !== 'ok') return false;
+      const parsed: unknown = JSON.parse(read.text);
+      return typeof parsed === 'object' && parsed !== null && (parsed as Record<string, unknown>)[key] === value;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    return (
+      flagged(path.join(home, '.gemini', 'config', 'config.json'), 'permissionPreset', 'AGENT_PERMISSION_PRESET_TURBO') ||
+      flagged(path.join(home, '.gemini', 'antigravity-cli', 'settings.json'), 'toolPermission', 'always-proceed')
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** The prescribed approving labels and the scope each records. `No, proceed on <model>` and anything else record nothing. */
@@ -632,6 +672,116 @@ export function pullAskAnswerFromTranscript(
     return null;
   }
 }
+type ChoiceElevationContext = {
+  approvalStore: ApprovalStore | undefined;
+  sessionId: string;
+  requestedModel: string;
+  typeName: string;
+  sessionCeilingTier: string;
+  isOrchestrator: boolean;
+  nowMs: number;
+  transcriptPath: string | undefined;
+  promptHash: string;
+  signature: string;
+  config?: ModeChangeConfigLike;
+};
+
+/**
+ * The choice flow's tail, used by choice mode: count the
+ * attempt, pull a late answer from the transcript on every attempt, otherwise deny. It never returns `ask`: under
+ * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
+ * unapproved.
+ */
+function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
+  const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
+  const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+  let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
+  if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
+    const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
+    if (typeof deniedAtMs === 'number' && denialPredatesModeChange(deniedAtMs, ctx.config, 'antigravity')) {
+      // The mode changed after this denial (on, then on-demand or off, then on again): an answer to it may have been
+      // given where nothing is recorded, so it is not read. The denial below is issued afresh, with a fresh question.
+      pullFallback = 'mode_changed';
+    } else if (typeof deniedAtMs === 'number') {
+      // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
+      let answerStepIdx: number | null = null;
+      let answerQuestionIdx: number | null = null;
+      let consumedKeys: string[] = [];
+      try {
+        answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
+        answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
+        consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
+      } catch {
+        // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
+        answerStepIdx = null;
+        answerQuestionIdx = null;
+        consumedKeys = [];
+      }
+      const pull = pullElevationAnswerDetailed(
+        ctx.transcriptPath,
+        requestedModel,
+        deniedAtMs,
+        answerStepIdx,
+        answerQuestionIdx,
+        consumedKeys
+      );
+      if (pull?.approved && pull.scope) {
+        // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
+        // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
+        // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
+        // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
+        // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
+        // allows.
+        const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
+        const keys = pull.answerKey ? [pull.answerKey] : undefined;
+        let stored = false;
+        let claimed = false;
+        try {
+          if (typeof approvalStore.recordAndClaim === 'function') {
+            const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
+            stored = res.stored === true;
+            claimed = stored && res.approval !== null;
+          } else {
+            stored = approvalStore.record(sessionId, pulled, keys) === true;
+            claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
+          }
+        } catch {
+          stored = false;
+          claimed = false;
+        }
+        if (claimed) {
+          return {
+            decision: 'allow',
+            elevation: 'approved',
+            approvalScope: pull.scope,
+            pullFallback: true
+          };
+        }
+        pullFallback = stored ? 'claim_lost' : 'record_failed';
+      }
+    }
+  }
+
+  approvalStore?.deny(sessionId, requestedModel, nowMs);
+  // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
+  // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
+  const baseReason = buildElevationReason({
+    typeName,
+    requestedModel,
+    sessionCeilingTier,
+    isOrchestrator
+  });
+  const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
+  const reason = stop ? `${baseReason} ${stop}` : baseReason;
+  return {
+    decision: 'deny',
+    reason,
+    elevation: 'denied',
+    attemptCount: count,
+    ...(pullFallback ? { pullFallback } : {})
+  };
+}
+
 
 export function evaluateAntigravitySubagentCall(
   input: AntigravityHookInput,
@@ -649,6 +799,13 @@ export function evaluateAntigravitySubagentCall(
   const nowMs = (deps.now ?? Date.now)();
   const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
   const mode: JevMode = deps.mode ?? 'on';
+
+  // A mode without decisions (on-demand; the hook never calls this for off) makes none: every invoke_subagent passes
+  // before any check (no deny, no ask, no overwrite, no approvals read or recorded, no attempt counted). The hook still
+  // writes the agent_call telemetry row for it.
+  if (!modeBehaviour(mode).decisions) {
+    return { decision: 'pass' };
+  }
 
   const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
 
@@ -678,13 +835,6 @@ export function evaluateAntigravitySubagentCall(
 
   if (!isExplicit || !requestedModel) {
     if (isOrchestrator) {
-      if (mode === 'on-demand') {
-        // On-demand never denies after step 1: the native dialog lets the user decide.
-        return {
-          decision: 'ask',
-          reason: `[jev] Under Orchestrator, Model was omitted or inherit on invoke_subagent: the subagent would run on the session default (tier '${rankToTierName(modelTierRank(sessionModel ?? ''))}'), against a subagent ceiling of '${rankToTierName(subagentCeilingRank(sessionModel))}'. Approve to proceed, or cancel and re-invoke with Model "flash" or "flash_lite".`
-        };
-      }
       return {
         decision: 'deny',
         reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
@@ -712,29 +862,17 @@ export function evaluateAntigravitySubagentCall(
 
     const pct = typeof pool.min_remaining === 'number' ? ` (${Math.round(pool.min_remaining * 100)}% remaining)` : '';
 
-    if (mode === 'on') {
-      if (pool.strategy === 'free_only') {
-        return {
-          decision: 'deny',
-          reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
-        };
-      }
-      if (pool.strategy === 'conserve') {
-        if (modelTierRank(effectiveTier) > 1) {
-          return {
-            decision: 'deny',
-            reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
-          };
-        }
-      }
-    } else if (mode === 'on-demand') {
-      if ((pool.strategy === 'free_only' || pool.strategy === 'conserve') && modelTierRank(effectiveTier) > 1) {
-        return {
-          decision: 'ask',
-          reason: `[jev] ${poolLabel} quota is in ${pool.strategy}${pct}: subagent requested '${effectiveTier}'. Approve to proceed, or cancel to conserve quota.`
-        };
-      }
-      // Healthy pool: fall through to the ceiling check below (on-demand asks above the ceiling).
+    if (pool.strategy === 'free_only') {
+      return {
+        decision: 'deny',
+        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
+      };
+    }
+    if (pool.strategy === 'conserve' && modelTierRank(effectiveTier) > 1) {
+      return {
+        decision: 'deny',
+        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
+      };
     }
   }
 
@@ -756,15 +894,6 @@ export function evaluateAntigravitySubagentCall(
   const args = input.toolCall?.args || {};
   const typeName = String(args.TypeName || args.Role || 'subagent');
 
-  // On-demand: the native dialog decides. No approvals are read or recorded and no attempt is counted.
-  if (mode === 'on-demand') {
-    return {
-      decision: 'ask',
-      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' (tier '${rankToTierName(requestedRank)}'), above the session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
-      elevation: 'asked'
-    };
-  }
-
   // Check explicit override in user prompt
   if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
     return { decision: 'allow', elevation: 'instructed' };
@@ -783,10 +912,12 @@ export function evaluateAntigravitySubagentCall(
   const elevationMode = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
 
   if (elevationMode === 'dialog') {
+    // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.
     return {
       decision: 'ask',
       reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
-      elevation: 'asked'
+      elevation: 'asked',
+      ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
     };
   }
 
@@ -796,112 +927,31 @@ export function evaluateAntigravitySubagentCall(
   const signature = `${typeName}:${requestedModel}`;
 
   if (elevationMode === 'clamp') {
+    // Every attempt is clamped, never asked: under auto-approve an `ask` is approved without a dialog.
     const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-    if (count === 1) {
-      return {
-        decision: 'allow',
-        overwrite: { Model: sessionCeilingTier },
-        elevation: 'clamped',
-        clampedTo: sessionCeilingTier
-      };
-    }
     return {
-      decision: 'ask',
-      reason: `[jev] Repeated elevation attempt: Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'.`,
-      elevation: 'asked',
+      decision: 'allow',
+      overwrite: { Model: sessionCeilingTier },
+      elevation: 'clamped',
+      clampedTo: sessionCeilingTier,
       attemptCount: count
     };
   }
 
-  // Choice mode (default):
-  const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-  let pullFallback: 'record_failed' | 'claim_lost' | undefined;
-  if (count <= 2) {
-    if (approvalStore && input.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
-      const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
-      if (typeof deniedAtMs === 'number') {
-        // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
-        let answerStepIdx: number | null = null;
-        let answerQuestionIdx: number | null = null;
-        let consumedKeys: string[] = [];
-        try {
-          answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
-          answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
-          consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
-        } catch {
-          // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
-          answerStepIdx = null;
-          answerQuestionIdx = null;
-          consumedKeys = [];
-        }
-        const pull = pullElevationAnswerDetailed(
-          input.transcriptPath,
-          requestedModel,
-          deniedAtMs,
-          answerStepIdx,
-          answerQuestionIdx,
-          consumedKeys
-        );
-        if (pull?.approved && pull.scope) {
-          // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
-          // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
-          // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
-          // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
-          // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
-          // allows.
-          const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
-          const keys = pull.answerKey ? [pull.answerKey] : undefined;
-          let stored = false;
-          let claimed = false;
-          try {
-            if (typeof approvalStore.recordAndClaim === 'function') {
-              const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
-              stored = res.stored === true;
-              claimed = stored && res.approval !== null;
-            } else {
-              stored = approvalStore.record(sessionId, pulled, keys) === true;
-              claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
-            }
-          } catch {
-            stored = false;
-            claimed = false;
-          }
-          if (claimed) {
-            return {
-              decision: 'allow',
-              elevation: 'approved',
-              approvalScope: pull.scope,
-              pullFallback: true
-            };
-          }
-          pullFallback = stored ? 'claim_lost' : 'record_failed';
-        }
-      }
-    }
-
-    approvalStore?.deny(sessionId, requestedModel, nowMs);
-    const reason = buildElevationReason({
-      typeName,
-      requestedModel,
-      sessionCeilingTier,
-      isOrchestrator
-    });
-    return {
-      decision: 'deny',
-      reason,
-      elevation: 'denied',
-      attemptCount: count,
-      ...(pullFallback ? { pullFallback } : {})
-    };
-  }
-
-  // Attempt >= 3: Dialog Backstop
-  return {
-    decision: 'ask',
-    reason: `[jev] Elevation backstop (attempt ${count}): Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel to proceed on ${sessionCeilingTier}.`,
-    elevation: 'asked',
-    attemptCount: count
-  };
+  // Choice mode (default).
+  return resolveChoiceElevation({
+    approvalStore,
+    sessionId,
+    requestedModel,
+    typeName,
+    sessionCeilingTier,
+    isOrchestrator,
+    nowMs,
+    transcriptPath: input.transcriptPath,
+    promptHash,
+    signature,
+    config: deps.config
+  });
 }
 
 const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -1263,4 +1313,458 @@ export async function pollForAskAnswers(
     if (anyAnswer(answers)) return answers;
   }
   return answers;
+}
+
+export type AntigravitySessionModelSource = 'hook' | ActiveModelSource;
+
+export function resolveAntigravitySessionModel(
+  inputModelName?: string | null,
+  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null
+): { sessionModel: string | null; sessionModelSource: AntigravitySessionModelSource | null } {
+  const hookModel = typeof inputModelName === 'string' ? inputModelName.trim() : '';
+  if (hookModel.length > 0) {
+    return { sessionModel: hookModel, sessionModelSource: 'hook' };
+  }
+  const quotaModel = typeof quotaView?.active_model === 'string' ? quotaView.active_model.trim() : '';
+  if (quotaModel.length > 0) {
+    return {
+      sessionModel: quotaModel,
+      sessionModelSource: quotaView?.activeModelSource ?? 'quota-state'
+    };
+  }
+  return { sessionModel: null, sessionModelSource: null };
+}
+
+/** Strip host metadata wrappers from Antigravity's `lastUserInput` before hashing or dispatching. */
+export function cleanUserInput(raw: string): string {
+  if (!raw) return '';
+  let text = raw;
+  text = text.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '');
+  text = text.replace(/<\/?USER_REQUEST>/gi, '');
+  return text.trim();
+}
+
+/** Short stable id for one user turn, shared between PreInvocation and PreToolUse telemetry. */
+export function turnId(prompt: string): string {
+  return createHash('sha1').update(cleanUserInput(prompt).trim()).digest('hex').slice(0, 12);
+}
+
+export type AntigravityTurnState = {
+  turn: string;
+  recommendedTier?: string;
+  recommendedSubagent?: string;
+  effort?: string;
+  at: string;
+};
+
+function turnStateFile(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  if (!safe) return null;
+  return path.join(sessionsDir, `${safe}.turn.json`);
+}
+
+export function readAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null
+): AntigravityTurnState | null {
+  if (!sessionId) return null;
+  const file = turnStateFile(sessionsDir, sessionId);
+  if (!file) return null;
+  try {
+    const read = readRegularFile(file, 64 * 1024);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.turn !== 'string' || parsed.turn.length === 0) {
+      return null;
+    }
+    return {
+      turn: parsed.turn,
+      ...(typeof parsed.recommendedTier === 'string' && parsed.recommendedTier.length > 0
+        ? { recommendedTier: parsed.recommendedTier }
+        : {}),
+      ...(typeof parsed.recommendedSubagent === 'string' && parsed.recommendedSubagent.length > 0
+        ? { recommendedSubagent: parsed.recommendedSubagent }
+        : {}),
+      ...(typeof parsed.effort === 'string' && parsed.effort.length > 0 ? { effort: parsed.effort } : {}),
+      at: typeof parsed.at === 'string' ? parsed.at : ''
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  state: AntigravityTurnState
+): void {
+  if (!sessionId) return;
+  const file = turnStateFile(sessionsDir, sessionId);
+  if (!file) return;
+  try {
+    privateDir(sessionsDir);
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: PRIVATE_FILE_MODE });
+    privateFile(tmp);
+    fs.renameSync(tmp, file);
+    privateFile(file);
+  } catch {
+    // best-effort; never crash the hook
+  }
+}
+
+/** How long a hook waits for the turn lock before it skips the turn-state update (fail open, never block the tool call). */
+export const TURN_LOCK_WAIT_MS = 500;
+/** The most calls one turn's pending list keeps (the newest win). */
+export const PENDING_RECOMMENDATION_MAX_CALLS = 20;
+/** A pending call older than this is dropped: the pre-flight is not coming for it. */
+export const PENDING_RECOMMENDATION_TTL_MS = 10 * 60_000;
+
+/**
+ * An `agent_call` that was written before its turn's recommendation existed. It holds what a late
+ * `agent_call_recommendation` row needs to stand alone (the decision and the models), never prompt text.
+ */
+export type PendingRecommendationCall = {
+  /** The same key the `agent_call` row carries as `callKey`. */
+  callKey: string;
+  /** Epoch ms the call was recorded. */
+  at: number;
+  decision: string;
+  requestedModel: string | null;
+  /** Absent on a denied call (it did not run). */
+  modelUsed?: string;
+  modelUsedSource?: ModelUsedSource;
+  toolName: string;
+  taskSummary?: string;
+  sessionModel: string | null;
+  sessionModelSource: string | null;
+};
+
+/** The lock that guards one conversation's turn state and its pending-call list (one lock for both, so check-and-record is atomic). */
+function turnLock(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  return safe ? path.join(sessionsDir, `${safe}.turn.lock`) : null;
+}
+
+function turnPendingFile(sessionsDir: string, sessionId: string): string | null {
+  const safe = safeSessionId(sessionId);
+  return safe ? path.join(sessionsDir, `${safe}.turn-pending.json`) : null;
+}
+
+function readPendingList(file: string): { turn: string; calls: PendingRecommendationCall[] } | null {
+  try {
+    const read = readRegularFile(file, 256 * 1024);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
+    if (!parsed || typeof parsed.turn !== 'string' || !Array.isArray(parsed.calls)) return null;
+    const calls = parsed.calls.filter(
+      (c: unknown): c is PendingRecommendationCall =>
+        !!c && typeof (c as PendingRecommendationCall).callKey === 'string' && typeof (c as PendingRecommendationCall).at === 'number'
+    );
+    return { turn: parsed.turn, calls };
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonAtomic(file: string, value: unknown): void {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value) + '\n', { mode: PRIVATE_FILE_MODE });
+  privateFile(tmp);
+  fs.renameSync(tmp, file);
+  privateFile(file);
+}
+
+/**
+ * The PreToolUse side of the recommendation join, atomic with the pre-flight's write. Under the turn lock: when the
+ * state already holds this turn's recommendation it is returned (and nothing is recorded); otherwise the call is put on
+ * the turn's pending list (bounded to {@link PENDING_RECOMMENDATION_MAX_CALLS}, expiring after
+ * {@link PENDING_RECOMMENDATION_TTL_MS}, replaced when another turn's list is there) so the pre-flight can write the late
+ * row. A lock timeout or any error skips the record (fail open): the caller still gets whatever an unlocked read found.
+ */
+export function claimTurnRecommendation(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  turn: string,
+  call: PendingRecommendationCall
+): { turnState: AntigravityTurnState | null; recorded: boolean } {
+  const matching = (s: AntigravityTurnState | null) => (s && s.turn === turn && s.recommendedTier ? s : null);
+  if (!sessionId) return { turnState: null, recorded: false };
+  const lock = turnLock(sessionsDir, sessionId);
+  const pendingFile = turnPendingFile(sessionsDir, sessionId);
+  if (!lock || !pendingFile) return { turnState: null, recorded: false };
+  try {
+    privateDir(sessionsDir);
+    const res = withDirLockOrSkip(
+      lock,
+      () => {
+        const state = matching(readAntigravityTurn(sessionsDir, sessionId));
+        if (state) return { turnState: state, recorded: false };
+        const existing = readPendingList(pendingFile);
+        const kept = (existing && existing.turn === turn ? existing.calls : [])
+          .filter((c) => call.at - c.at <= PENDING_RECOMMENDATION_TTL_MS && c.callKey !== call.callKey)
+          .slice(-(PENDING_RECOMMENDATION_MAX_CALLS - 1));
+        kept.push(call);
+        writeJsonAtomic(pendingFile, { turn, calls: kept });
+        return { turnState: null, recorded: true };
+      },
+      () => {
+        // lock busy: fall through to the unlocked read below
+      },
+      { waitMs: TURN_LOCK_WAIT_MS }
+    );
+    if (res) return res;
+  } catch {
+    // fail open
+  }
+  return { turnState: matching(readAntigravityTurn(sessionsDir, sessionId)), recorded: false };
+}
+
+/**
+ * The pre-flight side: store the turn's state (with its recommendation) and hand back, clearing them, the calls of the
+ * SAME turn that were written without one, so the caller can append a late row for each. Under the turn lock. A lock
+ * timeout writes the state unlocked and returns none (fail open: those calls keep `recommendationPending` and get no
+ * late row).
+ */
+export function commitAntigravityTurn(
+  sessionsDir: string,
+  sessionId: string | undefined | null,
+  state: AntigravityTurnState
+): PendingRecommendationCall[] {
+  if (!sessionId) return [];
+  const lock = turnLock(sessionsDir, sessionId);
+  const file = turnStateFile(sessionsDir, sessionId);
+  const pendingFile = turnPendingFile(sessionsDir, sessionId);
+  if (!lock || !file || !pendingFile) return [];
+  try {
+    privateDir(sessionsDir);
+    const taken = withDirLockOrSkip(
+      lock,
+      () => {
+        writeJsonAtomic(file, state);
+        if (!state.recommendedTier) return [];
+        const existing = readPendingList(pendingFile);
+        if (!existing || existing.turn !== state.turn) return [];
+        fs.rmSync(pendingFile, { force: true });
+        const now = Date.now();
+        return existing.calls.filter((c) => now - c.at <= PENDING_RECOMMENDATION_TTL_MS);
+      },
+      () => {
+        // lock busy: written unlocked below
+      },
+      { waitMs: TURN_LOCK_WAIT_MS }
+    );
+    if (taken) return taken;
+  } catch {
+    // fall through to the plain write
+  }
+  writeAntigravityTurn(sessionsDir, sessionId, state);
+  return [];
+}
+
+export type AntigravityModelUsedSource = ModelUsedSource;
+
+export type AntigravityTelemetryInput =
+  | {
+      kind: 'pre_invocation';
+      conversationId?: string | null;
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
+      lastUserInput?: string | null;
+      /** Absent on the row of a mode without routing advice (on-demand): no recommendation fields are written. */
+      recommendedSubagent?: string;
+      recommendedTier?: string;
+      effort?: string;
+      taskLen?: number;
+      taskHash?: string;
+      quotaStrategy?: string;
+    }
+  | {
+      kind: 'agent_call';
+      conversationId?: string | null;
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
+      lastUserInput?: string | null;
+      toolName?: string;
+      args?: Record<string, unknown>;
+      turnState?: AntigravityTurnState | null;
+      decision: AntigravityHookDecision;
+      downgradeLog?: Record<string, unknown>;
+      quotaStrategy?: string;
+      /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
+      callKey?: string;
+      /** Jev is on and the turn's recommendation was not known yet: the row says so, and a late row may follow. */
+      recommendationPending?: boolean;
+    }
+  | {
+      /** The late row the pre-flight appends for an `agent_call` written before the recommendation existed. */
+      kind: 'agent_call_recommendation';
+      conversationId?: string | null;
+      turn: string;
+      recommendedTier: string;
+      call: PendingRecommendationCall;
+    }
+  | {
+      kind: 'subagent_served';
+      conversationId?: string | null;
+      /** The session model from the hook input (PostToolUse, or the hook that flushed a backfill); absent when not known. */
+      inputModelName?: string | null;
+      quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
+      childConversationId?: string | null;
+      requestedModel?: string | null;
+      servedModel?: string | null;
+      backfilled?: boolean;
+    };
+
+export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
+
+  if (params.kind === 'pre_invocation') {
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const cleaned = cleanUserInput(params.lastUserInput || '');
+    const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+    const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PreInvocation',
+      sessionId: params.conversationId ?? null,
+      ...(turn ? { turn } : {}),
+      ...(typeof params.taskLen === 'number' ? { taskLen: params.taskLen } : {}),
+      ...(params.taskHash ? { taskHash: params.taskHash } : {}),
+      sessionModel,
+      sessionModelSource,
+      ...(params.recommendedSubagent ? { recommendedSubagent: params.recommendedSubagent } : {}),
+      ...(params.recommendedTier ? { recommendedTier: params.recommendedTier, modelRecommended: params.recommendedTier } : {}),
+      ...(params.effort ? { effort: params.effort } : {}),
+      ...(quotaStrategy ? { quotaStrategy } : {})
+    };
+  }
+
+  if (params.kind === 'agent_call_recommendation') {
+    const c = params.call;
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call_recommendation',
+      sessionId: params.conversationId ?? null,
+      turn: params.turn,
+      callKey: c.callKey,
+      toolName: c.toolName,
+      ...(c.taskSummary ? { taskSummary: c.taskSummary } : {}),
+      sessionModel: c.sessionModel,
+      sessionModelSource: c.sessionModelSource,
+      modelRecommended: params.recommendedTier,
+      recommendedTier: params.recommendedTier,
+      recommendationLate: true,
+      decision: c.decision,
+      requestedModel: c.requestedModel,
+      ...(c.modelUsed ? { modelUsed: c.modelUsed } : {}),
+      ...(c.modelUsed && c.modelUsedSource ? { modelUsedSource: c.modelUsedSource } : {})
+    };
+  }
+
+  if (params.kind === 'subagent_served') {
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      event: 'subagent_served',
+      sessionId: params.conversationId ?? null,
+      sessionModel,
+      sessionModelSource,
+      childConversationId: params.childConversationId ?? null,
+      requestedModel: params.requestedModel ?? null,
+      servedModel: params.servedModel ?? null,
+      backfilled: Boolean(params.backfilled)
+    };
+  }
+
+  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+  const cleaned = cleanUserInput(params.lastUserInput || '');
+  const currentTurn = cleaned.length > 0 ? turnId(cleaned) : undefined;
+  const matchedRecommendedTier =
+    currentTurn && params.turnState && params.turnState.turn === currentTurn && params.turnState.recommendedTier
+      ? params.turnState.recommendedTier
+      : undefined;
+
+  const { requestedModel } = extractSubagentModel(params.args);
+  const rawType = params.args?.TypeName ?? params.args?.typeName ?? params.args?.Role ?? params.args?.role;
+  const subagentType = str(rawType);
+
+  // The same value rules as the Claude Code hook (resolveModelUsed): clamp, else applied downgrade, else the model the
+  // call named, else the session model.
+  const downgradedTo =
+    params.downgradeLog?.downgrade === 'applied'
+      ? (str(params.downgradeLog.downgrade_to) ??
+         str(params.decision.overwrite?.Model) ??
+         str(params.decision.overwrite?.model))
+      : undefined;
+  // A denied call never ran: no modelUsed and no modelUsedSource (requestedModel stays). Every call that goes ahead keeps
+  // them, and so does a native ask, where the run may or may not happen.
+  const used: { modelUsed?: string; modelUsedSource?: ModelUsedSource } =
+    params.decision.decision === 'deny'
+      ? {}
+      : resolveModelUsed({
+          clampedTo: params.decision.clampedTo,
+          downgradedTo,
+          requested: requestedModel,
+          sessionModel
+        });
+  const { modelUsed, modelUsedSource } = used;
+
+  const downgrade = str(params.downgradeLog?.downgrade);
+  const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
+
+  return {
+    harness: 'antigravity',
+    toolOrHook: 'PreToolUse',
+    event: 'agent_call',
+    sessionId: params.conversationId ?? null,
+    ...(currentTurn ? { turn: currentTurn } : {}),
+    toolName: params.toolName || 'invoke_subagent',
+    ...(subagentType ? { taskSummary: `subagent: ${subagentType}` } : {}),
+    sessionModel,
+    sessionModelSource,
+    ...(matchedRecommendedTier
+      ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
+      : {}),
+    ...(modelUsed ? { modelUsed } : {}),
+    ...(modelUsedSource ? { modelUsedSource } : {}),
+    ...(params.callKey ? { callKey: params.callKey } : {}),
+    ...(!matchedRecommendedTier && params.recommendationPending ? { recommendationPending: true } : {}),
+    requestedModel: requestedModel ?? null,
+    decision: params.decision.decision,
+    ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
+    ...(downgrade ? { downgrade } : {}),
+    ...(quotaStrategy ? { quotaStrategy } : {})
+  };
+}
+
+/**
+ * The key an `agent_call` row carries as `callKey`: the tool call id, else `step:<stepIdx>` (real transcripts often carry
+ * no tool call ids), else a one-off `call:<time>-<random>`. A late `agent_call_recommendation` row repeats it, so the two
+ * rows of one call are matched on this key and the `turn`.
+ */
+export function antigravityCallKey(input: Pick<AntigravityHookInput, 'toolCall' | 'stepIdx'>): string {
+  const id = input.toolCall?.id;
+  if (typeof id === 'string' && id.trim().length > 0) return id.trim().slice(0, 120);
+  if (typeof input.stepIdx === 'number' && Number.isFinite(input.stepIdx)) return `step:${input.stepIdx}`;
+  return `call:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** What a pending-recommendation entry keeps of an `agent_call` telemetry row (models and decision, no text). */
+export function pendingCallFromEvent(ev: JevTelemetryEvent, callKey: string, at: number = Date.now()): PendingRecommendationCall {
+  const s = (v: unknown, max = 200): string | undefined => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : undefined);
+  return {
+    callKey,
+    at,
+    decision: s(ev.decision as unknown, 20) ?? 'pass',
+    requestedModel: s(ev.requestedModel as unknown) ?? null,
+    ...(s(ev.modelUsed) ? { modelUsed: s(ev.modelUsed) } : {}),
+    ...(s(ev.modelUsed) && ev.modelUsedSource ? { modelUsedSource: ev.modelUsedSource } : {}),
+    toolName: s(ev.toolName as unknown, 60) ?? 'invoke_subagent',
+    ...(s(ev.taskSummary) ? { taskSummary: s(ev.taskSummary) } : {}),
+    sessionModel: s(ev.sessionModel) ?? null,
+    sessionModelSource: s(ev.sessionModelSource) ?? null
+  };
 }

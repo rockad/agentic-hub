@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { QuotaView } from '../src/core/governance.ts';
 import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
@@ -9,11 +10,19 @@ import {
   pollForAskAnswer,
   pullElevationAnswerFromTranscript,
   extractChildConversationId,
+  detectAntigravityAutoApprove,
   findServedModelFromTranscript,
   MAX_TRANSCRIPT_READ_BYTES,
   buildElevationQuestion,
+  resolveAntigravitySessionModel,
+  cleanUserInput,
+  turnId,
+  readAntigravityTurn,
+  writeAntigravityTurn,
+  buildAntigravityTelemetryEvent,
   type AntigravityHookInput,
-  type AntigravityHookDecision
+  type AntigravityHookDecision,
+  type AntigravityTurnState
 } from '../antigravity/logic.ts';
 import {
   ApprovalStore,
@@ -147,7 +156,7 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     expect(decision.elevation).toBe('denied');
   });
 
-  it('triggers dialog backstop (ask) on 3rd attempt without approval in the same prompt', () => {
+  it('keeps denying on the 3rd attempt without approval in the same prompt (no dialog backstop)', () => {
     const input: AntigravityHookInput = {
       conversationId: 'c1',
       lastUserInput: 'run subagent on pro',
@@ -179,14 +188,16 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     });
     expect(d2.decision).toBe('deny');
 
-    // Attempt 3: ask (backstop)
+    // Attempt 3: still deny (an ask would be auto-approved under TURBO), now telling the agent to stop retrying pro
     const d3 = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: 'gemini-3.8-flash-low',
       now: () => 1100
     });
-    expect(d3.decision).toBe('ask');
-    expect(d3.elevation).toBe('asked');
+    expect(d3.decision).toBe('deny');
+    expect(d3.elevation).toBe('denied');
+    expect(d3.attemptCount).toBe(3);
+    expect(d3.reason).toContain('flash');
   });
 
   it('passes when explicit pro override is in the user prompt', () => {
@@ -1355,5 +1366,626 @@ describe('evaluateAntigravitySubagentCall with an id that has nothing safe in it
     );
     expect(decision.decision).toBe('deny');
     expect(calls).toEqual([]);
+  });
+});
+
+describe('Antigravity telemetry helpers (logic)', () => {
+  let tmpDir = '';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-telemetry-helpers-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('resolveAntigravitySessionModel', () => {
+    it('prefers inputModelName with source "hook" over quotaView', () => {
+      const res = resolveAntigravitySessionModel('  gemini-3.8-pro-low  ', {
+        active_model: 'gemini-3.8-flash-low',
+        activeModelSource: 'argument'
+      });
+      expect(res).toEqual({
+        sessionModel: 'gemini-3.8-pro-low',
+        sessionModelSource: 'hook'
+      });
+    });
+
+    it('falls back to quotaView.active_model and activeModelSource (or "quota-state" when omitted)', () => {
+      expect(
+        resolveAntigravitySessionModel('', {
+          active_model: '  gemini-3.8-flash-arg  ',
+          activeModelSource: 'argument'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-arg',
+        sessionModelSource: 'argument'
+      });
+
+      expect(
+        resolveAntigravitySessionModel(null, {
+          active_model: 'gemini-3.8-flash-latest',
+          activeModelSource: 'latest'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-latest',
+        sessionModelSource: 'latest'
+      });
+
+      expect(
+        resolveAntigravitySessionModel(undefined, {
+          active_model: 'gemini-3.8-flash-quota'
+        })
+      ).toEqual({
+        sessionModel: 'gemini-3.8-flash-quota',
+        sessionModelSource: 'quota-state'
+      });
+    });
+
+    it('returns null for both fields when hook model and quotaView model are missing', () => {
+      expect(resolveAntigravitySessionModel(undefined, null)).toEqual({
+        sessionModel: null,
+        sessionModelSource: null
+      });
+      expect(
+        resolveAntigravitySessionModel('   ', {
+          active_model: '  ',
+          activeModelSource: 'quota-state'
+        })
+      ).toEqual({
+        sessionModel: null,
+        sessionModelSource: null
+      });
+    });
+  });
+
+  describe('cleanUserInput and turnId', () => {
+    it('strips <ADDITIONAL_METADATA> and <USER_REQUEST> wrappers so PreInvocation and PreToolUse produce identical turn ids', () => {
+      const plain = 'Audit telemetry events across hooks';
+      const wrapped =
+        '<ADDITIONAL_METADATA>\nworkspace: /home/user/projects/jev\ncursor: line 42\n</ADDITIONAL_METADATA>\n' +
+        `<USER_REQUEST>\n  ${plain}  \n</USER_REQUEST>`;
+
+      expect(cleanUserInput(wrapped)).toBe(plain);
+      expect(turnId(wrapped)).toBe(turnId(plain));
+      expect(turnId(wrapped)).toMatch(/^[0-9a-f]{12}$/);
+    });
+  });
+
+  describe('readAntigravityTurn and writeAntigravityTurn', () => {
+    it('round-trips full and minimal turn state', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      const full: AntigravityTurnState = {
+        turn: 'abc123def456',
+        recommendedTier: 'flash',
+        recommendedSubagent: 'code-engineer',
+        effort: 'medium',
+        at: '2026-11-18T12:00:00.000Z'
+      };
+      writeAntigravityTurn(sessionsDir, 'sess-1', full);
+      expect(readAntigravityTurn(sessionsDir, 'sess-1')).toEqual(full);
+
+      const minimal: AntigravityTurnState = {
+        turn: 'fedcba654321',
+        at: '2026-11-18T12:05:00.000Z'
+      };
+      writeAntigravityTurn(sessionsDir, 'sess-1', minimal);
+      expect(readAntigravityTurn(sessionsDir, 'sess-1')).toEqual(minimal);
+    });
+
+    it('returns null and no-ops safely for missing, unsafe, or malformed turn files', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      expect(readAntigravityTurn(sessionsDir, null)).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, undefined)).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, '../escape')).toBeNull();
+      expect(readAntigravityTurn(sessionsDir, 'does-not-exist')).toBeNull();
+
+      // Malformed JSON
+      fs.writeFileSync(path.join(sessionsDir, 'bad-json.turn.json'), '{not json');
+      expect(readAntigravityTurn(sessionsDir, 'bad-json')).toBeNull();
+
+      // Missing or empty turn field
+      fs.writeFileSync(path.join(sessionsDir, 'missing-turn.turn.json'), JSON.stringify({ at: '2026-11-18T00:00:00Z' }));
+      expect(readAntigravityTurn(sessionsDir, 'missing-turn')).toBeNull();
+
+      fs.writeFileSync(path.join(sessionsDir, 'empty-turn.turn.json'), JSON.stringify({ turn: '', at: '2026-11-18T00:00:00Z' }));
+      expect(readAntigravityTurn(sessionsDir, 'empty-turn')).toBeNull();
+
+      // writeAntigravityTurn ignores missing or unsafe sessionId without throwing
+      writeAntigravityTurn(sessionsDir, '../escape', { turn: 'abc', at: '2026-11-18T00:00:00Z' });
+      writeAntigravityTurn(sessionsDir, null, { turn: 'abc', at: '2026-11-18T00:00:00Z' });
+      expect(fs.existsSync(path.join(tmpDir, 'escape.turn.json'))).toBe(false);
+    });
+  });
+
+  describe('buildAntigravityTelemetryEvent', () => {
+    it('records modelUsedSource "clamped" when decision.clampedTo is set', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'research', Model: 'pro' },
+        decision: { decision: 'allow', elevation: 'clamped', clampedTo: 'flash' }
+      });
+
+      expect(ev.modelUsed).toBe('flash');
+      expect(ev.modelUsedSource).toBe('clamped');
+      expect(ev.requestedModel).toBe('pro');
+      expect(ev.taskSummary).toBe('subagent: research');
+    });
+
+    it('records modelUsedSource "downgraded" when downgradeLog.downgrade is "applied"', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        decision: { decision: 'allow', overwrite: { Model: 'flash_lite' } },
+        downgradeLog: { downgrade: 'applied', downgrade_to: 'flash_lite' }
+      });
+
+      expect(ev.modelUsed).toBe('flash_lite');
+      expect(ev.modelUsedSource).toBe('downgraded');
+      expect(ev.downgrade).toBe('applied');
+    });
+
+    it('records modelUsedSource "requested" when args.Model is explicit without clamp/downgrade', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        decision: { decision: 'pass' }
+      });
+
+      expect(ev.modelUsed).toBe('flash');
+      expect(ev.modelUsedSource).toBe('requested');
+      expect(ev.requestedModel).toBe('flash');
+    });
+
+    it('records modelUsedSource "inherited" with sessionModel when args.Model is omitted or "inherit"', () => {
+      const omittedEv = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker' },
+        decision: { decision: 'pass' }
+      });
+      expect(omittedEv.modelUsed).toBe('gemini-3.8-flash-low');
+      expect(omittedEv.modelUsedSource).toBe('inherited');
+      expect(omittedEv.requestedModel).toBeNull();
+
+      const inheritEv = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'inherit' },
+        decision: { decision: 'pass' }
+      });
+      expect(inheritEv.modelUsed).toBe('gemini-3.8-flash-low');
+      expect(inheritEv.modelUsedSource).toBe('inherited');
+      expect(inheritEv.requestedModel).toBeNull();
+    });
+
+    it('records modelUsedSource "inherited" without modelUsed when neither the call nor the session names a model', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker' },
+        decision: { decision: 'pass' }
+      });
+      expect('modelUsed' in ev).toBe(false);
+      expect(ev.modelUsedSource).toBe('inherited');
+      expect(ev.sessionModel).toBeNull();
+      expect(ev.sessionModelSource).toBeNull();
+    });
+
+    it('an applied downgrade without downgrade_to falls back to the overwritten Model', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'pro' },
+        decision: { decision: 'pass', overwrite: { Model: 'flash_lite' } },
+        downgradeLog: { downgrade: 'applied' }
+      });
+      expect(ev.modelUsed).toBe('flash_lite');
+      expect(ev.modelUsedSource).toBe('downgraded');
+    });
+
+    it('a downgrade that was only asked is a denial: no modelUsed, the requested model stays', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-pro-low',
+        lastUserInput: 'run worker',
+        args: { TypeName: 'worker', Model: 'pro' },
+        decision: { decision: 'deny' },
+        downgradeLog: { downgrade: 'asked', downgrade_to: 'flash_lite' }
+      });
+      expect(ev.modelUsed).toBeUndefined();
+      expect(ev.modelUsedSource).toBeUndefined();
+      expect(ev.requestedModel).toBe('pro');
+    });
+
+    it('joins turnState.recommendedTier only when turnState.turn matches current turn', () => {
+      const prompt = '<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\nFix bug\n</USER_REQUEST>';
+      const expectedTurn = turnId('Fix bug');
+
+      const matched = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: prompt,
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        turnState: {
+          turn: expectedTurn,
+          recommendedTier: 'flash',
+          recommendedSubagent: 'code-engineer',
+          at: '2026-11-18T12:00:00.000Z'
+        },
+        decision: { decision: 'pass' }
+      });
+      expect(matched.turn).toBe(expectedTurn);
+      expect(matched.modelRecommended).toBe('flash');
+      expect(matched.recommendedTier).toBe('flash');
+
+      const mismatched = buildAntigravityTelemetryEvent({
+        kind: 'agent_call',
+        conversationId: 'c1',
+        inputModelName: 'gemini-3.8-flash-low',
+        lastUserInput: prompt,
+        args: { TypeName: 'code-engineer', Model: 'flash' },
+        turnState: {
+          turn: '000000000000',
+          recommendedTier: 'pro',
+          recommendedSubagent: 'code-engineer',
+          at: '2026-11-18T11:55:00.000Z'
+        },
+        decision: { decision: 'pass' }
+      });
+      expect(mismatched.turn).toBe(expectedTurn);
+      expect(mismatched.modelRecommended).toBeUndefined();
+      expect(mismatched.recommendedTier).toBeUndefined();
+    });
+
+    it('builds subagent_served event shape', () => {
+      const ev = buildAntigravityTelemetryEvent({
+        kind: 'subagent_served',
+        conversationId: 'parent-1',
+        childConversationId: 'child-2',
+        requestedModel: 'flash',
+        servedModel: 'gemini-3.8-flash-low',
+        backfilled: true
+      });
+
+      expect(ev).toEqual({
+        harness: 'antigravity',
+        toolOrHook: 'PostToolUse',
+        event: 'subagent_served',
+        sessionId: 'parent-1',
+        childConversationId: 'child-2',
+        requestedModel: 'flash',
+        servedModel: 'gemini-3.8-flash-low',
+        sessionModel: null,
+        sessionModelSource: null,
+        backfilled: true
+      });
+    });
+
+    it('subagent_served carries the session model from the hook input, else the quota view, else null', () => {
+      const base = { kind: 'subagent_served' as const, conversationId: 'parent-1', childConversationId: 'child-2', servedModel: 'm' };
+      expect(buildAntigravityTelemetryEvent({ ...base, inputModelName: ' gemini-3.8-flash-low ' })).toMatchObject({
+        sessionModel: 'gemini-3.8-flash-low',
+        sessionModelSource: 'hook'
+      });
+      expect(
+        buildAntigravityTelemetryEvent({ ...base, quotaView: { active_model: 'quota-model', activeModelSource: 'quota-state' } as any })
+      ).toMatchObject({ sessionModel: 'quota-model', sessionModelSource: 'quota-state' });
+      expect(buildAntigravityTelemetryEvent({ ...base })).toMatchObject({ sessionModel: null, sessionModelSource: null });
+    });
+  });
+});
+
+describe('Antigravity elevation never asks in choice and clamp modes (auto-approve safe)', () => {
+  let testDir = '';
+  let savedHome: string | undefined;
+  let approvals: ApprovalStore;
+
+  const proCall = (overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
+    conversationId: 'c-noask',
+    lastUserInput: 'run subagent on pro',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'solve it', Model: 'pro' } },
+    ...overrides
+  });
+
+  const writeHomeJson = (rel: string, body: string) => {
+    const file = path.join(testDir, 'home', rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-noask-test-'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(testDir, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const deps = (extra: Record<string, unknown> = {}, now = 1000) => ({
+    approvals,
+    sessionModelOverride: 'gemini-3.8-flash-low',
+    now: () => now,
+    ...extra
+  });
+
+  describe('choice mode', () => {
+    it('denies attempts 3 and 4 and never returns ask', () => {
+      const decisions = [1, 2, 3, 4, 5].map((n) =>
+        evaluateAntigravitySubagentCall(proCall(), deps({}, 1000 + n * 50))
+      );
+      for (const d of decisions) {
+        expect(d.decision).toBe('deny');
+        expect(d.elevation).toBe('denied');
+      }
+      expect(decisions.map((d) => d.attemptCount)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('keeps the plain question reason for attempts 1-2 and adds the stop-retrying hint from attempt 3', () => {
+      const d = [1, 2, 3, 4].map((n) => evaluateAntigravitySubagentCall(proCall(), deps({}, 1000 + n * 50)));
+      expect(d[0].reason).not.toContain('stop retrying');
+      expect(d[1].reason).not.toContain('stop retrying');
+      for (const late of [d[2], d[3]]) {
+        expect(late.reason).toContain('[jev-elevate:pro]');
+        expect(late.reason).toContain('stop retrying');
+        expect(late.reason).toContain('Model: "flash"');
+        expect(late.reason).toContain('ask_question');
+      }
+    });
+
+    it('honours a "Yes, once" answer recorded after two denies at attempt 3, and consumes it only once', () => {
+      const transcriptFile = path.join(testDir, 'transcript.jsonl');
+      const nowMs = 1_000_000;
+      fs.writeFileSync(
+        transcriptFile,
+        '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"call_q","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow expert?"]}}]}\n' +
+          '{"step_index":2,"type":"GENERIC","toolCallId":"call_q","content":"A1: Yes, once"}\n'
+      );
+      // Two denies happen before the answer row exists in the transcript.
+      const empty = path.join(testDir, 'empty.jsonl');
+      fs.writeFileSync(empty, '');
+      const d1 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: empty }), deps({}, nowMs));
+      const d2 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: empty }), deps({}, nowMs + 1000));
+      expect(d1.decision).toBe('deny');
+      expect(d2.decision).toBe('deny');
+
+      // Attempt 3: the answer is now in the transcript; the pull fallback must still run and allow.
+      const d3 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: transcriptFile }), deps({}, nowMs + 2000));
+      expect(d3.decision).toBe('allow');
+      expect(d3.elevation).toBe('approved');
+      expect(d3.approvalScope).toBe('once');
+      expect(d3.pullFallback).toBe(true);
+
+      // The same answer must not be replayed: the next pro attempt is denied again, still never ask.
+      const d4 = evaluateAntigravitySubagentCall(proCall({ transcriptPath: transcriptFile }), deps({}, nowMs + 3000));
+      expect(d4.decision).toBe('deny');
+      expect(d4.reason).toContain('stop retrying');
+    });
+  });
+
+  describe('clamp mode', () => {
+    it('allows every attempt (1..3) with Model overwritten to the ceiling', () => {
+      for (const n of [1, 2, 3]) {
+        const d = evaluateAntigravitySubagentCall(proCall(), deps({ elevationMode: 'clamp' }, 1000 + n * 50));
+        expect(d.decision).toBe('allow');
+        expect(d.elevation).toBe('clamped');
+        expect(d.overwrite).toEqual({ Model: 'flash' });
+        expect(d.clampedTo).toBe('flash');
+        expect(d.attemptCount).toBe(n);
+      }
+    });
+  });
+
+  describe('dialog mode', () => {
+    const dialog = () => evaluateAntigravitySubagentCall(proCall(), deps({ elevationMode: 'dialog' }));
+
+    it('returns ask with no warning when there is no Antigravity config', () => {
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.elevation).toBe('asked');
+      expect(d.autoApproveWarning).toBeUndefined();
+    });
+
+    it('carries the warning for a TURBO permission preset and still returns ask', () => {
+      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO' }));
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.elevation).toBe('asked');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('carries the warning for toolPermission always-proceed in the CLI settings', () => {
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'always-proceed' }));
+      const d = dialog();
+      expect(d.decision).toBe('ask');
+      expect(d.autoApproveWarning).toBe(true);
+    });
+
+    it('has no warning for a non-turbo preset', () => {
+      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_DEFAULT' }));
+      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'ask' }));
+      expect(dialog().autoApproveWarning).toBeUndefined();
+    });
+
+    it('does not throw and adds no warning for malformed or non-object JSON', () => {
+      for (const body of ['{not json', '', '[]', 'null', '"AGENT_PERMISSION_PRESET_TURBO"']) {
+        writeHomeJson('.gemini/config/config.json', body);
+        writeHomeJson('.gemini/antigravity-cli/settings.json', body);
+        const d = dialog();
+        expect(d.decision).toBe('ask');
+        expect(d.autoApproveWarning).toBeUndefined();
+      }
+    });
+
+    it('detectAntigravityAutoApprove treats an unreadable path as not detected', () => {
+      fs.mkdirSync(path.join(testDir, 'home', '.gemini', 'config', 'config.json'), { recursive: true });
+      expect(detectAntigravityAutoApprove(path.join(testDir, 'home'))).toBe(false);
+    });
+  });
+});
+
+describe('Antigravity on-demand makes no decisions', () => {
+  let testDir = '';
+  let savedHome: string | undefined;
+  let approvals: ApprovalStore;
+
+  const call = (model: string | undefined, overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
+    conversationId: 'c-ondemand',
+    lastUserInput: 'run a subagent',
+    modelName: 'gemini-3.8-flash-low',
+    toolCall: {
+      id: 't1',
+      name: 'invoke_subagent',
+      args: { TypeName: 'expert-worker', Prompt: 'solve it', ...(model === undefined ? {} : { Model: model }) }
+    },
+    ...overrides
+  });
+
+  const writeHomeJson = (rel: string, body: string) => {
+    const file = path.join(testDir, 'home', rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  const turbo = () =>
+    writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO' }));
+
+  const sessionFiles = () => {
+    const dir = path.join(testDir, 'sessions');
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  };
+
+  const lowView = (strategy: 'conserve' | 'free_only'): QuotaView => ({
+    source: 'test',
+    schema: 2,
+    stale: false,
+    updated_at: 1,
+    buckets: {},
+    gemini: { five_hour: 0.05, weekly: 0.05, min_remaining: 0.05 },
+    strategy,
+    thresholds: { normal_min: 0.3, conserve_min: 0.1, five_hour_normal_min: 0.3, five_hour_conserve_min: 0.1, weekly_normal_min: 0.2, weekly_conserve_min: 0.1 },
+    geminiRemainingFraction: 0.05,
+    active: { pool: 'gemini', five_hour: 0.05, weekly: 0.05, min_remaining: 0.05, strategy }
+  });
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ondemand-test-'));
+    savedHome = process.env.HOME;
+    process.env.HOME = path.join(testDir, 'home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    approvals = createAntigravityApprovalStore(path.join(testDir, 'sessions'));
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const run = (input: AntigravityHookInput, extra: Record<string, unknown> = {}) =>
+    evaluateAntigravitySubagentCall(input, {
+      approvals,
+      sessionModelOverride: 'gemini-3.8-flash-low',
+      mode: 'on-demand',
+      now: () => 1000,
+      ...extra
+    });
+
+  for (const withTurbo of [false, true]) {
+    describe(withTurbo ? 'with a TURBO config' : 'without a TURBO config', () => {
+      beforeEach(() => {
+        if (withTurbo) turbo();
+      });
+
+      it('passes pro above the ceiling, a repeated attempt included, with no approvals or attempts', () => {
+        for (const n of [1, 2, 3, 4]) {
+          expect(run(call('pro'), { now: () => 1000 + n })).toEqual({ decision: 'pass' });
+        }
+        expect(sessionFiles()).toEqual([]);
+      });
+
+      it('passes an unknown Model and openrouter_free', () => {
+        expect(run(call('bogus-tier'))).toEqual({ decision: 'pass' });
+        expect(run(call('openrouter/free'))).toEqual({ decision: 'pass' });
+        expect(run(call('openrouter_free'))).toEqual({ decision: 'pass' });
+      });
+
+      it('passes an omitted or inherit Model under Orchestrator', () => {
+        for (const model of [undefined, 'inherit']) {
+          const input = call(model, { modelName: 'Orchestrator (Argon)' });
+          expect(run(input, { sessionModelOverride: 'Orchestrator (Argon)' })).toEqual({ decision: 'pass' });
+        }
+      });
+
+      it('passes whatever a conserve or free_only pool says, above or within the ceiling', () => {
+        for (const strategy of ['conserve', 'free_only'] as const) {
+          for (const model of ['pro', 'flash', 'flash_lite', undefined]) {
+            expect(run(call(model), { quotaView: lowView(strategy) })).toEqual({ decision: 'pass' });
+          }
+        }
+      });
+
+      it('does not honour or consume a stored approval, and ignores JEV_ELEVATION modes', () => {
+        approvals.deny('c-ondemand', 'pro', 900); // an approval is only accepted after a denial prescribed the question
+        expect(approvals.record('c-ondemand', { model: 'pro', scope: 'once', created_at: 1000 })).toBe(true);
+        const before = sessionFiles();
+        for (const elevationMode of ['dialog', 'clamp', 'choice'] as const) {
+          const d = run(call('pro', { lastUserInput: 'use gemini pro for this' }), { elevationMode });
+          expect(d).toEqual({ decision: 'pass' });
+        }
+        expect(sessionFiles()).toEqual(before);
+        // The approval is still there for mode on.
+        expect(approvals.claim('c-ondemand', 'pro', 1000)).not.toBeNull();
+      });
+    });
+  }
+
+  it('the same calls are still decided in mode on', () => {
+    expect(run(call('pro'), { mode: 'on' }).decision).toBe('deny');
+    expect(run(call('bogus-tier'), { mode: 'on' }).decision).toBe('deny');
+    expect(run(call(undefined, { modelName: 'Orchestrator (Argon)' }), { mode: 'on', sessionModelOverride: 'Orchestrator (Argon)' }).decision).toBe('deny');
+    expect(run(call('flash'), { mode: 'on', quotaView: lowView('free_only') }).decision).toBe('deny');
+  });
+
+  it('detectAntigravityAutoApprove is untouched: it feeds only the dialog-mode warning', () => {
+    turbo();
+    expect(detectAntigravityAutoApprove(path.join(testDir, 'home'))).toBe(true);
+    const d = evaluateAntigravitySubagentCall(call('pro'), {
+      approvals,
+      sessionModelOverride: 'gemini-3.8-flash-low',
+      mode: 'on',
+      elevationMode: 'dialog',
+      now: () => 1000
+    });
+    expect(d.decision).toBe('ask');
+    expect(d.autoApproveWarning).toBe(true);
   });
 });

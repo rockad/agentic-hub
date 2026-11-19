@@ -17,8 +17,12 @@ Use this skill when the user or agent needs to inspect or switch TypeSafe Jev op
 | Mode | State | Description | Behavior |
 | --- | --- | --- | --- |
 | **`off`** | MCP Server Disabled | Zero token overhead, zero OpenRouter calls. | Antigravity runs strictly with built-in native tools. Background decisions, pre-flight routing, and free-tier offloading are completely disabled. |
-| **`on-demand`** | MCP Server Enabled | Passive System 1 coprocessor. | MCP server remains active. Invoked selectively by user or agent for complex multi-role workflows (`jev_dispatch`), condition checks (`jev_judge`), or ad-hoc free tier generation (`jev_execute_free`). No mandatory pre-flight clamping. |
+| **`on-demand`** | MCP Server Enabled | Passive System 1 coprocessor. | MCP server remains active. Invoked selectively by user or agent for complex multi-role workflows (`jev_dispatch`), condition checks (`jev_judge`), or ad-hoc free tier generation (`jev_execute_free`). Telemetry rows are written, and one informational quota line is injected only when a pool is `conserve`, `free_only` or exhausted. **No decisions** (no deny, ask, clamp, approvals, downgrade or guards) and **no routing advice** (no router call, directive or tier advice), in Claude Code and Antigravity alike. |
 | **`on`** | MCP Server Enabled | Aggressive System 1 enforcement. | Active coprocessor with mandatory execution guards: (1) **Pre-flight dispatch** via `jev_dispatch` on non-trivial tasks to calibrate subagent role and tier; (2) **Free-tier offloading** to `openrouter/free` via `jev_execute_free`; (3) **Automated quality gates** via `jev_judge`; (4) **Subagent tier clamping** to flash/flash_lite or free tier to conserve Pro quota. |
+
+> **In on-demand Jev enforces nothing: a pro (Claude Code: opus) subagent runs without any approval prompt from Jev. The pro-approval rule then depends only on the agent following its instructions. Use mode `on` to have Jev enforce it.**
+
+Every mode is defined once in `src/core/mode-policy.ts` (`modeBehaviour`, `lowQuotaNotice`) and every harness adapter, including any later one (OpenCode, Codex), must consult it.
 
 ---
 
@@ -37,21 +41,23 @@ To inspect the active operating mode, configuration state, and mode characterist
 
 To switch modes directly:
 
+> **Every mode change must be stamped.** Prefer `jev_set_mode`: it writes the mode and `modeChangedAt` together. When you edit `~/.config/jev/config.json` yourself, set `defaults.modeChangedAt` to the current time as an ISO UTC string in the same edit (for example `jq --arg m on --arg t "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" '.defaults.mode = $m | .defaults.modeChangedAt = $t'`). A pending Jev denial or question issued before that time is never approved by a later answer (an answer given in `on-demand` cannot approve a mode-`on` denial after switching back); a config without the stamp puts no restriction on anything.
+
 #### Switching to `on` (Aggressive System 1):
 - **Via Skill / Command**:
-  Update `defaults.mode: "on"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
+  Update `defaults.mode: "on"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool (When enabled)**:
   Call `jev_set_mode` with argument `{"mode": "on"}`.
 
 #### Switching to `on-demand` (Passive Coprocessor):
 - **Via Skill / Command**:
-  Update `defaults.mode: "on-demand"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
+  Update `defaults.mode: "on-demand"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp enable jev` via `run_command` if disabled.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "on-demand"}`.
 
 #### Switching to `off` (Zero Overhead):
 - **Via Skill / Command**:
-  Update `defaults.mode: "off"` in `~/.config/jev/config.json`. In Antigravity, run `agy mcp disable jev` via `run_command`.
+  Update `defaults.mode: "off"` and `defaults.modeChangedAt` (now, as an ISO UTC string) in `~/.config/jev/config.json`. In Antigravity, run `agy mcp disable jev` via `run_command`.
 - **Via MCP Tool**:
   Call `jev_set_mode` with argument `{"mode": "off"}`.
 
@@ -67,11 +73,11 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 
 - Tiers map onto Claude models: `openrouter_free` and `flash_lite` → `haiku`, `flash` → `sonnet`, `pro` → `opus`.
 - The session model is the ceiling. In mode `on`, a `PreToolUse` hook handles an `Agent` call that names a model stronger than the session model, and nothing else: a `pro` rating is advice in the turn context, not a dialog, so a call pinned to the session model or below starts without a prompt.
-  - Default (elevation choice): a call that names a stronger model, with no instruction naming it and no approval, is **denied** with a reason; the turn does not stop. Ask the user with `AskUserQuestion`, one question whose text STARTS with the marker `[jev-elevate:<model>]` followed by a short question naming the subagent_type, the requested model, the session model and a 10-word task summary, with exactly four options in this order and with these labels: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session model>`. Do not ask in any other form: a Jev hook records the user's answer from that question, and only that question. On a Yes launch the delegation again with the same model (the approval covers it and anything below it); on No launch it on the session model or do the work directly, and do not stop. Ask this question before the first `Agent` call when the turn context says to. If you do not, the third attempt of the same delegation in one prompt opens a permission dialog, whose No stops the turn. A new prompt (a background agent's completion notification is one) resets that count.
-  - `JEV_ELEVATION=dialog` (2.3.4 behaviour): the user is asked in a permission dialog on every such call. Yes runs it on the stronger model. No cancels the call and stops the turn; a comment typed with No lets you continue (for example "continue on sonnet"), so carry on with the work on the session model rather than retrying on a cheaper model.
+  - Default (elevation choice): a call that names a stronger model, with no instruction naming it and no approval, is **denied** with a reason; the turn does not stop. Ask the user with `AskUserQuestion`, one question whose text STARTS with the marker `[jev-elevate:<model>]` followed by a short question naming the subagent_type, the requested model, the session model and a 10-word task summary, with exactly four options in this order and with these labels: `Yes, once`, `Yes, for the next 5 minutes`, `Yes, for this session`, `No, proceed on <session model>`. Do not ask in any other form: a Jev hook records the user's answer from that question, and only that question. On a Yes launch the delegation again with the same model (the approval covers it and anything below it); on No launch it on the session model or do the work directly, and do not stop. Ask this question before the first `Agent` call when the turn context says to. If you do not, every attempt is denied again (never a permission dialog), and from the third attempt of the same delegation in one prompt the reason tells you to stop retrying that model: proceed with an explicit model at or below the session model, or ask the user again with `AskUserQuestion`. A new prompt (a background agent's completion notification is one) resets that count.
+  - `JEV_ELEVATION=dialog` (2.3.4 behaviour, the only mode that asks): the user is asked in a permission dialog on every such call (the hook logs `auto_approve_warning` when the permission mode approves without a dialog, `bypassPermissions` or `auto`). Yes runs it on the stronger model. No cancels the call and stops the turn; a comment typed with No lets you continue (for example "continue on sonnet"), so carry on with the work on the session model rather than retrying on a cheaper model.
   - A model the user named in their prompt (`use opus`, `run an opus subagent`), or a stronger one, passes unchanged with no dialog: that instruction is the approval, so do not ask separately.
-  - Opt-in clamp (`JEV_ELEVATION=clamp` in the environment, off by default): the first such call in a prompt runs on the session model instead, with no dialog, and a note says so. Do not call it again on your own; report the result and, if the stronger model is really needed, ask the user in chat (a reply naming that model passes). A repeat in the same prompt asks. In interactive sessions the clamp restarts on every new prompt (a background agent's notification is a new prompt), so it asks only for a repeat inside one prompt.
-  - If the session model's alias is remapped (`ANTHROPIC_DEFAULT_*_MODEL`), the call asks in `dialog` and `clamp` modes (the choice flow runs the approved model as requested).
+  - Opt-in clamp (`JEV_ELEVATION=clamp` in the environment, off by default): every such call runs on the session model instead, with no dialog, and a note says so. Do not call it again on your own; report the result and, if the stronger model is really needed, ask the user in chat (a reply naming that model passes). A repeat in the same prompt is clamped the same way: the clamp never asks.
+  - If the session model's alias is remapped (`ANTHROPIC_DEFAULT_*_MODEL`), the call asks in `dialog` and `clamp` modes, the one case the clamp cannot do (the choice flow runs the approved model as requested).
 - Downgrade choice (mode `ask`, the default; `models.downgrade.mode` in the config or `JEV_DOWNGRADE=ask|auto|off`): Jev rates **each delegation** on its own text (the `Agent` call's description and the start of its prompt). When a cheaper model is enough, it is strictly cheaper by list price, and no user instruction names the requested model, the call is **denied once** with a reason; the turn does not stop. A call with no `model` counts as the session model. Ask the user with `AskUserQuestion`, one question whose text STARTS with the marker `[jev-downgrade:<needed alias>]` followed by a short question naming the subagent_type, the requested model, the cheaper candidates, and stating what the reason says to state (Jev's rating with its probability, both list prices, and the advisory effort, for example "Jev suggests low effort; session effort is high"); at most four options in this order: `Yes, <cheapest sufficient model>`, at most one more `Yes` alternative, `No, keep <requested model>`, `No, and don't ask again this session`. Then launch the delegation again with the chosen model (on either No keep the requested model, set explicitly); any answer lets the retried call through, the same delegation is not asked about again for 10 minutes, and the last answer stops the question for the rest of the session. An option written `<id> via jev-ladder-<id>` is a subagent_type (a general-purpose clone pinned to that model id, made by `bun scripts/jev-models.ts ladder-agents --dir <directory>`): launch it with that `subagent_type` and no `model`. The `Agent` tool's `model` takes only `haiku`, `sonnet`, `opus` and `fable`, so a version inside an alias cannot be chosen any other way. The question is asked at the call only, never before it, and in no other form. In mode `auto` Jev runs such a call on the cheapest alias itself and says so; in `off` it does nothing. A router failure never blocks a call. Effort is advice only: no hook can set it.
 - Antigravity downgrade choice (Jev mode `on`, same settings `models.downgrade.mode` / `JEV_DOWNGRADE`): an `invoke_subagent` call with `Model: "flash"` (or `Model` omitted/`inherit` on a standard `flash` session, when a downgrade mode is configured) is rated on its role and the start of its prompt. When a cheaper model is enough, the call is **denied once** and the reason prescribes one `ask_question` whose text STARTS with the exact marker the denial names (`[jev-downgrade:flash_lite:<sig8>]`, one per delegation), with exactly three options in this order: `Yes, flash_lite`, `No, keep flash`, `No, and don't ask again this session`. Then call `invoke_subagent` again with `Model: "flash_lite"` on Yes, or with `Model: "flash"` on either No. Ask in no other form; a retry that skips the question passes. In mode `auto` Jev rewrites the model to `flash_lite` itself (`allow` + `overwrite`); in `off` and `on-demand` it does nothing. A router failure never blocks a call.
 - A `[JEV]` line added to the turn carries the recommended subagent, model and effort. It is advice: follow it unless the task clearly needs more, and say so when you deviate.
@@ -83,9 +89,9 @@ Pro tier models (`pro`) are **never invoked automatically**. They are strictly g
 
 When invoked via `/jev` or `/jev <mode>`:
 - `/jev` or `/jev status`: Inspect current mode from `~/.config/jev/config.json`.
-- `/jev on`: Sets mode to `on` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
-- `/jev on-demand`: Sets mode to `on-demand` in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
-- `/jev off`: Sets mode to `off` in `~/.config/jev/config.json` and disables MCP server (`agy mcp disable jev`) for zero overhead.
+- `/jev on`: Sets mode to `on` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev on-demand`: Sets mode to `on-demand` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and ensures MCP server is enabled (`agy mcp enable jev`).
+- `/jev off`: Sets mode to `off` (and stamps `modeChangedAt`) in `~/.config/jev/config.json` and disables MCP server (`agy mcp disable jev`) for zero overhead.
 
 ## Underlying State & Files
 

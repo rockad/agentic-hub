@@ -1,14 +1,16 @@
 /**
  * Jev elevation choice flow (the default, JEV_ELEVATION unset or "choice"): an Agent call above the session model
  * with no instruction and no approval is DENIED with a reason that prescribes one AskUserQuestion (marker plus four
- * options); a PostToolUse recorder turns the user's real answer into an approval; the retried call passes. The third
- * elevating attempt of one prompt opens the permission dialog. `dialog` is the 2.3.4 behaviour, `clamp` the opt-in clamp.
+ * options); a PostToolUse recorder turns the user's real answer into an approval; the retried call passes. The choice flow
+ * never asks: every attempt is denied, and from the third attempt of one delegation in a prompt the reason says to stop
+ * retrying. `dialog` is the 2.3.4 behaviour (the only mode that asks), `clamp` the opt-in clamp.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { onPostToolUse, onPreToolUse, onUserPromptSubmit, withLockDir, type HookDeps, type HookInput } from '../claude/hook.ts';
+import { onPostToolUse, onPreToolUse, onUserPromptSubmit, telemetryEvent, withLockDir, type HookDeps, type HookInput } from '../claude/hook.ts';
+import { stopRetryingText } from '../src/core/elevation-text.ts';
 import {
   ATTEMPT_FALLBACK_WINDOW_MS,
   noteDenied,
@@ -136,7 +138,7 @@ describe('PreToolUse in choice mode: deny', () => {
 
   it('JEV_ELEVATION=dialog is the 2.3.4 dialog and JEV_ELEVATION=clamp the opt-in clamp', async () => {
     const dialog = out(await onPreToolUse(call(), setup({ env: { JEV_ELEVATION: 'dialog' } }).d));
-    const clamp = out(await onPreToolUse(call(), setup({ env: { JEV_ELEVATION: 'clamp' }, claimClamp: () => ({ first: true }) }).d));
+    const clamp = out(await onPreToolUse(call(), setup({ env: { JEV_ELEVATION: 'clamp' } }).d));
 
     expect(dialog.permissionDecision).toBe('ask');
     expect(dialog.permissionDecisionReason).toContain('No cancels the call and stops the turn');
@@ -187,14 +189,19 @@ describe('PreToolUse in choice mode: deny', () => {
     expect(out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d)).permissionDecision).toBe('deny');
   });
 
-  it('falls back to the dialog when the approvals store is unavailable (a deny that could repeat for ever)', async () => {
-    const { d } = setup({ approvals: undefined });
+  it('denies, never asks, when the approvals store is unavailable (no counter, so no stop-retrying text)', async () => {
+    const { d, logs } = setup({ approvals: undefined });
 
-    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('ask');
+    for (let i = 0; i < 4; i++) {
+      const o = out(await onPreToolUse(call(), d));
+      expect(o.permissionDecision).toBe('deny');
+      expect(String(o.permissionDecisionReason)).not.toContain('stop retrying');
+    }
+    expect(logs.map((l) => l.elevation)).toEqual(['denied', 'denied', 'denied', 'denied']);
   });
 
   it('the remapped-alias ask is kept in clamp mode', async () => {
-    const { d, logs } = setup({ env: { JEV_ELEVATION: 'clamp', ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-id' }, claimClamp: () => ({ first: true }) });
+    const { d, logs } = setup({ env: { JEV_ELEVATION: 'clamp', ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-id' } });
 
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('ask');
     expect(logs[0]).toMatchObject({ clamp_skipped: 'alias-remapped' });
@@ -364,17 +371,46 @@ describe('approvals: record, then PreToolUse consumes', () => {
   });
 });
 
-describe('third attempt in one prompt opens the dialog', () => {
-  it('denies twice, asks on the third with the 2.3.4 reason, and keeps asking', async () => {
+describe('third attempt in one prompt says to stop retrying (the choice flow never asks)', () => {
+  it('denies every attempt; from the third the reason says to stop retrying, in the text Antigravity shares', async () => {
     const { d, logs } = setup();
 
     const outs = [];
     for (let i = 0; i < 4; i++) outs.push(out(await onPreToolUse(call(), d)));
 
-    expect(outs.map((o) => o.permissionDecision)).toEqual(['deny', 'deny', 'ask', 'ask']);
-    expect(outs[2].permissionDecisionReason).toContain('Yes runs it on opus. No cancels the call and stops the turn');
-    expect(logs.map((l) => l.elevation)).toEqual(['denied', 'denied', 'asked', 'asked']);
-    expect(logs[2]).toMatchObject({ elevation_attempt: 3 });
+    expect(outs.map((o) => o.permissionDecision)).toEqual(['deny', 'deny', 'deny', 'deny']);
+    expect(String(outs[0].permissionDecisionReason)).not.toContain('stop retrying');
+    expect(String(outs[1].permissionDecisionReason)).not.toContain('stop retrying');
+    expect(outs[2].permissionDecisionReason).toContain(stopRetryingText(3, 'opus', 'sonnet', 'AskUserQuestion'));
+    expect(outs[2].permissionDecisionReason).toContain(
+      `stop retrying 'opus'. Proceed with an explicit Model: "sonnet", or ask the user again with AskUserQuestion.`
+    );
+    expect(outs[3].permissionDecisionReason).toContain('This is attempt 4 for the same delegation');
+    expect(logs.map((l) => l.elevation)).toEqual(['denied', 'denied', 'denied', 'denied']);
+    expect(logs.map((l) => l.elevation_attempt)).toEqual([1, 2, 3, 4]);
+    // A deny is not a run: its telemetry row has the decision and the requested model, but no modelUsed.
+    expect(telemetryEvent(logs[2])).toMatchObject({ decision: 'deny', requestedModel: 'opus' });
+    expect(telemetryEvent(logs[2]).modelUsed).toBeUndefined();
+  });
+
+  it('the stop-retrying sentence is the same text in both harnesses apart from the tool name', () => {
+    expect(stopRetryingText(2, 'opus', 'sonnet', 'AskUserQuestion')).toBe('');
+    expect(stopRetryingText(undefined, 'opus', 'sonnet', 'AskUserQuestion')).toBe('');
+    expect(stopRetryingText(3, 'pro', 'flash', 'ask_question')).toBe(
+      `This is attempt 3 for the same delegation: stop retrying 'pro'. Proceed with an explicit Model: "flash", or ask the user again with ask_question.`
+    );
+    expect(stopRetryingText(3, 'opus', 'sonnet', 'AskUserQuestion').replace('AskUserQuestion', 'ask_question')).toBe(
+      stopRetryingText(3, 'opus', 'sonnet', 'ask_question')
+    );
+  });
+
+  it('a late answer still allows one run after the stop-retrying text', async () => {
+    const { d } = setup();
+    for (let i = 0; i < 3; i++) await onPreToolUse(call(), d);
+    await answer(d, 'Yes, once');
+
+    expect(await onPreToolUse(call(), d)).toBeNull();
+    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
   });
 
   it('a new prompt_id resets the count', async () => {
@@ -382,9 +418,13 @@ describe('third attempt in one prompt opens the dialog', () => {
     await onPreToolUse(call(), d);
     await onPreToolUse(call(), d);
 
-    expect(out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d)).permissionDecision).toBe('deny');
-    expect(out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d)).permissionDecision).toBe('deny');
-    expect(out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d)).permissionDecision).toBe('ask');
+    const reasons: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const o = out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d));
+      expect(o.permissionDecision).toBe('deny');
+      reasons.push(String(o.permissionDecisionReason));
+    }
+    expect(reasons.map((r) => r.includes('stop retrying'))).toEqual([false, false, true]);
   });
 
   it('counts per session', async () => {
@@ -518,12 +558,14 @@ describe('the live hook process', () => {
     expect(JSON.parse(run('pre-tool-use', agent('sb')).stdout.toString()).hookSpecificOutput.permissionDecision).toBe('deny');
   });
 
-  it('the third attempt asks, and a new prompt_id resets the count', () => {
+  it('the third attempt is still a deny that says to stop retrying, and a new prompt_id resets the count', () => {
     start();
-    const decisions = (prompt: string) => JSON.parse(run('pre-tool-use', agent('sx', prompt)).stdout.toString()).hookSpecificOutput.permissionDecision;
+    const hook = (prompt: string) => JSON.parse(run('pre-tool-use', agent('sx', prompt)).stdout.toString()).hookSpecificOutput;
+    const first = [hook('p1'), hook('p1'), hook('p1')];
 
-    expect([decisions('p1'), decisions('p1'), decisions('p1')]).toEqual(['deny', 'deny', 'ask']);
-    expect(decisions('p2')).toBe('deny');
+    expect(first.map((o) => o.permissionDecision)).toEqual(['deny', 'deny', 'deny']);
+    expect(first.map((o) => String(o.permissionDecisionReason).includes('stop retrying'))).toEqual([false, false, true]);
+    expect(String(hook('p2').permissionDecisionReason)).not.toContain('stop retrying');
   });
 
   it('a "once" approval is consumed by exactly one of several parallel PreToolUse processes', async () => {
@@ -601,23 +643,27 @@ describe('the attempt counter is per delegation, and its fallback key is safe', 
     expect(logs.map((l) => l.elevation_attempt)).toEqual([1, 1, 1]);
   });
 
-  it('a repeated identical call ignored twice still reaches the dialog, interleaved with others', async () => {
-    const { d } = setup();
+  it('a repeated identical call ignored twice gets the stop-retrying text, interleaved with others, and is never asked', async () => {
+    const { d, logs } = setup();
 
     const decisions = [];
     for (const n of [1, 2, 1, 2, 1, 2]) decisions.push(await decision(d, callOf(n)));
 
-    expect(decisions).toEqual(['deny', 'deny', 'deny', 'deny', 'ask', 'ask']);
+    expect(decisions).toEqual(['deny', 'deny', 'deny', 'deny', 'deny', 'deny']);
+    expect(logs.map((l) => l.elevation_attempt)).toEqual([1, 1, 2, 2, 3, 3]);
+    expect(logs.map((l) => String(l.reason).includes('stop retrying'))).toEqual([false, false, false, false, true, true]);
   });
 
-  it('a run of ever-different delegations in one prompt still ends at the dialog', async () => {
-    const { d } = setup();
+  it('a run of ever-different delegations in one prompt ends at the stop-retrying text, never at a dialog', async () => {
+    const { d, logs } = setup();
 
     let last = '';
     for (let n = 1; n <= 40; n++) last = await decision(d, callOf(n));
 
-    expect(last).toBe('ask');
-    expect(await decision(d, callOf(1))).toBe('ask');
+    expect(last).toBe('deny');
+    expect(await decision(d, callOf(1))).toBe('deny');
+    expect(String(logs.at(-1)!.reason)).toContain('stop retrying');
+    expect(logs.every((l) => l.elevation === 'denied')).toBe(true);
   });
 
   it('bumpAttempts counts per signature and a new prompt starts again', () => {
@@ -657,41 +703,46 @@ describe('the attempt counter is per delegation, and its fallback key is safe', 
       expect(await decision(d, noId())).toBe('deny');
     });
 
-    it('the same prompt still reaches the dialog on its third attempt', async () => {
-      const { d } = setup();
+    it('the same prompt gets the stop-retrying text on its third attempt', async () => {
+      const { d, logs } = setup();
       turn(d, '2026-11-13T10:00:00.000Z');
 
-      expect([await decision(d, noId()), await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny', 'ask']);
+      expect([await decision(d, noId()), await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny', 'deny']);
+      expect(logs.map((l) => String(l.reason).includes('stop retrying'))).toEqual([false, false, true]);
     });
 
     it('with no turn timestamp the counter expires after a quiet window, and counts inside it', async () => {
-      const { d, advance } = setup();
+      const { d, advance, logs } = setup();
       turn(d);
       expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny']);
 
       advance(ATTEMPT_FALLBACK_WINDOW_MS + 1);
       expect(await decision(d, noId())).toBe('deny');
       advance(1000);
-      expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'ask']);
+      expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny']);
+      expect(String(logs.at(-1)!.reason)).toContain('stop retrying');
+      expect(String(logs.at(-2)!.reason)).not.toContain('stop retrying');
     });
 
     it('with no state at all (the literal none key) it expires the same way', async () => {
-      const { d, advance } = setup();
+      const { d, advance, logs } = setup();
       expect([await decision(d, noId()), await decision(d, noId())]).toEqual(['deny', 'deny']);
 
       advance(ATTEMPT_FALLBACK_WINDOW_MS + 1);
       expect(await decision(d, noId())).toBe('deny');
       expect(await decision(d, noId())).toBe('deny');
-      expect(await decision(d, noId())).toBe('ask');
+      expect(await decision(d, noId())).toBe('deny');
+      expect(String(logs.at(-1)!.reason)).toContain('stop retrying');
     });
 
     it('a prompt_id key never expires on time alone', async () => {
-      const { d, advance } = setup();
+      const { d, advance, logs } = setup();
       await onPreToolUse(call(), d);
       await onPreToolUse(call(), d);
       advance(ATTEMPT_FALLBACK_WINDOW_MS * 10);
 
-      expect(await decision(d, call())).toBe('ask');
+      expect(await decision(d, call())).toBe('deny');
+      expect(String(logs.at(-1)!.reason)).toContain('stop retrying');
     });
   });
 });

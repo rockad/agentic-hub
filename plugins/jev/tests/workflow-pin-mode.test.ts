@@ -1,7 +1,8 @@
 /**
  * The PostToolUse drift recorder checks the CURRENT Jev mode: a pin written while Jev was on is dropped without any
- * stdout when Jev was switched off before the run ended, but its drift is still written to the decisions log (the
- * decision was made while Jev was on). Ported from cognitive-engine's workflow-pin-mode tests. Dropped there: the
+ * stdout when Jev was switched to on-demand before the run ended, but its drift is still written to the decisions log
+ * (the decision was made while Jev was on). When Jev was switched off, nothing is written: no log row, and the pin is
+ * left for the next prune. Ported from cognitive-engine's workflow-pin-mode tests. Dropped there: the
  * cases about a missing, malformed or explicitly-pointed config file (that package derives "off" from the file; here
  * the hook's mode comes from readJevMode, which has its own tests in config.test.ts and mode-cli.test.ts).
  */
@@ -38,7 +39,7 @@ describe('drift is reported only while Jev is on', () => {
     expect(JSON.parse(res.output!).systemMessage).toContain('changed');
   });
 
-  for (const mode of ['off', 'on-demand']) {
+  for (const mode of ['on-demand']) {
     it(`no stdout, pin consumed, drift still logged when Jev was switched to ${mode} after the pin`, async () => {
       const file = await pinnedAndEdited();
       r.mode.value = mode;
@@ -54,6 +55,18 @@ describe('drift is reported only while Jev is on', () => {
     });
   }
 
+  it('Jev switched off after the pin: nothing is written, not even the drift, and the pin is left in place', async () => {
+    const file = await pinnedAndEdited();
+    r.mode.value = 'off';
+
+    const res = await onWorkflowPostToolUse(post(file) as any, r.d);
+
+    expect(res.status).toBe('off');
+    expect(res.output).toBeUndefined();
+    expect(records()).toEqual([]);
+    expect(fs.readdirSync(r.pins)).toHaveLength(1);
+  });
+
   it('Jev switched off and the file unchanged: nothing is logged', async () => {
     r = rig();
     const file = path.join(r.tmp, 'w.js');
@@ -65,10 +78,10 @@ describe('drift is reported only while Jev is on', () => {
     expect(records()).toEqual([]);
   });
 
-  it('Jev switched off and the file deleted: the drift is logged with a null current hash', async () => {
+  it('Jev switched to on-demand and the file deleted: the drift is logged with a null current hash', async () => {
     const file = await pinnedAndEdited();
     fs.rmSync(file);
-    r.mode.value = 'off';
+    r.mode.value = 'on-demand';
 
     expect((await onWorkflowPostToolUse(post(file) as any, r.d)).output).toBeUndefined();
     expect(records()[0].current_sha256).toBeNull();

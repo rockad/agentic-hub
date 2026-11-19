@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -142,6 +142,11 @@ def _struct_dict(struct: Any) -> dict[str, Any]:
     return json_format.MessageToDict(struct) if struct is not None and len(struct) else {}
 
 
+IdleEnder = Callable[[datetime], Awaitable[Sequence[Any]]]
+"""Ends every live session idle since the given time and returns what it ended
+(`IdentityService.end_idle`): by name, so the end hooks fire and the audit row is written."""
+
+
 class CoordinationService:
     def __init__(
         self,
@@ -154,6 +159,7 @@ class CoordinationService:
         listeners: ListenerView | None = None,
         notifier: Notifier | None = None,
         limiter: SlidingWindowLimiter | None = None,
+        idle_ender: IdleEnder | None = None,
     ) -> None:
         self._store = store
         self._dir = directory
@@ -163,6 +169,13 @@ class CoordinationService:
         self._listeners: ListenerView = listeners if listeners is not None else NoListeners()
         self._notifier = notifier
         self._limiter = limiter if limiter is not None else SlidingWindowLimiter(clock)
+        self._idle_ender = idle_ender
+
+    def bind_idle_ender(self, idle_ender: IdleEnder) -> None:
+        """Hand the sweep the function that ends idle sessions by name (Z18). The identity service
+        is built after this one (it takes `pending_count`), so the app binds it here, as it binds
+        the wake service."""
+        self._idle_ender = idle_ender
 
     # ======================================================================================
     # SendMessage
@@ -791,9 +804,17 @@ class CoordinationService:
 
     async def sweep(self) -> SweepResult:
         """One pass of the TTL rules (spec 1.5, 6.2). Safe to run at any rate; each step is its own
-        compare-and-swap, and a task that changed under the sweep is skipped, never forced."""
+        compare-and-swap, and a task that changed under the sweep is skipped, never forced.
+
+        Idle sessions are ended through the bound idle ender (`IdentityService.end_idle`, Z18) so the
+        end hooks fire and the audit row is written; a service built without one (a caller that
+        builds the parts alone) falls back to `Directory.end_idle`, which does neither."""
         now = self._clock.now()
-        ended = await self._dir.end_idle(now - timedelta(hours=self._s.session_idle_ttl_h), now)
+        idle_cutoff = now - timedelta(hours=self._s.session_idle_ttl_h)
+        if self._idle_ender is not None:
+            ended = len(await self._idle_ender(idle_cutoff))
+        else:
+            ended = await self._dir.end_idle(idle_cutoff, now)
         submitted = held = failed = 0
         for task_id, hold in await self._store.expired(now, 500):
             to_reason = C.REASON_QUARANTINE_EXPIRED if hold else C.REASON_EXPIRED

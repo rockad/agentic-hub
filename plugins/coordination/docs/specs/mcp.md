@@ -96,7 +96,7 @@ Results: `structuredContent` and one JSON text block of the same object. A failu
 - `create_app(..., mcp=endpoint)`: the route is added only when an endpoint is passed, so a bare `create_app` serves what it always did.
 - `build_server_app` now builds the SQL audit log (`SqlAuditStore`) and the `CoordinationService`, passes the audit log to the middleware and the service, and mounts `/mcp`. This is the audit wiring S1-AUTH listed as not done (auth failures are now sampled into `audit`); it is minimal wiring in a file this stream may change.
 - `app.state.mcp` is the endpoint, so S1-ADMIN can call `app.state.mcp.sessions.drop_key(key_id)` when it revokes a key. Not wired here: a revoked key is refused by the middleware on its next request in any case.
-- Not started here: the service's TTL sweep (`run_forever`) and the audit auth-failure flush timer. Neither stream owns them; the A2A, WAKE or ADMIN stream starting the lifespan tasks should.
+- Not started here: the service's TTL sweep (`run_forever`) and the audit auth-failure flush timer. The sweep is started by the app lifespan since Z18 (identity.md section 6); the flush timer is still not started by any stream.
 
 ## 8. Not built here (handed on)
 

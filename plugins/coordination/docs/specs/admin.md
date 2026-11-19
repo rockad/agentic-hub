@@ -159,7 +159,7 @@ Run from the host that runs the stack, with the stack up. Use a throwaway `--age
 
 ## 12. Not done here
 
-- Closing parked `/wake/listen` requests on revoke, and the parked count in `status`: done by S1-WAKE (section 6). `cli/render.py` still prints "(null until S1-WAKE)" beside the count; that text is stale and `cli/` was outside S1-WAKE.
+- Closing parked `/wake/listen` requests on revoke, and the parked count in `status`: done by S1-WAKE (section 6). `cli/render.py` no longer prints "(null until S1-WAKE)" beside the count (removed with Z18).
 - `expose check` (S3-EXPOSE-CHECK) and `admin-apply` (GL-IMPORT): named, not built.
 - `--tailnet-login`: waits for the real identity source (S2-TS, Z14).
 - `a2a-coord install` (S1-INST).

@@ -220,12 +220,16 @@ class McpAsync:
         return r.json()["result"]
 
 
-def make_wake_env(pg_db: Callable[..., Any], *, recheck_s: float = 0.05, **config_overrides: Any) -> WakeEnv:
+def make_wake_env(
+    pg_db: Callable[..., Any], *, recheck_s: float = 0.05, sweep_interval_s: float | None = None, **config_overrides: Any
+) -> WakeEnv:
     """Seeds a migrated database (cards, keys of every kind) and builds the real server app on it
     with the hand-moved clock. Call it outside the event loop (the seeding runs its own loop); the
-    app's engine connects lazily, inside the loop of `run_wake`."""
+    app's engine connects lazily, inside the loop of `run_wake`. The TTL sweep runs only inside the
+    app's lifespan, which the ASGI transport does not start; `sweep_interval_s` is for a test that
+    does start it."""
     env = make_env(pg_db, **config_overrides)
-    app = build_server_app(env.config, clock=env.clock, wake_recheck_s=recheck_s)
+    app = build_server_app(env.config, clock=env.clock, wake_recheck_s=recheck_s, sweep_interval_s=sweep_interval_s)
     return WakeEnv(env, app)
 
 

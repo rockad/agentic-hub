@@ -64,7 +64,11 @@ S1-WAKE adds, here (wiring only; the wake path is `coordination.wake`):
   The same table's size is the `listeners.parked` figure of the admin `status`.
 - Shutdown: the app's lifespan answers parked listeners `503` as it stops, and `main` runs uvicorn
   through `WakeShutdownServer`, which does the same the moment SIGTERM arrives (uvicorn would
-  otherwise wait for the parked requests to finish before it runs the lifespan shutdown)."""
+  otherwise wait for the parked requests to finish before it runs the lifespan shutdown).
+
+Z18 adds, here: the lifespan starts the TTL sweep (`CoordinationService.run_forever`) and stops it
+first on shutdown; the sweep ends idle sessions through `IdentityService.end_idle`, bound with
+`service.bind_idle_ender`."""
 
 from __future__ import annotations
 
@@ -216,11 +220,24 @@ def create_app(
     return app
 
 
-def build_server_app(config: Config, *, clock: Clock | None = None, wake_recheck_s: float | None = None) -> Starlette:
+def build_server_app(
+    config: Config,
+    *,
+    clock: Clock | None = None,
+    wake_recheck_s: float | None = None,
+    sweep_interval_s: float | None = None,
+) -> Starlette:
     """The app `main` serves: `create_app` with the Postgres-backed key store, so every request
     but `/healthz` and the public root card is authenticated. The engine connects on first use
-    and is disposed when the app shuts down. `clock` and `wake_recheck_s` exist so a test can run the
-    real wiring against a hand-moved clock and a short wake re-check; `main` passes neither."""
+    and is disposed when the app shuts down. `clock`, `wake_recheck_s` and `sweep_interval_s` exist
+    so a test can run the real wiring against a hand-moved clock, a short wake re-check and a short
+    sweep interval; `main` passes none of them.
+
+    The lifespan runs the TTL sweep (`CoordinationService.run_forever`, every 60 s unless
+    `sweep_interval_s` says otherwise) and stops it first on shutdown (Z18). The sweep ends idle
+    sessions through `IdentityService.end_idle`, so the end hooks fire and the audit row is written."""
+    import asyncio
+
     from coordination.a2a import build_a2a, load_cards_or_empty, sync_cards
     from coordination.admin.keystore import SqlKeyAdminStore
     from coordination.admin.wiring import build_admin
@@ -251,6 +268,9 @@ def build_server_app(config: Config, *, clock: Clock | None = None, wake_recheck
     )
     wake.bind(service)
     identity = IdentityService(registry, clock, audit=audit, listeners=table, pending=service.pending_count)
+    # Z18: the sweep ends idle sessions by name through the identity service (end hooks, the
+    # `session_ended` audit row), not through `Directory.end_idle`, which does neither.
+    service.bind_idle_ender(identity.end_idle)
     mcp = build_endpoint(
         config, service, engine, clock, audit=audit, listeners=table, identity=identity, confirm=wake.confirm
     )
@@ -269,6 +289,7 @@ def build_server_app(config: Config, *, clock: Clock | None = None, wake_recheck
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         started = False
+        sweep: asyncio.Task[None] | None = None
         try:
             # The service layer reads the `cards` table to decide whether a card exists; the cards
             # file is its source (spec 1.3). Written here, not at import, so building the app
@@ -278,8 +299,20 @@ def build_server_app(config: Config, *, clock: Clock | None = None, wake_recheck
             # checks them. If it cannot open, the exception stops the server: no fallback.
             await admin.start()
             started = True
+            # The TTL sweep (spec 1.5, 6.2; Z18). A failed pass is logged and retried by
+            # `run_forever`; only cancellation ends it.
+            sweep = asyncio.create_task(
+                service.run_forever(**({} if sweep_interval_s is None else {"interval_s": sweep_interval_s})),
+                name="coordination-sweep",
+            )
             yield
         finally:
+            # The sweep stops first: it uses the engine and may end sessions (and so close
+            # listeners), which must not race the shutdown below.
+            if sweep is not None:
+                sweep.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sweep
             # Parked listeners are answered `503` with `Retry-After: 5` before the engine goes.
             # `WakeShutdownServer` already did this at SIGTERM; this covers every other way the
             # lifespan ends (a test, a programmatic stop).

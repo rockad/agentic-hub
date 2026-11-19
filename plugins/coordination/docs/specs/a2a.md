@@ -110,7 +110,7 @@ JSON-RPC answers HTTP 200 for its errors except these 403 and 429, which 3.3 and
 - **Push delivery** has no trigger (section 5).
 - **Rate limits and the handle-guess counter** are the service layer's (S2-LISTEN, S3-LIMITS); the binding adds none, and a quota failure is mapped to -32011 with `Retry-After`.
 - **`SessionLister`** reads the `sessions` table directly, as S1-MCP's `SessionRegistry` does for `a2a_peers`; the service layer has no list-sessions call. S1-ID owns `/sessions` and may merge the two. `ListenerView` is empty until WAKE, so `listening` never appears yet.
-- **Lifespan work not started here:** the service's TTL sweep loop, as in mcp.md section 7.
+- **Lifespan work not started here:** the service's TTL sweep loop. Started by the app lifespan since Z18 (identity.md section 6).
 
 ## 8. The A2A TCK gate
 

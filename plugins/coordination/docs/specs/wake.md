@@ -59,7 +59,7 @@ A client that hangs up leaves the table (the handler watches the connection) and
 - `close_session(handle)`: answers that handle's listener with `410 ended`; returns the count.
 - `begin_shutdown()`: refuses new listeners and answers every parked one `503` with `Retry-After: 5`.
 - `is_listening(handle)` and `newest_listening(card)` are the `ListenerView` the rest of the server reads. A listener that has been answered is not listening, even for the instant before its request handler removes it.
-- A parked listener looks again every `RECHECK_S` (20 s) **[design]**: the session must still be live (else `410 ended`; the idle expiry ends a session without firing the end hook), the session's `last_seen_at` is refreshed through the registry's throttled `touch` (so a session with a parked listener never expires by the idle TTL, as identity.md section 6 asks), and a wake that no notification announced is looked for (a re-offer that became due, a queued card task, a wake that just counted as lost).
+- A parked listener looks again every `RECHECK_S` (20 s) **[design]**: the session must still be live (else `410 ended`; a session ended without the end hook firing is caught here, and the idle expiry fires the hook since Z18), the session's `last_seen_at` is refreshed through the registry's throttled `touch` (so a session with a parked listener never expires by the idle TTL, as identity.md section 6 asks), and a wake that no notification announced is looked for (a re-offer that became due, a queued card task, a wake that just counted as lost).
 
 ## 4. The wake decision (spec 7.3, 7.4, 7.5)
 
@@ -147,13 +147,13 @@ Measured on the development workstation, the pinned Postgres container, a real u
 | The 200 body's number | the pending count, clamped to 1 to 9999 |
 | `announce` after an empty inbox | a zero count clears the memory, so the next non-zero count announces |
 | Card mismatch on `X-Coord-Session` | looks like an unregistered session (`410 unregistered`); the lookup is scoped to the key's card, so a key never learns whether another card holds that id |
-| Is the TTL sweep started? | No (section 11) |
+| Is the TTL sweep started? | Yes since Z18: the app lifespan runs it every 60 s (section 11) |
 
 ## 11. Not built here, and handed on
 
 - **BP7 (the `410 unregistered` client retry).** The SP2 C7 result (hooks run in parallel, the first park came before the registration in 5 of 5 sessions) says to keep the 15 s retry. It is the client's: `a2a-listen` (S1-CLAUDE) retries a `410 unregistered` for 15 s and then treats it as final. The server answers `410 unregistered` at once and changed nothing for it.
-- **The TTL sweep loop (`service.run_forever`) is still not started by any stream** (mcp.md section 7, a2a.md). Without it a card task that was routed to a session and not confirmed is never put back in the card queue, and expired tasks are never rejected, so some of the wake paths of spec 7.4 (the queued card task) have no live source in a running server; they are tested through the service. Starting it in the lifespan is a small change, but it changes behaviour (sessions idle for `A2A_SESSION_IDLE_TTL_H` get ended) that nobody has decided on; it is left to S1-GATE or the main session.
-- **`a2a-coord status` text.** `cli/render.py` still prints "(null until S1-WAKE)" next to the parked count. `cli/` is outside this stream's files; the number is real now and the text is stale.
+- **The TTL sweep loop (`service.run_forever`): started by the app lifespan since Z18.** It runs every 60 s and is cancelled first on shutdown. It puts a card task that was routed to a session and not confirmed back in the card queue, rejects expired tasks, and ends sessions idle for `A2A_SESSION_IDLE_TTL_H`. Idle sessions end through `IdentityService.end_idle`, so the end hooks fire and a parked listener of an expired session gets `410` at once instead of at its next look (identity.md section 6).
+- **`a2a-coord status` text.** Fixed with Z18: `cli/render.py` no longer prints "(null until S1-WAKE)" next to the parked count (it still prints `null` where no counter is wired).
 - **Cross-host wake** is S2-WAKE. The table is single-process (spec 1.1), as is the rate limiter.
 - **The `/wake/*` per-key rate limiter** of the middleware (S3-LIMITS) is not built; the park limiter above covers the one case the spec 7.1 table names.
 - **A client run.** Claude Code's `asyncRewake` listener and `UserPromptSubmit` hook, and agy's `PreInvocation` hook, were not run against this server (rules: no agy, no helper `claude`). The wire shapes are the ones SP1 recorded. **[unverified]** against both; S1-CLAUDE, S1-AGY and the user's live checks cover it.

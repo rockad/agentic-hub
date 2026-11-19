@@ -333,9 +333,9 @@ class IdentityService:
         with 410, and one `session_ended` row (`via` idle_ttl, actor `system`). A session that
         called in after the scan is left alone. Returns what it ended, oldest first.
 
-        Nothing runs this on a timer yet: the sweep loop is not started by the app (undecided).
-        The service layer's own `Directory.end_idle` still ends idle sessions without naming them;
-        until the sweep calls this instead, only this function fires the hooks."""
+        The app lifespan runs the sweep loop and `CoordinationService.sweep` calls this (Z18, bound
+        with `bind_idle_ender`), so it is the only path that ends idle sessions in the server; the
+        service layer's `Directory.end_idle` stays only for a service built without the binding."""
         out: list[EndResult] = []
         for handle in await self.registry.idle_handles(last_seen_before):
             if not await self.registry.end(handle, idle_before=last_seen_before):

@@ -183,7 +183,7 @@ def parse_qs:
   ((.args? // {}) | .questions? | if type == "string" then (fromjson? // []) elif type == "array" then . else [] end)
   | if type == "array" then . else [] end;
 def clarify_cmd:
-  test("(?:^|(?<=[\\s>\\[(\($sq)\"]))/(clarify|grill-me|cplain|celi5)(?:$|(?=[\\s.,;:!?<\\]\($sq)\"]))");
+  test("(?:^|(?<=[\\s>\\[(\($sq)\"]))/(clarify|grill-me|cplain|celi5)(?:$|(?=[\\s.,;:!?<\\]\($sq)\"]))"; "i");
 
 def heading_match:
   rtrimstr("\r")
@@ -191,21 +191,56 @@ def heading_match:
   | select(.m != null or .sep != null)
   | {n: (.n | tonumber), m: (if .m != null then (.m | tonumber) else null end)};
 
-# Lines of a reply that sit outside fenced code blocks (``` or ~~~).
+# Lines of a reply that sit outside fenced code blocks. A fence opens with 3+ backticks
+# or tildes (at most 3 spaces of indent; a backtick fence has no backtick in its info
+# string) and closes on a line of the same character, at least as long, with nothing
+# after it. Linear time: one foreach pass.
 def outside_fences:
-  reduce (split("\n")[]) as $l ({in: false, out: []};
-    if ($l | test("^[ \\t]*(```|~~~)")) then .in |= not
-    elif .in then .
-    else .out += [$l] end)
-  | .out;
+  [ foreach (split("\n")[]) as $l ({open: null, emit: false};
+      if .open == null then
+        ([$l | capture("^ {0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")][0]) as $o
+        | if $o != null and (($o.f[0:1] == "~") or ($o.info | contains("`") | not))
+          then {open: {c: $o.f[0:1], n: ($o.f | length)}, emit: false}
+          else {open: null, emit: true, line: $l} end
+      else
+        ([$l | capture("^ {0,3}(?<f>`{3,}|~{3,})[ \\t]*$")][0]) as $c
+        | if $c != null and $c.f[0:1] == .open.c and ($c.f | length) >= .open.n
+          then {open: null, emit: false}
+          else {open: .open, emit: false} end
+      end;
+      if .emit then .line else empty end) ];
 
-# Question headings count only inside a clarify session, and never inside a code block.
-def extract_headings($content; $clarify_seen; $step):
-  if $clarify_seen then [ ($content | outside_fences[] | heading_match) + {step: $step} ] else [] end;
+# A clarify session starts at a command, the Turn-1 target line, the fork-map line,
+# or a tagged ask_question; it ends at the closing Decision Table.
+def has_trigger($lines):
+  any($lines[]; (contains("Target resolved:") or contains("orthogonal"))
+    and test("Target resolved:|(Decomposing into|Identified) [0-9]+ orthogonal"));
 
-# The closing Decision Table ends the clarify session (closing.md, plain-mode.md).
-def closes_series($content):
-  $content | outside_fences | any(.[]; test("^#{2,4}[ \\t]*(1\\.[ \\t]*)?Decision Table"));
+def all_headings($lines): [ $lines[] | select(startswith("##")) | heading_match ];
+
+# Question headings count only inside a clarify session.
+def extract_headings($lines; $clarify_seen):
+  if $clarify_seen then all_headings($lines) else [] end;
+
+def decision_table($lines):
+  any($lines[]; (startswith("#") or startswith("*"))
+    and test("^(#{1,4}[ \\t]*|\\*\\*)([0-9]+[.)][ \\t]*)?(final[ \\t]+)?decision[ \\t]+table"; "i"));
+
+# [Question N of M] / [Fork N of M] tags on ask_question calls of this reply.
+def ask_tags($e):
+  [ ($e.tool_calls // []) | if type == "array" then .[] else empty end
+    | select(type == "object" and .name == "ask_question")
+    | (.args // {}) | tostring
+    | [capture("\\[\\s*(?:Question|Fork)\\s+(?<n>[0-9]+)\\s+of\\s+(?<m>[0-9]+)\\s*\\]"; "i")][0]
+    | select(. != null)
+    | {n: (.n | tonumber), m: (.m | tonumber)} ];
+
+# The Decision Table closes the series only when it is the whole reply (no Question
+# heading) and the last question asked was the last one (n >= m, or nothing tracked).
+def closes_series($lines; $last):
+  decision_table($lines)
+  and (all_headings($lines) | length) == 0
+  and ($last == null or $last.n >= $last.m);
 
 def flush_headings:
   if (.headings | length) == 0 then .
@@ -284,23 +319,29 @@ def check_ask($step; $tc; $st):
     end;
 
 reduce (inputs | fromjson? | select(type == "object")) as $e
-  ({line: 0, text: "", rev: "", prev: null, clarify_seen: false, headings: [], checked: 0, failed: 0, warned: 0, out: []};
+  ({line: 0, text: "", rev: "", prev: null, clarify_seen: false, last: null, headings: [], checked: 0, failed: 0, warned: 0, out: []};
    .line += 1
    | (if $e.step_index != null then $e.step_index else .line end) as $step
    | if $e.type == "USER_INPUT" then
        ($e.content | str) as $ucontent
        | flush_headings
        | .text = ""
-       | (if ($ucontent | clarify_cmd) then .clarify_seen = true else . end)
+       | (if ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null else . end)
      elif $e.type == "PLANNER_RESPONSE" then
        ($e.content | str) as $content
-       | (if ($content | test("Target resolved:")) then true else .clarify_seen end) as $cseen
+       | ($content | outside_fences) as $lines
+       | ask_tags($e) as $tags
+       | (.clarify_seen or has_trigger($lines) or ($tags | length) > 0) as $cseen
+       | closes_series($lines; .last) as $closes
        | (if $content != "" then
             .text += ($content + "\n")
             | .rev += ($content + "\n")
-            | .headings += extract_headings($content; $cseen; $step)
+            | .headings += (extract_headings($lines; $cseen) | map(. + {step: $step}))
           else . end)
-       | .clarify_seen = (if closes_series($content) then false else $cseen end)
+       | .last = (if $cseen and ($closes | not)
+                  then (($tags | last) // (all_headings($lines) | map(select(.m != null)) | last) // .last)
+                  else null end)
+       | .clarify_seen = ($cseen and ($closes | not))
        | reduce (($e.tool_calls // []) | if type == "array" then .[] else empty end | select(type == "object" and .name == "ask_question")) as $tc (.;
            check_ask($step; $tc; .)
          )

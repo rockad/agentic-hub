@@ -4,8 +4,8 @@ description: >-
   Walk a non-trivial design through its forks one question at a time. Resolves
   design targets without parameters via a multi-tier recency cascade, explores the
   codebase first, surfaces genuine architectural trade-offs with prose-first
-  previews and explicit recommendations, and asks interactive single-choice
-  questions across Antigravity, Claude Code, and OpenCode. Supports both deep
+  previews, self-contained dialogs and explicit recommendations, and asks
+  interactive single-choice questions across Antigravity, Claude Code, and OpenCode. Supports both deep
   technical architecture (/clarify, /grill-me) and plain-English intuitive mental
   model clarification (/cplain, /celi5). Closes with a decision table, architecture
   artifact, and Jev-aware parallel workstream handoff.
@@ -140,11 +140,21 @@ This ensures total transparency: if the skill picked up an artifact the user did
 3. **Present the complete fork map upfront**:
    - Always state the total count and list all identified forks before asking the first question:
      > "Identified N orthogonal architectural forks across [topics]: [list of forks 1..N]. We start with Fork 1: <topic>."
+   - **The total is fixed once the map is announced.** Every `Question N (of Total)` heading, `[Question N of Total]` prefix, and `Fork N/Total` header uses that same N.
+   - If the count genuinely changes (a fork is retired, split, or discovered), say so before the next question: `Fork map revised: N → M (<reason>)`. From then on, use M in every counter.
 4. **Never batch the questions**: One fork, one interactive question call, one answer. Walk through all N forks sequentially.
 
 ## The Shape of Each Step (Prose-First Previews)
 
-All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. This keeps interactive UI dialogs, chips, and modal prompts concise, clean, and readable across all harnesses.
+All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. Prose is the universal canvas: it renders in every harness, and in Antigravity and OpenCode it keeps dialogs, chips, and modal prompts concise and clean. In Claude Code the `AskUserQuestion` dialog may be the only surface the user is sure to see, so there the dialog must also stand on its own (see "B. Claude Code"). Prose is still printed; the rich dialog is added to it, never a replacement for it.
+
+> [!IMPORTANT]
+> **Per-fork invariant — every fork gets the full step, every time.**
+> Fork N gets the complete step in prose **immediately before its own question call**, with no exceptions:
+> - **Mode A**: heading, context, argued options, your reading, and the recommendation.
+> - **Mode B**: header with Door Type and Under the Hood, the 4-question framing, and the recommendation.
+>
+> This holds for forks 2..N too, including when the previous answer arrived as a tool result inside the same turn. An answer arriving as a tool result is not a reason to skip the next step.
 
 The step structure adapts based on the active operational mode:
 
@@ -325,7 +335,12 @@ ask_question({
 
 #### B. Claude Code (`AskUserQuestion`)
 
-Uses `AskUserQuestion` with concise `header`, `label`, `description`, and `"multiSelect": false` (strictly required by Claude Code). Options can include the `"preview"` field to provide side-by-side terminal UI comparison boxes on single-select forks:
+Uses `AskUserQuestion` with a short `header` and `label`, a self-sufficient `description` and `preview` on every option, and `"multiSelect": false` (strictly required by Claude Code; `preview` renders only on single-select forks). Claude Code may show the user only the dialog, so the dialog carries the argument in addition to the prose step above it:
+
+- **`description`**: two to three sentences per option — what it does, the main pro, the main con. Target 150–300 characters, never under 120. In Mode B it also carries the analogy.
+- **`preview`**: a technical or mental-model block, followed by `+` pro lines and `- con` lines, about 6–12 lines in all. In Mode B it holds the sketch, an `Under the hood:` line, a `Door:` line (Tattoo or Sticker), then the `+` and `-` lines.
+- **Prose stays**: the full step is still printed above the call (see the per-fork invariant). The dialog repeats the essentials; it does not replace the analysis.
+- **Final `→ next:` line**: every option's `preview` ends with `→ next: full Question N+1 write-up, then ask` (on the last fork: `→ next: decision table and closing`). The `AskUserQuestion` tool result echoes the chosen option's preview, so this line lands right beside any output-style brevity reminder and counters it. Keep previews within about 12 lines including it.
 
 **Mode A (Standard Architecture):**
 ```json
@@ -338,18 +353,18 @@ AskUserQuestion({
       "options": [
         {
           "label": "Option A: M:N join table (Recommended)",
-          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt.",
-          "preview": "record_tags\n  record_id\n  tag_id\n  UNIQUE (record_id, tag_id)"
+          "description": "Normalized join table with a compound unique index on (record_id, tag_id). Tags are queryable from either side and a rename touches one row. Costs one extra join per tagged read and a separate table to migrate.",
+          "preview": "record_tags\n  record_id -> records.id\n  tag_id    -> tags.id\n  UNIQUE (record_id, tag_id)\n\nRead: JOIN record_tags USING (record_id)\n+ FK integrity, rename a tag in one row\n+ indexed lookups from either side\n- extra join on every tagged read\n- one more table to migrate and back up\n→ next: full Question 2 write-up, then ask"
         },
         {
           "label": "Option B: Denormalized JSONB array",
-          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys.",
-          "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']"
+          "description": "Embedded JSON array on the record row, queried through a GIN index. Writes stay in one row and reads need no join. Renaming or aggregating tags means scanning every row, and there are no foreign keys.",
+          "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']\n\nIndex: GIN (tags jsonb_path_ops)\n+ single-row write, no join on read\n+ no extra table to migrate\n- rename a tag = rewrite every row\n- no FK, a typo becomes a new tag\n- tag counts need a full scan\n→ next: full Question 2 write-up, then ask"
         },
         {
           "label": "Option C: Single-tenant delimited string",
-          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying.",
-          "preview": "records\n  id\n  tags: text -- 'backend,urgent'"
+          "description": "Comma-delimited string in one text column on the record. Zero relations and the fastest start, but matching needs LIKE patterns, a typo silently creates a new tag, and fixing it later is a full data migration.",
+          "preview": "records\n  id\n  tags: text -- 'backend,urgent'\n\nRead: tags LIKE '%urgent%'\n+ trivial to start, no schema work\n- LIKE cannot use a normal index\n- 'urgent' also matches 'non-urgent'\n- a comma inside a tag breaks parsing\n- later migration touches every row\n→ next: full Question 2 write-up, then ask"
         }
       ]
     }
@@ -368,18 +383,18 @@ AskUserQuestion({
       "options": [
         {
           "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
-          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box.",
-          "preview": "[Records] <---> [Sticky Tag Box] <---> [Tags]\nIndependent, clean, searchable from either side."
+          "description": "Like reusable sticky notes on a folder: each note lives in its own box and can be moved or renamed freely. Searchable from either side with clean integrity, but you maintain an extra index-card box (a join table).",
+          "preview": "[Records] <---> [Sticky Tag Box] <---> [Tags]\n\nUnder the hood: record_tags join table, UNIQUE (record_id, tag_id)\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ rename a tag once, every folder follows\n+ searchable from either side\n- one more table to maintain\n- a join on every tagged read\n→ next: full Question 2 write-up, then ask"
         },
         {
           "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag.",
-          "preview": "[Record Folder]\nTags written in ink: [urgent, backend]\nHard to rename tags across 10,000 folders."
+          "description": "Like writing tags in ink directly on the folder. Fast to write and nothing extra to maintain, but finding every folder with one tag means opening them all, and renaming a tag means rewriting each folder.",
+          "preview": "[Record Folder]\n  tags in ink: [urgent, backend]\n\nUnder the hood: jsonb array column on records with a GIN index\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ one write, no joins\n+ no extra table\n- rename = rewrite 10,000 folders\n- no integrity check, typos spawn new tags\n→ next: full Question 2 write-up, then ask"
         },
         {
           "label": "Option C: The Comma List on the Box (Delimited String)",
-          "description": "Writing tags separated by commas. Quickest to start, messy to organize later.",
-          "preview": "[Record Folder]\nString: \"urgent,backend\"\nTypos break searches easily."
+          "description": "Like jotting tags separated by commas on the box lid. Quickest to start and needs no schema work, but a typo breaks the search, similar names collide, and untangling it later means rewriting every box.",
+          "preview": "[Record Folder]\n  lid: \"urgent,backend\"\n\nUnder the hood: delimited text column, matched with LIKE\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ zero setup\n- typos and near-names silently break searches\n- no index can help, every search is a full scan\n- a comma inside a tag corrupts the list\n→ next: full Question 2 write-up, then ask"
         }
       ]
     }
@@ -467,14 +482,17 @@ Wait for the user's text reply before advancing to the next fork.
 
 ## After Each Answer
 
+The order is fixed: **Noted line → full Question N+1 step → tool call.** The acknowledgement is short; the next step is not.
+
 1. **Acknowledge in one line:**
 
    > Noted: **<chosen option>**. <Optionally, one clause on what it cascades into.> On to the next.
 
-2. **Do not repeat the preview** — the user just reviewed it in prose.
-3. If the answer makes a later fork moot — choosing multi-select dissolves a pending question about a tag limit — **say so immediately**: "Choosing X retires fork Y; next is Z."
-4. If the answer carries a clarification that touches decisions already taken, **revisit them out loud**. Never silently. "This clarification affects decisions N and M — reopening both."
-5. If the user picks "Other" and supplies their own answer, **take it without pushback** and re-check the remaining forks against it.
+2. **Then print the full step for Question N+1** — heading, context, argued options, reading, recommendation (Mode A) or the Door Type header, 4-question framing, and recommendation (Mode B) — and only then call the question tool. This applies even when the answer arrived as a tool result in the same turn.
+3. **Do not re-show the fork that was just answered** — no recap of its options or preview. The next fork still gets its full step.
+4. If the answer makes a later fork moot — choosing multi-select dissolves a pending question about a tag limit — **say so immediately**: "Choosing X retires fork Y; next is Z."
+5. If the answer carries a clarification that touches decisions already taken, **revisit them out loud**. Never silently. "This clarification affects decisions N and M — reopening both."
+6. If the user picks "Other" and supplies their own answer, **take it without pushback** and re-check the remaining forks against it.
 
 ## Closing the Series & Jev-Aware Execution Handoff
 
@@ -543,6 +561,7 @@ Once the user approves:
 - Preview blocks are monospaced ASCII. Emoji only where they carry meaning, such as colour swatches in a palette fork.
 - Four to eight lines of pros and cons per option is plenty; do not stretch each one into half a page.
 - Do not apologise for the length of the analysis — it is the value of the mode. Do not pad it either.
+- **Step format agrees with terse output styles.** The user asked for the full step by invoking clarify, and terse styles treat requested detail as what the user needs (Concise's own rule: give full detail on request). So under Concise or a similar style, the full step is the required content, not padding. Only the acknowledgements ("Noted: ...") and the closing stay terse.
 
 ## Anti-Patterns
 
@@ -554,7 +573,8 @@ Once the user approves:
 - **Firing options without codebase discovery** — asking questions the codebase already answers damages trust.
 - **Firing options without analysis** — that is a questionnaire, not a clarification.
 - **Options with no preview in prose** — the visual comparison is the point. If a fork resists having a preview, it may not be a fork worth this mode.
-- **Overloading tool call descriptions with previews** — breaks modal dialogs in GUI harnesses. Keep previews in markdown prose.
+- **Overloading tool call descriptions with previews (Antigravity / GUI harnesses whose dialogs take plain strings)** — breaks modal dialogs. There, keep previews in markdown prose. This does **not** apply to Claude Code: a thin `AskUserQuestion` dialog (one-line descriptions, no pros and cons in `preview`) is the anti-pattern there.
+- **Back-to-back question calls** — two question tool calls with no step prose between them. An answer arriving as a tool result is not a reason to skip the next step: every fork gets its full step immediately before its own call.
 - **Two options that mean the same thing** — merge them.
 - **Hiding the recommendation** — without a `(Recommended)` tag you are not helping, you are polling.
 - **Silent revision of earlier decisions** — always name what changed and why out loud.
@@ -572,6 +592,8 @@ Once the user approves:
 - **Door Type Classification**: One-Way Doors (Tattoos) are expensive or destructive to undo (database storage engine, primary key schema, public API shape, distributed protocol). Two-Way Doors (Stickers) are cheap to change (cache TTL, batch chunk size, retry count, UI label phrasing). Make this distinction explicit in Plain Mode.
 - **Dual Anchors ("Where the Analogy Breaks")**: Every analogy breaks somewhere. Explicitly identifying the break-point prevents false mental models that could cause bad downstream assumptions.
 - **Total Forks vs. Options per Fork Distinction**: Clarify this distinction carefully: **4 options per question is the harness limit for choices**, NOT a limit on the total number of architectural forks in the session! A comprehensive clarification should uncover **all** genuine architectural forks (e.g. 5 to 12+), sweeping across all architectural dimensions, and walk through them one by one.
-- **Previews in Markdown Prose**: Do not rely exclusively on tool-specific preview properties. Markdown prose is the universal preview canvas across all harnesses.
+- **Previews in Markdown Prose**: Prose is always required — it is the universal preview canvas across all harnesses, so never rely on tool-specific preview properties alone. In Claude Code, add a rich dialog on top (full `description` plus `preview` with `+`/`-` lines), because the dialog may be the only thing shown.
+- **Output-style reminders after tool results**: Terse output styles re-inject a brevity reminder after each answer comes back. The preview's `→ next:` line is the counterweight; never drop it.
+- **Fork Count Is Locked**: The total N is fixed when the fork map is announced. If it changes, state `Fork map revised: N → M (<reason>)` before the next question and use M in every counter from then on. A silently drifting counter ("of 5" then "of 3") reads as a bug.
 - **Claude Code `preview` Rendering**: In Claude Code, the `preview` field renders only when `multiSelect: false`. On a multi-select fork the preview blocks silently do not appear in the terminal UI comparison box — keep the comparison in markdown prose.
 - **Option Count & Limits**: Four options per question is the harness limit. "Other" is automatically appended by the UI; never add a manual "Other" option.

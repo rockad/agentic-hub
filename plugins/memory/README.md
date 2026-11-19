@@ -53,3 +53,11 @@ The CLI tool `scripts/memory.sh` manages session state and context retrieval:
 - **Recall Endpoint**: `http://127.0.0.1:8110/mcp` (Streamable HTTP, FastMCP)
 - **Lookup Endpoint**: `http://127.0.0.1:8100/mcp` (Streamable HTTP, FTS5)
 - **CLI Utility**: `scripts/memory.sh`
+
+### Lookup on a new machine
+
+1. `cp .env.example .env` in this directory (gitignored) and set `LOOKUP_HOME`, `LOOKUP_MANIFEST_DIR` and `LOOKUP_MANIFEST_FILE` to your own manifest, kept outside the repo. Use absolute paths.
+2. Generate the source mounts from that manifest into a file outside the repo, and point `COMPOSE_FILE` in `.env` at it (the commands are in `.env.example`).
+3. `docker compose up -d lookup`, then `curl -s localhost:8100/healthz` should report a non-zero `docs` count.
+
+If `archive_stats` says `index not found at /data/index.db` and the container log shows `manifest not found`, step 1 or 2 is missing. Under rootless Docker an SMB source cannot be mounted in the container; mount it on the host instead.

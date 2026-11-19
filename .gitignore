@@ -10,6 +10,9 @@ __pycache__/
 *$py.class
 *.egg-info/
 sources.toml
+# Generated Lookup source mounts list machine-local home paths: never commit them.
+docker-compose.override.yml
+docker-compose.mounts.yml
 .venv/
 env/
 venv/

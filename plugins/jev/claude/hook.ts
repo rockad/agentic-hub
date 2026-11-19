@@ -30,7 +30,10 @@
  *   post-tool-use (matcher "Workflow") drift recorder: re-hashes the script files the guard analysed and logs
  *                                      `workflow_changed` when one differs (workflow-pin.ts); no prompt
  *
- * Active only in Jev mode "on" (config.json, or the file JEV_CONFIG_FILE names). Every path is
+ * Mode (config.json, or the file JEV_CONFIG_FILE names), as defined once in src/core/mode-policy.ts for every harness:
+ * "off" does nothing and writes nothing; "on-demand" makes no decisions and gives no routing advice (no router call, no
+ * directive, no deny, ask, clamp, downgrade or approval) but writes the prompt and agent_call telemetry rows and injects a
+ * one-line informational notice when a quota pool is low; "on" does everything described here. Every path is
  * best-effort: on any error the hook prints nothing and exits 0, so Claude Code
  * carries on as if Jev were not installed.
  */
@@ -46,6 +49,10 @@ import {
   fetchRecallMemory,
   logJevTelemetry,
   resolveModelUsed,
+  modeBehaviour,
+  lowQuotaNotice,
+  quotaPoolLabel,
+  type LowQuotaPool,
   checkEgress,
   egressContextDirs,
   discoverWorkspaceAgents,
@@ -224,6 +231,11 @@ export type HookDeps = {
    */
   learnSessionModel?: SessionModelLearner;
   readQuotaStrategy: () => Promise<string>;
+  /**
+   * The routine quota pool as the notice needs it (label, strategy, minimum remaining). Used only by a mode without routing
+   * advice (on-demand) for its low-quota notice; absent: the strategy from `readQuotaStrategy` stands in, without a percentage.
+   */
+  readQuotaPool?: () => Promise<LowQuotaPool | null>;
   dispatch: (task: string, quotaStrategy: string, criteria?: Record<string, string>) => Promise<Dispatch | null>;
   log: (entry: Record<string, unknown>) => void;
   /** Egress policy for the hook's working directory; absent means no policy. */
@@ -290,12 +302,75 @@ function sessionModelOf(input: HookInput, sessionId: string | null, deps: HookDe
 // The timeout race lives in src/core/with-timeout.ts (the Antigravity downgrade uses it too); re-exported for existing imports.
 export { withTimeout };
 
+/**
+ * UserPromptSubmit of a mode without routing advice (on-demand): no router call, no directive and no turn state. It
+ * writes the prompt telemetry row (session model, quota strategy, no recommendation fields) and, only when the quota
+ * pool is low or exhausted, injects the shared one-line informational notice. A healthy pool injects nothing.
+ */
+async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId: string | null): Promise<HookOutput> {
+  const task = (input.prompt || '').trim();
+  // The same prompts the advised mode would act on: a host-injected turn, a short prompt or a pasted blob is not a task.
+  if (isHostInjectedPrompt(task) || task.length < 8 || isNonTaskPrompt(task)) return null;
+  let pool: LowQuotaPool | null | undefined;
+  try {
+    pool = await deps.readQuotaPool?.();
+  } catch {
+    pool = null;
+  }
+  pool ??= { label: 'Gemini', strategy: await deps.readQuotaStrategy(), minRemaining: null };
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
+  deps.log({
+    hook: 'UserPromptSubmit',
+    session: sessionId,
+    session_id: sessionId,
+    turn: turnId(task),
+    quota: pool.strategy ?? 'unknown',
+    sessionModel,
+    session_model_source: sessionModelSource
+  });
+  const notice = lowQuotaNotice(pool);
+  if (!notice) return null;
+  return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notice } };
+}
+
+/**
+ * PreToolUse of a mode without decisions (on-demand): the call is left exactly as it is (no output) and the `agent_call`
+ * row is written as for a call the advised mode lets through unchanged: decision `pass`, the model the call asked for,
+ * the model it is expected to run on (via the same resolution), the session model. No approvals, elevation state,
+ * clamp, downgrade or recommendation fields.
+ */
+function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: string): void {
+  const call = input.tool_input || {};
+  const sessionId = safeSessionId(input.session_id);
+  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
+  const rankCtx = safely(() => deps.rankContext?.()) ?? null;
+  const resolved: ResolvedAgentModel | null =
+    tool === 'Workflow'
+      ? null
+      : (safely(() => resolveAgentModel(call, input.cwd, deps.env ?? process.env, pinnedLadderModel(call.subagent_type, rankCtx))) ?? null);
+  deps.log({
+    hook: 'PreToolUse',
+    event: 'agent_call',
+    session: sessionId,
+    session_id: sessionId,
+    tool_name: tool,
+    decision: 'pass',
+    subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
+    model: call.model ?? null,
+    requested_model: typeof call.model === 'string' ? call.model : null,
+    sessionModel,
+    session_model_source: sessionModelSource,
+    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {})
+  });
+}
+
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
   const sessionId = safeSessionId(input.session_id);
-  if ((await deps.readMode()) !== 'on') {
+  const behaviour = modeBehaviour(await deps.readMode());
+  if (!behaviour.routingAdvice) {
     // This turn runs without the advisor: nothing stored for an earlier turn may speak for it.
     safely(() => deps.forgetTurn?.(sessionId));
-    return null;
+    return behaviour.telemetry ? onPromptWithoutAdvice(input, deps, sessionId) : null;
   }
   const task = (input.prompt || '').trim();
   // A host-injected turn (a task notification, a local command) is not a new user turn: it keeps the
@@ -390,7 +465,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const tool = input.tool_name;
   if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Workflow') return null;
   const mode = await deps.readMode();
-  if (mode !== 'on') return null;
+  const behaviour = modeBehaviour(mode);
+  if (!behaviour.decisions) {
+    // No decisions (on-demand): the call is left as it is; only the telemetry row is written. Off writes nothing.
+    if (behaviour.telemetry) recordAgentCallWithoutDecision(input, deps, tool);
+    return null;
+  }
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
   const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
@@ -1374,6 +1454,14 @@ const liveDeps: HookDeps = {
       return (await readQuotaView()).strategy;
     } catch {
       return 'unknown';
+    }
+  },
+  readQuotaPool: async () => {
+    try {
+      const view = await readQuotaView();
+      return { label: quotaPoolLabel(view.active, view.active_model), strategy: view.active.strategy, minRemaining: view.active.min_remaining };
+    } catch {
+      return null;
     }
   },
   dispatch: liveDispatch,

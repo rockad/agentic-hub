@@ -1028,3 +1028,66 @@ describe('Antigravity telemetry via JEV_TELEMETRY_FILE (hook process)', () => {
     });
   });
 });
+
+describe('Antigravity hook as a process in on-demand', () => {
+  const telemetryPath = () => path.join(home, 'telemetry-od.jsonl');
+  const readTelemetry = (): Record<string, any>[] =>
+    fs.existsSync(telemetryPath())
+      ? fs.readFileSync(telemetryPath(), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+
+  beforeEach(() => {
+    fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'on-demand' } }));
+  });
+
+  it('passes a pro call on a flash session with empty stdout, writes an agent_call row with decision pass, and stores no approval state', () => {
+    const proc = run(
+      'pre-tool-use',
+      {
+        conversationId: 'conv-od-1',
+        lastUserInput: 'Invoke an expert agent on pro',
+        modelName: 'gemini-3.8-flash-low',
+        toolCall: { id: 'call_od', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } }
+      },
+      { JEV_TELEMETRY_FILE: telemetryPath() }
+    );
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toBe('');
+
+    const rows = readTelemetry();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness: 'antigravity',
+      toolOrHook: 'PreToolUse',
+      event: 'agent_call',
+      sessionId: 'conv-od-1',
+      toolName: 'invoke_subagent',
+      decision: 'pass',
+      requestedModel: 'pro',
+      modelUsed: 'pro',
+      modelUsedSource: 'requested',
+      sessionModel: 'gemini-3.8-flash-low',
+      sessionModelSource: 'hook'
+    });
+    for (const k of ['recommendedTier', 'modelRecommended', 'recommendationPending', 'elevation']) expect(rows[0]).not.toHaveProperty(k);
+
+    const sessions = path.join(home, '.config', 'jev', 'antigravity-sessions');
+    const files = fs.existsSync(sessions) ? fs.readdirSync(sessions) : [];
+    expect(files.filter((f) => f.includes('approvals') || f.includes('attempt'))).toEqual([]);
+  });
+
+  it('passes an unknown Model and an omitted Model the same way', () => {
+    for (const [id, args] of [
+      ['call_a', { TypeName: 'w', Prompt: 'p', Model: 'bogus-tier' }],
+      ['call_b', { TypeName: 'w', Prompt: 'p' }]
+    ] as const) {
+      const proc = run(
+        'pre-tool-use',
+        { conversationId: 'conv-od-2', modelName: 'gemini-3.8-flash-low', toolCall: { id, name: 'invoke_subagent', args } },
+        { JEV_TELEMETRY_FILE: telemetryPath() }
+      );
+      expect(proc.stdout.toString()).toBe('');
+    }
+    expect(readTelemetry().map((r) => r.decision)).toEqual(['pass', 'pass']);
+  });
+});

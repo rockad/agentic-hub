@@ -178,13 +178,15 @@ describe('what passes', () => {
     expect(await onPreToolUse(wf({ script: OPUS }, r), r.d)).toBeNull();
   });
 
-  it('mode off and on-demand leave a Workflow alone, whatever it holds', async () => {
+  it('mode off and on-demand leave a Workflow alone (on-demand only records a pass row), whatever it holds', async () => {
     setup();
     for (const mode of ['off', 'on-demand']) {
       r.mode.value = mode;
       expect(await onPreToolUse(wf({ script: OPUS }, r), r.d)).toBeNull();
     }
-    expect(r.logs).toEqual([]);
+    // Off writes nothing; on-demand leaves the Workflow alone (no output) and only records the pass row.
+    expect(r.logs).toHaveLength(1);
+    expect(r.logs[0]).toMatchObject({ event: 'agent_call', tool_name: 'Workflow', decision: 'pass' });
   });
 
   it('an unknown session model leaves the call alone', async () => {

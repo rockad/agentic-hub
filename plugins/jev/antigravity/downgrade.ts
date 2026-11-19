@@ -16,6 +16,7 @@ import { isOrchestratorModel, modelTierRank } from '../src/core/governance.js';
 import { parseDowngradeMode } from '../src/core/downgrade-config.js';
 import { downgradeMode, neededTier, parseTierRating, resolveMinProbability, SESSION_OFF_LABEL, type TierRating } from '../src/core/downgrade-state.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { callJev } from '../src/core/client.js';
 import { DOWNGRADE_ALIAS, DOWNGRADE_MARKER_SIG_CHARS, type DowngradeChoice, type DowngradeStore } from './approvals.js';
@@ -173,7 +174,7 @@ export async function liveRateTask(task: string, signal?: AbortSignal): Promise<
 export type DowngradeDeps = {
   /** The per-conversation downgrade store. Absent: no downgrade evaluation at all. */
   store?: DowngradeStore;
-  /** The Jev mode. The downgrade runs only in `on` (as on Claude Code); `on-demand` and `off` leave the call alone. */
+  /** The Jev mode. The downgrade makes a decision, so it runs only in a mode with decisions (`on`, as on Claude Code); `on-demand` and `off` leave the call alone. */
   jevMode?: JevMode;
   /** The session model the call would inherit (the one the ceiling uses). */
   sessionModel?: string | null;
@@ -260,7 +261,7 @@ export async function applyAntigravityDowngrade(
     return unchanged();
   };
   try {
-    if ((deps.jevMode ?? 'on') !== 'on') return skip('jev-mode');
+    if (!modeBehaviour(deps.jevMode ?? 'on').decisions) return skip('jev-mode');
     // An omitted Model changes behaviour for every default call: it needs a downgrade mode that was set on purpose.
     const explicitlyConfigured = parseDowngradeMode(env.JEV_DOWNGRADE) !== null || parseDowngradeMode(configured) !== null;
     if (inheritsFlash && !explicitlyConfigured) return skip('not-configured');

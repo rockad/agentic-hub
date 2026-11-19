@@ -17,6 +17,7 @@ import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
@@ -530,7 +531,7 @@ async function main() {
       ...downgradeLog
     });
 
-    if (input.toolCall?.name === 'invoke_subagent') {
+    if (input.toolCall?.name === 'invoke_subagent' && modeBehaviour(mode).telemetry) {
       const cleaned = cleanUserInput(input.lastUserInput || '');
       const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
       const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>
@@ -548,11 +549,13 @@ async function main() {
           callKey,
           recommendationPending
         });
-      let event = build(readAntigravityTurn(sessionsDir, input.conversationId), false);
-      // No recommendation for this turn yet. Only mode `on` runs the pre-flight that makes one, and it may still be running
+      // A mode without routing advice (on-demand) makes no recommendation, so no turn state speaks for this call.
+      const advice = modeBehaviour(mode).routingAdvice;
+      let event = build(advice ? readAntigravityTurn(sessionsDir, input.conversationId) : null, false);
+      // No recommendation for this turn yet. Only a mode with routing advice (`on`) runs the pre-flight that makes one, and it may still be running
       // (hooks of one turn are not serialised): record the call under the turn lock, atomically with a re-check of the
       // state, so the pre-flight can append a late `agent_call_recommendation` row when it finishes. Mark the row either way.
-      if (!event.recommendedTier && mode === 'on') {
+      if (!event.recommendedTier && advice) {
         const pendingEvent = build(null, true);
         const claim = turn
           ? claimTurnRecommendation(sessionsDir, input.conversationId, turn, pendingCallFromEvent(pendingEvent, callKey))

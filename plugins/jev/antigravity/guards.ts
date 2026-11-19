@@ -22,6 +22,7 @@ import {
 } from '../src/shared.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 
 /** How long the write guard waits for its lock before failing open. */
 const WRITE_GUARD_LOCK_WAIT_MS = 500;
@@ -1136,7 +1137,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
 }> {
   // 1. Mode resolution: readJevMode('antigravity') only
   const mode = await readJevMode('antigravity');
-  if (mode !== 'on') {
+  if (!modeBehaviour(mode).decisions) {
     return { decision: 'allow' };
   }
 

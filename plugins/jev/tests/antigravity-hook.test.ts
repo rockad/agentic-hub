@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { QuotaView } from '../src/core/governance.ts';
 import {
   evaluateAntigravitySubagentCall,
   parseElevationAnswer,
@@ -1851,16 +1852,20 @@ describe('Antigravity elevation never asks in choice and clamp modes (auto-appro
   });
 });
 
-describe('Antigravity on-demand elevation under auto-approve', () => {
+describe('Antigravity on-demand makes no decisions', () => {
   let testDir = '';
   let savedHome: string | undefined;
   let approvals: ApprovalStore;
 
-  const proCall = (overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
+  const call = (model: string | undefined, overrides: Partial<AntigravityHookInput> = {}): AntigravityHookInput => ({
     conversationId: 'c-ondemand',
-    lastUserInput: 'run subagent on pro',
+    lastUserInput: 'run a subagent',
     modelName: 'gemini-3.8-flash-low',
-    toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'expert-worker', Prompt: 'solve it', Model: 'pro' } },
+    toolCall: {
+      id: 't1',
+      name: 'invoke_subagent',
+      args: { TypeName: 'expert-worker', Prompt: 'solve it', ...(model === undefined ? {} : { Model: model }) }
+    },
     ...overrides
   });
 
@@ -1878,6 +1883,19 @@ describe('Antigravity on-demand elevation under auto-approve', () => {
     return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
   };
 
+  const lowView = (strategy: 'conserve' | 'free_only'): QuotaView => ({
+    source: 'test',
+    schema: 2,
+    stale: false,
+    updated_at: 1,
+    buckets: {},
+    gemini: { five_hour: 0.05, weekly: 0.05, min_remaining: 0.05 },
+    strategy,
+    thresholds: { normal_min: 0.3, conserve_min: 0.1, five_hour_normal_min: 0.3, five_hour_conserve_min: 0.1, weekly_normal_min: 0.2, weekly_conserve_min: 0.1 },
+    geminiRemainingFraction: 0.05,
+    active: { pool: 'gemini', five_hour: 0.05, weekly: 0.05, min_remaining: 0.05, strategy }
+  });
+
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ondemand-test-'));
     savedHome = process.env.HOME;
@@ -1892,131 +1910,82 @@ describe('Antigravity on-demand elevation under auto-approve', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  const run = (input: AntigravityHookInput, now = 1000, extra: Record<string, unknown> = {}) =>
+  const run = (input: AntigravityHookInput, extra: Record<string, unknown> = {}) =>
     evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: 'gemini-3.8-flash-low',
       mode: 'on-demand',
-      now: () => now,
+      now: () => 1000,
       ...extra
     });
 
-  describe('auto-approve detected (TURBO preset)', () => {
-    it('denies attempts 1..3 with the warning and never asks', () => {
-      turbo();
-      const decisions = [1, 2, 3, 4].map((n) => run(proCall(), 1000 + n * 50));
-      for (const d of decisions) {
-        expect(d.decision).toBe('deny');
-        expect(d.elevation).toBe('denied');
-        expect(d.autoApproveWarning).toBe(true);
-        expect(d.reason).toContain('[jev-elevate:pro]');
-      }
-      expect(decisions.map((d) => d.attemptCount)).toEqual([1, 2, 3, 4]);
-      expect(decisions[0].reason).not.toContain('stop retrying');
-      expect(decisions[1].reason).not.toContain('stop retrying');
-      expect(decisions[2].reason).toContain('stop retrying');
-      expect(decisions[2].reason).toContain('Model: "flash"');
+  for (const withTurbo of [false, true]) {
+    describe(withTurbo ? 'with a TURBO config' : 'without a TURBO config', () => {
+      beforeEach(() => {
+        if (withTurbo) turbo();
+      });
+
+      it('passes pro above the ceiling, a repeated attempt included, with no approvals or attempts', () => {
+        for (const n of [1, 2, 3, 4]) {
+          expect(run(call('pro'), { now: () => 1000 + n })).toEqual({ decision: 'pass' });
+        }
+        expect(sessionFiles()).toEqual([]);
+      });
+
+      it('passes an unknown Model and openrouter_free', () => {
+        expect(run(call('bogus-tier'))).toEqual({ decision: 'pass' });
+        expect(run(call('openrouter/free'))).toEqual({ decision: 'pass' });
+        expect(run(call('openrouter_free'))).toEqual({ decision: 'pass' });
+      });
+
+      it('passes an omitted or inherit Model under Orchestrator', () => {
+        for (const model of [undefined, 'inherit']) {
+          const input = call(model, { modelName: 'Orchestrator (Argon)' });
+          expect(run(input, { sessionModelOverride: 'Orchestrator (Argon)' })).toEqual({ decision: 'pass' });
+        }
+      });
+
+      it('passes whatever a conserve or free_only pool says, above or within the ceiling', () => {
+        for (const strategy of ['conserve', 'free_only'] as const) {
+          for (const model of ['pro', 'flash', 'flash_lite', undefined]) {
+            expect(run(call(model), { quotaView: lowView(strategy) })).toEqual({ decision: 'pass' });
+          }
+        }
+      });
+
+      it('does not honour or consume a stored approval, and ignores JEV_ELEVATION modes', () => {
+        approvals.deny('c-ondemand', 'pro', 900); // an approval is only accepted after a denial prescribed the question
+        expect(approvals.record('c-ondemand', { model: 'pro', scope: 'once', created_at: 1000 })).toBe(true);
+        const before = sessionFiles();
+        for (const elevationMode of ['dialog', 'clamp', 'choice'] as const) {
+          const d = run(call('pro', { lastUserInput: 'use gemini pro for this' }), { elevationMode });
+          expect(d).toEqual({ decision: 'pass' });
+        }
+        expect(sessionFiles()).toEqual(before);
+        // The approval is still there for mode on.
+        expect(approvals.claim('c-ondemand', 'pro', 1000)).not.toBeNull();
+      });
     });
+  }
 
-    it('also detects toolPermission always-proceed', () => {
-      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'always-proceed' }));
-      const d = run(proCall());
-      expect(d.decision).toBe('deny');
-      expect(d.autoApproveWarning).toBe(true);
-    });
-
-    it('ignores JEV_ELEVATION modes: neither dialog nor clamp can return ask or allow here', () => {
-      turbo();
-      for (const elevationMode of ['dialog', 'clamp'] as const) {
-        const d = run(proCall(), 1000, { elevationMode });
-        expect(d.decision).toBe('deny');
-        expect(d.overwrite).toBeUndefined();
-        expect(d.autoApproveWarning).toBe(true);
-      }
-    });
-
-    it('honours a late "Yes, once" answer once and does not replay it', () => {
-      turbo();
-      const transcriptFile = path.join(testDir, 'transcript.jsonl');
-      const nowMs = 1_000_000;
-      fs.writeFileSync(
-        transcriptFile,
-        '{"step_index":1,"created_at":"2026-11-16T12:00:00.000Z","type":"PLANNER_RESPONSE","tool_calls":[{"id":"call_q","name":"ask_question","args":{"questions":["[jev-elevate:pro] Allow expert?"]}}]}\n' +
-          '{"step_index":2,"type":"GENERIC","toolCallId":"call_q","content":"A1: Yes, once"}\n'
-      );
-      const empty = path.join(testDir, 'empty.jsonl');
-      fs.writeFileSync(empty, '');
-      const d1 = run(proCall({ transcriptPath: empty }), nowMs);
-      const d2 = run(proCall({ transcriptPath: empty }), nowMs + 1000);
-      expect(d1.decision).toBe('deny');
-      expect(d2.decision).toBe('deny');
-
-      const d3 = run(proCall({ transcriptPath: transcriptFile }), nowMs + 2000);
-      expect(d3.decision).toBe('allow');
-      expect(d3.elevation).toBe('approved');
-      expect(d3.approvalScope).toBe('once');
-      expect(d3.pullFallback).toBe(true);
-      expect(d3.autoApproveWarning).toBe(true);
-
-      const d4 = run(proCall({ transcriptPath: transcriptFile }), nowMs + 3000);
-      expect(d4.decision).toBe('deny');
-      expect(d4.autoApproveWarning).toBe(true);
-      expect(d4.reason).toContain('stop retrying');
-    });
-
-    it('honours an explicit pro instruction in the prompt, as choice mode does', () => {
-      turbo();
-      const d = run(proCall({ lastUserInput: 'use gemini pro for this' }));
-      expect(d.decision).toBe('allow');
-      expect(d.elevation).toBe('instructed');
-      expect(d.autoApproveWarning).toBe(true);
-    });
-
-    it('leaves a call within the ceiling unchanged', () => {
-      turbo();
-      const call = proCall({ toolCall: { id: 't2', name: 'invoke_subagent', args: { TypeName: 'w', Prompt: 'p', Model: 'flash' } } });
-      expect(run(call).decision).toBe('pass');
-    });
+  it('the same calls are still decided in mode on', () => {
+    expect(run(call('pro'), { mode: 'on' }).decision).toBe('deny');
+    expect(run(call('bogus-tier'), { mode: 'on' }).decision).toBe('deny');
+    expect(run(call(undefined, { modelName: 'Orchestrator (Argon)' }), { mode: 'on', sessionModelOverride: 'Orchestrator (Argon)' }).decision).toBe('deny');
+    expect(run(call('flash'), { mode: 'on', quotaView: lowView('free_only') }).decision).toBe('deny');
   });
 
-  describe('no auto-approve', () => {
-    it('asks as before with no approval-store writes and no attempt counted', () => {
-      for (const n of [1, 2, 3, 4]) {
-        const d = run(proCall(), 1000 + n);
-        expect(d.decision).toBe('ask');
-        expect(d.elevation).toBe('asked');
-        expect(d.autoApproveWarning).toBeUndefined();
-        expect(d.attemptCount).toBeUndefined();
-      }
-      expect(sessionFiles()).toEqual([]);
+  it('detectAntigravityAutoApprove is untouched: it feeds only the dialog-mode warning', () => {
+    turbo();
+    expect(detectAntigravityAutoApprove(path.join(testDir, 'home'))).toBe(true);
+    const d = evaluateAntigravitySubagentCall(call('pro'), {
+      approvals,
+      sessionModelOverride: 'gemini-3.8-flash-low',
+      mode: 'on',
+      elevationMode: 'dialog',
+      now: () => 1000
     });
-
-    it('asks for a non-turbo preset', () => {
-      writeHomeJson('.gemini/config/config.json', JSON.stringify({ permissionPreset: 'AGENT_PERMISSION_PRESET_DEFAULT' }));
-      writeHomeJson('.gemini/antigravity-cli/settings.json', JSON.stringify({ toolPermission: 'ask' }));
-      const d = run(proCall());
-      expect(d.decision).toBe('ask');
-      expect(d.autoApproveWarning).toBeUndefined();
-    });
-
-    it('does not honour a prompt override or a stored approval: the dialog decides', () => {
-      approvals.record('c-ondemand', { model: 'pro', scope: 'session', created_at: 1000 });
-      const d = run(proCall({ lastUserInput: 'use gemini pro for this' }));
-      expect(d.decision).toBe('ask');
-      expect(d.elevation).toBe('asked');
-    });
-  });
-
-  describe('malformed config', () => {
-    it('asks and does not throw for malformed or non-object JSON', () => {
-      for (const body of ['{not json', '', '[]', 'null', '"AGENT_PERMISSION_PRESET_TURBO"']) {
-        writeHomeJson('.gemini/config/config.json', body);
-        writeHomeJson('.gemini/antigravity-cli/settings.json', body);
-        const d = run(proCall());
-        expect(d.decision).toBe('ask');
-        expect(d.autoApproveWarning).toBeUndefined();
-      }
-      expect(sessionFiles()).toEqual([]);
-    });
+    expect(d.decision).toBe('ask');
+    expect(d.autoApproveWarning).toBe(true);
   });
 });

@@ -133,7 +133,7 @@ describe('candidates and ordering with the v2.3.16 checks', () => {
     expect(r.decision.elevation).toBe('denied');
     expect(routerCalls).toBe(0);
     const od = await decide(call({ Model: 'pro' }), auto, { mode: 'on-demand' });
-    expect(od.decision.decision).toBe('ask');
+    expect(od.decision.decision).toBe('pass'); // on-demand makes no decisions
     expect(routerCalls).toBe(0);
   });
 

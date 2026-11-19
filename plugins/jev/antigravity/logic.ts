@@ -13,6 +13,7 @@ import {
   type QuotaView
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
@@ -678,7 +679,7 @@ type ChoiceElevationContext = {
 };
 
 /**
- * The choice flow's tail, shared by choice mode and by on-demand mode under Antigravity auto-approve: count the
+ * The choice flow's tail, used by choice mode: count the
  * attempt, pull a late answer from the transcript on every attempt, otherwise deny. It never returns `ask`: under
  * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
  * unapproved.
@@ -790,6 +791,13 @@ export function evaluateAntigravitySubagentCall(
   const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
   const mode: JevMode = deps.mode ?? 'on';
 
+  // A mode without decisions (on-demand; the hook never calls this for off) makes none: every invoke_subagent passes
+  // before any check (no deny, no ask, no overwrite, no approvals read or recorded, no attempt counted). The hook still
+  // writes the agent_call telemetry row for it.
+  if (!modeBehaviour(mode).decisions) {
+    return { decision: 'pass' };
+  }
+
   const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
 
   // 1. Reject openrouter_free and invalid model values
@@ -818,13 +826,6 @@ export function evaluateAntigravitySubagentCall(
 
   if (!isExplicit || !requestedModel) {
     if (isOrchestrator) {
-      if (mode === 'on-demand') {
-        // On-demand never denies after step 1: the native dialog lets the user decide.
-        return {
-          decision: 'ask',
-          reason: `[jev] Under Orchestrator, Model was omitted or inherit on invoke_subagent: the subagent would run on the session default (tier '${rankToTierName(modelTierRank(sessionModel ?? ''))}'), against a subagent ceiling of '${rankToTierName(subagentCeilingRank(sessionModel))}'. Approve to proceed, or cancel and re-invoke with Model "flash" or "flash_lite".`
-        };
-      }
       return {
         decision: 'deny',
         reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
@@ -852,29 +853,17 @@ export function evaluateAntigravitySubagentCall(
 
     const pct = typeof pool.min_remaining === 'number' ? ` (${Math.round(pool.min_remaining * 100)}% remaining)` : '';
 
-    if (mode === 'on') {
-      if (pool.strategy === 'free_only') {
-        return {
-          decision: 'deny',
-          reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
-        };
-      }
-      if (pool.strategy === 'conserve') {
-        if (modelTierRank(effectiveTier) > 1) {
-          return {
-            decision: 'deny',
-            reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
-          };
-        }
-      }
-    } else if (mode === 'on-demand') {
-      if ((pool.strategy === 'free_only' || pool.strategy === 'conserve') && modelTierRank(effectiveTier) > 1) {
-        return {
-          decision: 'ask',
-          reason: `[jev] ${poolLabel} quota is in ${pool.strategy}${pct}: subagent requested '${effectiveTier}'. Approve to proceed, or cancel to conserve quota.`
-        };
-      }
-      // Healthy pool: fall through to the ceiling check below (on-demand asks above the ceiling).
+    if (pool.strategy === 'free_only') {
+      return {
+        decision: 'deny',
+        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
+      };
+    }
+    if (pool.strategy === 'conserve' && modelTierRank(effectiveTier) > 1) {
+      return {
+        decision: 'deny',
+        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
+      };
     }
   }
 
@@ -896,23 +885,9 @@ export function evaluateAntigravitySubagentCall(
   const args = input.toolCall?.args || {};
   const typeName = String(args.TypeName || args.Role || 'subagent');
 
-  // On-demand: the native dialog decides. No approvals are read or recorded and no attempt is counted.
-  // Exception: under Antigravity auto-approve (permission preset TURBO, tool permission always-proceed) that dialog is
-  // approved without being shown, so an `ask` would run the stronger model unapproved. Then on-demand takes the choice
-  // flow below (override, approvals, pull fallback, deny), whatever JEV_ELEVATION says, and marks its decisions.
-  const onDemandAutoApprove = mode === 'on-demand' && detectAntigravityAutoApprove();
-  if (mode === 'on-demand' && !onDemandAutoApprove) {
-    return {
-      decision: 'ask',
-      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' (tier '${rankToTierName(requestedRank)}'), above the session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
-      elevation: 'asked'
-    };
-  }
-  const autoApproveMark = onDemandAutoApprove ? { autoApproveWarning: true as const } : {};
-
   // Check explicit override in user prompt
   if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
-    return { decision: 'allow', elevation: 'instructed', ...autoApproveMark };
+    return { decision: 'allow', elevation: 'instructed' };
   }
 
   // Check covering approval
@@ -921,14 +896,11 @@ export function evaluateAntigravitySubagentCall(
     return {
       decision: 'allow',
       elevation: 'approved',
-      approvalScope: approval.scope,
-      ...autoApproveMark
+      approvalScope: approval.scope
     };
   }
 
-  const elevationMode = onDemandAutoApprove
-    ? 'choice'
-    : deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
+  const elevationMode = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
 
   if (elevationMode === 'dialog') {
     // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.
@@ -957,8 +929,8 @@ export function evaluateAntigravitySubagentCall(
     };
   }
 
-  // Choice mode (default), and on-demand under auto-approve.
-  const choice = resolveChoiceElevation({
+  // Choice mode (default).
+  return resolveChoiceElevation({
     approvalStore,
     sessionId,
     requestedModel,
@@ -970,7 +942,6 @@ export function evaluateAntigravitySubagentCall(
     promptHash,
     signature
   });
-  return onDemandAutoApprove ? { ...choice, ...autoApproveMark } : choice;
 }
 
 const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -1590,8 +1561,9 @@ export type AntigravityTelemetryInput =
       inputModelName?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
       lastUserInput?: string | null;
-      recommendedSubagent: string;
-      recommendedTier: string;
+      /** Absent on the row of a mode without routing advice (on-demand): no recommendation fields are written. */
+      recommendedSubagent?: string;
+      recommendedTier?: string;
       effort?: string;
       taskLen?: number;
       taskHash?: string;
@@ -1651,9 +1623,8 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       ...(params.taskHash ? { taskHash: params.taskHash } : {}),
       sessionModel,
       sessionModelSource,
-      recommendedSubagent: params.recommendedSubagent,
-      recommendedTier: params.recommendedTier,
-      modelRecommended: params.recommendedTier,
+      ...(params.recommendedSubagent ? { recommendedSubagent: params.recommendedSubagent } : {}),
+      ...(params.recommendedTier ? { recommendedTier: params.recommendedTier, modelRecommended: params.recommendedTier } : {}),
       ...(params.effort ? { effort: params.effort } : {}),
       ...(quotaStrategy ? { quotaStrategy } : {})
     };

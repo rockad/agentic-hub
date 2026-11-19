@@ -27,6 +27,7 @@ import {
   type QuotaView
 } from '../src/shared.js';
 import { withTimeout } from '../src/core/with-timeout.js';
+import { lowQuotaNotice, modeBehaviour, quotaPoolLabel } from '../src/core/mode-policy.js';
 import {
   cleanUserInput,
   turnId,
@@ -224,13 +225,18 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
       const poolStrategy = routinePool.strategy;
       const remaining = routinePool.min_remaining ?? 1;
       const pct = (remaining * 100).toFixed(1);
-      const poolLabel = routinePool.pool === '3p' ? `3p (${quota.active_model ?? 'non-Gemini'})` : 'Gemini';
+      const poolLabel = quotaPoolLabel(routinePool, quota.active_model);
+      const behaviour = modeBehaviour(mode);
 
       // Directives
       const parts: string[] = [];
 
-      // Quota directive
-      if (poolStrategy === 'free_only') {
+      // Quota text. Mode `on`: the full directives (advice). A mode without routing advice (on-demand): the one-line
+      // informational notice, only for a low or exhausted pool (the shared text, the same in every harness).
+      if (behaviour.quotaNotice === 'low-only') {
+        const notice = lowQuotaNotice({ label: poolLabel, strategy: poolStrategy, minRemaining: routinePool.min_remaining });
+        if (notice) parts.push(notice);
+      } else if (poolStrategy === 'free_only') {
         parts.push(`[QUOTA EMERGENCY: ${poolLabel} pool strategy is free_only (${pct}% remaining). Subagents are locked out. ALL generation, drafting, and boilerplate MUST be offloaded to free models via jev_execute_free or jev_agent_free.]`);
       } else if (poolStrategy === 'conserve') {
         const fivePct = routinePool.five_hour !== null && routinePool.five_hour !== undefined ? `${Math.round(routinePool.five_hour * 100)}%` : 'n/a';
@@ -254,8 +260,8 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
         }
       }
 
-      // Mode directive
-      if (mode === 'on') {
+      // Routing advice (mode `on` only): the router call, the pre-flight line and the directive.
+      if (behaviour.routingAdvice) {
         const sessionHint = safeId ? `Session ID: ${safeId} (pass as conversationId to jev_dispatch, jev_batch_dispatch, jev_quota, jev_select_model).` : '';
 
         let modeDirective = '';
@@ -386,6 +392,30 @@ ${sessionHint}
         }
 
         parts.push(modeDirective);
+      } else if (behaviour.telemetry) {
+        // No routing advice (on-demand): no router call, no turn state, no directive. The prompt telemetry row is still
+        // written, on the same prompts the dispatch would run for, with the session model and the quota strategy only
+        // (no recommendation fields).
+        const isPlanReview = /\[plan review\]/i.test(cleanTask);
+        const isJevCmd = cleanTask.startsWith('/jev');
+        const isFirstInvocation = invocationNum === 1 || invocationNum === undefined;
+        if (cleanTask.length >= 8 && !isPlanReview && !isJevCmd && isFirstInvocation) {
+          const { taskLen, taskHash } = taskFingerprint(cleanTask);
+          pendingTelemetry.push(
+            logJevTelemetry(
+              buildAntigravityTelemetryEvent({
+                kind: 'pre_invocation',
+                conversationId: safeId ?? null,
+                inputModelName: modelName,
+                quotaView: quota,
+                lastUserInput: cleanTask,
+                taskLen,
+                taskHash,
+                quotaStrategy: poolStrategy
+              })
+            )
+          );
+        }
       }
 
       // Check cross-harness memory

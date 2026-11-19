@@ -341,8 +341,16 @@ describe('Item 4: invoke_subagent guard order', () => {
     expect(resLiteFreeOnly.reason).toContain('critically low');
   });
 
-  it('Step 3: mode on-demand asks when quota is low, and passes when healthy', () => {
+  it('mode on-demand passes every invoke_subagent: quota, ceiling, Orchestrator and invalid models included', () => {
     const nowMs = 1_000_000;
+    let touched = 0;
+    const spy: ApprovalStore = {
+      record: () => { touched++; return true; },
+      deny: () => { touched++; },
+      claim: () => { touched++; return null; },
+      attempt: () => { touched++; return 1; },
+      wasDeniedRecently: () => { touched++; return null; }
+    };
     const conserveQuotaView: QuotaView = {
       source: 'test',
       schema: 2,
@@ -355,117 +363,27 @@ describe('Item 4: invoke_subagent guard order', () => {
       geminiRemainingFraction: 0.15,
       active: { pool: 'gemini', five_hour: 0.15, weekly: 0.15, min_remaining: 0.15, strategy: 'conserve' }
     };
-
-    const inputPro: AntigravityHookInput = {
+    const input = (model: string | undefined, modelName = 'gemini-3.8-flash-low'): AntigravityHookInput => ({
       conversationId: 'c-ondemand',
-      modelName: 'gemini-3.8-flash-low',
-      toolCall: {
-        id: 'call_p',
-        name: 'invoke_subagent',
-        args: { TypeName: 'expert', Model: 'pro' }
-      }
-    };
-
-    // Low quota in on-demand: returns ask
-    const resAsk = evaluateAntigravitySubagentCall(inputPro, {
-      approvals,
-      quotaView: conserveQuotaView,
-      mode: 'on-demand',
-      now: () => nowMs
+      modelName,
+      toolCall: { id: 'c', name: 'invoke_subagent', args: { TypeName: 'w', ...(model === undefined ? {} : { Model: model }) } }
     });
-    expect(resAsk.decision).toBe('ask');
-    expect(resAsk.reason).toContain('conserve');
-    expect(resAsk.reason).toContain('pro');
-
-    // Healthy quota in on-demand: pro is still above the flash ceiling, so the native dialog asks (reason names the
-    // requested tier and the ceiling, not the quota). It is never the elevation choice question.
-    const resCeiling = evaluateAntigravitySubagentCall(inputPro, {
-      approvals,
-      quotaView: healthyView(nowMs),
-      mode: 'on-demand',
-      now: () => nowMs
-    });
-    expect(resCeiling.decision).toBe('ask');
-    expect(resCeiling.reason).toContain("ceiling 'flash'");
-    expect(resCeiling.reason).not.toContain('jev-elevate');
-
-    // Healthy quota and a model within the ceiling passes.
-    const resPass = evaluateAntigravitySubagentCall(
-      { ...inputPro, toolCall: { id: 'call_f', name: 'invoke_subagent', args: { TypeName: 'worker', Model: 'flash' } } },
-      { approvals, quotaView: healthyView(nowMs), mode: 'on-demand', now: () => nowMs }
-    );
-    expect(resPass.decision).toBe('pass');
-  });
-
-  it('on-demand above the ceiling asks (native dialog), records no approvals and counts no attempts', () => {
-    const nowMs = 1_000_000;
-    let recorded = 0;
-    let attempts = 0;
-    let denied = 0;
-    const spy: ApprovalStore = {
-      record: () => { recorded++; return true; },
-      deny: () => { denied++; },
-      claim: () => null,
-      attempt: () => { attempts++; return 1; },
-      wasDeniedRecently: () => null
-    };
-    const input: AntigravityHookInput = {
-      conversationId: 'c-ondemand-ceiling',
-      modelName: 'gemini-3.8-flash-low',
-      toolCall: { id: 'call_p', name: 'invoke_subagent', args: { TypeName: 'expert', Model: 'pro' } }
-    };
-    for (const quotaView of [undefined, healthyView(nowMs)]) {
-      const res = evaluateAntigravitySubagentCall(input, {
-        approvals: spy,
-        quotaView,
-        mode: 'on-demand',
-        now: () => nowMs
-      });
-      expect(res.decision).toBe('ask');
-      expect(res.reason).toContain("'pro'");
-      expect(res.reason).toContain("ceiling 'flash'");
+    // Mode on decides the same calls (a deny each), on-demand passes them all and never touches the approval store.
+    const cases: Array<[string, AntigravityHookInput, QuotaView | undefined]> = [
+      ['pro above the ceiling, low quota', input('pro'), conserveQuotaView],
+      ['pro above the ceiling, healthy quota', input('pro'), healthyView(nowMs)],
+      ['openrouter/free', input('openrouter/free'), undefined],
+      ['an invalid model', input('bogus-tier'), undefined],
+      ['Orchestrator, Model omitted', input(undefined, 'Orchestrator (Argon)'), undefined],
+      ['Orchestrator, Model inherit', input('inherit', 'Orchestrator (Argon)'), undefined]
+    ];
+    for (const [label, call, quotaView] of cases) {
+      const onDemand = evaluateAntigravitySubagentCall(call, { approvals: spy, quotaView, mode: 'on-demand', now: () => nowMs });
+      expect(onDemand, label).toEqual({ decision: 'pass' });
+      const on = evaluateAntigravitySubagentCall(call, { approvals, quotaView, mode: 'on', now: () => nowMs });
+      expect(on.decision, label).toBe('deny');
     }
-    expect(recorded).toBe(0);
-    expect(attempts).toBe(0);
-    expect(denied).toBe(0);
-
-    // At or below the ceiling still passes.
-    const atCeiling = evaluateAntigravitySubagentCall(
-      { ...input, toolCall: { id: 'c2', name: 'invoke_subagent', args: { TypeName: 'w', Model: 'flash' } } },
-      { approvals: spy, mode: 'on-demand', now: () => nowMs }
-    );
-    expect(atCeiling.decision).toBe('pass');
-  });
-
-  it('on-demand under Orchestrator with Model omitted or inherit asks (never denies); mode on still denies', () => {
-    const nowMs = 1_000_000;
-    const base = {
-      conversationId: 'c-ondemand-orch',
-      modelName: 'Orchestrator (Argon)'
-    };
-    for (const args of [{ TypeName: 'worker' }, { TypeName: 'worker', Model: 'inherit' }]) {
-      const input: AntigravityHookInput = {
-        ...base,
-        toolCall: { id: 'call_o', name: 'invoke_subagent', args }
-      };
-      const onDemand = evaluateAntigravitySubagentCall(input, { mode: 'on-demand', now: () => nowMs });
-      expect(onDemand.decision).toBe('ask');
-      expect(onDemand.reason).toContain('Orchestrator');
-      expect(onDemand.reason).toContain("tier 'pro'");
-      expect(onDemand.reason).toContain("ceiling of 'flash'");
-      const on =evaluateAntigravitySubagentCall(input, { mode: 'on', now: () => nowMs });
-      expect(on.decision).toBe('deny');
-    }
-  });
-
-  it('on-demand never denies except for an invalid or openrouter_free model', () => {
-    const input = (model: string): AntigravityHookInput => ({
-      conversationId: 'c-ondemand-deny',
-      modelName: 'gemini-3.8-flash-low',
-      toolCall: { id: 'c', name: 'invoke_subagent', args: { TypeName: 'w', Model: model } }
-    });
-    expect(evaluateAntigravitySubagentCall(input('openrouter/free'), { mode: 'on-demand' }).decision).toBe('deny');
-    expect(evaluateAntigravitySubagentCall(input('bogus-tier'), { mode: 'on-demand' }).decision).toBe('deny');
+    expect(touched).toBe(0);
   });
 
   it('Step 4: buildElevationReason adapts for Orchestrator', () => {

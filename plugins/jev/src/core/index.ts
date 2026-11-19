@@ -17,3 +17,4 @@ export * from './dir-lock.js';
 export * from './downgrade-config.js';
 export * from './private-fs.js';
 export * from './claude-session.js';
+export * from './mode-policy.js';

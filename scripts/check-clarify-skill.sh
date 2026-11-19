@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-clarify-skill.sh - guard for the clarify skill.
 #
-# 1. SKILL.md stays under a line cap, so the core skill cannot quietly grow back.
+# 1. SKILL.md stays under a line cap and a word cap, so the core skill cannot quietly grow back.
 # 2. The strings that the Stop hook, the transcript checker and the references
 #    depend on are still present in SKILL.md or its references.
 #
@@ -14,6 +14,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 dir="$root/skills/clarify"
 core="$dir/SKILL.md"
 cap="${CLARIFY_LINE_CAP:-170}"
+word_cap="${CLARIFY_WORD_CAP:-2300}"
 fail=0
 
 lines="$(wc -l < "$core")"
@@ -38,12 +39,30 @@ anchors=(
   'Option naming rule|core'
   'Counter prefix rule|core'
   'full step is the required content|core'
+  "Concise's own rule|core"
+  'Turn-1 single-reply invariant|core'
+  'not a reason to skip the next step|core'
+  'even when the answer arrived as a tool result|core'
+  '"multiSelect": false|core'
+  'never under 120|core'
+  '→ next: full Question N+1 write-up, then ask|core'
+  'Option X:|core'
+  'plain english|core'
+  '/clarify eli5|core'
+  'clarify-stop-check.sh|any'
   'ask_question|core'
   'AskUserQuestion|core'
   '`question`|core'
   'Decision Table|any'
   'Gated Execution|any'
 )
+
+# A line cap alone can be gamed by longer lines, so words are capped too.
+words="$(wc -w < "$core")"
+if [ "$words" -gt "$word_cap" ]; then
+  echo "FAIL: skills/clarify/SKILL.md has $words words, cap is $word_cap" >&2
+  fail=1
+fi
 
 for entry in "${anchors[@]}"; do
   anchor="${entry%|*}"
@@ -63,5 +82,5 @@ for rule in 'Per-fork invariant' 'Same-Reply Invariant' 'option naming rule' 'co
   fi
 done
 
-if [ "$fail" -eq 0 ]; then echo "OK: clarify core $lines lines (cap $cap), anchors present"; fi
+if [ "$fail" -eq 0 ]; then echo "OK: clarify core $lines lines (cap $cap), $words words (cap $word_cap), anchors present"; fi
 exit "$fail"

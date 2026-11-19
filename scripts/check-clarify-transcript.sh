@@ -233,7 +233,7 @@ def decision_table($lines):
 def closing_sections($lines):
   any($lines[]; startswith("#") and contains("Gated Execution"));
 
-# `Fork map revised: N → M` sets the new total M (SKILL.md, Fork Count Is Locked).
+# `Fork map revised: N → M` sets the new total M (SKILL.md, the fork-count-is-locked rule).
 def revised_total($lines):
   [ $lines[] | select(contains("Fork map revised"))
     | [capture("Fork map revised:\\s*[0-9]+\\s*(?:→|->)\\s*(?<m>[0-9]+)")][0]

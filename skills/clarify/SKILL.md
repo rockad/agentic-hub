@@ -9,10 +9,11 @@ description: >-
 when_to_use: >-
   The user is designing something non-trivial (schema, data model, API contract, UX
   flow, architecture, migration) with at least three orthogonal open decisions, or asks
-  to clarify before coding. Triggers: /clarify, /grill-me, /cplain, /celi5,
-  --plain, --eli5, "explain like I'm five", "plain english", "walk me through the
-  options", "interview me", "one at a time", "trade-offs", "design decision",
-  "discuss before coding". Skip for a single isolated choice, when the user said to
+  to clarify before coding. Triggers: /clarify, /grill-me, /cplain, /celi5, cplain, celi5,
+  --plain, --eli5, /clarify eli5, "explain like I'm five", "plain english", "walk me
+  through the options", "interview me", "one at a time", "trade-offs", "design
+  decision", "discuss before coding", "clarify architecture before coding",
+  "architecture without code". Skip for a single isolated choice, when the user said to
   just build it, or while another interactive flow owns the conversation.
 metadata:
   author: doccr
@@ -23,7 +24,7 @@ metadata:
 A working mode for designing something non-trivial with the user when several orthogonal forks are open and each carries its own trade-offs. It makes every decision visible, argued, and reversible while it is still cheap to reverse, before any implementation code is written.
 
 - **Mode A: Standard Architectural (`/clarify`, `/grill-me`)**: senior engineering mechanics, DDL, DTOs, interface contracts, formal pros and cons.
-- **Mode B: Plain English (`/cplain`, `/celi5`, `--plain`, `--eli5`)**: everyday analogies, Door Type reversibility (One-Way Tattoo vs Two-Way Sticker), failure blast radius, and "where the analogy breaks".
+- **Mode B: Plain English (`/cplain`, `/celi5`, `--plain`, `--eli5`, `/clarify eli5`, "explain like I'm five", "plain english")**: everyday analogies, Door Type reversibility (One-Way Tattoo vs Two-Way Sticker), failure blast radius, and "where the analogy breaks".
 
 Do not enter for a single question with a single choice, a trivial fork (`let` vs `const`), urgent implementation the user told you to just build, or while another interactive flow (plan mode, a setup wizard) owns the conversation.
 
@@ -46,13 +47,14 @@ The rules in this file apply on every question; the references hold examples and
 > - Use the Terminal CLI fallback only when no question tool is exposed.
 > - Antigravity also needs the clarify Stop hook (see `references/antigravity.md` and `README.md`).
 
-- **Per-fork invariant.** Fork N gets its complete step in prose immediately before its own question call, for forks 2..N too, including when the previous answer arrived as a tool result in the same turn. Mode A: heading, context, argued options, your reading, recommendation. Mode B: Door Type and Under the Hood header, the 4-question framing, recommendation.
-- **Option naming rule.** Option A is always the recommended option, titled `### Option A. <name> (Recommended)` in prose and `1. (Recommended) Option A: <name>` in the picker; then `Option B: <name>`, `Option C: <name>`, in the same order as the prose. Mode B names read `Option X: <Analogy Name> (<Formal Tech Anchor>)`. Never emit a bare option name, never reorder, never add a manual "Other" (the UI adds it). Four options per question is the harness limit; it is not a limit on the number of forks.
-- **Counter prefix rule.** Harness widgets count only the single-element call array (`1/1`), so prefix the question string: `"[Question N of Total] <text>"` (or `[Fork N of Total]`). In Claude Code and OpenCode also set `"header": "Fork N/Total"`.
-- **Fork count is locked.** The total is fixed when the fork map is announced, and every counter uses it. If it genuinely changes (a fork is retired, split or discovered), say `Fork map revised: N → M (<reason>)` before the next question and use M from then on.
+- **Per-fork invariant.** Fork N gets its complete step in prose immediately before its own question call, for forks 2..N too, with no exceptions. An answer arriving as a tool result in the same turn is not a reason to skip the next step. Mode A: heading, context, argued options, your reading, recommendation. Mode B: Door Type and Under the Hood header, the 4-question framing, recommendation.
+- **Option naming rule.** Option A is always the recommended option, titled `### Option A. <name> (Recommended)` in prose and `1. (Recommended) Option A: <name>` in the Antigravity and terminal picker (Claude Code and OpenCode labels use the suffix: `Option A: <name> (Recommended)`); then `Option B: <name>`, `Option C: <name>`, in the same order as the prose. Mode B names read `Option X: <Analogy Name> (<Formal Tech Anchor>)`. Never emit a bare option name, never reorder, never add a manual "Other" (the UI adds it). Four options per question is the harness limit; it is not a limit on the number of forks.
+- **Counter prefix rule.** Harness widgets count only the single-element call array (`1/1`), so you MUST always prefix the question string: `"[Question N of Total] <text>"` (or `[Fork N of Total]`). In Claude Code and OpenCode also set `"header": "Fork N/Total"`.
+- **Fork count is locked.** The total is fixed when the fork map is announced, and every counter uses it. If it genuinely changes (a fork is retired, split or discovered), say `Fork map revised: N → M (<reason>)` before the next question and use M from then on. A silently drifting counter ("of 5" then "of 3") reads as a bug.
 - **One question per call.** One fork, one question call, one answer. Never batch, even if the tool schema allows arrays.
 - **Prose first.** All analysis, diagrams, snippets and trade-offs live in the markdown prose above the call; it renders in every harness. In Claude Code the dialog may be the only surface the user sees, so there it must also stand on its own (`references/claude-code.md`); in Antigravity and OpenCode keep previews out of the dialog strings. The dialog never replaces the prose.
-- **Terse output styles.** Invoking clarify asks for the full step, so under Concise or a similar style the full step is the required content. Only the "Noted: ..." lines and the closing stay terse. Terse styles re-inject a brevity reminder after each answer; the `→ next:` preview line (Claude Code) is the counterweight, so never drop it.
+- **Claude Code dialog rules** (the dialog may be the only thing the user sees, so it must carry the argument): `"multiSelect": false` (previews render only then; on a multi-select fork they silently do not appear), a short `header`, and a `label` with the `Option X:` prefix. Each `description` is 2–3 sentences (what it does, main pro, main con), 150–300 characters, never under 120. Each `preview` is a technical or mental-model block plus `+` and `-` lines, about 6–12 lines (Mode B adds `Under the hood:` and `Door:` lines), and ends with `→ next: full Question N+1 write-up, then ask` (last fork: `→ next: decision table and closing`). Full examples: `references/claude-code.md`.
+- **Terse output styles.** Invoking clarify asks for the full step, and terse styles treat requested detail as what the user needs (Concise's own rule: give full detail on request), so under Concise or a similar style the full step is the required content, not padding. Only the "Noted: ..." lines and the closing stay terse. Terse styles re-inject a brevity reminder after each answer; the `→ next:` preview line (Claude Code) is the counterweight, so never drop it.
 - **No code without a go.** Never modify code before the user explicitly confirms after the closing.
 
 ## Pre-flight Investigation (Codebase Discovery)
@@ -121,7 +123,7 @@ In Mode B use `Option A: The Digital Sticky Tag (M:N Join Table)` style names.
 The order is fixed: **Noted line → full Question N+1 step → tool call.** The acknowledgement is short; the next step is not.
 
 1. Acknowledge in one line: `Noted: **<chosen option>**. <Optional clause on what it cascades into.> On to the next.`
-2. Print the full step for Question N+1, then call the tool. Do not re-show the fork just answered.
+2. Print the full step for Question N+1, then call the tool. This applies even when the answer arrived as a tool result in the same turn. Do not re-show the fork just answered.
 3. If the answer makes a later fork moot, say so at once: "Choosing X retires fork Y; next is Z."
 4. If the answer touches decisions already taken, revisit them out loud, never silently: "This clarification affects decisions N and M — reopening both."
 5. If the user picks "Other" and supplies their own answer, take it without pushback and re-check the remaining forks against it.

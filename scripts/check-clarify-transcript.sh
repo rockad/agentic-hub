@@ -221,15 +221,17 @@ def all_headings($lines):
   [ $lines[] | select(startswith("##") and contains("Question")) | heading_match ];
 
 # A Decision Table heading (any case; optional number, emoji, "Final", quote or bold).
+# At most 100 prefiltered candidates are tested, so a pathological reply cannot run
+# the regex on every line.
 def decision_table($lines):
-  any($lines[]; (startswith("#") or startswith("*") or startswith(">"))
-    and (ascii_downcase | contains("decision"))
-    and test("^(>[ \\t]*)?(#{1,4}|\\*\\*)[^A-Za-z]*(final[ \\t]+)?decisions?[ \\t]+table"; "i"));
+  [ limit(100; $lines[] | select((startswith("#") or startswith("*") or startswith(">"))
+      and (ascii_downcase | contains("decision") and contains("table")))) ]
+  | any(.[]; test("^(>[ \\t]*)?(#{1,4}|\\*\\*)[^A-Za-z]*(final[ \\t]+)?decisions?[ \\t]+table"; "i"));
 
-# The later closing sections (closing.md) only appear once the series is over.
+# The gate heading (closing.md) appears only once the series is over; a mid-series recap
+# may show the table and the artifact but never the gate.
 def closing_sections($lines):
-  any($lines[]; startswith("#")
-    and (contains("Final Architecture Artifact") or contains("Gated Execution")));
+  any($lines[]; startswith("#") and contains("Gated Execution"));
 
 # `Fork map revised: N → M` sets the new total M (SKILL.md, Fork Count Is Locked).
 def revised_total($lines):
@@ -358,7 +360,8 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
        | (if $cseen then revised_total($lines) else null end) as $rev
        | ((if $asked != null then $asked else .last end)
           | if . != null and $rev != null then .m = $rev else . end) as $last
-       | (if $cseen then closes_series($lines; $hs; $last) else false end) as $closes
+       | (($e.tool_calls // []) | if type == "array" then any(.[]; type == "object" and .name == "ask_question") else false end) as $asks
+       | (if $cseen and ($asks | not) then closes_series($lines; $hs; $last) else false end) as $closes
        | (if $content != "" then
             .text += ($content + "\n")
             | .rev += ($content + "\n")

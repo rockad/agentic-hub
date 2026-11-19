@@ -139,6 +139,13 @@ done
 # 25. positive controls for the "silent" cases: the same transcripts minus the guard must continue.
 { user "write me an interview FAQ"; reply "$FAQ"; user "/clarify x"; reply "$FAQ"; } | run_hook 25a-control-faq-in-clarify continue
 { user "/clarify storage"; reply "$(printf 'The format looks like this:\n\n## Question 2 (of 4) — Naming\n')"; } | run_hook 25b-control-unfenced-heading continue
+# 25c. a mid-series recap that shows the table and the artifact (but not the gate) must not close.
+RECAPFULL=$'### 1. Decision Table\n\n| # | Topic |\n|---|---|\n| 1 | Storage |\n\n### 2. Final Architecture Artifact\n\nThe design so far.'
+{ user "/clarify x"; reply_ask $'## Question 2 (of 5) — Indexing' "Question 2 of 5"; user "show table and artifact so far"; reply "$RECAPFULL"; user "go"; reply $'## Question 3 (of 5) — Rollout'; } \
+  | run_hook 25c-recap-with-artifact-not-closing continue
+# 25d. a reply that calls ask_question never closes the session, even with a table in it.
+{ user "/clarify x"; reply_ask "$(printf '%s\n\n%s' "$TABLE" "$Q3")" "Question 3 of 3"; user "A"; reply "$Q3"; } \
+  | run_hook 25d-table-with-ask-not-closing continue
 # 26. big replies stay fast in every shape (the hook has a 5 s timeout); armed session, worst case.
 big() { # big <name> <jq expression producing one line per $i> <lines>
   { user "/clarify storage"; jq -nc --argjson n "$3" "{type: \"PLANNER_RESPONSE\", content: ([range(\$n) | . as \$i | $2] | join(\"\\n\"))}"; } > "$tmp/$1.jsonl"
@@ -154,6 +161,7 @@ big hashes '"# line \($i)"' 40000
 big bold '"**bold \($i)**"' 40000
 big quotes '"> quote \($i)"' 40000
 big fences '"```"' 40000
+big decision '"# decision \($i) table"' 40000
 big headings '"## Question \($i) (of 9) — x"' 20000
 
 # The offline checker must agree on the same cases.

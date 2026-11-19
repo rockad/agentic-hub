@@ -169,7 +169,7 @@ const learned = createSessionModelLearner({ dir, home })('s1', fifo);
 console.log(JSON.stringify([readTranscriptChunk(fifo, 1024, 0), modelFromTranscript(fifo, { home }), learned]));`
     );
     const started = Date.now();
-    const r = Bun.spawnSync([process.execPath, probe, fifo, home, sessions], { timeout: 8000 });
+    const r = Bun.spawnSync([process.execPath, probe, fifo, home, sessions], { timeout: 8000, env: { ...process.env } });
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString().trim()).toBe('[null,null,null]');
     expect(Date.now() - started).toBeLessThan(6000);

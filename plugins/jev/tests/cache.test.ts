@@ -17,6 +17,8 @@ import {
 } from '../src/core/cache.js';
 import { clearConfigCacheForTesting } from '../src/core/config.js';
 
+const SUITE_CACHE_FILE = process.env.JEV_CACHE_FILE;
+
 describe('Shared bun:sqlite RAM Cache (src/core/cache.ts)', () => {
   let tmpCacheDir: string;
   let tmpCacheFile: string;
@@ -32,7 +34,9 @@ describe('Shared bun:sqlite RAM Cache (src/core/cache.ts)', () => {
 
   afterEach(() => {
     clearDecisionCache();
-    delete process.env.JEV_CACHE_FILE;
+    // back to the private cache of tests/setup-home.ts, not to the machine-wide one
+    if (SUITE_CACHE_FILE) process.env.JEV_CACHE_FILE = SUITE_CACHE_FILE;
+    else delete process.env.JEV_CACHE_FILE;
     delete process.env.JEV_CONFIG_FILE;
     delete process.env.JEV_CACHE_TTL_MS;
     clearConfigCacheForTesting();

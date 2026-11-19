@@ -302,7 +302,7 @@ export async function pollForAskAnswer(
 }
 
 /** An answer text without its `A1:` prefix and its `(Recommended)` tag (a prefix as Antigravity writes it, or a suffix). */
-function answerLabel(answerText: string): string {
+export function answerLabel(answerText: string): string {
   return answerText
     .trim()
     .replace(/^A\d+:\s*/, '')
@@ -333,8 +333,8 @@ export function parseElevationAnswer(answerText?: string | null): { approved: bo
  * 3. Neither: the first GENERIC row after the question, but only when the question was the planner step's single tool
  *    call. With several tool calls (run in parallel) the rows may come in completion order, so there is no answer.
  *
- * `answerQuestionIdx` is the question index PostToolUse saw (default: the matched call's own). An answer whose key
- * (`<id>#<q>` or `step:<step_index>#<q>`) is in `consumedKeys` already approved a run and is no answer.
+ * `answerQuestionIdx` is the question index PostToolUse saw for that row (default: the matched call's own). An answer
+ * whose key (`<id>#<q>` or `step:<step_index>#<q>`) is in `consumedKeys` already approved a run and is no answer.
  */
 export function pullElevationAnswerFromTranscript(
   transcriptPath: string,
@@ -344,18 +344,11 @@ export function pullElevationAnswerFromTranscript(
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
 ): { approved: boolean; scope?: ApprovalScope } | null {
-  const r = pullElevationAnswerDetailed(
-    transcriptPath,
-    requestedModel,
-    deniedAtMs,
-    answerStepIdx,
-    answerQuestionIdx,
-    consumedKeys
-  );
+  const r = pullElevationAnswerDetailed(transcriptPath, requestedModel, deniedAtMs, answerStepIdx, answerQuestionIdx, consumedKeys);
   return r ? { approved: r.approved, ...(r.scope ? { scope: r.scope } : {}) } : null;
 }
 
-/** Like `pullElevationAnswerFromTranscript`, plus the consumption key of the answer row that was read. */
+/** Like `pullElevationAnswerFromTranscript`, plus the consumption key of the answer row that was read (when it has one). */
 export function pullElevationAnswerDetailed(
   transcriptPath: string,
   requestedModel: string,
@@ -364,6 +357,59 @@ export function pullElevationAnswerDetailed(
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
 ): { approved: boolean; scope?: ApprovalScope; answerKey?: string } | null {
+  const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, {
+    deniedAtMs,
+    answerStepIdx,
+    answerQuestionIdx,
+    ...(consumedKeys.length > 0 ? { excludeToolCallIds: new Set(consumedKeys) } : {})
+  });
+  if (!pulled) return null;
+  const answerKey = askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0, pulled.answerStep);
+  return { ...parseElevationAnswer(pulled.raw), ...(answerKey ? { answerKey } : {}) };
+}
+
+/** Bounds for `pullAskAnswerFromTranscript`: an older question never answers a newer denial. */
+export type PullAskOptions = {
+  /** Ignore steps whose timestamp is more than 5 s before this time (a step with no timestamp is not filtered by time). */
+  deniedAtMs?: number;
+  /** Ignore question steps whose `step_index` is not greater than this (the step the denial happened at). */
+  afterStepIdx?: number;
+  /**
+   * Ignore a question whose answer was already recorded once. An entry is `<toolCallId>#<questionIndex>` (see
+   * `askAnswerKey`: one ask can carry several questions under one tool call id), `step:<answerStep>#<questionIndex>`
+   * for a transcript with no tool call ids, or, for an older record, a bare tool call id, which consumes every question
+   * of that call.
+   */
+  excludeToolCallIds?: ReadonlySet<string>;
+  /** Decides whether a question (or message) text is the one wanted, in place of "contains the marker text". */
+  matches?: (text: string) => boolean;
+  /**
+   * The `step_index` PostToolUse recorded for the question's own answer row. A question with no tool call id is answered
+   * by exactly that GENERIC row. Without it, only a question that was the planner step's single tool call falls back to
+   * the first GENERIC row after it.
+   */
+  answerStepIdx?: number | null;
+  /**
+   * The question index PostToolUse recorded together with `answerStepIdx`: the answer line read from that row is this
+   * question's, whichever of several marker questions of the planner step matched. Ignored for a question with a tool
+   * call id (the id already names its own question).
+   */
+  answerQuestionIdx?: number | null;
+};
+
+/**
+ * The most recent `ask_question` in the bounded transcript tail whose question carries `markerText` (compared lowercase),
+ * and the raw answer text of its result row. Null when there is no such question, or its result row is not in the tail
+ * yet (`raw` is null when the row is there but holds no answer for the question). `toolCallId` is the question's own tool
+ * call id when the transcript names one, so a caller can record that this answer was consumed. The answer comes only from
+ * the user's result row (`A<n>:` lines), never from the question or its options.
+ */
+export function pullAskAnswerFromTranscript(
+  transcriptPath: string,
+  markerText: string,
+  opts: PullAskOptions = {}
+): { raw: string | null; toolCallId?: string; questionIndex?: number; answerStep?: number } | null {
+  const deniedAtMs = opts.deniedAtMs;
   try {
     const read = readRegularFileTail(transcriptPath, TRANSCRIPT_TAIL_WINDOW_BYTES);
     if (read.kind !== 'ok') return null;
@@ -388,7 +434,9 @@ export function pullElevationAnswerDetailed(
       }
     }
 
-    const marker = `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`.toLowerCase();
+    const marker = markerText.toLowerCase();
+    // `matches` decides alone when given (the downgrade flow needs "starts with its own marker"); else the marker may be anywhere.
+    const questionMatches = (t: string): boolean => (opts.matches ? opts.matches(t) : t.toLowerCase().includes(marker));
 
     type AskMatch = {
       stepIndexInArray: number;
@@ -400,6 +448,21 @@ export function pullElevationAnswerDetailed(
 
     let latestToolMatch: AskMatch | null = null;
     let latestProseMatch: AskMatch | null = null;
+
+    const isGeneric = (s: Record<string, unknown>): boolean => typeof s.type === 'string' && s.type.toUpperCase() === 'GENERIC';
+    // The step_index of the answer row of an id-less question in step `i`: the row PostToolUse recorded, else (a lone
+    // ask_question only) the first GENERIC row after the question. Undefined when it cannot be told, so nothing is excluded.
+    const idlessAnswerStep = (i: number, toolCallCount: number): number | undefined => {
+      if (typeof opts.answerStepIdx === 'number') return opts.answerStepIdx;
+      if (toolCallCount !== 1) return undefined;
+      const row = steps.slice(i + 1).find(isGeneric);
+      return typeof row?.step_index === 'number' ? row.step_index : undefined;
+    };
+    const isConsumed = (key: string | undefined): boolean => key !== undefined && !!opts.excludeToolCallIds?.has(key);
+    // With a recorded row AND question, an id-less question is answered by that row's line, whichever matching question
+    // of the transcript it is: the key it is consumed under uses the recorded question index too.
+    const recordedQuestion =
+      typeof opts.answerStepIdx === 'number' && typeof opts.answerQuestionIdx === 'number' ? opts.answerQuestionIdx : undefined;
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -437,19 +500,26 @@ export function pullElevationAnswerDetailed(
               const questions = args?.questions;
               if (Array.isArray(questions)) {
                 questions.forEach((q, idx) => {
+                  // The first matching question of a step that is not already consumed wins: two questions of one ask
+                  // share the tool call id, so an answer is tracked per question (`<id>#<index>`), and the delegation
+                  // next in line reads the earliest open question, not the latest.
+                  if (matchedTool) return;
                   const qText =
                     typeof q === 'string'
                       ? q
                       : q && typeof q === 'object'
                         ? (q as Record<string, unknown>).question
                         : '';
-                  if (typeof qText === 'string' && qText.toLowerCase().includes(marker)) {
+                  if (typeof qText === 'string' && questionMatches(qText)) {
+                    const callId = typeof rec.id === 'string' ? rec.id : undefined;
+                    const keyIdx = callId ? idx : (recordedQuestion ?? idx);
+                    if (isConsumed(askAnswerKey(callId, keyIdx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
                     matchedTool = true;
                     markerIndex = idx;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
                   }
                 });
-              } else if (typeof questions === 'string' && questions.toLowerCase().includes(marker)) {
+              } else if (typeof questions === 'string' && questionMatches(questions)) {
                 matchedTool = true;
                 markerIndex = 0;
                 if (typeof rec.id === 'string') toolCallId = rec.id;
@@ -466,12 +536,21 @@ export function pullElevationAnswerDetailed(
         (stepType === 'PLANNER_RESPONSE' || stepType === '') &&
         !hasToolCalls &&
         typeof step.content === 'string' &&
-        step.content.toLowerCase().includes(marker)
+        questionMatches(step.content)
       ) {
         matchedProse = true;
         markerIndex = 0;
         if (typeof step.toolCallId === 'string') toolCallId = step.toolCallId;
         else if (typeof step.tool_call_id === 'string') toolCallId = step.tool_call_id;
+      }
+
+      if (matchedTool || matchedProse) {
+        // A question the denial cannot have caused, or one whose answer was already recorded, is not this denial's answer.
+        const stepIndex = typeof step.step_index === 'number' ? step.step_index : null;
+        if (typeof opts.afterStepIdx === 'number' && stepIndex !== null && stepIndex <= opts.afterStepIdx) continue;
+        if (toolCallId && opts.excludeToolCallIds?.has(toolCallId)) continue;
+        // A prose match has no tool call: only a recorded row can say which answer it would read.
+        if (matchedProse && !toolCallId && isConsumed(askAnswerKey(undefined, recordedQuestion ?? 0, idlessAnswerStep(i, 0)))) continue;
       }
 
       if (matchedTool) {
@@ -495,7 +574,6 @@ export function pullElevationAnswerDetailed(
     if (!latestMatch) return null;
 
     let genericStep: Record<string, unknown> | null = null;
-    let genericIndex = -1;
 
     if (latestMatch.toolCallId) {
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
@@ -505,7 +583,6 @@ export function pullElevationAnswerDetailed(
           const stepToolId = step.toolCallId ?? step.tool_call_id;
           if (stepToolId === latestMatch.toolCallId) {
             genericStep = step;
-            genericIndex = i;
             break;
           }
         }
@@ -514,16 +591,15 @@ export function pullElevationAnswerDetailed(
 
     // No id: the row PostToolUse recorded for the question (its input.stepIdx), and no other. Rows of parallel tool
     // calls follow the planner step in an order that may be call order or completion order, so position is not used.
-    if (!latestMatch.toolCallId && typeof answerStepIdx === 'number') {
-      const rows: Array<{ step: Record<string, unknown>; index: number }> = [];
+    if (!latestMatch.toolCallId && typeof opts.answerStepIdx === 'number') {
+      const rows: Array<Record<string, unknown>> = [];
       for (let i = latestMatch.stepIndexInArray + 1; i < steps.length; i++) {
         const step = steps[i];
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
-        if (stepType === 'GENERIC' && step.step_index === answerStepIdx) rows.push({ step, index: i });
+        if (stepType === 'GENERIC' && step.step_index === opts.answerStepIdx) rows.push(step);
       }
       // A duplicated index is ambiguous: fail closed.
-      genericStep = rows.length === 1 ? rows[0].step : null;
-      genericIndex = rows.length === 1 ? rows[0].index : -1;
+      genericStep = rows.length === 1 ? rows[0] : null;
     } else if (!latestMatch.toolCallId && latestMatch.toolCallCount === 1) {
       // The first-GENERIC-after fallback is only for a question that carries no tool call id, was not recorded by
       // PostToolUse, and was the single tool call of its planner step. With an id, a missing matching row means the
@@ -533,7 +609,6 @@ export function pullElevationAnswerDetailed(
         const stepType = typeof step.type === 'string' ? step.type.toUpperCase() : '';
         if (stepType === 'GENERIC') {
           genericStep = step;
-          genericIndex = i;
           break;
         }
       }
@@ -543,20 +618,16 @@ export function pullElevationAnswerDetailed(
       return null;
     }
 
-    // The question the user answered is the one PostToolUse saw, when it recorded one (several asks in one planner
-    // step may carry the marker); otherwise the matched call's own.
-    const questionIdx = typeof answerQuestionIdx === 'number' && !latestMatch.toolCallId ? answerQuestionIdx : latestMatch.markerIndex;
-    // Consumption key of the answer row: the tool call id when there is one, else the row's step_index.
-    const rowKey = latestMatch.toolCallId
-      ? latestMatch.toolCallId
-      : typeof genericStep.step_index === 'number'
-        ? `step:${genericStep.step_index}`
-        : `pos:${genericIndex}`;
-    const answerKey = `${rowKey}#${questionIdx}`;
-    if (consumedKeys.includes(answerKey)) return null;
-
-    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIdx);
-    return { ...parseElevationAnswer(rawAnswer), answerKey };
+    // A row the recorded step named is read at the recorded question, not at the matched call's own.
+    const questionIndex =
+      !latestMatch.toolCallId && typeof opts.answerStepIdx === 'number' && recordedQuestion !== undefined ? recordedQuestion : latestMatch.markerIndex;
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex);
+    return {
+      raw: rawAnswer,
+      questionIndex,
+      ...(latestMatch.toolCallId ? { toolCallId: latestMatch.toolCallId } : {}),
+      ...(typeof genericStep.step_index === 'number' ? { answerStep: genericStep.step_index } : {})
+    };
   } catch {
     return null;
   }
@@ -1144,4 +1215,52 @@ export function flushPendingServed(
   } catch {
     // fail-open
   }
+}
+
+/**
+ * The key an answered question is recorded under: `<toolCallId>#<questionIndex>`. One `ask_question` can carry several
+ * questions under one tool call id, so consuming the whole call would hide the other questions' answers from the
+ * delegations they belong to.
+ *
+ * Real Antigravity transcripts carry no tool call id: then the key is `step:<answerStep>#<questionIndex>`, where
+ * `answerStep` is the `step_index` of the ask's own answer row (what PostToolUse reports as `stepIdx`), so one answer
+ * cannot be consumed twice or by another question. Undefined when there is neither an id nor a row.
+ */
+export function askAnswerKey(toolCallId: string | undefined, questionIndex: number, answerStep?: number | null): string | undefined {
+  if (toolCallId) return `${toolCallId}#${questionIndex}`;
+  return typeof answerStep === 'number' && Number.isInteger(answerStep) && answerStep >= 0 ? `step:${answerStep}#${questionIndex}` : undefined;
+}
+
+/**
+ * Like {@link pollForAskAnswer} for an ask with several questions: ONE bounded wait for the result row, shared by all of
+ * them, then every question's own `A<n>` line is read from what the transcript holds at that moment. `questionIndexes`
+ * are read in order and the answers returned in the same order (`null` for an index with no answer line). N questions
+ * cost one wait window, not N, so the hook stays inside its timeout however many questions the assistant packs into
+ * one ask.
+ */
+export async function pollForAskAnswers(
+  input: AntigravityHookInput | undefined,
+  questionIndexes: number[],
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+): Promise<Array<string | null>> {
+  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes));
+  const anyAnswer = (list: Array<string | null>) => list.some((a) => a !== null);
+
+  let answers = readAll();
+  if (anyAnswer(answers)) return answers;
+
+  const contentOnStdin = typeof input?.content === 'string' && input.content.trim().length > 0;
+  if (contentOnStdin || !input?.transcriptPath || typeof input?.stepIdx !== 'number') return answers;
+
+  const maxWaitMs = opts?.maxWaitMs ?? 2000;
+  const pollIntervalMs = opts?.pollIntervalMs ?? 150;
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    const remaining = maxWaitMs - (Date.now() - startTime);
+    if (remaining <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
+    answers = readAll();
+    if (anyAnswer(answers)) return answers;
+  }
+  return answers;
 }

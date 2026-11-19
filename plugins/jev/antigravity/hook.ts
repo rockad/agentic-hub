@@ -14,12 +14,16 @@ import {
   type QuotaView
 } from '../src/shared.js';
 import { taskFingerprint } from '../src/core/telemetry.js';
+import { checkEgress, egressContextDirs } from '../src/core/egress.js';
+import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
+  pollForAskAnswers,
+  askAnswerKey,
   extractChildConversationId,
   findServedModelFromTranscript,
   recordPendingServed,
@@ -29,7 +33,8 @@ import {
   type AntigravityHookInput
 } from './logic.js';
 import { readRegularFileTail } from '../claude/safe-read.js';
-import { createAntigravityApprovalStore, type ApprovalScope } from './approvals.js';
+import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
+import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -128,7 +133,8 @@ async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
 
   try {
-    // No API keys are loaded here: the hook makes no network call.
+    // The only network call this hook can make is the downgrade rating at PreToolUse (one router call, 1.5 s, fail-open);
+    // the key is loaded the way the MCP server loads it, on import of the shared client.
     const jevDir = getJevDir();
 
     const rawStdin = await Bun.stdin.text();
@@ -160,6 +166,7 @@ async function main() {
 
     const sessionsDir = path.join(jevDir, 'antigravity-sessions');
     const approvals = noSession ? undefined : createAntigravityApprovalStore(sessionsDir);
+    const downgrades = createAntigravityDowngradeStore(sessionsDir);
     flushPendingServed(sessionsDir, input.conversationId, appendDecisionLog, jevHomeDir());
 
     if (event === 'post-tool-use') {
@@ -174,6 +181,83 @@ async function main() {
         let answerStepRecorded = false;
         let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
         let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'no_session' | 'error' = 'error';
+
+        // A downgrade question (`[jev-downgrade:flash_lite:<sig8>]` or the plain marker, text starts with the marker) is
+        // recorded by its own branch, EVERY such question of the call (each answer line belongs to its own delegation).
+        // An elevation marker wins when a call carries both: the elevation flow is the one that must never miss an answer.
+        const downgradeQuestions = findDowngradeQuestions(input.toolCall?.args?.questions);
+        const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
+        if (downgradeQuestions.length > 0 && !carriesElevation) {
+          let dRow = false;
+          let dStepRecorded = false;
+          let dChoice: 'yes' | 'keep' | 'off' | null = null;
+          type DowngradeOutcome = 'recorded' | 'no_row' | 'rejected' | 'not_asked' | 'error';
+          let dOutcome: DowngradeOutcome = 'error';
+          let dOutcomes: DowngradeOutcome[] = [];
+          try {
+            const results: Array<{ row: boolean; choice: 'yes' | 'keep' | 'off' | null; outcome: DowngradeOutcome }> = [];
+            // Record where the answer row is against every pending question of this ask, before waiting for it and
+            // whatever the outcome (no_row included): the row's step_index is this call's own stepIdx. The PreToolUse
+            // pull reads only that row (real transcripts carry no tool call ids; parallel tools make position unreliable).
+            if (conversationId && typeof input.stepIdx === 'number') {
+              for (const q of downgradeQuestions) {
+                try {
+                  if (downgrades.noteAnswerStep?.(conversationId, input.stepIdx, Date.now(), q.sig, q.index)) dStepRecorded = true;
+                } catch {
+                  // fail-open: the pull then reads a lone ask_question only
+                }
+              }
+            }
+            // One bounded wait for the result row, shared by every question of the ask; each answer line is then read
+            // from that one row (N questions must not cost N wait windows: the hook has a timeout).
+            const rawAnswers = await pollForAskAnswers(
+              input,
+              downgradeQuestions.map((q) => q.index)
+            );
+            downgradeQuestions.forEach((q, n) => {
+              const rawAnswer = rawAnswers[n] ?? null;
+              const row = rawAnswer !== null;
+              const choice = parseDowngradeAnswer(rawAnswer);
+              let outcome: DowngradeOutcome;
+              try {
+                if (!row) outcome = 'no_row';
+                else if (!choice) outcome = 'rejected';
+                else if (!conversationId) outcome = 'not_asked';
+                else {
+                  // Consumed per question, not per tool call: the other questions of this ask are still open.
+                  const askId = askAnswerKey(input.toolCall?.id, q.index, input.stepIdx);
+                  outcome = downgrades.answer(conversationId, choice, askId, Date.now(), q.sig) ? 'recorded' : 'not_asked';
+                }
+              } catch {
+                outcome = 'error';
+              }
+              results.push({ row, choice, outcome });
+            });
+            const shown = results.find((r) => r.outcome === 'recorded') ?? results[0];
+            dRow = results.some((r) => r.row);
+            dChoice = shown.choice;
+            dOutcome = shown.outcome;
+            dOutcomes = results.map((r) => r.outcome);
+          } catch {
+            dOutcome = 'error';
+          }
+          appendDecisionLog({
+            event: 'ask_answer',
+            marker: 'downgrade',
+            session_id: conversationId,
+            stepIdx: input.stepIdx ?? null,
+            content_on_stdin: contentOnStdin,
+            transcript_readable: transcriptReadable,
+            marker_found: true,
+            row_found: dRow,
+            answer_step_recorded: dStepRecorded,
+            parsed: { choice: dChoice },
+            ...(downgradeQuestions.length > 1 ? { downgrade_questions: downgradeQuestions.length, outcomes: dOutcomes } : {}),
+            outcome: dOutcome
+          });
+          console.log('{}');
+          process.exit(0);
+        }
 
         try {
           const questions = input.toolCall?.args?.questions;
@@ -329,12 +413,30 @@ async function main() {
       activeModel = ceilingModelForHarness('antigravity', trimmedModel);
     }
 
-    const decision = evaluateAntigravitySubagentCall(input, {
+    let decision = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: activeModel,
       quotaView,
       mode
     });
+
+    // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
+    // fails open: its log carries the `downgrade*` fields of the row below.
+    let downgradeLog: Record<string, unknown> = {};
+    if (decision.decision === 'pass') {
+      const downgraded = await applyAntigravityDowngrade(input, decision, {
+        store: downgrades,
+        jevMode: mode,
+        sessionModel: activeModel,
+        env: process.env,
+        downgradeConfig: loadDowngradeMode,
+        downgradeMinProbability: loadDowngradeMinProbability,
+        rateTask: liveRateTask,
+        egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd, ...(input.workspacePaths ?? [])])).allowed
+      });
+      decision = downgraded.decision;
+      downgradeLog = downgraded.log;
+    }
 
     const { requestedModel } = extractSubagentModel(input.toolCall?.args);
     const lastUserPrompt = input.lastUserInput || '';
@@ -358,7 +460,8 @@ async function main() {
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
-      ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {})
+      ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
+      ...downgradeLog
     });
 
     if (decision.decision === 'pass') {

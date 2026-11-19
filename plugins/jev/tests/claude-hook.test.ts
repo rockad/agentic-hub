@@ -237,7 +237,7 @@ describe('hook process', () => {
   it('exits 0 and prints nothing on malformed stdin', () => {
     const stdin = new TextEncoder().encode('not json');
 
-    const proc = Bun.spawnSync(['bun', path.join(PLUGIN_ROOT, 'claude/hook.ts'), 'user-prompt-submit'], { stdin });
+    const proc = Bun.spawnSync(['bun', path.join(PLUGIN_ROOT, 'claude/hook.ts'), 'user-prompt-submit'], { stdin, env: { ...process.env } });
 
     expect([proc.exitCode, proc.stdout.toString()]).toEqual([0, '']);
   });

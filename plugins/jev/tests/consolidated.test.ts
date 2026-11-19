@@ -85,6 +85,8 @@ describe('Consolidated Master Plan: Phase 2 (Latency Optimization & Local Heuris
   });
 });
 
+const SUITE_CACHE_FILE = process.env.JEV_CACHE_FILE;
+
 describe('Consolidated Master Plan: Phase 3 (File-Backed Decision Cache & Concurrency)', () => {
   let tmpCacheDir: string;
   let tmpCacheFile: string;
@@ -98,7 +100,9 @@ describe('Consolidated Master Plan: Phase 3 (File-Backed Decision Cache & Concur
   });
 
   afterEach(() => {
-    delete process.env.JEV_CACHE_FILE;
+    // back to the private cache of tests/setup-home.ts, not to the machine-wide one
+    if (SUITE_CACHE_FILE) process.env.JEV_CACHE_FILE = SUITE_CACHE_FILE;
+    else delete process.env.JEV_CACHE_FILE;
     delete process.env.JEV_CONFIG_FILE;
     delete process.env.JEV_CACHE_TTL_MS;
     clearConfigCacheForTesting();

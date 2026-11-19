@@ -10,9 +10,9 @@
  */
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { assertEgressAllowed } from './core/egress.js';
+import { jevHomeDir } from './core/private-fs.js';
 
 let cachedVersion: string | null = null;
 
@@ -241,13 +241,14 @@ class OtlpTracer implements JevTracer {
 
 let activeTracer: JevTracer = new NoopTracer();
 
-function resolveTracingConfig(override?: TracingConfig): {
+export function resolveTracingConfig(override?: TracingConfig): {
   enabled: boolean;
   endpoint: string | null;
   serviceName: string;
 } {
   let fileConfig: { endpoint?: string; enabled?: boolean; serviceName?: string } = {};
-  const configPath = path.join(os.homedir(), '.config', 'jev', 'config.json');
+  // At call time: JEV_CONFIG_FILE, else HOME (bun fixes os.homedir() at startup, so a test run would read the real home).
+  const configPath = process.env.JEV_CONFIG_FILE || path.join(jevHomeDir(), '.config', 'jev', 'config.json');
   try {
     if (fsSync.existsSync(configPath)) {
       const raw = JSON.parse(fsSync.readFileSync(configPath, 'utf8'));

@@ -7,6 +7,14 @@ A skill that walks a non-trivial design through its open decisions ("forks"), on
 
 Works in Claude Code, Google Antigravity and OpenCode.
 
+## Files
+
+- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (per-fork invariant, same-reply invariant, tool-call, naming and counter rules, Mode A step format, after-answer order, style, anti-patterns, gotchas).
+- `references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`: the dialog format and examples for one harness. The session reads only its own.
+- `references/plain-mode.md`: the Mode B (`/cplain`, `/celi5`) step format, decision table and artifact. Read only in Mode B.
+- `references/closing.md`: the decision table, artifact, workstream table and execution handoff. Read only after the last fork.
+- `hooks/clarify-stop-check.sh`: the Antigravity Stop hook, required in Antigravity (see below).
+
 ## Install
 
 - **Agent Skills / Antigravity:** `npx skills add rockad/agentic-hub --skill clarify`. Repeat the command with `--skill cplain` and `--skill celi5` for the aliases.

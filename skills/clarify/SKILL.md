@@ -45,6 +45,20 @@ The skill provides two operational modes tailored to different audiences and dep
 - **Mode A: Standard Architectural Mode (`/clarify`, `/grill-me`)**: Senior engineering mechanics, DDL, DTOs, ERDs, interface contracts, formal invariants, and technical pros/cons. Previews feature code snippets, database schemas, and protocol specs.
 - **Mode B: Plain English & Intuitive Mode (`/cplain`, `/celi5`, `--plain`, `--eli5`, `eli5`, "explain like I'm five", "plain english")**: Everyday analogies, mental models, 4-Question framing, Door Type reversibility (One-Way Tattoo vs. Two-Way Sticker), concrete Failure Blast Radius, and Dual-Anchors ("Where the analogy breaks"). Ensures complex architectural decisions are intuitive without sacrificing technical rigor.
 
+## Read before the first question
+
+This skill keeps its long examples and secondary formats in reference files, relative to this skill directory. Read exactly these, once, before asking Question 1:
+
+- **Your harness's reference** (pick by which question tool exists):
+  - `references/antigravity.md` if `ask_question` exists.
+  - `references/claude-code.md` if `AskUserQuestion` exists.
+  - `references/opencode.md` if `question` exists.
+  - None for the Terminal CLI fallback (its format is below in this file).
+- **`references/plain-mode.md`**, only in Mode B (`/cplain`, `/celi5`, `--plain`, `--eli5`).
+- **`references/closing.md`**, only after the last fork has been answered.
+
+The rules in this file apply on every question; the reference files hold examples and formats.
+
 ## Triggers & When to Enter
 
 - **Slash commands & phrase triggers**:
@@ -148,7 +162,7 @@ This ensures total transparency: if the skill picked up an artifact the user did
 
 ## The Shape of Each Step (Prose-First Previews)
 
-All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. Prose is the universal canvas: it renders in every harness, and in Antigravity and OpenCode it keeps dialogs, chips, and modal prompts concise and clean. In Claude Code the `AskUserQuestion` dialog may be the only surface the user is sure to see, so there the dialog must also stand on its own (see "B. Claude Code"). Prose is still printed; the rich dialog is added to it, never a replacement for it.
+All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. Prose is the universal canvas: it renders in every harness, and in Antigravity and OpenCode it keeps dialogs, chips, and modal prompts concise and clean. In Claude Code the `AskUserQuestion` dialog may be the only surface the user is sure to see, so there the dialog must also stand on its own (see "B. Claude Code" below and `references/claude-code.md`). Prose is still printed; the rich dialog is added to it, never a replacement for it.
 
 > [!IMPORTANT]
 > **Per-fork invariant — every fork gets the full step, every time.**
@@ -205,58 +219,7 @@ Close with a one-line recommendation:
 
 ### Mode B: Plain English & Intuitive Step Format (`/cplain`, `/celi5`)
 
-Plain English mode translates technical trade-offs into accessible mental models, everyday analogies, and clear risk boundaries while maintaining technical precision underneath.
-
-#### 1. Header with Door Type & Under the Hood Anchor
-
-Every question in Plain Mode begins with a clear classification of reversibility and its technical domain:
-
-```markdown
-## Question N (of Total) — <Everyday Descriptive Name>
-> **Door Type:** One-Way Door (Tattoo — high cost to reverse) | Two-Way Door (Sticker — easily changed)
-> **Under the Hood:** <Formal Engineering Topic / Subsystem>
-```
-
-- **One-Way Door (Tattoo)**: High cost to reverse. Hard or destructive to undo once code and data are live (e.g. database schema topology, primary storage engine, public API protocol contracts).
-- **Two-Way Door (Sticker)**: Easily changed. Low cost to reverse or iterate upon (e.g. cache TTL duration, polling interval, worker batch chunk size, internal retry limits).
-
-#### 2. The 4-Question Framing
-
-Structure the markdown prose above the tool call around these four questions:
-
-##### 1. What problem are we actually solving?
-1–2 plain-English sentences removing all jargon, explaining the practical user-facing or system challenge.
-
-##### 2. What are our choices in plain English?
-Present two to four mutually exclusive choices. **Option A is ALWAYS the Recommended Option** (`### Option A. <Analogy Name> (Recommended)`).
-
-For each option, provide:
-- **Everyday Analogy**: A relatable real-world comparison (e.g., "The Digital Sticky Tag", "The Fast-Food Drive-Through Lane", "The Central Dispatch Office").
-- **Conceptual ASCII Sketch**: Simple mental model diagram (not raw code or DDL).
-- **Under the Hood**: Formal engineering mechanism/term (e.g., `M:N Join Table with compound unique index`, `Redis pub/sub ring buffer`, `Optimistic locking with version column`).
-- **Where the Analogy Breaks**: The exact boundary where the real-world analogy stops matching software reality, preventing false assumptions.
-
-*Example Option Format:*
-```markdown
-### Option A. The Digital Sticky Tag (Recommended)
-- **Everyday Analogy**: Like sticking a color-coded reusable post-it note on a folder.
-- **Mental Model**:
-  [Record Folder] <---> [Sticky Tag Box] <---> [Tag Name]
-- **Under the Hood**: Normalized `record_tags` join table with foreign keys and compound unique index `(record_id, tag_id)`.
-- **Where the Analogy Breaks**: Unlike physical sticky notes that fall off or tear, database join rows never peel off accidentally and enforce strict referential integrity.
-```
-
-##### 3. What are the tangible trade-offs & blast radius?
-- **What gets easier (Pros)**: 2–3 concrete operational or developer benefits.
-- **Failure Blast Radius / Rework Cost (Cons)**: What happens if this assumption is wrong? How much work is required to undo this decision? Who or what gets affected?
-
-##### 4. Why is Option A the common-sense pick?
-- 2–3 plain sentences explaining why Option A is the pragmatic default.
-- Specific scenario or constraint under which the recommendation would flip to Option B or C.
-
-Close with the recommendation line:
-
-> **Recommendation:** **Option A: <Analogy Name> (<Formal Tech Anchor>)** — <one plain sentence explaining why>.
+Full format (Door Type and Under the Hood header, 4-question framing, example option, recommendation line) is in `references/plain-mode.md`. Read it before the first question in Mode B. The Per-fork invariant above still applies to every Mode B fork.
 
 ---
 
@@ -293,184 +256,20 @@ After printing the markdown analysis, **ALWAYS invoke the harness-appropriate in
 > - In Antigravity: `"question": "[Question 5 of 9] Which cross-harness title write-back strategy should ax adopt?"`
 > - In Claude Code & OpenCode: Also set `"header": "Fork 5/9"` (or `"Q5/9: Strategy"`).
 
-#### A. Google Antigravity (`ask_question`)
+#### Per-harness dialog rules (summary — these apply on every call)
 
-Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. Always invoke `ask_question` in the same reply as `## Question 1 (of Total)` — do not end Turn 1 after the recommendation without calling the tool. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
+Full examples live in the harness reference you read before the first question (`references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`).
 
-**Mode A (Standard Architecture):**
-```json
-ask_question({
-  "questions": [
-    {
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "options": [
-        "(Recommended) Option A: M:N join table",
-        "Option B: Denormalized JSONB array",
-        "Option C: Single-tenant delimited string"
-      ],
-      "is_multi_select": false
-    }
-  ]
-})
-```
+**A. Google Antigravity (`ask_question`)**: options are plain strings prefixed `(Recommended) Option A: <name>`, `Option B: <name>`; call `ask_question` in the same reply as the `## Question N` write-up. Antigravity also needs the clarify Stop hook (rules alone did not stop turn-1 misses); it is described in `references/antigravity.md` and `README.md`.
 
-**Mode B (Plain English / ELI5):**
-```json
-ask_question({
-  "questions": [
-    {
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "options": [
-        "(Recommended) Option A: The Digital Sticky Tag (M:N Join Table)",
-        "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-        "Option C: The Comma List on the Box (Delimited String)"
-      ],
-      "is_multi_select": false
-    }
-  ]
-})
-```
+**B. Claude Code (`AskUserQuestion`)** — the dialog may be the only thing the user sees, so on every call:
+- Set `"multiSelect": false` (previews render only then), a short `header` (`Fork N/Total`), and a `label` with the `Option X:` prefix.
+- `description`: 2–3 sentences per option (what it does, main pro, main con), 150–300 characters, never under 120.
+- `preview`: a technical or mental-model block followed by `+` and `-` lines, about 6–12 lines. In Mode B add an `Under the hood:` line and a `Door:` line.
+- Every `preview` ends with `→ next: full Question N+1 write-up, then ask` (last fork: `→ next: decision table and closing`).
+- Prose is still printed above the call; the dialog never replaces it.
 
-*What the user sees in the Antigravity UI picker (Mode B):*
-```
-1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
-2. Option B: The Direct Sharpie Label (Denormalized JSONB)
-3. Option C: The Comma List on the Box (Delimited String)
-4. Other
-```
-
-**Optional Antigravity `Stop` hook backstop** (`hooks/clarify-stop-check.sh`, alongside `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:
-```json
-{ "clarify-require-tool-call": {
-  "enabled": true,
-  "Stop": [{ "type": "command", "command": "~/.agents/skills/clarify/hooks/clarify-stop-check.sh", "timeout": 5 }]
-} }
-```
-
-#### B. Claude Code (`AskUserQuestion`)
-
-Uses `AskUserQuestion` with a short `header` and `label`, a self-sufficient `description` and `preview` on every option, and `"multiSelect": false` (strictly required by Claude Code; `preview` renders only on single-select forks). Claude Code may show the user only the dialog, so the dialog carries the argument in addition to the prose step above it:
-
-- **`description`**: two to three sentences per option — what it does, the main pro, the main con. Target 150–300 characters, never under 120. In Mode B it also carries the analogy.
-- **`preview`**: a technical or mental-model block, followed by `+` pro lines and `- con` lines, about 6–12 lines in all. In Mode B it holds the sketch, an `Under the hood:` line, a `Door:` line (Tattoo or Sticker), then the `+` and `-` lines.
-- **Prose stays**: the full step is still printed above the call (see the per-fork invariant). The dialog repeats the essentials; it does not replace the analysis.
-- **Final `→ next:` line**: every option's `preview` ends with `→ next: full Question N+1 write-up, then ask` (on the last fork: `→ next: decision table and closing`). The `AskUserQuestion` tool result echoes the chosen option's preview, so this line lands right beside any output-style brevity reminder and counters it. Keep previews within about 12 lines including it.
-
-**Mode A (Standard Architecture):**
-```json
-AskUserQuestion({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Option A: M:N join table (Recommended)",
-          "description": "Normalized join table with a compound unique index on (record_id, tag_id). Tags are queryable from either side and a rename touches one row. Costs one extra join per tagged read and a separate table to migrate.",
-          "preview": "record_tags\n  record_id -> records.id\n  tag_id    -> tags.id\n  UNIQUE (record_id, tag_id)\n\nRead: JOIN record_tags USING (record_id)\n+ FK integrity, rename a tag in one row\n+ indexed lookups from either side\n- extra join on every tagged read\n- one more table to migrate and back up\n→ next: full Question 2 write-up, then ask"
-        },
-        {
-          "label": "Option B: Denormalized JSONB array",
-          "description": "Embedded JSON array on the record row, queried through a GIN index. Writes stay in one row and reads need no join. Renaming or aggregating tags means scanning every row, and there are no foreign keys.",
-          "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']\n\nIndex: GIN (tags jsonb_path_ops)\n+ single-row write, no join on read\n+ no extra table to migrate\n- rename a tag = rewrite every row\n- no FK, a typo becomes a new tag\n- tag counts need a full scan\n→ next: full Question 2 write-up, then ask"
-        },
-        {
-          "label": "Option C: Single-tenant delimited string",
-          "description": "Comma-delimited string in one text column on the record. Zero relations and the fastest start, but matching needs LIKE patterns, a typo silently creates a new tag, and fixing it later is a full data migration.",
-          "preview": "records\n  id\n  tags: text -- 'backend,urgent'\n\nRead: tags LIKE '%urgent%'\n+ trivial to start, no schema work\n- LIKE cannot use a normal index\n- 'urgent' also matches 'non-urgent'\n- a comma inside a tag breaks parsing\n- later migration touches every row\n→ next: full Question 2 write-up, then ask"
-        }
-      ]
-    }
-  ]
-})
-```
-
-**Mode B (Plain English / ELI5):**
-```json
-AskUserQuestion({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
-          "description": "Like reusable sticky notes on a folder: each note lives in its own box and can be moved or renamed freely. Searchable from either side with clean integrity, but you maintain an extra index-card box (a join table).",
-          "preview": "[Records] <---> [Sticky Tag Box] <---> [Tags]\n\nUnder the hood: record_tags join table, UNIQUE (record_id, tag_id)\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ rename a tag once, every folder follows\n+ searchable from either side\n- one more table to maintain\n- a join on every tagged read\n→ next: full Question 2 write-up, then ask"
-        },
-        {
-          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-          "description": "Like writing tags in ink directly on the folder. Fast to write and nothing extra to maintain, but finding every folder with one tag means opening them all, and renaming a tag means rewriting each folder.",
-          "preview": "[Record Folder]\n  tags in ink: [urgent, backend]\n\nUnder the hood: jsonb array column on records with a GIN index\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ one write, no joins\n+ no extra table\n- rename = rewrite 10,000 folders\n- no integrity check, typos spawn new tags\n→ next: full Question 2 write-up, then ask"
-        },
-        {
-          "label": "Option C: The Comma List on the Box (Delimited String)",
-          "description": "Like jotting tags separated by commas on the box lid. Quickest to start and needs no schema work, but a typo breaks the search, similar names collide, and untangling it later means rewriting every box.",
-          "preview": "[Record Folder]\n  lid: \"urgent,backend\"\n\nUnder the hood: delimited text column, matched with LIKE\nDoor: One-Way (Tattoo) - storage shape is hard to change once data is live\n+ zero setup\n- typos and near-names silently break searches\n- no index can help, every search is a full scan\n- a comma inside a tag corrupts the list\n→ next: full Question 2 write-up, then ask"
-        }
-      ]
-    }
-  ]
-})
-```
-
-#### C. OpenCode (`question`)
-
-Uses `question` following standard option schema with `Option A:` labels:
-
-**Mode A (Standard Architecture):**
-```json
-question({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "options": [
-        {
-          "label": "Option A: M:N join table (Recommended)",
-          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt."
-        },
-        {
-          "label": "Option B: Denormalized JSONB array",
-          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys."
-        },
-        {
-          "label": "Option C: Single-tenant delimited string",
-          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying."
-        }
-      ]
-    }
-  ]
-})
-```
-
-**Mode B (Plain English / ELI5):**
-```json
-question({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "options": [
-        {
-          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
-          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box."
-        },
-        {
-          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag."
-        },
-        {
-          "label": "Option C: The Comma List on the Box (Delimited String)",
-          "description": "Writing tags separated by commas. Quickest to start, messy to organize later."
-        }
-      ]
-    }
-  ]
-})
-```
+**C. OpenCode (`question`)**: standard option schema with `Option X:` labels and a short `description`; see `references/opencode.md`.
 
 #### D. Terminal CLI Fallback
 
@@ -510,63 +309,12 @@ The order is fixed: **Noted line → full Question N+1 step → tool call.** The
 
 ## Closing the Series & Jev-Aware Execution Handoff
 
-Once all forks are resolved, present the consolidated architectural blueprint and transition gate.
+Once all forks are resolved, present the consolidated architectural blueprint and transition gate. Read `references/closing.md` now for the full format. In short:
 
-### 1. Decision Table
-
-#### Mode A (Standard Architecture)
-
-| # | Decision Topic | Chosen Option | Changed? |
-|---|----------------|---------------|----------|
-| 1 | <topic> | Option A: <formal technical decision> | unchanged / revised |
-| 2 | <topic> | Option B: <formal technical decision> | new |
-
-#### Mode B (Plain English / ELI5)
-
-| # | Decision Topic | Plain English Analogy | Under the Hood | Door Type | Changed? |
-|---|----------------|-----------------------|----------------|-----------|----------|
-| 1 | Tag Storage | The Digital Sticky Tag | M:N Join Table | Two-Way (Sticker) | unchanged / revised |
-| 2 | Cache Invalidation | The Daily Menu Board | TTL Cache Invalidation | One-Way (Tattoo) | new |
-
-The "Changed?" column earns its place only if something was revised mid-series; drop it when every decision held.
-
-### 2. Final Architecture Artifact
-
-Assemble the **final picture**:
-- **Mode A (Standard Architecture)**: Complete technical blueprint — complete ASCII diagram, DTOs/schemas, state machines, API contracts, and governing invariants in a single consolidated block.
-- **Mode B (Plain English / ELI5)**: Dual-layer blueprint providing **both** the conceptual ASCII mental model (everyday system metaphor) and the formal technical specification (under-the-hood contracts, schemas, and invariants). This bridges the intuitive high-level understanding with rigorous implementation-ready contracts.
-
-### 3. Proposed Parallel Workstream Breakdown Table
-
-When the architecture spans multiple files or components, break down the execution into a DAG of independent workstreams:
-
-| Stream | Scope / File Targets | Description | Suggested Role | Recommended Tier |
-|---|---|---|---|---|
-| WS1 | `src/db/schema.ts`, `migrations/` | Database schema & migration files | `code_engineer` | `flash` |
-| WS2 | `src/api/routes.ts`, `src/api/dto.ts` | Endpoint definitions & validation | `code_engineer` | `flash` |
-| WS3 | `docs/adr/001-tag-model.md` | ADR documentation & schema dictionary | `ghostwriter` / `vault_librarian` | `openrouter_free` |
-
-### 4. Gated Execution Transition
-
-> [!IMPORTANT]
-> **Do not write code without an explicit go from the user.**
-
-Before creating or editing files, present the decision table, artifact, and workstream breakdown, then stop and ask for confirmation (e.g. "Ready to proceed with execution?").
-
-Once the user approves:
-
-1. **Detect Jev Coprocessor**:
-   - Check if `jev_batch_dispatch` exists in available tools, or run CLI check `jev status` via `run_command`.
-
-2. **Branch A — Jev Active (`jev on` or `jev on-demand`)**:
-   - **Post-Approval Transition Gate**: Call `jev_batch_dispatch` with the workstream DAG to calibrate tier recommendations and subagent assignments.
-   - Inspect active and idle subagents with `manage_subagents(Action: "list")`. Reuse idle workers via `send_message` or spawn parallel subagents with `invoke_subagent`.
-   - Offload non-sensitive, public, or sanitized boilerplate, formatting, and markdown summaries to `jev_execute_free` ($0.00 cost, 0 Gemini quota).
-   - **Strict Main Context Gate**: The main orchestrator **must not** edit multiple files (`>=2`) sequentially in the main turn. Work must be delegated to parallel subagents as mapped in the workstream breakdown.
-
-3. **Branch B — Jev Inactive / Standard Environment**:
-   - In multi-agent environments: delegate independent workstreams to native subagents in parallel (`invoke_subagent` / `send_message`).
-   - In single-agent environments: execute the workstream breakdown sequentially step by step.
+- Present the decision table, the final architecture artifact, and the parallel workstream breakdown.
+- Then stop and ask for confirmation. **Do not write code without an explicit go from the user.**
+- After the go, detect Jev and dispatch the workstreams (details in `references/closing.md`).
+- In Mode B, use the Mode B decision table and artifact from `references/plain-mode.md`.
 
 ## Style
 

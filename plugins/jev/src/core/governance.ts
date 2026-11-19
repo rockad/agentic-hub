@@ -13,6 +13,7 @@ import {
 } from './cache.js';
 import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
+import { isModeOff, modeBehaviour } from './mode-policy.js';
 import { getTracer } from '../tracing.js';
 import { privateDir, privateFile, PRIVATE_FILE_MODE, jevHomeDir } from './private-fs.js';
 import { safeSessionId } from '../../claude/logic.js';
@@ -902,10 +903,10 @@ export function applyLowQuotaClamp(
   const { pool, strategy, min_remaining } = quotaView.active;
   const poolName = pool || 'gemini';
   const unchanged: QuotaClampResult = { tier, wasClampedByQuota: false, strategy, pool: poolName };
-  if (mode === 'off' || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
+  if (isModeOff(mode) || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
 
   const rank = modelTierRank(tier);
-  if (mode === 'on') {
+  if (modeBehaviour(mode).decisions) {
     const floorTier = strategy === 'free_only' ? (editsFiles ? 'flash_lite' : 'openrouter_free') : 'flash_lite';
     if (rank > modelTierRank(floorTier)) {
       return { ...unchanged, tier: floorTier, wasClampedByQuota: true };

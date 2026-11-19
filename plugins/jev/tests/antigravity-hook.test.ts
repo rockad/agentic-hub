@@ -1206,7 +1206,8 @@ describe('approval store: unsafe session ids (A2)', () => {
   it('an id with nothing safe in it behaves as no stored state and does no file I/O', () => {
     const sessions = path.join(tmpDir, 'sessions');
     const store = createAntigravityApprovalStore(sessions);
-    const before = fs.readdirSync(sessions);
+    // The directory is created lazily, so building the store and asking it about nothing creates none.
+    expect(fs.existsSync(sessions)).toBe(false);
     for (const id of ['', '../..', '///', undefined as unknown as string, 42 as unknown as string]) {
       store.deny(id, 'pro', 1000);
       expect(store.record(id, { model: 'pro', scope: 'session', created_at: 1001 })).toBe(false);
@@ -1214,8 +1215,22 @@ describe('approval store: unsafe session ids (A2)', () => {
       expect(store.attempt(id, 'k', 'sig', 1003)).toBe(1);
       expect(store.wasDeniedRecently(id, 'pro', 1004)).toBeNull();
     }
-    expect(fs.readdirSync(sessions)).toEqual(before);
-    expect(fs.readdirSync(tmpDir)).toEqual(['sessions']);
+    expect(fs.existsSync(sessions)).toBe(false);
+    expect(fs.readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it('the sessions directory is created by the first write, not by building the store or by reads', () => {
+    const sessions = path.join(tmpDir, 'sessions');
+    const store = createAntigravityApprovalStore(sessions);
+    expect(fs.existsSync(sessions)).toBe(false);
+    expect(store.wasDeniedRecently('s1', 'pro', 1000)).toBeNull();
+    expect(store.claim('s1', 'pro', 1000)).toBeNull();
+    expect(store.getAnswerStep('s1', 'pro', 1000)).toBeNull();
+    expect(store.getAnswerQuestion('s1', 'pro', 1000)).toBeNull();
+    expect(store.getConsumedAnswers('s1')).toEqual([]);
+    expect(fs.existsSync(sessions)).toBe(false);
+    store.deny('s1', 'pro', 1000);
+    expect(fs.existsSync(sessions)).toBe(true);
   });
 });
 

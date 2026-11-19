@@ -2,6 +2,7 @@ import {
   bumpAttempts,
   claimApproval,
   claimEffortApproval,
+  lastDeniedAtMs,
   noteDenied,
   noteEffortDenied,
   recordApproval,
@@ -24,6 +25,7 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       if (next) states.set(s, next);
     },
     deny: (s, model, nowMs) => void states.set(s, noteDenied(get(s), model, nowMs)),
+    deniedAt: (s, model) => lastDeniedAtMs(get(s), model),
     claim: (s, requested, nowMs, ctx) => {
       const { state, approval } = claimApproval(get(s), requested, nowMs, ctx);
       states.set(s, state);

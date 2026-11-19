@@ -215,6 +215,13 @@ async function main() {
     if (event === 'post-tool-use') {
       const toolName = input?.toolCall?.name;
       if (toolName === 'ask_question') {
+        // Answers feed approvals and downgrade choices, which are decisions: a mode without decisions (on-demand) records
+        // none, so a stale denial from an earlier mode `on` cannot be approved from an answer given now.
+        if (!modeBehaviour(mode).decisions) {
+          await flushTelemetry();
+          console.log('{}');
+          process.exit(0);
+        }
         const conversationId = noSession ? null : input.conversationId || 'default-session';
         const contentOnStdin = typeof input.content === 'string' && input.content.trim().length > 0;
         const transcriptReadable = isTranscriptReadable(input.transcriptPath);
@@ -487,7 +494,8 @@ async function main() {
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
     // fails open: its log carries the `downgrade*` fields of the row below.
     let downgradeLog: Record<string, unknown> = {};
-    if (decision.decision === 'pass') {
+    // A mode without decisions (on-demand) does not even look at it: no downgrade or downgrade_skip field on the row.
+    if (decision.decision === 'pass' && modeBehaviour(mode).decisions) {
       const downgraded = await applyAntigravityDowngrade(input, decision, {
         store: downgrades,
         jevMode: mode,

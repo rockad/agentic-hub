@@ -320,6 +320,27 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(pre('c-tie').decision).toBe('deny');
   });
 
+  it('SYNTHETIC: a stale mode-on denial, then an answer given in on-demand records no approval; back in on, pro is still denied', () => {
+    const configFile = path.join(home, '.config', 'jev', 'config.json');
+    const setMode = (mode: string) => fs.writeFileSync(configFile, JSON.stringify({ defaults: { mode } }));
+
+    expect(pre('c-od-answer').decision).toBe('deny'); // mode on: the denial is on record
+
+    setMode('on-demand');
+    const post = run('post-tool-use', answered('c-od-answer', 'Created At: x\nCompleted At: y\nA1: Yes, for this session'));
+    expect(post.exitCode).toBe(0);
+    expect(post.stdout.toString().trim()).toBe('{}');
+    expect(approvalsOf('c-od-answer')).toEqual([]);
+    // Nothing is recorded in the answer log either: on-demand makes no decisions.
+    const log = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    const rows = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+    expect(rows.filter((r) => r.event === 'ask_answer')).toEqual([]);
+
+    setMode('on');
+    expect(pre('c-od-answer').decision).toBe('deny');
+    expect(approvalsOf('c-od-answer')).toEqual([]);
+  });
+
   it('SYNTHETIC: with several questions the marker question\'s own answer line is read', () => {
     const questions = [
       { question: 'Unrelated?', options: ['a', 'b'] },

@@ -29,18 +29,21 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-function run(event: string, input: object, env: Record<string, string> = {}) {
+/** An env value of undefined removes the variable (the default downgrade mode: JEV_DOWNGRADE unset). */
+function run(event: string, input: object, env: Record<string, string | undefined> = {}) {
+  const merged: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: home,
+    JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'),
+    JEV_OPENROUTER_API_KEY: '',
+    OPENROUTER_API_KEY: '',
+    JEV_DOWNGRADE: 'ask',
+    ...env
+  };
+  for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
   return Bun.spawnSync(['bun', HOOK, event], {
     stdin: new TextEncoder().encode(JSON.stringify(input)),
-    env: {
-      ...process.env,
-      HOME: home,
-      JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'),
-      JEV_OPENROUTER_API_KEY: '',
-      OPENROUTER_API_KEY: '',
-      JEV_DOWNGRADE: 'ask',
-      ...env
-    }
+    env: merged as Record<string, string>
   });
 }
 
@@ -136,7 +139,28 @@ describe('Antigravity downgrade: the hook process', () => {
     seedRating([0.03, 0.83, 0.14, 0]);
     const proc = run('pre-tool-use', invoke('flash'), { JEV_DOWNGRADE: 'auto' });
     expect(proc.stdout.toString()).toBe('');
-    expect(logRows().filter((r) => r.event === 'agent_call')[0].downgrade_skip).toBe('jev-mode');
+    const row = logRows().filter((r) => r.event === 'agent_call')[0];
+    expect(row.decision).toBe('pass');
+    expect(row).not.toHaveProperty('downgrade');
+    expect(row).not.toHaveProperty('downgrade_skip');
+  });
+
+  it('Jev mode on-demand, default downgrade mode and explicit Model flash: no downgrade field on the agent_call row', () => {
+    fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'on-demand' } }));
+    const proc = run('pre-tool-use', invoke('flash'), { JEV_DOWNGRADE: undefined });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toBe('');
+    const rows = logRows().filter((r) => r.event === 'agent_call');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].decision).toBe('pass');
+    expect(rows[0]).not.toHaveProperty('downgrade');
+    expect(Object.keys(rows[0]).filter((k) => k.startsWith('downgrade'))).toEqual([]);
+    expect(fs.existsSync(stateFile())).toBe(false);
+    // The telemetry row of the call carries no downgrade fields either.
+    const telemetry = path.join(home, '.gemini', 'antigravity-cli', 'jev_telemetry.jsonl');
+    if (fs.existsSync(telemetry)) {
+      expect(fs.readFileSync(telemetry, 'utf8')).not.toContain('downgrade');
+    }
   });
 
   it('a v2.3.16 deny still wins: pro above the ceiling is denied by the elevation flow, not rewritten', () => {

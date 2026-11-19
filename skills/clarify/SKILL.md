@@ -140,6 +140,8 @@ This ensures total transparency: if the skill picked up an artifact the user did
 3. **Present the complete fork map upfront**:
    - Always state the total count and list all identified forks before asking the first question:
      > "Identified N orthogonal architectural forks across [topics]: [list of forks 1..N]. We start with Fork 1: <topic>."
+   - Keep the Turn-1 fork map compact: **one short line per fork** (`- **Fork k:** <topic> (<3–6 word scope>)`) so Turn 1 stays lean before Question 1.
+   - **Turn-1 single-reply invariant**: Target announcement → compact fork map → Question 1 prose → native question tool call (`ask_question` / `AskUserQuestion` / `question`) MUST all complete in this same Turn 1 reply.
    - **The total is fixed once the map is announced.** Every `Question N (of Total)` heading, `[Question N of Total]` prefix, and `Fork N/Total` header uses that same N.
    - If the count genuinely changes (a fork is retired, split, or discovered), say so before the next question: `Fork map revised: N → M (<reason>)`. From then on, use M in every counter.
 4. **Never batch the questions**: One fork, one interactive question call, one answer. Walk through all N forks sequentially.
@@ -155,6 +157,10 @@ All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in 
 > - **Mode B**: header with Door Type and Under the Hood, the 4-question framing, and the recommendation.
 >
 > This holds for forks 2..N too, including when the previous answer arrived as a tool result inside the same turn. An answer arriving as a tool result is not a reason to skip the next step.
+
+> [!CRITICAL]
+> **Same-Reply Invariant**:
+> A `## Question N (of Total)` heading and the interactive question tool call (`ask_question` / `AskUserQuestion` / `question`) MUST always appear in the **same assistant reply**. Never end a turn after `> **Recommendation:**` without invoking the tool (see "Adaptive Interactive Tool Calling" below).
 
 The step structure adapts based on the active operational mode:
 
@@ -289,7 +295,7 @@ After printing the markdown analysis, **ALWAYS invoke the harness-appropriate in
 
 #### A. Google Antigravity (`ask_question`)
 
-Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
+Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. Always invoke `ask_question` in the same reply as `## Question 1 (of Total)` — do not end Turn 1 after the recommendation without calling the tool. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 
 **Mode A (Standard Architecture):**
 ```json
@@ -331,6 +337,14 @@ ask_question({
 2. Option B: The Direct Sharpie Label (Denormalized JSONB)
 3. Option C: The Comma List on the Box (Delimited String)
 4. Other
+```
+
+**Optional Antigravity `Stop` hook backstop** (`hooks/clarify-stop-check.sh`, alongside `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:
+```json
+{ "clarify-require-tool-call": {
+  "enabled": true,
+  "Stop": [{ "type": "command", "command": "~/.agents/skills/clarify/hooks/clarify-stop-check.sh", "timeout": 5 }]
+} }
 ```
 
 #### B. Claude Code (`AskUserQuestion`)

@@ -16,6 +16,10 @@ core="$dir/SKILL.md"
 cap="${CLARIFY_LINE_CAP:-170}"
 word_cap="${CLARIFY_WORD_CAP:-2300}"
 fail=0
+body="$(mktemp)"
+trap 'rm -f "$body"' EXIT
+# The body is SKILL.md without its frontmatter, so routing rules cannot be satisfied by it.
+awk '/^---$/ { c++; next } c >= 2' "$core" > "$body"
 
 lines="$(wc -l < "$core")"
 if [ "$lines" -gt "$cap" ]; then
@@ -23,7 +27,7 @@ if [ "$lines" -gt "$cap" ]; then
   fail=1
 fi
 
-# anchor|file (core = SKILL.md, any = SKILL.md or a reference)
+# anchor|scope (core = SKILL.md, body = SKILL.md without frontmatter, any = SKILL.md or a reference)
 anchors=(
   'Target resolved:|core'
   'Identified N orthogonal|core'
@@ -47,8 +51,15 @@ anchors=(
   'never under 120|core'
   '→ next: full Question N+1 write-up, then ask|core'
   'Option X:|core'
-  'plain english|core'
-  '/clarify eli5|core'
+  'plain english|body'
+  '/clarify eli5|body'
+  'cplain|body'
+  'eli5|body'
+  'MUST appear in the same assistant reply|core'
+  'Never end a turn after|core'
+  'Never batch|core'
+  'never add a manual "Other"|core'
+  'and the question tool call all complete in this same Turn 1 reply|core'
   'clarify-stop-check.sh|any'
   'ask_question|core'
   'AskUserQuestion|core'
@@ -67,7 +78,11 @@ fi
 for entry in "${anchors[@]}"; do
   anchor="${entry%|*}"
   scope="${entry##*|}"
-  if [ "$scope" = core ]; then files=("$core"); else files=("$core" "$dir"/references/*.md); fi
+  case "$scope" in
+    core) files=("$core") ;;
+    body) files=("$body") ;;
+    *) files=("$core" "$dir"/references/*.md) ;;
+  esac
   if ! grep -qF -- "$anchor" "${files[@]}"; then
     echo "FAIL: anchor missing ($scope): $anchor" >&2
     fail=1

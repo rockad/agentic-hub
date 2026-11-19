@@ -9,7 +9,7 @@ Works in Claude Code, Google Antigravity and OpenCode.
 
 ## Files
 
-- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (same-reply, per-fork, option naming, counter prefix, locked fork count, terse styles), target resolution, the fork taxonomy, the Mode A step format, the CLI fallback, after-answer order and anti-patterns.
+- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (same-reply, per-fork, option naming, counter prefix, locked fork count, terse styles, Claude Code dialog rules), target resolution, the fork taxonomy, the Mode A step format, the CLI fallback, after-answer order and anti-patterns.
 - `references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`: the dialog format and examples for one harness. The session reads only its own.
 - `references/plain-mode.md`: the Mode B (`/cplain`, `/celi5`) step format, decision table and artifact. Read only in Mode B.
 - `references/closing.md`: the decision table, artifact, workstream table and execution handoff. Read only after the last fork.
@@ -102,4 +102,4 @@ In Google Antigravity, `/grill-me` is a built-in command that injects the native
 
 ## Keeping the skill light
 
-`SKILL.md` loads in full on every trigger, so it has a line cap enforced in CI by `scripts/check-clarify-skill.sh`, which also checks that the strings the Stop hook and the transcript checker depend on are still present. Add a rule once, in the rules block, not again in an anti-pattern or a note. Put long examples and conditional formats in `references/`.
+`SKILL.md` loads in full on every trigger, so it has a line cap and a word cap enforced in CI by `scripts/check-clarify-skill.sh`, which also checks that the strings the Stop hook and the transcript checker depend on are still present. Add a rule once, in the rules block, not again in an anti-pattern or a note. Put long examples and conditional formats in `references/`.

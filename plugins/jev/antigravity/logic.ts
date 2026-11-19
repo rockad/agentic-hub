@@ -14,6 +14,7 @@ import {
 } from '../src/core/governance.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
+import { stopRetryingText } from '../src/core/elevation-text.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
@@ -759,11 +760,8 @@ function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDec
     sessionCeilingTier,
     isOrchestrator
   });
-  const reason =
-    count >= 3
-      ? `${baseReason} This is attempt ${count} for the same delegation: stop retrying '${requestedModel}'. ` +
-        `Proceed with an explicit Model: "${sessionCeilingTier}", or ask the user again with ask_question.`
-      : baseReason;
+  const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
+  const reason = stop ? `${baseReason} ${stop}` : baseReason;
   return {
     decision: 'deny',
     reason,

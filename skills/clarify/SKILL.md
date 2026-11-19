@@ -4,8 +4,8 @@ description: >-
   Walk a non-trivial design through its forks one question at a time. Resolves
   design targets without parameters via a multi-tier recency cascade, explores the
   codebase first, surfaces genuine architectural trade-offs with prose-first
-  previews and explicit recommendations, and asks interactive single-choice
-  questions across Antigravity, Claude Code, and OpenCode. Supports both deep
+  previews, self-contained dialogs and explicit recommendations, and asks
+  interactive single-choice questions across Antigravity, Claude Code, and OpenCode. Supports both deep
   technical architecture (/clarify, /grill-me) and plain-English intuitive mental
   model clarification (/cplain, /celi5). Closes with a decision table, architecture
   artifact, and Jev-aware parallel workstream handoff.
@@ -44,6 +44,20 @@ The skill provides two operational modes tailored to different audiences and dep
 
 - **Mode A: Standard Architectural Mode (`/clarify`, `/grill-me`)**: Senior engineering mechanics, DDL, DTOs, ERDs, interface contracts, formal invariants, and technical pros/cons. Previews feature code snippets, database schemas, and protocol specs.
 - **Mode B: Plain English & Intuitive Mode (`/cplain`, `/celi5`, `--plain`, `--eli5`, `eli5`, "explain like I'm five", "plain english")**: Everyday analogies, mental models, 4-Question framing, Door Type reversibility (One-Way Tattoo vs. Two-Way Sticker), concrete Failure Blast Radius, and Dual-Anchors ("Where the analogy breaks"). Ensures complex architectural decisions are intuitive without sacrificing technical rigor.
+
+## Read before the first question
+
+This skill keeps its long examples and secondary formats in reference files, relative to this skill directory. Read exactly these, once, before asking Question 1:
+
+- **Your harness's reference** (pick by which question tool exists):
+  - `references/antigravity.md` if `ask_question` exists.
+  - `references/claude-code.md` if `AskUserQuestion` exists.
+  - `references/opencode.md` if `question` exists.
+  - None for the Terminal CLI fallback (its format is below in this file).
+- **`references/plain-mode.md`**, only in Mode B (`/cplain`, `/celi5`, `--plain`, `--eli5`).
+- **`references/closing.md`**, only after the last fork has been answered.
+
+The rules in this file apply on every question; the reference files hold examples and formats.
 
 ## Triggers & When to Enter
 
@@ -140,11 +154,27 @@ This ensures total transparency: if the skill picked up an artifact the user did
 3. **Present the complete fork map upfront**:
    - Always state the total count and list all identified forks before asking the first question:
      > "Identified N orthogonal architectural forks across [topics]: [list of forks 1..N]. We start with Fork 1: <topic>."
+   - Keep the Turn-1 fork map compact: **one short line per fork** (`- **Fork k:** <topic> (<3–6 word scope>)`) so Turn 1 stays lean before Question 1.
+   - **Turn-1 single-reply invariant**: Target announcement → compact fork map → Question 1 prose → native question tool call (`ask_question` / `AskUserQuestion` / `question`) MUST all complete in this same Turn 1 reply.
+   - **The total is fixed once the map is announced.** Every `Question N (of Total)` heading, `[Question N of Total]` prefix, and `Fork N/Total` header uses that same N.
+   - If the count genuinely changes (a fork is retired, split, or discovered), say so before the next question: `Fork map revised: N → M (<reason>)`. From then on, use M in every counter.
 4. **Never batch the questions**: One fork, one interactive question call, one answer. Walk through all N forks sequentially.
 
 ## The Shape of Each Step (Prose-First Previews)
 
-All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. This keeps interactive UI dialogs, chips, and modal prompts concise, clean, and readable across all harnesses.
+All substantive analysis, ASCII diagrams, code snippets, and trade-offs live in the **markdown prose above the tool call**. Prose is the universal canvas: it renders in every harness, and in Antigravity and OpenCode it keeps dialogs, chips, and modal prompts concise and clean. In Claude Code the `AskUserQuestion` dialog may be the only surface the user is sure to see, so there the dialog must also stand on its own (see "B. Claude Code" below and `references/claude-code.md`). Prose is still printed; the rich dialog is added to it, never a replacement for it.
+
+> [!IMPORTANT]
+> **Per-fork invariant — every fork gets the full step, every time.**
+> Fork N gets the complete step in prose **immediately before its own question call**, with no exceptions:
+> - **Mode A**: heading, context, argued options, your reading, and the recommendation.
+> - **Mode B**: header with Door Type and Under the Hood, the 4-question framing, and the recommendation.
+>
+> This holds for forks 2..N too, including when the previous answer arrived as a tool result inside the same turn. An answer arriving as a tool result is not a reason to skip the next step.
+
+> [!CRITICAL]
+> **Same-Reply Invariant**:
+> A `## Question N (of Total)` heading and the interactive question tool call (`ask_question` / `AskUserQuestion` / `question`) MUST always appear in the **same assistant reply**. Never end a turn after `> **Recommendation:**` without invoking the tool (see "Adaptive Interactive Tool Calling" below).
 
 The step structure adapts based on the active operational mode:
 
@@ -189,58 +219,7 @@ Close with a one-line recommendation:
 
 ### Mode B: Plain English & Intuitive Step Format (`/cplain`, `/celi5`)
 
-Plain English mode translates technical trade-offs into accessible mental models, everyday analogies, and clear risk boundaries while maintaining technical precision underneath.
-
-#### 1. Header with Door Type & Under the Hood Anchor
-
-Every question in Plain Mode begins with a clear classification of reversibility and its technical domain:
-
-```markdown
-## Question N (of Total) — <Everyday Descriptive Name>
-> **Door Type:** One-Way Door (Tattoo — high cost to reverse) | Two-Way Door (Sticker — easily changed)
-> **Under the Hood:** <Formal Engineering Topic / Subsystem>
-```
-
-- **One-Way Door (Tattoo)**: High cost to reverse. Hard or destructive to undo once code and data are live (e.g. database schema topology, primary storage engine, public API protocol contracts).
-- **Two-Way Door (Sticker)**: Easily changed. Low cost to reverse or iterate upon (e.g. cache TTL duration, polling interval, worker batch chunk size, internal retry limits).
-
-#### 2. The 4-Question Framing
-
-Structure the markdown prose above the tool call around these four questions:
-
-##### 1. What problem are we actually solving?
-1–2 plain-English sentences removing all jargon, explaining the practical user-facing or system challenge.
-
-##### 2. What are our choices in plain English?
-Present two to four mutually exclusive choices. **Option A is ALWAYS the Recommended Option** (`### Option A. <Analogy Name> (Recommended)`).
-
-For each option, provide:
-- **Everyday Analogy**: A relatable real-world comparison (e.g., "The Digital Sticky Tag", "The Fast-Food Drive-Through Lane", "The Central Dispatch Office").
-- **Conceptual ASCII Sketch**: Simple mental model diagram (not raw code or DDL).
-- **Under the Hood**: Formal engineering mechanism/term (e.g., `M:N Join Table with compound unique index`, `Redis pub/sub ring buffer`, `Optimistic locking with version column`).
-- **Where the Analogy Breaks**: The exact boundary where the real-world analogy stops matching software reality, preventing false assumptions.
-
-*Example Option Format:*
-```markdown
-### Option A. The Digital Sticky Tag (Recommended)
-- **Everyday Analogy**: Like sticking a color-coded reusable post-it note on a folder.
-- **Mental Model**:
-  [Record Folder] <---> [Sticky Tag Box] <---> [Tag Name]
-- **Under the Hood**: Normalized `record_tags` join table with foreign keys and compound unique index `(record_id, tag_id)`.
-- **Where the Analogy Breaks**: Unlike physical sticky notes that fall off or tear, database join rows never peel off accidentally and enforce strict referential integrity.
-```
-
-##### 3. What are the tangible trade-offs & blast radius?
-- **What gets easier (Pros)**: 2–3 concrete operational or developer benefits.
-- **Failure Blast Radius / Rework Cost (Cons)**: What happens if this assumption is wrong? How much work is required to undo this decision? Who or what gets affected?
-
-##### 4. Why is Option A the common-sense pick?
-- 2–3 plain sentences explaining why Option A is the pragmatic default.
-- Specific scenario or constraint under which the recommendation would flip to Option B or C.
-
-Close with the recommendation line:
-
-> **Recommendation:** **Option A: <Analogy Name> (<Formal Tech Anchor>)** — <one plain sentence explaining why>.
+Full format (Door Type and Under the Hood header, 4-question framing, example option, recommendation line) is in `references/plain-mode.md`. Read it before the first question in Mode B. The Per-fork invariant above still applies to every Mode B fork.
 
 ---
 
@@ -277,171 +256,20 @@ After printing the markdown analysis, **ALWAYS invoke the harness-appropriate in
 > - In Antigravity: `"question": "[Question 5 of 9] Which cross-harness title write-back strategy should ax adopt?"`
 > - In Claude Code & OpenCode: Also set `"header": "Fork 5/9"` (or `"Q5/9: Strategy"`).
 
-#### A. Google Antigravity (`ask_question`)
+#### Per-harness dialog rules (summary — these apply on every call)
 
-Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
+Full examples live in the harness reference you read before the first question (`references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`).
 
-**Mode A (Standard Architecture):**
-```json
-ask_question({
-  "questions": [
-    {
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "options": [
-        "(Recommended) Option A: M:N join table",
-        "Option B: Denormalized JSONB array",
-        "Option C: Single-tenant delimited string"
-      ],
-      "is_multi_select": false
-    }
-  ]
-})
-```
+**A. Google Antigravity (`ask_question`)**: options are plain strings prefixed `(Recommended) Option A: <name>`, `Option B: <name>`; call `ask_question` in the same reply as the `## Question N` write-up. Antigravity also needs the clarify Stop hook (rules alone did not stop turn-1 misses); it is described in `references/antigravity.md` and `README.md`.
 
-**Mode B (Plain English / ELI5):**
-```json
-ask_question({
-  "questions": [
-    {
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "options": [
-        "(Recommended) Option A: The Digital Sticky Tag (M:N Join Table)",
-        "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-        "Option C: The Comma List on the Box (Delimited String)"
-      ],
-      "is_multi_select": false
-    }
-  ]
-})
-```
+**B. Claude Code (`AskUserQuestion`)** — the dialog may be the only thing the user sees, so on every call:
+- Set `"multiSelect": false` (previews render only then), a short `header` (`Fork N/Total`), and a `label` with the `Option X:` prefix.
+- `description`: 2–3 sentences per option (what it does, main pro, main con), 150–300 characters, never under 120.
+- `preview`: a technical or mental-model block followed by `+` and `-` lines, about 6–12 lines. In Mode B add an `Under the hood:` line and a `Door:` line.
+- Every `preview` ends with `→ next: full Question N+1 write-up, then ask` (last fork: `→ next: decision table and closing`).
+- Prose is still printed above the call; the dialog never replaces it.
 
-*What the user sees in the Antigravity UI picker (Mode B):*
-```
-1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
-2. Option B: The Direct Sharpie Label (Denormalized JSONB)
-3. Option C: The Comma List on the Box (Delimited String)
-4. Other
-```
-
-#### B. Claude Code (`AskUserQuestion`)
-
-Uses `AskUserQuestion` with concise `header`, `label`, `description`, and `"multiSelect": false` (strictly required by Claude Code). Options can include the `"preview"` field to provide side-by-side terminal UI comparison boxes on single-select forks:
-
-**Mode A (Standard Architecture):**
-```json
-AskUserQuestion({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Option A: M:N join table (Recommended)",
-          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt.",
-          "preview": "record_tags\n  record_id\n  tag_id\n  UNIQUE (record_id, tag_id)"
-        },
-        {
-          "label": "Option B: Denormalized JSONB array",
-          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys.",
-          "preview": "records\n  id\n  tags: jsonb -- ['backend', 'urgent']"
-        },
-        {
-          "label": "Option C: Single-tenant delimited string",
-          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying.",
-          "preview": "records\n  id\n  tags: text -- 'backend,urgent'"
-        }
-      ]
-    }
-  ]
-})
-```
-
-**Mode B (Plain English / ELI5):**
-```json
-AskUserQuestion({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "multiSelect": false,
-      "options": [
-        {
-          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
-          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box.",
-          "preview": "[Records] <---> [Sticky Tag Box] <---> [Tags]\nIndependent, clean, searchable from either side."
-        },
-        {
-          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag.",
-          "preview": "[Record Folder]\nTags written in ink: [urgent, backend]\nHard to rename tags across 10,000 folders."
-        },
-        {
-          "label": "Option C: The Comma List on the Box (Delimited String)",
-          "description": "Writing tags separated by commas. Quickest to start, messy to organize later.",
-          "preview": "[Record Folder]\nString: \"urgent,backend\"\nTypos break searches easily."
-        }
-      ]
-    }
-  ]
-})
-```
-
-#### C. OpenCode (`question`)
-
-Uses `question` following standard option schema with `Option A:` labels:
-
-**Mode A (Standard Architecture):**
-```json
-question({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] Which data model should we use for record tagging?",
-      "options": [
-        {
-          "label": "Option A: M:N join table (Recommended)",
-          "description": "Normalized join table with compound unique index. Flexible queries, zero migration debt."
-        },
-        {
-          "label": "Option B: Denormalized JSONB array",
-          "description": "Embedded JSON array on record. Faster writes, but slower tag aggregation and no foreign keys."
-        },
-        {
-          "label": "Option C: Single-tenant delimited string",
-          "description": "Simple comma-delimited string in record column. Zero relations, but fragile querying."
-        }
-      ]
-    }
-  ]
-})
-```
-
-**Mode B (Plain English / ELI5):**
-```json
-question({
-  "questions": [
-    {
-      "header": "Fork 1/5",
-      "question": "[Question 1 of 5] How should we organize user tags on records?",
-      "options": [
-        {
-          "label": "Option A: The Digital Sticky Tag (M:N Join Table) (Recommended)",
-          "description": "Like reusable sticky notes. Independent, clean, but needs a separate index card box."
-        },
-        {
-          "label": "Option B: The Direct Sharpie Label (Denormalized JSONB)",
-          "description": "Like writing directly on the folder. Fast to write, but harder to search all folders for one tag."
-        },
-        {
-          "label": "Option C: The Comma List on the Box (Delimited String)",
-          "description": "Writing tags separated by commas. Quickest to start, messy to organize later."
-        }
-      ]
-    }
-  ]
-})
-```
+**C. OpenCode (`question`)**: standard option schema with `Option X:` labels and a short `description`; see `references/opencode.md`.
 
 #### D. Terminal CLI Fallback
 
@@ -467,74 +295,26 @@ Wait for the user's text reply before advancing to the next fork.
 
 ## After Each Answer
 
+The order is fixed: **Noted line → full Question N+1 step → tool call.** The acknowledgement is short; the next step is not.
+
 1. **Acknowledge in one line:**
 
    > Noted: **<chosen option>**. <Optionally, one clause on what it cascades into.> On to the next.
 
-2. **Do not repeat the preview** — the user just reviewed it in prose.
-3. If the answer makes a later fork moot — choosing multi-select dissolves a pending question about a tag limit — **say so immediately**: "Choosing X retires fork Y; next is Z."
-4. If the answer carries a clarification that touches decisions already taken, **revisit them out loud**. Never silently. "This clarification affects decisions N and M — reopening both."
-5. If the user picks "Other" and supplies their own answer, **take it without pushback** and re-check the remaining forks against it.
+2. **Then print the full step for Question N+1** — heading, context, argued options, reading, recommendation (Mode A) or the Door Type header, 4-question framing, and recommendation (Mode B) — and only then call the question tool. This applies even when the answer arrived as a tool result in the same turn.
+3. **Do not re-show the fork that was just answered** — no recap of its options or preview. The next fork still gets its full step.
+4. If the answer makes a later fork moot — choosing multi-select dissolves a pending question about a tag limit — **say so immediately**: "Choosing X retires fork Y; next is Z."
+5. If the answer carries a clarification that touches decisions already taken, **revisit them out loud**. Never silently. "This clarification affects decisions N and M — reopening both."
+6. If the user picks "Other" and supplies their own answer, **take it without pushback** and re-check the remaining forks against it.
 
 ## Closing the Series & Jev-Aware Execution Handoff
 
-Once all forks are resolved, present the consolidated architectural blueprint and transition gate.
+Once all forks are resolved, present the consolidated architectural blueprint and transition gate. Read `references/closing.md` now for the full format. In short:
 
-### 1. Decision Table
-
-#### Mode A (Standard Architecture)
-
-| # | Decision Topic | Chosen Option | Changed? |
-|---|----------------|---------------|----------|
-| 1 | <topic> | Option A: <formal technical decision> | unchanged / revised |
-| 2 | <topic> | Option B: <formal technical decision> | new |
-
-#### Mode B (Plain English / ELI5)
-
-| # | Decision Topic | Plain English Analogy | Under the Hood | Door Type | Changed? |
-|---|----------------|-----------------------|----------------|-----------|----------|
-| 1 | Tag Storage | The Digital Sticky Tag | M:N Join Table | Two-Way (Sticker) | unchanged / revised |
-| 2 | Cache Invalidation | The Daily Menu Board | TTL Cache Invalidation | One-Way (Tattoo) | new |
-
-The "Changed?" column earns its place only if something was revised mid-series; drop it when every decision held.
-
-### 2. Final Architecture Artifact
-
-Assemble the **final picture**:
-- **Mode A (Standard Architecture)**: Complete technical blueprint — complete ASCII diagram, DTOs/schemas, state machines, API contracts, and governing invariants in a single consolidated block.
-- **Mode B (Plain English / ELI5)**: Dual-layer blueprint providing **both** the conceptual ASCII mental model (everyday system metaphor) and the formal technical specification (under-the-hood contracts, schemas, and invariants). This bridges the intuitive high-level understanding with rigorous implementation-ready contracts.
-
-### 3. Proposed Parallel Workstream Breakdown Table
-
-When the architecture spans multiple files or components, break down the execution into a DAG of independent workstreams:
-
-| Stream | Scope / File Targets | Description | Suggested Role | Recommended Tier |
-|---|---|---|---|---|
-| WS1 | `src/db/schema.ts`, `migrations/` | Database schema & migration files | `code_engineer` | `flash` |
-| WS2 | `src/api/routes.ts`, `src/api/dto.ts` | Endpoint definitions & validation | `code_engineer` | `flash` |
-| WS3 | `docs/adr/001-tag-model.md` | ADR documentation & schema dictionary | `ghostwriter` / `vault_librarian` | `openrouter_free` |
-
-### 4. Gated Execution Transition
-
-> [!IMPORTANT]
-> **Do not write code without an explicit go from the user.**
-
-Before creating or editing files, present the decision table, artifact, and workstream breakdown, then stop and ask for confirmation (e.g. "Ready to proceed with execution?").
-
-Once the user approves:
-
-1. **Detect Jev Coprocessor**:
-   - Check if `jev_batch_dispatch` exists in available tools, or run CLI check `jev status` via `run_command`.
-
-2. **Branch A — Jev Active (`jev on` or `jev on-demand`)**:
-   - **Post-Approval Transition Gate**: Call `jev_batch_dispatch` with the workstream DAG to calibrate tier recommendations and subagent assignments.
-   - Inspect active and idle subagents with `manage_subagents(Action: "list")`. Reuse idle workers via `send_message` or spawn parallel subagents with `invoke_subagent`.
-   - Offload non-sensitive, public, or sanitized boilerplate, formatting, and markdown summaries to `jev_execute_free` ($0.00 cost, 0 Gemini quota).
-   - **Strict Main Context Gate**: The main orchestrator **must not** edit multiple files (`>=2`) sequentially in the main turn. Work must be delegated to parallel subagents as mapped in the workstream breakdown.
-
-3. **Branch B — Jev Inactive / Standard Environment**:
-   - In multi-agent environments: delegate independent workstreams to native subagents in parallel (`invoke_subagent` / `send_message`).
-   - In single-agent environments: execute the workstream breakdown sequentially step by step.
+- Present the decision table, the final architecture artifact, and the parallel workstream breakdown.
+- Then stop and ask for confirmation. **Do not write code without an explicit go from the user.**
+- After the go, detect Jev and dispatch the workstreams (details in `references/closing.md`).
+- In Mode B, use the Mode B decision table and artifact from `references/plain-mode.md`.
 
 ## Style
 
@@ -543,6 +323,7 @@ Once the user approves:
 - Preview blocks are monospaced ASCII. Emoji only where they carry meaning, such as colour swatches in a palette fork.
 - Four to eight lines of pros and cons per option is plenty; do not stretch each one into half a page.
 - Do not apologise for the length of the analysis — it is the value of the mode. Do not pad it either.
+- **Step format agrees with terse output styles.** The user asked for the full step by invoking clarify, and terse styles treat requested detail as what the user needs (Concise's own rule: give full detail on request). So under Concise or a similar style, the full step is the required content, not padding. Only the acknowledgements ("Noted: ...") and the closing stay terse.
 
 ## Anti-Patterns
 
@@ -554,7 +335,8 @@ Once the user approves:
 - **Firing options without codebase discovery** — asking questions the codebase already answers damages trust.
 - **Firing options without analysis** — that is a questionnaire, not a clarification.
 - **Options with no preview in prose** — the visual comparison is the point. If a fork resists having a preview, it may not be a fork worth this mode.
-- **Overloading tool call descriptions with previews** — breaks modal dialogs in GUI harnesses. Keep previews in markdown prose.
+- **Overloading tool call descriptions with previews (Antigravity / GUI harnesses whose dialogs take plain strings)** — breaks modal dialogs. There, keep previews in markdown prose. This does **not** apply to Claude Code: a thin `AskUserQuestion` dialog (one-line descriptions, no pros and cons in `preview`) is the anti-pattern there.
+- **Back-to-back question calls** — two question tool calls with no step prose between them. An answer arriving as a tool result is not a reason to skip the next step: every fork gets its full step immediately before its own call.
 - **Two options that mean the same thing** — merge them.
 - **Hiding the recommendation** — without a `(Recommended)` tag you are not helping, you are polling.
 - **Silent revision of earlier decisions** — always name what changed and why out loud.
@@ -572,6 +354,8 @@ Once the user approves:
 - **Door Type Classification**: One-Way Doors (Tattoos) are expensive or destructive to undo (database storage engine, primary key schema, public API shape, distributed protocol). Two-Way Doors (Stickers) are cheap to change (cache TTL, batch chunk size, retry count, UI label phrasing). Make this distinction explicit in Plain Mode.
 - **Dual Anchors ("Where the Analogy Breaks")**: Every analogy breaks somewhere. Explicitly identifying the break-point prevents false mental models that could cause bad downstream assumptions.
 - **Total Forks vs. Options per Fork Distinction**: Clarify this distinction carefully: **4 options per question is the harness limit for choices**, NOT a limit on the total number of architectural forks in the session! A comprehensive clarification should uncover **all** genuine architectural forks (e.g. 5 to 12+), sweeping across all architectural dimensions, and walk through them one by one.
-- **Previews in Markdown Prose**: Do not rely exclusively on tool-specific preview properties. Markdown prose is the universal preview canvas across all harnesses.
+- **Previews in Markdown Prose**: Prose is always required — it is the universal preview canvas across all harnesses, so never rely on tool-specific preview properties alone. In Claude Code, add a rich dialog on top (full `description` plus `preview` with `+`/`-` lines), because the dialog may be the only thing shown.
+- **Output-style reminders after tool results**: Terse output styles re-inject a brevity reminder after each answer comes back. The preview's `→ next:` line is the counterweight; never drop it.
+- **Fork Count Is Locked**: The total N is fixed when the fork map is announced. If it changes, state `Fork map revised: N → M (<reason>)` before the next question and use M in every counter from then on. A silently drifting counter ("of 5" then "of 3") reads as a bug.
 - **Claude Code `preview` Rendering**: In Claude Code, the `preview` field renders only when `multiSelect: false`. On a multi-select fork the preview blocks silently do not appear in the terminal UI comparison box — keep the comparison in markdown prose.
 - **Option Count & Limits**: Four options per question is the harness limit. "Other" is automatically appended by the UI; never add a manual "Other" option.

@@ -292,3 +292,108 @@ describe('Antigravity pre-flight in on-demand', () => {
     expect(msg).not.toContain('quota notice');
   });
 });
+
+describe('Antigravity pre-flight: exhausted Argon frontier pool per mode', () => {
+  let tmpHome = '';
+  let agyDir = '';
+  const saved: Record<string, string | undefined> = {};
+  const ENV = ['HOME', 'JEV_CONFIG_FILE', 'JEV_TELEMETRY_FILE', 'JEV_QUOTA_STATE_FILE'];
+
+  beforeEach(() => {
+    clearConfigCacheForTesting();
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-argon-pre-'));
+    agyDir = path.join(tmpHome, '.gemini', 'antigravity-cli');
+    fs.mkdirSync(agyDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpHome, '.config', 'jev'), { recursive: true });
+    for (const k of ENV) saved[k] = process.env[k];
+    process.env.HOME = tmpHome;
+    process.env.JEV_CONFIG_FILE = path.join(tmpHome, '.config', 'jev', 'config.json');
+    process.env.JEV_TELEMETRY_FILE = path.join(tmpHome, 'telemetry.jsonl');
+    process.env.JEV_QUOTA_STATE_FILE = path.join(agyDir, 'quota-state.json');
+  });
+
+  afterEach(() => {
+    clearConfigCacheForTesting();
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const setMode = (mode: string) => {
+    fs.writeFileSync(process.env.JEV_CONFIG_FILE!, JSON.stringify({ defaults: { mode } }));
+    clearConfigCacheForTesting();
+  };
+
+  const writeQuota = (execution: number, argon: number) =>
+    fs.writeFileSync(
+      path.join(agyDir, 'quota-state.json'),
+      JSON.stringify({
+        schema: 2,
+        updated_at: Math.floor(Date.now() / 1000),
+        active_model: 'Orchestrator (Argon)',
+        plan_tier: 'pro',
+        buckets: {
+          'gemini-5h': { remaining_fraction: execution },
+          'gemini-weekly': { remaining_fraction: execution },
+          'gemini-argon-wtu-weekly': { remaining_fraction: argon, reset_at: Math.floor(Date.now() / 1000) + 3600 }
+        }
+      })
+    );
+
+  async function message(): Promise<string> {
+    let stdout = '';
+    const origLog = console.log;
+    console.log = (msg: string) => { stdout += msg; };
+    try {
+      await runPreflight(
+        JSON.stringify({ conversationId: 'c-argon', modelName: 'Orchestrator (Argon)', lastUserInput: 'please refactor the billing module', invocationNum: 1 }),
+        { autoHeal: () => {}, callJev: (async () => null) as any }
+      );
+    } finally {
+      console.log = origLog;
+    }
+    const out = JSON.parse(stdout);
+    return out.injectSteps?.[0]?.ephemeralMessage ?? '';
+  }
+
+  it('on-demand, Argon at 0, healthy execution pool: one shared notice line for Argon, no advice', async () => {
+    setMode('on-demand');
+    writeQuota(0.8, 0);
+    const msg = await message();
+    expect(msg).toBe('[JEV] quota notice: Argon is free_only (0% remaining). Informational only.');
+    expect(msg).not.toContain('ARGON EXHAUSTED WARNING');
+    expect(msg).not.toMatch(/switch model|\/model/i);
+  });
+
+  it('on-demand, Argon free_only with some remaining: the shared wording for free_only', async () => {
+    setMode('on-demand');
+    writeQuota(0.8, 0.03);
+    expect(await message()).toBe('[JEV] quota notice: Argon is free_only (3% remaining). Informational only.');
+  });
+
+  it('on-demand, both pools low: one shared notice line per pool, nothing else', async () => {
+    setMode('on-demand');
+    writeQuota(0.05, 0);
+    const lines = (await message()).split('\n\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^\[JEV\] quota notice: Gemini is (conserve|free_only) \(5% remaining\)\. Informational only\.$/);
+    expect(lines[1]).toBe('[JEV] quota notice: Argon is free_only (0% remaining). Informational only.');
+  });
+
+  it('on-demand, healthy pools: nothing injected', async () => {
+    setMode('on-demand');
+    writeQuota(0.8, 0.8);
+    expect(await message()).toBe('');
+  });
+
+  it('mode on keeps the full Argon warning with the model-switch advice', async () => {
+    setMode('on');
+    writeQuota(0.8, 0);
+    const msg = await message();
+    expect(msg).toContain('ARGON EXHAUSTED WARNING');
+    expect(msg).toContain('Switch model to Gemini 4 Hydrogen via /model');
+    expect(msg).not.toContain('quota notice');
+  });
+});

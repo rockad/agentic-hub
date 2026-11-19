@@ -244,11 +244,16 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
         parts.push(`[QUOTA CONSERVE: ${poolLabel} pool strategy is conserve (${pct}% remaining, 5h: ${fivePct}, weekly: ${weeklyPct}). All subagents are throttled strictly to Model: "flash_lite" (Pro tier prohibited). Offload routine generation, boilerplate, formatting, and draft text to free models via jev_execute_free or jev_agent_free.]`);
       }
 
-      // Argon-exhausted warning for Orchestrator
+      // Argon-exhausted frontier pool for the Orchestrator. Mode `on`: the full warning (with the model-switch advice).
+      // A mode without routing advice (on-demand): the same shared one-line notice as for every other low pool (one line
+      // per low pool, no advice).
       if (isOrchestrator && quota.variant === 'argon') {
         const frontier = quota.pools?.frontier;
         const isArgonExhausted = frontier && (frontier.strategy === 'free_only' || frontier.min_remaining === 0);
-        if (isArgonExhausted) {
+        if (isArgonExhausted && behaviour.quotaNotice === 'low-only') {
+          const notice = lowQuotaNotice({ label: 'Argon', strategy: frontier.strategy, minRemaining: frontier.min_remaining });
+          if (notice) parts.push(notice);
+        } else if (isArgonExhausted && behaviour.quotaNotice === 'always') {
           const resetAt = quota.buckets['gemini-argon-wtu-weekly']?.reset_at;
           const resetAtStr = typeof resetAt === 'number'
             ? new Date(resetAt * 1000).toISOString()

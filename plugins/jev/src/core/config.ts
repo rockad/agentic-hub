@@ -31,6 +31,12 @@ export interface HarnessRoutingConfig {
   models?: Record<string, string>;
 }
 
+export interface WriteGuardConfig {
+  exemptPaths?: string[];
+  maxFiles?: number;
+  maxFilesOrchestrator?: number;
+}
+
 export interface HarnessConfig {
   mode: JevMode;
   models?: Partial<HarnessModelMap>;
@@ -39,6 +45,7 @@ export interface HarnessConfig {
   requireUpgradeApproval?: boolean;
   availableSubagents?: string[];
   agentPaths?: string[];
+  writeGuard?: WriteGuardConfig;
 }
 
 export interface JevTimeoutsConfig {
@@ -73,7 +80,7 @@ export interface JevConfig {
   defaults: JevConfigDefaults;
   routing?: JevRoutingConfig;
   tiers?: JevTiersConfig;
-  models?: Record<string, string>;
+  models?: Record<string, string> & { orchestratorVariant?: 'argon' | 'carbon' };
   timeouts?: Partial<JevTimeoutsConfig>;
   cache?: Partial<JevCacheConfig>;
   thresholds?: Record<string, number>;

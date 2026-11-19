@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { inputJsonSchema, strictObject } from './schema.js';
+import { conversationIdSchema, inputJsonSchema, strictObject } from './schema.js';
+import { safeSessionId } from '../../claude/logic.js';
 import {
   readQuotaView,
   quotaRecommendation,
@@ -15,7 +16,8 @@ export const quotaInputSchema = strictObject({
   refresh: z
     .boolean()
     .optional()
-    .describe('Reserved: hint that the caller wants a fresh read (the statusline is the only live source; this flag does not force a refresh).')
+    .describe('Reserved: hint that the caller wants a fresh read (the statusline is the only live source; this flag does not force a refresh).'),
+  conversationId: conversationIdSchema
 });
 
 export const selectModelInputSchema = strictObject({
@@ -36,7 +38,8 @@ export const selectModelInputSchema = strictObject({
   quotaStrategy: z
     .enum(['normal', 'conserve', 'free_only', 'unknown'])
     .optional()
-    .describe('Optional quota strategy from jev_quota; biases the ladder toward free when quota is tight.')
+    .describe('Optional quota strategy from jev_quota; biases the ladder toward free when quota is tight.'),
+  conversationId: conversationIdSchema
 });
 
 export const quotaToolDefinition: Tool = {
@@ -51,8 +54,9 @@ export const selectModelToolDefinition: Tool = {
   inputSchema: inputJsonSchema(selectModelInputSchema)
 };
 
-export async function handleQuotaTool(_args?: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const view = await readQuotaView();
+export async function handleQuotaTool(args?: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const conversationId = safeSessionId(((args || {}) as { conversationId?: unknown }).conversationId);
+  const view = await readQuotaView({ conversationId: conversationId ?? undefined });
   const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10);
   const result = {
     source: view.source,
@@ -60,6 +64,7 @@ export async function handleQuotaTool(_args?: unknown): Promise<{ content: Array
     stale: view.stale,
     planTier: view.plan_tier ?? null,
     activeModel: view.active_model ?? null,
+    activeModelSource: view.activeModelSource ?? null,
     updatedAt: view.updated_at,
     strategy: view.strategy,
     thresholds: view.thresholds,
@@ -81,6 +86,7 @@ export async function handleQuotaTool(_args?: unknown): Promise<{ content: Array
 
   await logTelemetry({
     tool: 'jev_quota',
+    sessionId: conversationId ?? null,
     strategy: view.strategy,
     minRemaining: view.gemini.min_remaining,
     stale: view.stale,
@@ -96,21 +102,25 @@ export async function handleQuotaTool(_args?: unknown): Promise<{ content: Array
 }
 
 export async function handleSelectModelTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const { task, candidates, quotaStrategy } = (args || {}) as {
+  const { task, candidates, quotaStrategy, conversationId: rawConversationId } = (args || {}) as {
     task: string;
     candidates?: ModelCandidate[];
     quotaStrategy?: string;
+    conversationId?: string;
   };
+  // Sanitized; recorded as `sessionId` only (see handleQuotaTool).
+  const conversationId = safeSessionId(rawConversationId);
   if (!task) {
     throw new Error('jev_select_model requires "task"');
   }
 
   const cands = Array.isArray(candidates) && candidates.length ? candidates : DEFAULT_MODEL_CANDIDATES;
-  const strategy = quotaStrategy || (await readQuotaView()).strategy;
+  const strategy = quotaStrategy || (await readQuotaView({ conversationId: conversationId ?? undefined })).strategy;
   const selection = await selectModel(task, cands, strategy);
 
   await logTelemetry({
     tool: 'jev_select_model',
+    sessionId: conversationId ?? null,
     recommendation: selection.recommendation,
     recommendedOptionId: selection.recommendedOptionId,
     cheapestSufficient: selection.cheapestSufficient,

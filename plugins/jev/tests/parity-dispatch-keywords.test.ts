@@ -211,8 +211,14 @@ describe('read-only personas never own an editing task', () => {
     expect(res.executionGuidance).toContain('Agent(subagent_type: "general-purpose", model: "sonnet")');
   });
 
-  it('single dispatch outside Claude Code is unchanged', () => {
+  it('single dispatch outside Claude Code swaps a read-only persona for an editing task (self when nothing else is offered)', () => {
     const res = runSingle('antigravity', { task: 'Edit the plan document', availableSubagents: ['Plan'] } as any, { recommendedSubagent: 'Plan', recommendedTier: 'flash' });
+
+    expect(res.recommendedSubagent).toBe('self');
+  });
+
+  it('single dispatch outside Claude Code keeps the read-only persona for a task that does not edit', () => {
+    const res = runSingle('antigravity', { task: 'Explain the plan document', availableSubagents: ['Plan'] } as any, { recommendedSubagent: 'Plan', recommendedTier: 'flash' });
 
     expect(res.recommendedSubagent).toBe('Plan');
   });

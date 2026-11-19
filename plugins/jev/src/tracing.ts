@@ -14,6 +14,20 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { assertEgressAllowed } from './core/egress.js';
 
+let cachedVersion: string | null = null;
+
+/** The plugin version, read from package.json (the single source of truth); 'unknown' when it cannot be read. */
+export function jevVersion(): string {
+  if (cachedVersion !== null) return cachedVersion;
+  try {
+    const raw = JSON.parse(fsSync.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    cachedVersion = typeof raw?.version === 'string' && raw.version.length > 0 ? raw.version : 'unknown';
+  } catch {
+    cachedVersion = 'unknown';
+  }
+  return cachedVersion ?? 'unknown';
+}
+
 export interface JevSpan {
   setAttribute(key: string, value: string | number | boolean): void;
   setAttributes(attributes: Record<string, string | number | boolean>): void;
@@ -94,7 +108,7 @@ function emitOtlpSpan(data: {
             {
               scope: {
                 name: 'agentic-hub-jev',
-                version: '2.3.15'
+                version: jevVersion()
               },
               spans: [
                 {
@@ -310,7 +324,7 @@ export async function initTracing(configOverride?: TracingConfig): Promise<JevTr
   try {
     const otelApi = await import('@opentelemetry/api' as any);
     if (otelApi && otelApi.trace && typeof otelApi.trace.getTracer === 'function') {
-      const tracer = otelApi.trace.getTracer(serviceName, '2.3.15');
+      const tracer = otelApi.trace.getTracer(serviceName, jevVersion());
       activeTracer = {
         startSpan(name: string, attributes?: Record<string, string | number | boolean>): JevSpan {
           const span = tracer.startSpan(name, { attributes });

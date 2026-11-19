@@ -29,3 +29,15 @@ export function inputJsonSchema(schema: StrictInputSchema): Tool['inputSchema'] 
   const { $schema: _header, ...rest } = toJsonSchemaCompat(schema) as Record<string, unknown>;
   return rest as Tool['inputSchema'];
 }
+
+/**
+ * The optional `conversationId` argument of jev_dispatch, jev_batch_dispatch, jev_quota and jev_select_model.
+ * It is a free string at the schema level (a non-string is rejected); the handlers sanitize it with
+ * `safeSessionId` before it reaches the telemetry file as `sessionId`.
+ */
+export const conversationIdSchema = z
+  .string()
+  .optional()
+  .describe(
+    "Optional: the id of the calling conversation. It is sanitized to letters, digits, '_' and '-' and recorded as `sessionId` in the tool's telemetry line, so a caller's own calls can be told apart from another conversation's. Omitted, the line records a null sessionId."
+  );

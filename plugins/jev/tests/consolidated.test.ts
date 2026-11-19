@@ -320,7 +320,7 @@ describe('Consolidated Master Plan: Phase 4 (OpenTelemetry Tracing Pipeline)', (
 
 describe('Consolidated Master Plan: Unified Telemetry Logging', () => {
   it('logs telemetry events conforming to JevTelemetryEvent', async () => {
-    const { logJevTelemetry, JEV_TELEMETRY_FILE } = await import('../src/shared.ts');
+    const { logJevTelemetry, jevTelemetryFile } = await import('../src/shared.ts');
     const testSession = `test-session-${Date.now()}`;
 
     await logJevTelemetry({
@@ -335,8 +335,8 @@ describe('Consolidated Master Plan: Unified Telemetry Logging', () => {
       quotaStrategy: 'normal'
     });
 
-    expect(fs.existsSync(JEV_TELEMETRY_FILE)).toBe(true);
-    const content = fs.readFileSync(JEV_TELEMETRY_FILE, 'utf8');
+    expect(fs.existsSync(jevTelemetryFile())).toBe(true);
+    const content = fs.readFileSync(jevTelemetryFile(), 'utf8');
     const lines = content.trim().split('\n');
     const lastEntry = JSON.parse(lines[lines.length - 1]);
 

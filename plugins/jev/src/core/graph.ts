@@ -15,11 +15,15 @@ export interface SubTask {
   boilerplateType?: string | null;
   effort?: string;
   requiresUserApproval: boolean;
+  /** Present (true) only when Jev mode "on" lowered the tier because the active quota pool is low. */
+  wasClampedByQuota?: boolean;
+  /** Present only when pro survives in a low pool (mode "on-demand"): names the pool and its remaining percent. */
+  quotaWarning?: string;
   estimatedCostUsd: number;
-  /** Claude Code only, echoed from the caller's input when given (case study 5.4). */
+  /** Echoed from the caller's input when given (case study 5.4); on Antigravity and OpenCode only for an item that supplies kind or needsEdit. */
   kind?: 'mechanical' | 'settled-edit' | 'judgement';
   needsEdit?: boolean;
-  /** Claude Code only: what set the tier. `kind` is the caller's classification, `router` the Decisions API under the stage rubric, `keyword` the offline whole-word rule. */
+  /** What set the tier (on Antigravity and OpenCode only for an item that supplies kind or needsEdit; there it is `kind` or `keyword`). `kind` is the caller's classification, `router` the Decisions API under the stage rubric, `keyword` the offline whole-word rule. */
   tierSource?: 'kind' | 'router' | 'keyword';
 }
 
@@ -28,6 +32,7 @@ export interface BatchDispatchPlan {
   totalTasks: number;
   freeTierTasks: number;
   activeSessionModel: string;
+  activeModelSource?: string | null;
   maxConcurrentFreeWorkers: number;
   tasks: SubTask[];
   stages: SubTask[][];

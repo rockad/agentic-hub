@@ -238,15 +238,15 @@ describe('the advertised JSON schemas keep the documented shape', () => {
       jev_route: { props: ['context', 'options', 'criteria', 'instruction'], required: ['context', 'options'] },
       jev_judge: { props: ['context', 'condition'], required: ['context', 'condition'] },
       jev_score: { props: ['context', 'rubric', 'criteria'], required: ['context'] },
-      jev_dispatch: { props: ['task', 'availableSubagents'], required: ['task'] },
-      jev_batch_dispatch: { props: ['tasks', 'availableSubagents'], required: ['tasks'] },
+      jev_dispatch: { props: ['task', 'availableSubagents', 'conversationId'], required: ['task'] },
+      jev_batch_dispatch: { props: ['tasks', 'availableSubagents', 'conversationId'], required: ['tasks'] },
       jev_agent_free: { props: ['prompt', 'cwd', 'model', 'timeoutMs'], required: ['prompt'] },
       jev_execute_free: { props: ['prompt', 'systemInstruction', 'model'], required: ['prompt'] },
       jev_execute_free_guarded: { props: ['prompt', 'systemInstruction', 'condition', 'model'], required: ['prompt'] },
       jev_set_mode: { props: ['mode'], required: ['mode'] },
       jev_get_mode: { props: [], required: [] },
-      jev_quota: { props: ['refresh'], required: [] },
-      jev_select_model: { props: ['task', 'candidates', 'quotaStrategy'], required: ['task'] }
+      jev_quota: { props: ['refresh', 'conversationId'], required: [] },
+      jev_select_model: { props: ['task', 'candidates', 'quotaStrategy', 'conversationId'], required: ['task'] }
     };
     for (const [name, e] of Object.entries(expected)) {
       expect([name, props(name)]).toEqual([name, e.props]);

@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { inputJsonSchema, strictObject } from './schema.js';
+import { conversationIdSchema, inputJsonSchema, strictObject } from './schema.js';
 import {
   callJevDecision,
   callJevRouter,
   readQuotaView,
+  poolForTier,
   clampTierToSessionCeiling,
+  modelTierRank,
+  applyLowQuotaClamp,
+  readJevMode,
   detectScaffoldingTask,
   isFreeTierMechanicalTask,
   isReadOnlySubagent,
@@ -15,6 +19,9 @@ import {
   claudeModelTier,
   sessionBelowOpus,
   type JevHarness,
+  type JevMode,
+  type QuotaView,
+  type QuotaClampResult,
   topologicalSortStages,
   estimateTierCost,
   defaultEffortForSubagent,
@@ -24,7 +31,6 @@ import {
   loadJevConfigSync,
   normalizeTier,
   getHarnessModels,
-  type CognitiveTier,
   JEV_MODEL,
   FALLBACK_MODEL,
   JEV_INPUT_COST_PER_MILLION,
@@ -35,7 +41,7 @@ import {
   type BatchDispatchPlan
 } from '../core/index.js';
 import { STAGE_RUBRIC, TIER_CRITERIA, isStageKind } from '../stage-rubric.js';
-import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria } from '../../claude/logic.js';
+import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria, safeSessionId } from '../../claude/logic.js';
 
 /** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
 export const dispatchInputSchema = strictObject({
@@ -43,7 +49,8 @@ export const dispatchInputSchema = strictObject({
   availableSubagents: z
     .array(z.string())
     .optional()
-    .describe('Optional candidate subagents (defaults to dynamically discovered workspace agents)')
+    .describe('Optional candidate subagents (defaults to dynamically discovered workspace agents)'),
+  conversationId: conversationIdSchema
 });
 
 export const batchDispatchInputSchema = strictObject({
@@ -60,18 +67,19 @@ export const batchDispatchInputSchema = strictObject({
           .enum(['mechanical', 'settled-edit', 'judgement'])
           .optional()
           .describe(
-            "Optional, Claude Code only: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives haiku, settled-edit (spec or plan edit with a decision already made) gives sonnet, judgement (an error is expensive) gives opus"
+            "Optional: the caller's own classification of the stage, used instead of guessing. mechanical (edit or checklist update) gives flash_lite (haiku on Claude Code), settled-edit (spec or plan edit with a decision already made) gives flash (sonnet), judgement (an error is expensive) gives pro (opus). On Antigravity and OpenCode the tier, kind and tierSource are reported for an item only when it supplies kind or needsEdit"
           ),
         needsEdit: z
           .boolean()
           .optional()
           .describe(
-            'Optional, Claude Code only: the stage edits files, so read-only subagent types (Plan, Explore) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
+            'Optional: the stage edits files, so read-only personas (Plan, Explore, research, knowledge-researcher) are never assigned and the free tier (text only) is not used. When omitted the task wording decides; false overrides the wording'
           )
       })
     )
     .describe('Array of task descriptions or phase items to plan and dispatch in parallel'),
-  availableSubagents: z.array(z.string()).optional().describe('Optional list of candidate subagents')
+  availableSubagents: z.array(z.string()).optional().describe('Optional list of candidate subagents'),
+  conversationId: conversationIdSchema
 });
 
 export const dispatchToolDefinition: Tool = {
@@ -82,7 +90,7 @@ export const dispatchToolDefinition: Tool = {
 
 export const batchDispatchToolDefinition: Tool = {
   name: 'jev_batch_dispatch',
-  description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags. On Claude Code, classify each task with kind (mechanical, settled-edit, judgement) and needsEdit to get the model per stage (haiku, sonnet, opus), Agent() guidance and no read-only persona or free tier for an edit stage.',
+  description: 'Decompose a multi-task roadmap or list of phases into a parallel DAG execution manifest with optimal tier assignments, dependency tracking, concurrency safety (max 10 for openrouter_free), and boilerplate pre-flight flags. On every harness a task that edits files gets no read-only persona and no free tier; classify a task with kind (mechanical, settled-edit, judgement) and needsEdit to get the tier per stage (flash_lite, flash, pro; haiku, sonnet, opus on Claude Code), plus Agent() guidance on Claude Code.',
   inputSchema: inputJsonSchema(batchDispatchInputSchema)
 };
 
@@ -247,6 +255,25 @@ export function keepEditsOffFreeTier(tier: string, edits: boolean): string {
 }
 
 /**
+ * The low-quota step for a harness. Claude Code has no Claude-quota source in readQuotaView: its pools are the
+ * Antigravity Gemini buckets, which say nothing about a Claude subscription (and may be a stale file left on the
+ * machine). So on Claude Code the step changes nothing and reports an unknown pool.
+ */
+export function quotaStepForHarness(
+  harness: JevHarness,
+  tier: string,
+  quotaView: QuotaView,
+  mode: JevMode,
+  edits: boolean
+): QuotaClampResult {
+  const pool = poolForTier(quotaView, tier);
+  if (harness === 'claude-code') {
+    return { tier, wasClampedByQuota: false, strategy: 'unknown', pool: (pool.pool as any) || quotaView.active.pool };
+  }
+  return applyLowQuotaClamp(tier, { active: pool }, mode, edits);
+}
+
+/**
  * The session-model ceiling the clamp compares against. Antigravity's quota file names a Gemini
  * model, which says nothing about a Claude Code session, so in claude-code there is no ceiling
  * here (the Claude hook, which knows the session model, applies its own).
@@ -273,12 +300,46 @@ export function resolveEditCapableSubagent(harness: JevHarness, subagent: string
   return editCapableSubagent(subagent, taskText, 'general-purpose');
 }
 
+/**
+ * Personas that cannot edit files outside Claude Code: the Claude Code read-only types plus the workspace
+ * research personas. Compared on a normalised name, so `knowledge-researcher`, `Knowledge Researcher` and
+ * `knowledge_researcher` are one persona. Claude Code keeps its own, narrower set (isReadOnlySubagent).
+ */
+const READ_ONLY_PERSONAS: ReadonlySet<string> = new Set(['research', 'knowledge-researcher', 'plan', 'explore']);
+
+/** Edit-capable personas to swap in, in priority order, as normalised names (kebab-case and display names alike). */
+const EDIT_CAPABLE_PERSONAS: readonly string[] = ['code-engineer', 'self'];
+
+const normalisePersona = (name: string): string => (name || '').trim().toLowerCase().replace(/[\s_-]+/g, '-');
+
+/** Whether a persona is read-only for batch edit safety on Antigravity and OpenCode. */
+export function isReadOnlyPersona(name: string): boolean {
+  return READ_ONLY_PERSONAS.has(normalisePersona(name));
+}
+
+/**
+ * Outside Claude Code: the persona that carries an editing task. A read-only persona is replaced by the first
+ * edit-capable workspace persona in priority order (code-engineer, Code Engineer, then self); any other persona
+ * is returned as given. `self` is always available, so the replacement never fails.
+ */
+export function resolveEditCapablePersona(subagent: string, workspaceAgents: Record<string, string>): string {
+  if (!isReadOnlyPersona(subagent)) return subagent;
+  for (const wanted of EDIT_CAPABLE_PERSONAS) {
+    const found = Object.keys(workspaceAgents).find((name) => normalisePersona(name) === wanted);
+    if (found) return found;
+  }
+  return 'self';
+}
+
 export async function handleDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
-  const { task, availableSubagents } = (args || {}) as {
+  const { task, availableSubagents, conversationId: rawConversationId } = (args || {}) as {
     task: string;
     availableSubagents?: string[];
+    conversationId?: string;
   };
+  // Sanitized once; recorded as `sessionId` (null when omitted or nothing safe is left).
+  const conversationId = safeSessionId(rawConversationId);
 
   if (!task) {
     throw new Error('jev_dispatch requires a non-empty "task" string');
@@ -385,7 +446,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
       confidence = Math.min(saAnswer?.confidence ?? 0.85, tierAnswer?.confidence ?? 0.85);
     } catch (fallbackErr: any) {
       const latencyMs = Math.round(performance.now() - start);
-      await logTelemetry({ tool: 'jev_dispatch', ...telemetryHarness(), status: 'error', error: String(fallbackErr), latencyMs });
+      await logTelemetry({ tool: 'jev_dispatch', ...telemetryHarness(), sessionId: conversationId ?? null, status: 'error', error: String(fallbackErr), latencyMs });
       throw new Error(
         `jev_dispatch: all dispatch tiers failed. Tier 1 (Jev Decisions API) and Tier 2 (${FALLBACK_MODEL}) both unavailable. ` +
         `Last error: ${fallbackErr.message}. Ensure OPENROUTER_API_KEY is set and valid in mcp_config.json.`
@@ -403,8 +464,10 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     costFormatted: `$${costUsd.toFixed(6)}`
   };
 
-  const quotaView = await readQuotaView();
+  const quotaView = await readQuotaView({ conversationId: conversationId ?? undefined });
   recommendedSubagent = resolveEditCapableSubagent(harness, recommendedSubagent, task);
+  // Outside Claude Code a read-only persona (research, knowledge-researcher, Plan, Explore) never owns an editing task.
+  if (!isClaude && editsFiles({ task })) recommendedSubagent = resolveEditCapablePersona(recommendedSubagent, subagentCriteria);
   const rawEffort = defaultEffortForSubagent(recommendedSubagent, task);
   const recommendedEffort = applyEffortGovernance(rawEffort, quotaView.strategy, recommendedTier);
 
@@ -414,8 +477,12 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   const claudeModel = isClaude ? activeClaudeSessionModel() : null;
   const clamped = clampTierToSessionCeiling(recommendedTier, ceilingModelForHarness(harness, quotaView.active_model), task);
   const ceilingClamping = isClaude ? { ...clamped, ceilingTier: claudeModelTier(claudeModel) ?? 'pro' } : clamped;
-  // The free tier returns text and cannot edit files: on Claude Code a task worded as an edit goes one tier up.
-  const effectiveTier = isClaude ? keepEditsOffFreeTier(ceilingClamping.clampedTier, editsFiles({ task })) : ceilingClamping.clampedTier;
+  // The quota step follows the ceiling: its only threshold source is the active pool's strategy (evaluatePoolStrategy).
+  // Mode "on" clamps a low pool whatever the task text says; "on-demand" lets pro through with a quotaWarning.
+  // On Claude Code the step is a no-op: the Gemini pools say nothing about the Claude subscription.
+  const quotaStep = quotaStepForHarness(harness, ceilingClamping.clampedTier, quotaView, await readJevMode(harness), editsFiles({ task }));
+  // The free tier returns text and cannot edit files: on every harness a task worded as an edit goes one tier up.
+  const effectiveTier = keepEditsOffFreeTier(quotaStep.tier, editsFiles({ task }));
   const cognitiveTier = normalizeTier(effectiveTier);
   const harnessModels = getHarnessModels();
   const concreteModel = harnessModels[cognitiveTier] || effectiveTier;
@@ -436,7 +503,10 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
     executionTool,
     executionGuidance,
     sessionCeilingTier: ceilingClamping.ceilingTier,
+    activeModelSource: quotaView.activeModelSource ?? null,
     wasClampedByCeiling: ceilingClamping.wasClamped,
+    ...(quotaStep.wasClampedByQuota ? { wasClampedByQuota: true, quotaStrategy: quotaStep.strategy, quotaPool: quotaStep.pool } : {}),
+    ...(isPro && quotaStep.quotaWarning ? { quotaWarning: quotaStep.quotaWarning } : {}),
     ...(isClaude ? { activeSessionModel: claudeModel ?? 'unknown' } : {}),
     scaffoldFirst: scaffoldingCheck.scaffoldFirst,
     boilerplateType: scaffoldingCheck.boilerplateType,
@@ -458,6 +528,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   await logTelemetry({
     tool: 'jev_dispatch',
     ...telemetryHarness(),
+    sessionId: conversationId ?? null,
     // Metadata only: the prompt text never reaches the telemetry file.
     ...taskFingerprint(task),
     ...result
@@ -519,17 +590,21 @@ export function matchSubagentByKeywords(
 
 export async function handleBatchDispatchTool(args: unknown): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const start = performance.now();
-  const { tasks, availableSubagents } = (args || {}) as {
+  const { tasks, availableSubagents, conversationId: rawConversationId } = (args || {}) as {
     tasks: Array<{ id: string; task: string; dependencies?: string[]; kind?: string; needsEdit?: boolean }>;
     availableSubagents?: string[];
+    conversationId?: string;
   };
+  // Sanitized once; recorded as `sessionId` (null when omitted or nothing safe is left).
+  const conversationId = safeSessionId(rawConversationId);
 
   if (!Array.isArray(tasks) || tasks.length === 0) {
     throw new Error('jev_batch_dispatch requires a non-empty "tasks" array');
   }
 
-  const quotaView = await readQuotaView();
+  const quotaView = await readQuotaView({ conversationId: conversationId ?? undefined });
   const activeHarness = detectActiveHarness();
+  const jevMode = await readJevMode(activeHarness);
   const isClaude = activeHarness === 'claude-code';
   const claudeModel = isClaude ? activeClaudeSessionModel() : null;
   const cfg = loadJevConfigSync();
@@ -557,6 +632,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
 
   // Candidate subagents for a task. On Claude Code a stage that edits files never gets a read-only type
   // (Plan, Explore); the caller's `needsEdit` wins when given, otherwise the wording decides (editsFiles).
+  // Elsewhere the candidates are unchanged and a read-only pick is swapped afterwards (resolveEditCapablePersona).
   const candidatesFor = (item: { needsEdit?: unknown; task?: string }): Record<string, string> => {
     if (!isClaude || !editsFiles(item)) return workspaceAgents;
     const editable = Object.fromEntries(Object.entries(workspaceAgents).filter(([name]) => !isReadOnlySubagent(name)));
@@ -625,33 +701,43 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     const scaffolding = detectScaffoldingTask(taskText);
 
     const kind = isStageKind(item.kind) ? item.kind : undefined;
+    const edits = editsFiles(item);
+    // The stage rubric is active for an item that says what it is (kind) or whether it edits (needsEdit). On
+    // Claude Code every item is rubric-evaluated; elsewhere an item supplying neither keeps the legacy keyword tier
+    // and reports none of kind, needsEdit and tierSource.
+    const rubricItem = isClaude || kind !== undefined || typeof item.needsEdit === 'boolean';
     let subagent = subagentAssignments[item.id] || 'self';
     let rawTier: string;
     let tierSource: SubTask['tierSource'];
-    if (isClaude) {
-      // A read-only type cannot carry out an edit stage, whatever routed it there.
-      if (editsFiles(item) && isReadOnlySubagent(subagent)) subagent = 'general-purpose';
-      // The caller's classification first, then the router's answer under the stage rubric, then whole words.
-      if (kind) {
-        rawTier = STAGE_RUBRIC[kind].tier;
-        tierSource = 'kind';
-      } else if (routerTiers[item.id]) {
-        rawTier = routerTiers[item.id];
-        tierSource = 'router';
-      } else {
-        rawTier = classifyBatchTier(taskText);
-        tierSource = 'keyword';
-      }
-      // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
-      rawTier = keepEditsOffFreeTier(rawTier, editsFiles(item));
+    // A read-only persona cannot carry out an edit stage, whatever routed it there (every harness).
+    if (edits) {
+      subagent = isClaude
+        ? isReadOnlySubagent(subagent) ? 'general-purpose' : subagent
+        : resolveEditCapablePersona(subagent, workspaceAgents);
+    }
+    // The caller's classification first, then (Claude Code) the router's answer under the stage rubric, then whole words.
+    if (kind) {
+      rawTier = STAGE_RUBRIC[kind].tier;
+      tierSource = 'kind';
+    } else if (isClaude && routerTiers[item.id]) {
+      rawTier = routerTiers[item.id];
+      tierSource = 'router';
     } else {
-      subagent = resolveEditCapableSubagent(activeHarness, subagent, taskText);
       rawTier = classifyBatchTier(taskText);
+      tierSource = 'keyword';
     }
 
+    // A judgement stage (or a rubric-evaluated stage whose rubric tier is pro) is exempt from the session-model
+    // ceiling only: its pro tier is the point. The quota step that follows is separate, and nothing exempts from it.
+    // On Claude Code no ceiling model is read here, so the ceiling changes nothing.
     const ceilingModel = ceilingModelForHarness(activeHarness, quotaView.active_model);
-    const clamped = clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
-    const tier = clamped.clampedTier;
+    const ceilingExempt = kind === 'judgement' || (tierSource !== 'keyword' && modelTierRank(rawTier) >= 3);
+    const clamped = ceilingExempt ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
+    // Quota step: one threshold source (the active pool's strategy). Mode "on" clamps a low pool regardless of
+    // approvals or override phrases in the task; "on-demand" leaves pro standing with a quotaWarning.
+    const quotaStep = quotaStepForHarness(activeHarness, clamped.clampedTier, quotaView, jevMode, edits);
+    // The free tier returns text and cannot edit files: the same test as the persona (editsFiles) decides.
+    const tier = keepEditsOffFreeTier(quotaStep.tier, edits);
     const cognitiveTier = normalizeTier(tier);
     const harnessModels = getHarnessModels();
     const concreteModel = harnessModels[cognitiveTier] || tier;
@@ -691,9 +777,12 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
       boilerplateType: scaffolding.boilerplateType,
       effort: taskEffort,
       requiresUserApproval: requiresApproval,
+      ...(quotaStep.wasClampedByQuota ? { wasClampedByQuota: true } : {}),
+      ...(requiresApproval && quotaStep.quotaWarning ? { quotaWarning: quotaStep.quotaWarning } : {}),
       estimatedCostUsd: taskCost,
-      // Claude Code only: the caller's own fields echoed when given, and what set the tier.
-      ...(isClaude ? { ...(kind ? { kind } : {}), ...(typeof item.needsEdit === 'boolean' ? { needsEdit: item.needsEdit } : {}), tierSource } : {})
+      // Rubric-evaluated items only (all on Claude Code; elsewhere those with kind or needsEdit): the caller's own
+      // fields echoed when given, and what set the tier.
+      ...(rubricItem ? { ...(kind ? { kind } : {}), ...(typeof item.needsEdit === 'boolean' ? { needsEdit: item.needsEdit } : {}), tierSource } : {})
     });
   }
 
@@ -708,6 +797,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     totalTasks: plannedTasks.length,
     freeTierTasks: freeTierCount,
     activeSessionModel: (isClaude ? claudeModel : ceilingModelForHarness(activeHarness, quotaView.active_model)) || 'unknown',
+    activeModelSource: quotaView.activeModelSource ?? null,
     maxConcurrentFreeWorkers: concurrencyCap,
     tasks: plannedTasks,
     stages,
@@ -720,6 +810,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
   await logTelemetry({
     tool: 'jev_batch_dispatch',
     ...telemetryHarness(),
+    sessionId: conversationId ?? null,
     taskCount: plannedTasks.length,
     estimatedCostUsd: manifest.estimatedCostUsd,
     requiresUserApproval: anyProRequested,

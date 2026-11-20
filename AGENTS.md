@@ -33,7 +33,8 @@ agentic-hub/
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Skills installation repair utility
-│   └── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
+│   ├── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
+│   └── todo/             # Shortcut to the harness's built-in todo
 └── marketplace.json      # Public marketplace manifest
 ```
 

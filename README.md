@@ -27,7 +27,8 @@ agentic-hub/
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Diagnostic and repair tool for npx skills installs
-│   └── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
+│   ├── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
+│   └── todo/             # Shortcut to the harness's built-in todo, kept current across subagents and workflows
 ├── marketplace.json      # Google Antigravity plugin and skill marketplace manifest
 ├── AGENTS.md             # Canonical AI agent guidance
 └── LICENSE               # MIT Open Source License
@@ -91,6 +92,7 @@ agentic-hub/
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.
 - **`skills/skills-doctor`**: Diagnose and repair `npx skills` installations across projects and global directories.
 - **`skills/sync-main`**: Merge the latest main into the current branch (main wins on shared code, the branch keeps its own), then build, test and lint the affected parts, attribute each failure to the merge or to the branch, and offer options instead of fixing silently. Never pushes on its own.
+- **`skills/todo`**: A shortcut to the harness's built-in todo, not a reimplementation: create it if missing, reconcile it if it exists, and carry the progress of subagents and workflows into it. Only the main session marks items completed or creates follow-ups. Claude Code is mapped; other harnesses come as `references/<harness>.md`.
 - **`skills/mcp-toggle`**: Context window optimizer; inspect and toggle on-demand MCP plugins (`chrome-devtools`, `google-workspace`, `jev`) saving ~22,000–24,000 tokens per turn.
 
 ---

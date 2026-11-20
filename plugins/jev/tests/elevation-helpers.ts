@@ -2,6 +2,7 @@ import {
   bumpAttempts,
   claimApproval,
   claimEffortApproval,
+  consumeApprovals,
   lastDeniedAtMs,
   noteDenied,
   noteEffortDenied,
@@ -45,6 +46,14 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       const { state, approval } = claimEffortApproval(get(s), level, nowMs);
       states.set(s, state);
       return approval;
+    },
+    peek: (s, requested, nowMs, ctx) => claimApproval(get(s), requested, nowMs, ctx).approval,
+    peekEffort: (s, level, nowMs) => claimEffortApproval(get(s), level, nowMs).approval,
+    consume: (s, wants, nowMs) => {
+      const done = consumeApprovals(get(s), wants, nowMs);
+      if (!done) return null;
+      states.set(s, done.state);
+      return { model: done.model, effort: done.effort };
     }
   };
 }

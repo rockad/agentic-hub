@@ -1236,6 +1236,35 @@ export function claimEffortApproval(state: ApprovalState, level: EffortLevel, no
 }
 
 /**
+ * Pure: consume, in one step, every approval a call needs (`model`: the covering model approval, `effort`: the covering effort
+ * approval), or none of them. A `once` is spent only when everything wanted is still there, so a call that cannot go ahead
+ * never spends one of its approvals (one answer, one run). Null when any wanted approval is gone (a parallel call spent it,
+ * or it expired between the peek and now): nothing is consumed then.
+ */
+export function consumeApprovals(
+  state: ApprovalState,
+  wants: { model?: { requested: string; ctx?: RankContext | null }; effort?: EffortLevel },
+  nowMs: number
+): { state: ApprovalState; model: Approval | null; effort: EffortApproval | null } | null {
+  let next = state;
+  let model: Approval | null = null;
+  let effort: EffortApproval | null = null;
+  if (wants.model) {
+    const c = claimApproval(next, wants.model.requested, nowMs, wants.model.ctx);
+    if (!c.approval) return null;
+    next = c.state;
+    model = c.approval;
+  }
+  if (wants.effort) {
+    const c = claimEffortApproval(next, wants.effort, nowMs);
+    if (!c.approval) return null;
+    next = c.state;
+    effort = c.approval;
+  }
+  return { state: next, model, effort };
+}
+
+/**
  * The deny reason of the effort flow (xhigh and max, the interim rule): the same prescribed-question shape as the elevation
  * choice, with the marker `[jev-elevate-effort:<level>]` and a No that re-invokes at `high`. `interim` is the finding's own
  * wording. From the third attempt of the same delegation it also says to stop retrying (`stopRetryingText`).

@@ -547,7 +547,7 @@ The agents a `run_workflow` script launches never pass through `PreToolUse[invok
 - **Modes** (from `modeBehaviour`): `off` runs and writes nothing; `on-demand` makes no decision, so the call passes with no analysis and no pin (one `workflow_call` row with `workflow_guard: "skipped"`); `on` does everything above.
 - **Pin store** (`antigravity/workflow-pin.ts`, shared with Claude Code in `src/core/workflow-pin.ts`): every allowed or asked call pins the sha256 of each analysed script under its `toolCall.id` in `~/.config/jev/antigravity-workflow-pins/` (directory 0700, files 0600, pruned after 14 days). `PostToolUse` on `run_workflow` re-hashes the files after the run and logs one `workflow_changed` row per file that differs (analysed and current sha256, never text; `harness: "antigravity"`). There is no prompt on a difference (the run already happened) and no approval is invalidated. Every decision is made on the current text, never on an earlier verdict. A pin written while Jev was on is consumed, and its drift logged, even if Jev was switched off before the run ended (off writes nothing).
 - **Logging**: a `workflow_call` row in `antigravity_decisions.jsonl` carries the decision, the models found, the script labels, hashes and sizes, and counts; never the script, the prompt or the reason text.
-- **Limits**: a fail-closed filter, not a sandbox. A script that `import`s another local file which launches agents is not followed; a script cannot be held still between the analysis and the harness's own read of it (detection after the fact, see the pin store); the run's actual served model is not observable. The exact live shape of the `run_workflow` `PreToolUse` / `PostToolUse` envelope is unverified on a live Antigravity; the guard reads the documented parameter names with casing tolerance.
+- **Limits**: a fail-closed filter, not a sandbox. A local import (a sibling `.py` file or package next to the script or under its Cwd, or a relative import) is unverifiable, so a file that launches agents behind it is never silently skipped; other modules are not followed; a script cannot be held still between the analysis and the harness's own read of it (detection after the fact, see the pin store); the run's actual served model is not observable. The exact live shape of the `run_workflow` `PreToolUse` / `PostToolUse` envelope is unverified on a live Antigravity; the guard reads the documented parameter names with casing tolerance.
 
 ### `invoke_subagent` Downgrade Choice (`PreToolUse`, `[jev-downgrade:flash_lite]`)
 
@@ -971,9 +971,10 @@ a failed hook then blocks the call. Jev does not enable it.
 
 **Drift recorder.** `PreToolUse` pins the sha256 of every script file it read under the call's `tool_use_id`
 (`~/.config/jev/workflow-pins/`, directory 0700, file 0600, pruned after 14 days). `PostToolUse` on `Workflow`
-re-hashes those files after the run and, when one differs, logs a `workflow_changed` event and (while Jev is on)
-prints a message. There is deliberately no prompt on a hash difference: the run already happened. A denied call is
-not pinned.
+re-hashes those files after the run and, when one differs, logs a `workflow_changed` event, marks the pin `drifted`
+(kept as the record) and (while Jev is on) prints a message. There is deliberately no prompt on a hash difference: the run
+already happened. A denied call is not pinned, and a pin is never read as a verdict: every `PreToolUse` analyses the file
+from disk as it is now.
 
 **Logging.** The `agent_call` decision-log entry of a Workflow carries `workflow_guard` (`allow`, `denied`, `asked`,
 `passed-instructed`, `error`), `workflow_models` (the literal models that were ranked, in script order),
@@ -986,6 +987,7 @@ an internal error: it asks.
 
 - Static analysis cannot be sound. This is a fail-closed filter, not a sandbox; the reference's `STILL_SLIPS` table of idioms known to pass is kept in `tests/workflow-guard-hardening.test.ts`.
 - A model computed at run time (a variable, `args`, a call) asks; it is not ranked.
+- A literal `xhigh`/`max` effort takes the `[jev-elevate-effort:<level>]` question (an instructed prompt passes); an unrecognised or non-literal effort asks. Every import (`import`, `export ... from`, `import()`, `require`), a local one included, is unverifiable.
 - `acorn` is loaded when the first Workflow is analysed, not when the hook starts: an install without it makes a Workflow ask (the script cannot be read) and does not disturb the other hooks.
 - The model a workflow agent actually ran on is **not logged**: no hook sees it, and `SubagentStart` carries no model.
 - No downgrade rating for a Workflow, and no clamp.
@@ -1132,7 +1134,7 @@ model elevation (`JEV_ELEVATION=dialog` keeps the permission dialog, `effort_ask
 
 Without an approvals store the deny is still returned (no counter, so no stop-retrying text). Unrecognised levels, non-string
 values and any comparison of a literal level with the session's effort are deliberately **not** checked on this path (cognitive-engine
-RFC 007 says do not build further), and the Workflow guard is unchanged. The model ceiling does not bound effort;
+RFC 007 says do not build further); the Workflow guard applies the same rule to a literal `xhigh`/`max` in a script (see "2.3.18: Workflow effort uses the choice question"). The model ceiling does not bound effort;
 the non-interim control is `maxEffortLevel: "high"` in the Claude Code settings.
 
 The Agent schema also accepts a relative `effort`, `"lower"` or `"higher"` (one step from the agent's normal effort).
@@ -1183,8 +1185,27 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 
 - **2.3.18: an approval is consumed only by a call that runs** (Claude Code `Agent`/`Task` PreToolUse guard; Jev mode `on`, choice flow; the version fields are bumped with the release, not in this change):
   - **One answer, one run.** The model gate and the effort gate only **peek** for a covering approval (`ApprovalStore.peek`, `peekEffort`: nothing is spent, not even an expiry pruned). Once every gate (model elevation, effort, unreadable definition, downgrade) has run and the verdict is allow, the approvals found are spent together by `ApprovalStore.consume` (`consumeApprovals`), under the store's lock, re-checking there. Before, a `Yes, once` for the model was spent by the elevation gate even when the same call was then denied by the effort gate (and a `once` effort answer by a downgrade deny), so the retry was denied for the model again. A call that loses the race for a `once` to a parallel call consumes nothing and is denied with the question for what is no longer covered. A standing approval (5 minutes, session) is never spent.
-  - The Workflow guard keeps its single `claim` (the model gate is its only gate). Open, pending the owner: whether an approved or instructed effort skips the downgrade question, and the Workflow effort route (a literal `xhigh`/`max` in a script is still classed unverifiable); both are marked `TODO` in the code.
-  - Tests: `tests/agent-guard-effort.test.ts` ("one answer, one run").
+  - **The downgrade question still follows an accepted effort** (decided): an effort that was named by the user or covered by an approval does not skip the downgrade evaluation. The effort question comes first, the downgrade question after it; a downgrade deny does not spend the effort answer (consumed only at the commit).
+  - Tests: `tests/agent-guard-effort.test.ts` ("one answer, one run", including "effort once + the downgrade question").
+
+- **2.3.18: Workflow effort uses the choice question** (Claude Code `Workflow` PreToolUse guard; Jev mode `on`):
+  - A literal `xhigh` or `max` `effort` on an `agent()` call, or on the `effort:` of an `agentType` definition, is its own site kind (`effort`), no longer "unverifiable". It follows the Agent rule: a prompt that names the effort passes (`passed-instructed`), otherwise the Workflow is **denied with the `[jev-elevate-effort:<level>]` question**, whose text names the held agents (for example "2 agents at max, 1 agent at xhigh; one answer covers the whole script"). The approval is for the highest level among the sites (`max` covers `xhigh`) and covers the whole script. Approvals are the Agent ones (once, 5 minutes, session), the model question comes first, and both are peeked and consumed together only when the Workflow runs. An unrecognised level or a non-literal effort stays unverifiable (denied with the sites); the closing sentence of that deny now says that `xhigh`/`max` is put to the user as a question once nothing else is unverifiable. Dialog mode asks, as before.
+  - Log: `effort_level`, `effort_decision` (`denied`, `approved`), `effort_approval_scope`, `workflow_effort_sites` on the `agent_call` row. Antigravity's `run_workflow` has no effort concept (nothing in its analyser or its `invoke_subagent` guard reads one), so there is nothing to align there.
+  - Tests: `tests/agent-guard-effort.test.ts` ("Workflow effort follows the Agent rule").
+
+- **2.3.18: combined cost estimate on every `agent_call` row, telemetry only** (both harnesses):
+  - Fields on every `agent_call` row, decisions log and telemetry alike, denied and on-demand rows too: `costEstimate`, `costRatio`, `costWeightsVersion` (`1`). `cost = W_model[tier] * W_effort[level]`, `ratio = cost(call) / cost(session)`. Model weights: `openrouter_free` 0, `flash_lite`/`haiku` 1, `flash`/`sonnet` 3, `pro`/`opus` 15 (`fable` counts as `pro`). Effort weights: `low` 0.5, `medium` 1, `high` 1.5, `xhigh` 2, `max` 3. A missing effort is the session's, else `medium`; Antigravity reads the effort from the `-low`/`-medium`/`-high`/`-xhigh` suffix of the requested or session model id, else `medium`. `costEstimate` is null when the call's model has no tier, `costRatio` is null when either side is unknown or the session's cost is 0. A Workflow row has the version and no estimate (its agents choose their own).
+  - It is an estimate of what the call **requested** (not of what ran after a clamp or downgrade) and it **never changes a decision**: nothing reads it. One shared helper with a versioned weights table: `src/core/cost-estimate.ts` (`COST_WEIGHTS_VERSION`).
+  - Tests: `tests/cost-estimate.test.ts`.
+
+- **2.3.18: a local import is unverifiable** (both Workflow guards):
+  - **Antigravity `run_workflow` (Python):** an `import` or `from ... import` whose top-level name is a sibling `<name>.py` file or `<name>/` package directory next to the script (a `ScriptPath`) or under its `Cwd` (the directory for an inline `Script`), and any relative import, is an unverifiable site (the imported file may launch agents the analysis never sees). Choice and clamp deny with "inline the agent(...) calls or remove the local import"; dialog mode asks as before. The standard library and installed packages stay allowed: only a sibling file or directory is checked.
+  - **Claude Code `Workflow` (JS):** already covered, nothing to add: the acorn analysis treats every `import` declaration, `export ... from`, dynamic `import()` and `require` as unverifiable, local or not.
+  - Tests: `tests/workflow-local-import.test.ts`.
+
+- **2.3.18: drift marks the pin, and a pin is never a verdict** (both Workflow guards):
+  - `PostToolUse` still logs `workflow_changed` for a script file that differs from the analysed one, and now **marks the pin `drifted`** (with the files and both hashes) and keeps it until it is pruned; an unchanged run still drops its pin. `PreToolUse` does not read the pin store at all: every call (a re-invocation, a resume, the same tool call id) analyses the file from disk as it is now and gets the normal verdict.
+  - Tests: `tests/workflow-drift-fresh.test.ts` (a file changed after a check is analysed fresh on the next run in both harnesses), `tests/workflow-pin-mode.test.ts`, `tests/antigravity-workflow-hook-process.test.ts`.
 
 - **2.3.18: Antigravity `run_workflow` static guard and pin store** (Antigravity `PreToolUse` / `PostToolUse` hooks, Jev mode `on`; parity with the Claude Code `Workflow` guard; the version fields are bumped with the release, not in this change):
   - **New guard** (`antigravity/workflow-guard.ts`): the script of a `run_workflow` call (`Script` or `ScriptPath`) is analysed on every call by a deterministic Python tokenizer in pure TypeScript (no subprocess), because the agents it launches never reach the `invoke_subagent` hook. See "`run_workflow` Static Guard" in the Antigravity section.

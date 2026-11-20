@@ -40,7 +40,7 @@ describe('drift is reported only while Jev is on', () => {
   });
 
   for (const mode of ['on-demand']) {
-    it(`no stdout, pin consumed, drift still logged when Jev was switched to ${mode} after the pin`, async () => {
+    it(`no stdout, drift still logged and the pin kept as drifted when Jev was switched to ${mode} after the pin`, async () => {
       const file = await pinnedAndEdited();
       r.mode.value = mode;
 
@@ -48,7 +48,8 @@ describe('drift is reported only while Jev is on', () => {
 
       expect(res.status).toBe('off');
       expect(res.output).toBeUndefined();
-      expect(fs.readdirSync(r.pins)).toHaveLength(0);
+      expect(fs.readdirSync(r.pins)).toHaveLength(1); // kept, marked drifted
+      expect(JSON.parse(fs.readFileSync(path.join(r.pins, fs.readdirSync(r.pins)[0]), 'utf8'))).toMatchObject({ drifted: true });
       expect(records()).toHaveLength(1);
       expect(records()[0]).toMatchObject({ tool_name: 'Workflow', tool_use_id: 'toolu_01ABC', session_id: 's1', file, decision: 'allow' });
       expect(records()[0].analysed_sha256).not.toBe(records()[0].current_sha256);

@@ -33,8 +33,13 @@
  *   that is `openrouter`/`free` or that no tier recognises, a script that cannot be tokenized, an unreadable,
  *   non-regular, oversized or missing `ScriptPath`, and a `run_workflow` input with neither `Script` nor `ScriptPath`.
  *
- * Limits (not a sandbox, a fail-closed filter): a script that `import`s another local file which launches agents is not
- * followed; a script cannot be re-checked between the analysis and the harness's own read of it (every decision is bound
+ * - a LOCAL import: an `import` or `from ... import` whose top-level name is a sibling `<name>.py` file or a `<name>/` package
+ *   directory next to the script (a `ScriptPath`) or under its `Cwd`, and any relative import (`from . import x`, `from .m import y`).
+ *   The imported file may launch agents the analysis never sees, so it is unverifiable ("inline the agent() calls or remove the
+ *   local import"). The standard library and installed packages stay allowed: only a sibling file or directory is checked.
+ *
+ * Limits (not a sandbox, a fail-closed filter): a local file is not followed (see above), and a module that is neither a sibling
+ * nor reachable from the script's own directory or Cwd (a `sys.path` change, a `.pth` file) is not noticed; a script cannot be re-checked between the analysis and the harness's own read of it (every decision is bound
  * to the sha256 of the text analysed, and a PostToolUse recorder reports drift, see workflow-pin.ts); the run's actual
  * served model is not observable here.
  *
@@ -303,6 +308,26 @@ export interface AnalysisContext {
   definitions?: DefinitionResolver;
   /** Collects every literal model that was ranked, and whether one passed by instruction. */
   seen: { models: string[]; instructed: boolean };
+  /** The directories a local import is looked for in: the script's own directory (a `ScriptPath`) and its `Cwd`. Empty or absent: no import is local. */
+  localModuleDirs?: readonly string[];
+}
+
+/** Is `name` a sibling module: `<dir>/<name>.py` or a `<dir>/<name>/` directory, in one of `dirs`? Never throws. */
+function isLocalModule(name: string, dirs: readonly string[]): boolean {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+  for (const dir of dirs) {
+    try {
+      if (fs.statSync(path.join(dir, `${name}.py`)).isFile()) return true;
+    } catch {
+      // not a file
+    }
+    try {
+      if (fs.statSync(path.join(dir, name)).isDirectory()) return true;
+    } catch {
+      // not a directory
+    }
+  }
+  return false;
 }
 
 const clip = (s: string, max = 48): string => {
@@ -464,8 +489,55 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
     if (orchestrator) site(at, `${source} has no explicit model under an Orchestrator session (set model to "flash" or "flash_lite")`);
   };
 
+  const localDirs = ctx.localModuleDirs ?? [];
+  /** The first token of a statement: first on its line, or right after `;` or `:` (a one-line `if x: import y`). */
+  const statementStart = (i: number): boolean => {
+    const prev = toks[i - 1];
+    return !prev || prev.line < toks[i].line || (prev.t === 'op' && (prev.v === ';' || prev.v === ':'));
+  };
+  /** An `import` or `from ... import` at `i` whose module is a sibling file or package, or relative: one unverifiable site. */
+  const checkImport = (i: number): void => {
+    const t = toks[i];
+    const tops: string[] = [];
+    let relative = false;
+    if (t.v === 'from') {
+      let j = i + 1;
+      while (toks[j]?.t === 'op' && (toks[j].v === '.' || toks[j].v === '...')) {
+        relative = true;
+        j++;
+      }
+      if (toks[j]?.t === 'name' && toks[j].v !== 'import') tops.push(toks[j].v);
+      while (toks[j]?.t === 'name' && toks[j].v !== 'import') {
+        j++;
+        if (toks[j]?.t === 'op' && toks[j].v === '.') j++;
+        else break;
+      }
+      if (!(toks[j]?.t === 'name' && toks[j].v === 'import')) return; // not an import statement (`yield from`, `raise ... from`)
+    } else {
+      let j = i + 1;
+      for (;;) {
+        if (toks[j]?.t !== 'name') break;
+        tops.push(toks[j].v);
+        j++;
+        while (toks[j]?.t === 'op' && toks[j].v === '.' && toks[j + 1]?.t === 'name') j += 2;
+        if (toks[j]?.t === 'name' && toks[j].v === 'as') j += 2;
+        if (toks[j]?.t === 'op' && toks[j].v === ',') j++;
+        else break;
+      }
+    }
+    const local = relative ? 'a relative' : tops.find((n) => isLocalModule(n, localDirs));
+    if (!local) return;
+    site(
+      t,
+      relative
+        ? 'a relative import brings in a local file the analysis cannot see (inline the agent() calls or remove the local import)'
+        : `the import of '${clip(local as string)}' brings in a sibling file or package (next to the script or under its Cwd) the analysis cannot see (inline the agent() calls or remove the local import)`
+    );
+  };
+
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
+    if (t.t === 'name' && (t.v === 'import' || t.v === 'from') && !(toks[i - 1]?.t === 'op' && toks[i - 1].v === '.') && statementStart(i)) checkImport(i);
     if (t.t === 'str') {
       if (t.prefix?.includes('f') && FSTRING_RESTRICTED.test(t.body ?? '') && (t.body ?? '').includes('{')) {
         site(t, 'an f-string expression names agent, exec, eval, compile, importlib or a similar escape');
@@ -591,13 +663,18 @@ export function evaluateWorkflowInput(args: unknown, where: WorkflowInputContext
 
   const sites: CallSite[] = [];
   try {
-    if (inline.value !== null) sites.push(...analyzePythonScript(inline.value, '<inline>', g, scripts));
+    const cwdArg = pickString(a, ['Cwd', 'cwd']).value;
+    if (inline.value !== null) {
+      // An inline script has no directory of its own: a local import is looked for under its Cwd (else the hook's).
+      const inlineBase = cwdArg ?? where.cwd ?? where.workspacePaths?.[0];
+      sites.push(...analyzePythonScript(inline.value, '<inline>', { ...g, localModuleDirs: inlineBase ? [path.resolve(inlineBase)] : [] }, scripts));
+    }
     if (file.value !== null) {
-      const cwdArg = pickString(a, ['Cwd', 'cwd']).value;
       const base = cwdArg ?? where.cwd ?? where.workspacePaths?.[0] ?? process.cwd();
       const resolved = path.resolve(base, file.value);
       const read = readRegularFile(resolved, MAX_SCRIPT_BYTES);
-      if (read.kind === 'ok') sites.push(...analyzePythonScript(read.text, resolved, g, scripts));
+      // The script's own directory first, then its Cwd.
+      if (read.kind === 'ok') sites.push(...analyzePythonScript(read.text, resolved, { ...g, localModuleDirs: [path.dirname(resolved), path.resolve(base)] }, scripts));
       else if (read.kind === 'too-large') sites.push({ file: resolved, line: 0, col: 0, reason: `${read.size} bytes, over the ${MAX_SCRIPT_BYTES} byte limit`, kind: 'unverifiable' });
       else if (read.kind === 'not-regular') sites.push({ file: resolved, line: 0, col: 0, reason: 'not a regular file (missing, a directory or a FIFO)', kind: 'unverifiable' });
       else sites.push({ file: resolved, line: 0, col: 0, reason: `cannot be read (${clip(read.message, 80)})`, kind: 'unverifiable' });
@@ -632,7 +709,8 @@ export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | '
     `[jev] This run_workflow script (${scriptIds(scripts)}) cannot be cleared against the session model '${sessionModel}': ` +
     `${d.sites.length} site(s) Jev cannot verify (${d.unverifiable.length} unverifiable):\n${siteLines(d.sites)}\n` +
     'Change the script so every agent(...) call names a literal model (a plain string such as "flash", "flash_lite" or "pro", no variables, f-strings, expressions, *args or **kwargs) ' +
-    'at or below the session ceiling, or inherits it (not under an Orchestrator), and so that agent is only ever called directly; then call run_workflow again. ' +
+    'at or below the session ceiling, or inherits it (not under an Orchestrator), and so that agent is only ever called directly, and so that it imports no local file ' +
+    '(inline the agent(...) calls or remove the local import; the standard library and installed packages are fine); then call run_workflow again. ' +
     'Do not ask the user about this: it is fixed in the script.'
   );
 }

@@ -54,6 +54,10 @@ This document governs System 1 decision-making, model tier governance, thinking 
 - **Pro Tier Manual Approval Workflow**:
   - Pro tier models (`pro`, `opus`) must NEVER be used automatically.
   - If `jev_dispatch` recommends `pro`, prompt the user for explicit approval. If declined, execute on `flash` or cheaper.
+- **Antigravity `run_workflow` guard (mode `on`)**:
+  - The agents a `run_workflow` script launches never reach the `invoke_subagent` hook, so the hook analyses the script (`Script` or `ScriptPath`) statically on every call and binds its decision to the sha256 of the text it read.
+  - A literal `model` above the session ceiling is denied with the `[jev-elevate:<model>]` `ask_question` (with `(sha256:<12hex>)`); ask it as prescribed and retry. A script Jev cannot verify is denied with guidance; write a literal `model` on every `agent(...)` call. Only `JEV_ELEVATION=dialog` ever asks.
+  - `on-demand` makes no decision and `off` does nothing. Drift of a script file after the run is logged as `workflow_changed`.
 - **Thinking Effort**:
   - Match reasoning effort to task complexity. High thinking effort should be reserved for ambiguous architectural decisions, while routine transformations run with minimal or zero thinking overhead.
   - Claude Code, mode `on`: an `Agent` call with effort `xhigh` or `max` is denied until the user approves it with the prescribed `AskUserQuestion` (marker `[jev-elevate-effort:<level>]`: Yes once, Yes for the next 5 minutes, Yes for this session, No run at high), or names that effort in the prompt. Outside `JEV_ELEVATION=dialog` Jev never uses a permission dialog for it, or for an unranked model, an unreadable agent definition or an unverifiable Workflow: those are denied with guidance.

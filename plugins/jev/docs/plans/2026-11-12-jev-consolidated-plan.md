@@ -1210,7 +1210,7 @@ PRs `#54`, `#55`, `#66`, and `#73` are merged into `main`. Redacted summary of R
 | 2 | #76 (`v2.3.17`): review; after #72 merges, rebase onto `main`, retarget, merge (CI starts once it targets `main`) | Claude Code, Doc-Cr | 1 | open |
 | 3 | After each merge: reinstall the jev plugin in Antigravity from `main` and move the dedicated MCP worktree to the new `main` | Antigravity, Claude Code | 1, 2 | blocked |
 | 4 | Remove the merged local worktrees (check each is clean or merged first) | Claude Code | 1, 2 | blocked |
-| 5 | `v2.3.18` (WS3 + WS5): `run_workflow` static guard with the Q3 idioms above, pin store, final docs | tbd | 2 | next release |
+| 5 | `v2.3.18` (WS3 + WS5): `run_workflow` static guard with the Q3 idioms above, pin store, final docs (T12: guard, pin store and docs done on `feat/jev-2.3.18`; unverifiable scripts are denied with guidance rather than `ask`, 2.3.18 never-ask rule) | Claude Code | 2 | done (T12) |
 | 6 | **Argon phase (separate, later):** Live Check 9 Part B, Live Check 8 (relax the explicit-`Model` rule under the Orchestrator?), Live Check 11 (which models serve `pro` from Hydrogen and Orchestrator parents; decides E5) | Antigravity | Argon weekly reset | done (32.10) |
 | 7 | Argon phase: record results here (redacted); update Live Check 11's fallback clause, which assumed every case serves `gemini-3.8-flash-tiered` (Round 2 saw Hydrogen-tiered serving ids); if Part B contradicts Decision 3, revise it and ship a follow-up release | Antigravity, Claude Code, owner | 6 | done (32.10; no code change needed) |
 

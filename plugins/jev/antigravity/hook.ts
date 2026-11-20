@@ -47,6 +47,8 @@ import {
 import { readRegularFileTail } from '../claude/safe-read.js';
 import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
+import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
+import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -72,6 +74,14 @@ function appendDecisionLog(entry: Record<string, unknown>): void {
     privateFile(file);
   } catch {
     // fail open on logging failure
+  }
+}
+
+function safelyPrune(dir: string): void {
+  try {
+    pruneWorkflowPins(dir);
+  } catch {
+    // best-effort
   }
 }
 
@@ -422,6 +432,13 @@ async function main() {
         await flushTelemetry();
         console.log('{}');
         process.exit(0);
+      } else if (toolName === RUN_WORKFLOW_TOOL) {
+        // The drift recorder: re-hashes the script files the PreToolUse guard analysed and logs `workflow_changed` when one
+        // differs. No prompt and nothing printed beyond the empty object; mode off never gets here, on-demand logs silently.
+        await recordRunWorkflowPostToolUse(input, { dir: antigravityWorkflowPinDir(jevDir), readMode: () => mode, log: appendDecisionLog });
+        await flushTelemetry();
+        console.log('{}');
+        process.exit(0);
       } else if (toolName === 'invoke_subagent') {
         const conversationId = input.conversationId || null;
         let contentToSearch = typeof input.content === 'string' ? input.content : '';
@@ -509,6 +526,49 @@ async function main() {
     }
     if (!activeModel && sessionModel) {
       activeModel = ceilingModelForHarness('antigravity', sessionModel);
+    }
+
+    // run_workflow: the agents a script launches never reach this hook, so the script itself is analysed (workflow-guard.ts).
+    // A mode without decisions (on-demand) passes it untouched: no analysis, no pin, one decisions-log row.
+    if (input.toolCall?.name === RUN_WORKFLOW_TOOL) {
+      const pinDir = antigravityWorkflowPinDir(jevDir);
+      const w = evaluateAntigravityWorkflowCall(input, {
+        mode,
+        sessionModel: activeModel,
+        approvals,
+        config: jevConfig,
+        pinDir
+      });
+      const wf = w.decision;
+      const wfPrompt = taskFingerprint(input.lastUserInput || '');
+      // Never the script and never the reason text (it carries script-supplied literals): counts, hashes and decision fields.
+      appendDecisionLog({
+        event: 'workflow_call',
+        harness: 'antigravity',
+        session_id: input.conversationId || null,
+        call_key: antigravityCallKey(input),
+        tool_name: RUN_WORKFLOW_TOOL,
+        session_model: activeModel || null,
+        ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
+        decision: wf.decision,
+        elevation: wf.elevation || null,
+        approval_scope: wf.approvalScope || null,
+        attempt_count: wf.attemptCount || null,
+        prompt_length: wfPrompt.taskLen,
+        prompt_hash: wfPrompt.taskLen > 0 ? wfPrompt.taskHash : null,
+        ...(wf.pullFallback ? { pull_fallback: wf.pullFallback } : {}),
+        ...(wf.autoApproveWarning ? { auto_approve_warning: true } : {}),
+        ...w.log
+      });
+      if (modeBehaviour(mode).decisions) safelyPrune(pinDir);
+      await flushTelemetry();
+      if (wf.decision === 'pass') {
+        passThrough(event);
+      }
+      const wfOut: Record<string, unknown> = { decision: wf.decision };
+      if (wf.reason) wfOut.reason = wf.reason;
+      console.log(JSON.stringify(wfOut));
+      process.exit(0);
     }
 
     let decision = evaluateAntigravitySubagentCall(input, {

@@ -49,6 +49,7 @@ import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type A
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
+import { antigravityCostFields } from '../src/core/cost-estimate.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -629,7 +630,9 @@ async function main() {
       prompt_hash: promptHash,
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
       ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
-      ...downgradeLog
+      ...downgradeLog,
+      // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
+      ...antigravityCostFields(requestedModel, activeModel)
     });
 
     if (isSubagentCall && modeBehaviour(mode).telemetry) {

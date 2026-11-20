@@ -38,6 +38,8 @@
 #      appeared since the previous clarify question.
 #   5. WARNING only: ask_question with [Question/Fork N of M] without
 #      "## Question N" prose in the same reply segment.
+# The session ends, as in the Stop hook, when the user abandons the series: an explicit
+# cancel or a different slash command after the last question (issue #82).
 #
 # Exit codes: 0 all checked questions pass, 1 at least one failure,
 #             2 no clarify questions found, 3 usage or input error.
@@ -233,7 +235,7 @@ def decision_table($lines):
 def closing_sections($lines):
   any($lines[]; startswith("#") and contains("Gated Execution"));
 
-# `Fork map revised: N → M` sets the new total M (SKILL.md, Fork Count Is Locked).
+# `Fork map revised: N → M` sets the new total M (SKILL.md, the fork-count-is-locked rule).
 def revised_total($lines):
   [ $lines[] | select(contains("Fork map revised"))
     | [capture("Fork map revised:\\s*[0-9]+\\s*(?:→|->)\\s*(?<m>[0-9]+)")][0]
@@ -256,6 +258,23 @@ def last_question($tags; $hs):
   | if $t != null then {n: $t.n, m: ([$t.m, ($h.m // 0)] | max)}
     elif $h != null then $h
     else null end;
+
+# The text of a user turn: the <USER_REQUEST> block when the harness wraps one (the skill
+# body and metadata around it are not what the user typed), else the whole content.
+def user_text:
+  str | (([capture("<USER_REQUEST>\\s*(?<t>[\\s\\S]*?)\\s*</USER_REQUEST>")][0].t) // .);
+
+# The first answer line of an ask_question result ("A1: ...", also for a write-in).
+def answer_text:
+  str | ([ split("\n")[] | capture("^A[0-9]+:[ \\t]*(?<t>.*)$") | .t ][0] // "");
+
+# A message that leaves the series: it opens with an explicit cancel phrase that ends the
+# sentence (or leads into a new request), or it is a different slash command. Anchored at
+# the start so "never mind the cost, go with A" and "stop using Redis" stay answers.
+def abandons:
+  (str | ascii_downcase | sub("^\\s+"; "") | sub("^a[0-9]+:\\s*"; "")) as $t
+  | ($t | test("^(?:(?:ok|okay|no|hmm|actually|wait|sorry|please|hey)[,.!:]?\\s+)*(?:forget (?:that|it|this|about it|all that)|never ?mind|cancel(?: (?:that|it|this|clarify|the (?:clarify|interview|questions)))?|abort(?: (?:that|it|this|clarify|the (?:clarify|interview|questions)))?|stop(?: (?:asking|this|it|clarify|the (?:clarify|interview|questions)))?|let.?s stop(?: (?:here|this|now))?|i.?m done(?: (?:here|with this))?|that.?s enough|no more questions|(?:skip|exit|quit|leave|abandon) (?:clarify|the (?:clarify|interview|questions)|this))(?:\\s*$|\\s*[.!;]|\\s*,\\s*(?:and |then |please |let.?s |now |instead |just |write |give |show |tell |make |can you |could you |i want |i.?d )|\\s+(?:and|then|please|now|instead)\\b)"))
+    or (($t | test("^/[a-z][a-z0-9:_-]*(?:\\s|$)")) and ($t | clarify_cmd | not));
 
 # The Decision Table closes the series when it is the whole reply (no Question heading)
 # and the last question asked was the last one (n >= m, or none tracked), or when the
@@ -342,14 +361,20 @@ def check_ask($step; $tc; $st):
     end;
 
 reduce (inputs | fromjson? | select(type == "object")) as $e
-  ({line: 0, text: "", rev: "", prev: null, clarify_seen: false, last: null, headings: [], checked: 0, failed: 0, warned: 0, out: []};
+  ({line: 0, text: "", rev: "", prev: null, clarify_seen: false, last: null, awaiting: false, headings: [], checked: 0, failed: 0, warned: 0, out: []};
    .line += 1
    | (if $e.step_index != null then $e.step_index else .line end) as $step
    | if $e.type == "USER_INPUT" then
        ($e.content | str) as $ucontent
        | flush_headings
        | .text = ""
-       | (if ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null else . end)
+       | .awaiting = false
+       | (if ($ucontent | user_text | abandons) then .clarify_seen = false | .last = null
+          elif ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null
+          else . end)
+     elif $e.type == "GENERIC" and .awaiting then
+       .awaiting = false
+       | (if ($e.content | answer_text | abandons) then .clarify_seen = false | .last = null else . end)
      elif $e.type == "PLANNER_RESPONSE" then
        ($e.content | str) as $content
        | ($content | outside_fences) as $lines
@@ -369,6 +394,7 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
           else . end)
        | .last = (if $cseen and ($closes | not) then $last else null end)
        | .clarify_seen = ($cseen and ($closes | not))
+       | .awaiting = $asks
        | reduce (($e.tool_calls // []) | if type == "array" then .[] else empty end | select(type == "object" and .name == "ask_question")) as $tc (.;
            check_ask($step; $tc; .)
          )

@@ -9,7 +9,7 @@ Works in Claude Code, Google Antigravity and OpenCode.
 
 ## Files
 
-- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (per-fork invariant, same-reply invariant, tool-call, naming and counter rules, Mode A step format, after-answer order, style, anti-patterns, gotchas).
+- `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (same-reply, per-fork, option naming, counter prefix, locked fork count, terse styles, Claude Code dialog rules), target resolution, the fork taxonomy, the Mode A step format, the CLI fallback, after-answer order and anti-patterns.
 - `references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`: the dialog format and examples for one harness. The session reads only its own.
 - `references/plain-mode.md`: the Mode B (`/cplain`, `/celi5`) step format, decision table and artifact. Read only in Mode B.
 - `references/closing.md`: the decision table, artifact, workstream table and execution handoff. Read only after the last fork.
@@ -55,9 +55,11 @@ What the hook does:
 - A clarify session starts at a `/clarify` (or alias, any case) command, a `Target resolved:` line, an `Identified N orthogonal` or `Decomposing into N orthogonal` line, or an `ask_question` call tagged `[Question N of M]` or `[Fork N of M]`. Any mention of the command arms it, including in unrelated prose.
 - It ends at a `Decision Table` heading (any case; optional number, emoji, `Final`, quote marker or bold) in a reply with no `## Question` heading, once the last question has been asked (`N >= M`), or when a `Gated Execution` heading shows the run ended early. It also closes if no question was tracked yet. A reply that itself calls `ask_question` never closes the session. `Fork map revised: N → M` updates the total. A table or artifact recap in the middle of a series does not end it. A run that stops early with only the table (no gate) leaves the session armed.
 - Outside the session the hook stays silent. Headings inside fenced code blocks are ignored (CommonMark fence rules, CRLF handled). Only `## Question N (of M)` or `## Question N —` headings count.
-- Known gap: after an abandoned clarify (no `Decision Table`), an unrelated reply with a `## Question N (of M)` heading can still trigger the hook (#82).
+- It also ends the session when the user abandons the series (#82). The user's message after the last question (the `A1: ...` answer of an `ask_question`, including a write-in, or a typed message) counts as a cancel when it opens with an explicit cancel phrase that ends the sentence or leads into a new request (`forget that.`, `never mind, write ...`, `cancel`, `stop`, `let's stop here`, `I'm done`, `that's enough`, `skip clarify`), or when it is a different slash command (`/jev status`). A phrase inside an ordinary answer (`never mind the cost, go with A`, `stop using Redis`) is still an answer. A new `/clarify` or a tagged `ask_question` arms the hook again.
+- Safety net: after 2 consecutive interventions with no `ask_question` call and no user turn in between, the hook stands down (returns `{}`) and prints one line on stderr (`standing down after N consecutive interventions ...`). The count comes from the hook's own earlier `Stop hook blocked termination` messages in the transcript. It resets on an `ask_question` call and on a user turn. A genuine stall is one intervention away from being fixed, so the cap does not weaken the #79 fix.
+- Known gaps (#82): a "new unrelated request" that is not a slash command and is not phrased as a cancel (for example `now write me an FAQ`) is not recognised, so the first `## Question N` reply after it still draws up to 2 interventions. The cancel phrase list is English only. If Antigravity omits the hook's own block messages from `transcript.jsonl`, the cap does not engage and only the cancel check protects against the loop (not verified).
 - Tests set `CLARIFY_HOOK_STRICT=1` so a broken jq program exits 3 instead of failing open. Normal use never sets it.
-- It cannot loop, because it stays silent while `continuationActive` is true.
+- `continuationActive` alone did not prevent a loop in live run E8 (17 interventions in a row on an abandoned series), which is why the cap above exists.
 - It fails open (returns `{}`) if `jq` or the transcript is missing.
 - It needs `bash` and `jq`. It takes about 15 ms on a typical transcript and about 200 ms on an 11 MB one.
 
@@ -95,3 +97,11 @@ scripts/check-clarify-transcript.sh --format antigravity \
 - Exit codes: `0` all pass, `1` a failure, `2` no clarify questions found, `3` usage error.
 
 Background and test history: `docs/plans/clarify-claude-code-option-explanations.md` and issue #79.
+
+## Relationship to the native `/grill-me`
+
+In Google Antigravity, `/grill-me` is a built-in command that injects the native `<GRILL_ME>` prompt. This skill does not shadow or replace it. It treats `/grill-me` as a trigger and adds exhaustive fork decomposition (no 4-fork cap), codebase pre-flight, prose-first previews, a recommended Option A and a Jev-aware handoff. In Claude Code and OpenCode, where there is no native `/grill-me`, the skill provides the same interview under the same command.
+
+## Keeping the skill light
+
+`SKILL.md` loads in full on every trigger, so it has a line cap and a word cap enforced in CI by `scripts/check-clarify-skill.sh`, which also checks that the strings the Stop hook and the transcript checker depend on are still present. Add a rule once, in the rules block, not again in an anti-pattern or a note. Put long examples and conditional formats in `references/`.

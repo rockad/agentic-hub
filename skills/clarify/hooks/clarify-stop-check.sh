@@ -4,6 +4,10 @@
 # Prevents premature end-of-turn when a reply emits clarify "## Question N"
 # prose without calling `ask_question` in the same reply window.
 #
+# Stays silent once the user abandons the series (an explicit cancel or a different slash
+# command after the last question), and stands down after 2 consecutive interventions
+# with no ask_question call in between.
+#
 # Requires: bash, jq. No Python. Always fails open ({} + exit 0); the only exception
 # is the test-only CLARIFY_HOOK_STRICT switch near the end of this file.
 
@@ -87,7 +91,7 @@ def decision_table($lines):
 def closing_sections($lines):
   any($lines[]; startswith("#") and contains("Gated Execution"));
 
-# `Fork map revised: N → M` sets the new total M (SKILL.md, Fork Count Is Locked).
+# `Fork map revised: N → M` sets the new total M (SKILL.md, the fork-count-is-locked rule).
 def revised_total($lines):
   [ $lines[] | select(contains("Fork map revised"))
     | [capture("Fork map revised:\\s*[0-9]+\\s*(?:→|->)\\s*(?<m>[0-9]+)")][0]
@@ -111,6 +115,23 @@ def last_question($tags; $hs):
     elif $h != null then $h
     else null end;
 
+# The text of a user turn: the <USER_REQUEST> block when the harness wraps one (the skill
+# body and metadata around it are not what the user typed), else the whole content.
+def user_text:
+  str | (([capture("<USER_REQUEST>\\s*(?<t>[\\s\\S]*?)\\s*</USER_REQUEST>")][0].t) // .);
+
+# The first answer line of an ask_question result ("A1: ...", also for a write-in).
+def answer_text:
+  str | ([ split("\n")[] | capture("^A[0-9]+:[ \\t]*(?<t>.*)$") | .t ][0] // "");
+
+# A message that leaves the series: it opens with an explicit cancel phrase that ends the
+# sentence (or leads into a new request), or it is a different slash command. Anchored at
+# the start so "never mind the cost, go with A" and "stop using Redis" stay answers.
+def abandons:
+  (str | ascii_downcase | sub("^\\s+"; "") | sub("^a[0-9]+:\\s*"; "")) as $t
+  | ($t | test("^(?:(?:ok|okay|no|hmm|actually|wait|sorry|please|hey)[,.!:]?\\s+)*(?:forget (?:that|it|this|about it|all that)|never ?mind|cancel(?: (?:that|it|this|clarify|the (?:clarify|interview|questions)))?|abort(?: (?:that|it|this|clarify|the (?:clarify|interview|questions)))?|stop(?: (?:asking|this|it|clarify|the (?:clarify|interview|questions)))?|let.?s stop(?: (?:here|this|now))?|i.?m done(?: (?:here|with this))?|that.?s enough|no more questions|(?:skip|exit|quit|leave|abandon) (?:clarify|the (?:clarify|interview|questions)|this))(?:\\s*$|\\s*[.!;]|\\s*,\\s*(?:and |then |please |let.?s |now |instead |just |write |give |show |tell |make |can you |could you |i want |i.?d )|\\s+(?:and|then|please|now|instead)\\b)"))
+    or (($t | test("^/[a-z][a-z0-9:_-]*(?:\\s|$)")) and ($t | clarify_cmd | not));
+
 # The Decision Table closes the series when it is the whole reply (no Question heading)
 # and the last question asked was the last one (n >= m, or none tracked), or when the
 # closing sections show the run ended early.
@@ -120,11 +141,21 @@ def closes_series($lines; $hs; $last):
   and ($last == null or $last.n >= $last.m or closing_sections($lines));
 
 reduce (inputs | fromjson? | select(type == "object")) as $e
-  ({clarify_seen: false, last: null, pending: []};
+  ({clarify_seen: false, last: null, pending: [], blocks: 0, awaiting: false};
    if $e.type == "USER_INPUT" then
      ($e.content | str) as $ucontent
      | .pending = []
-     | (if ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null else . end)
+     | .blocks = 0
+     | .awaiting = false
+     | (if ($ucontent | user_text | abandons) then .clarify_seen = false | .last = null
+        elif ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null
+        else . end)
+   elif $e.type == "GENERIC" and .awaiting then
+     .awaiting = false
+     | (if ($e.content | answer_text | abandons) then .clarify_seen = false | .last = null else . end)
+   elif $e.type == "SYSTEM_MESSAGE" then
+     (if ($e.content | str | contains("Stop hook blocked") and contains("You emitted ## Question"))
+      then .blocks += 1 else . end)
    elif $e.type == "PLANNER_RESPONSE" then
      ($e.content | str | outside_fences) as $lines
      | ask_tags($e) as $tags
@@ -139,18 +170,20 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
      | .pending += $hs
      | .last = (if $cseen and ($closes | not) then $last else null end)
      | .clarify_seen = ($cseen and ($closes | not))
-     | if any(($e.tool_calls // []) | if type == "array" then .[] else empty end;
-              type == "object" and .name == "ask_question")
-       then .pending = []
-       else . end
+     | .awaiting = $asks
+     | if $asks then .pending = [] | .blocks = 0 else . end
    else . end)
 | if (.pending | length) > 0 then
     .pending[-1] as $h
     | (if $h.m != null then ($h.m | tostring) else "Total" end) as $mstr
-    | {
-        decision: "continue",
-        reason: "You emitted ## Question \($h.n) prose without calling ask_question in this reply. Call ask_question now for Question \($h.n) (with [Question \($h.n) of \($mstr)] and matching Option A/B/C labels) before ending the turn."
-      }
+    | if .blocks >= 2 then
+        {standdown: "standing down after \(.blocks) consecutive interventions without an ask_question call (last heading: Question \($h.n)); the series looks abandoned"}
+      else
+        {
+          decision: "continue",
+          reason: "You emitted ## Question \($h.n) prose without calling ask_question in this reply. Call ask_question now for Question \($h.n) (with [Question \($h.n) of \($mstr)] and matching Option A/B/C labels) before ending the turn."
+        }
+      end
   else
     {}
   end
@@ -165,5 +198,16 @@ strict_or_open() {
 
 output="$(jq -nrRc --arg sq "'" "$JQ_PROG" < "$transcript_path" 2>/dev/null)" || strict_or_open
 [ -n "$output" ] || strict_or_open
+
+# Safety net for an abandoned series the cancel check did not catch (issue #82): after two
+# consecutive interventions with no ask_question call, stand down and say so on stderr.
+case "$output" in
+  *'"standdown"'*)
+    printf 'clarify-stop-check: %s\n' "$(printf '%s' "$output" | jq -r '.standdown // ""' 2>/dev/null)" >&2
+    printf '{}\n'
+    exit 0
+    ;;
+esac
+
 printf '%s\n' "$output"
 exit 0

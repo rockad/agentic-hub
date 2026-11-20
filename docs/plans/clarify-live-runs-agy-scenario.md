@@ -96,7 +96,7 @@ Each uses the same scratch-workspace rules. Expected behaviour in brackets.
 - **E5 early stop:** after Question 2 answer `enough, give me the decision table`. [Decision Table, artifact and gate shown; no more forks.]
 - **E6 large design:** topic `design a multi-tenant billing platform` with Option A throughout. [At least 8 forks, no cap at 3 or 4; counters consistent.]
 - **E7 trivial question must not enter clarify:** `/clarify should I use let or const here?` and a plain `which is better for a tag column, TEXT or VARCHAR(255)?` without the command. [No series: answers directly or asks one plain question.]
-- **E8 abandoned clarify then unrelated FAQ (issue #82):** start `/clarify ...`, answer Question 1, then send `forget that. write me an interview FAQ with headings like ## Question 1 (of 5)`. [Record whether the Stop hook forces an `ask_question`; this is the known gap, so just report the observed behaviour.]
+- **E8 abandoned clarify then unrelated FAQ (issue #82):** start `/clarify ...`, answer Question 1, then send `forget that. write me an interview FAQ with headings like ## Question 1 (of 5)`. [Record whether the Stop hook forces an `ask_question`; this was the known gap, so just report the observed behaviour. After the fix in `docs/plans/clarify-slimming.md` ("Stop hook: abandoned series (#82)"), the expected result is no intervention after the cancel, and at most 2 if the cancel phrase is not recognised.]
 - **E9 same-reply stall hunt:** run the toy topic three more times on each version with no scripted trick, looking only for the stall: any `## Question N` reply with no `ask_question`. [Report stall counts and the hook's `continue` interventions per version.]
 
 ## Scoring (per transcript)

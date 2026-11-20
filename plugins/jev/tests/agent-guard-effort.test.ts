@@ -593,3 +593,100 @@ describe('one answer, one run: an approval is consumed only by a call that actua
     expect(states()?.effortApprovals).toHaveLength(1);
   });
 });
+
+describe('Workflow effort follows the Agent rule (instructed passes, otherwise the choice question, approvals as for Agent)', () => {
+  const wfCall = (script: string, id = 'toolu_1'): HookInput => ({ session_id: 's1', prompt_id: 'p1', tool_name: 'Workflow', cwd: r.project, tool_use_id: id, tool_input: { script } as any });
+  const SCRIPT = `await agent('a', {effort: 'max'})\nawait agent('b', {effort: 'max'})\nawait agent('c', {effort: 'xhigh'})`;
+  const states = () => r.approvals.states.get('s1');
+
+  it('is denied with the prescribed effort question naming the number of held agents; never unverifiable, never asked', async () => {
+    setup();
+
+    const o = out(await onPreToolUse(wfCall(SCRIPT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('STARTS with the marker [jev-elevate-effort:max]');
+    expect(o.permissionDecisionReason).toContain('2 agents at max, 1 agent at xhigh');
+    expect(o.permissionDecisionReason).toContain('covers the whole script');
+    for (const label of ['Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, run at high']) expect(o.permissionDecisionReason).toContain(`'${label}'`);
+    expect(r.logs[0]).toMatchObject({ decision: 'deny', workflow_guard: 'denied', effort_level: 'max', effort_decision: 'denied', workflow_effort_sites: 3, elevation_attempt: 1 });
+  });
+
+  it('a prompt that names the effort passes; xhigh named does not cover max', async () => {
+    setup();
+    r.turns.set('s1', { turn: 't1', at: 1, mode: 'on', intent: parseUserIntent('use max effort') });
+    expect(await onPreToolUse(wfCall(SCRIPT), r.d)).toBeNull();
+    expect(r.logs[0]).toMatchObject({ decision: 'pass', workflow_guard: 'passed-instructed' });
+
+    r.turns.set('s1', { turn: 't1', at: 1, mode: 'on', intent: parseUserIntent('use xhigh effort') });
+    expect(out(await onPreToolUse(wfCall(SCRIPT), r.d)).permissionDecision).toBe('deny');
+  });
+
+  it('a once answer covers the whole script, once: the run spends it, the next call is denied again', async () => {
+    setup();
+    await onPreToolUse(wfCall(SCRIPT), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+
+    expect(await onPreToolUse(wfCall(SCRIPT), r.d)).toBeNull();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'pass', workflow_guard: 'allow', effort_decision: 'approved', effort_approval_scope: 'once', elevation: 'approved' });
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+    expect(out(await onPreToolUse(wfCall(SCRIPT, 'toolu_2'), r.d)).permissionDecision).toBe('deny');
+  });
+
+  it('model once + effort once on one Workflow: the model question first, then the effort; neither is spent by a deny; the third attempt runs', async () => {
+    setup();
+    const both = `${SCRIPT}\nawait agent('d', {model: 'opus'})`;
+    expect(out(await onPreToolUse(wfCall(both), r.d)).permissionDecisionReason).toContain('[jev-elevate:opus]');
+    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, once'), r.d);
+
+    expect(out(await onPreToolUse(wfCall(both), r.d)).permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+    expect(states()?.approvals).toHaveLength(1); // not spent by the effort deny
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+
+    expect(await onPreToolUse(wfCall(both), r.d)).toBeNull();
+    expect(states()?.approvals ?? []).toEqual([]);
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+  });
+
+  it('a once spent by a parallel call between the peek and the consume is not spent twice', async () => {
+    setup();
+    await onPreToolUse(wfCall(SCRIPT), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    const peekEffort = r.approvals.peekEffort!;
+    r.approvals.peekEffort = (s, level, nowMs) => {
+      const hit = peekEffort(s, level, nowMs);
+      r.approvals.consume!(s, { effort: level }, nowMs);
+      return hit;
+    };
+
+    expect(out(await onPreToolUse(wfCall(SCRIPT), r.d)).permissionDecision).toBe('deny');
+  });
+
+  it('an effort a script names as xhigh is covered by an approval of max, and a definition effort takes the same route', async () => {
+    setup();
+    writeAgent('deep.md', '---\nname: deep\neffort: xhigh\n---\nbody\n');
+    const o = out(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d));
+    expect(o.permissionDecisionReason).toContain('[jev-elevate-effort:xhigh]');
+
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d); // no denial for max: ignored
+    expect(out(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d)).permissionDecision).toBe('deny');
+    await onPostToolUse(answered(EFFORT_Q('xhigh'), 'Yes, for this session'), r.d);
+    expect(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d)).toBeNull();
+  });
+
+  it('an unrecognised or non-literal effort stays unverifiable and mixed with an effort site is denied as unverifiable (the closing sentence says where effort goes)', async () => {
+    setup();
+
+    const o = out(await onPreToolUse(wfCall(`await agent('a', {effort: 'max'})\nawait agent('b', {effort: args.e})`), r.d));
+
+    expect(o.permissionDecisionReason).toContain('Jev cannot verify');
+    expect(o.permissionDecisionReason).toContain('put to the user as a question');
+    expect(r.logs[0]).toMatchObject({ workflow_guard: 'denied-unverifiable' });
+  });
+
+  it('dialog mode asks, as before', async () => {
+    dialog();
+
+    expect(out(await onPreToolUse(wfCall(SCRIPT), r.d)).permissionDecision).toBe('ask');
+  });
+});

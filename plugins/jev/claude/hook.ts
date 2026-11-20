@@ -134,6 +134,7 @@ import {
   type ApprovalState,
   type EffortApproval,
   type Dispatch,
+  type Elevation,
   type ElevationMode,
   type RankContext,
   type TurnState,
@@ -173,7 +174,7 @@ import { taskFingerprint } from '../src/core/telemetry.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { createSessionModelLearner, isAuthoritative, readSessionRecord, writeSessionRecord, type SessionModelLearner } from './session-model.js';
 import { clip } from './agent-definitions.js';
-import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowSignature, workflowUnverifiableReason, type WorkflowResolver } from './workflow-guard.js';
+import { evaluateWorkflowInput, fsResolver, workflowChoiceReason, workflowEffortChoiceReason, workflowSignature, workflowUnverifiableReason, type WorkflowResolver } from './workflow-guard.js';
 import { pruneWorkflowPins, recordWorkflowPostToolUse, writeWorkflowPin, type PostToolUseResult } from './workflow-pin.js';
 
 const JEV_DIR = path.join(os.homedir(), '.config', 'jev');
@@ -736,10 +737,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // offered a cheaper catalogue step when one is enough and strictly cheaper (see `planDowngrade`). It runs only when no
   // instruction names the model, the elevation guard did not decide the call, nothing is on record for this delegation
   // and the session did not switch it off; the router rating fails open (any error, timeout or missing key: no question).
-  // TODO(owner decision pending): whether an effort that was accepted (named by the user, or covered by an approval) should
-  // skip this question, since the user has explicitly taken a costly run. Today it does not skip: the evaluation runs as
-  // before. A downgrade deny no longer wastes the effort answer, because a covering approval is only consumed at the commit
-  // below, when the call's verdict is allow.
+  // An accepted effort (named by the user, or covered by an approval) does not skip this question: the effort question comes
+  // first, the downgrade question after it. A downgrade deny does not waste the effort answer, because a covering approval is
+  // only consumed at the commit below, when the call's verdict is allow.
   const effortSuggested = state?.recEffort ?? null;
   const effortSession = readEffort(input.effort);
   const downgradeModeNow = downgradeMode(deps.env ?? {}, safely(() => deps.downgradeConfig?.()));
@@ -961,33 +961,66 @@ function evaluateWorkflowCall(a: {
     // analysis cannot prove is denied with what to fix.
     if (a.elevMode === 'dialog') return dialog();
     const top = d.highestElevation;
-    if (d.unverifiable.length > 0 || !top) {
+    const topEffort = d.highestEffort;
+    if (d.unverifiable.length > 0 || (!top && !topEffort)) {
       return finish(
         'denied-unverifiable',
         { verdict: { decision: 'deny', reason: workflowUnverifiableReason(d, a.sessionModel) }, elevationState: 'denied' },
         { workflow_reasons: d.sites.length }
       );
     }
-    // The model gate is the only gate of a Workflow (the effort of an agent() call is classed unverifiable above), so the
-    // claim is also the final step: it spends a `once` only for a call that goes ahead.
-    // TODO(owner decision pending): a literal agent() effort of xhigh or max is still denied as unverifiable with no route,
-    // while an Agent call gets the [jev-elevate-effort] choice question (an instructed prompt passes). Make Workflow effort
-    // follow the Agent rule (and fix the contradictory finding text) once the owner has decided; the Agent-path peek and
-    // consume below are the pattern to reuse.
     const nowMs = (deps.now ?? Date.now)();
-    const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, top.requested, nowMs, a.rankCtx)) ?? null) : null;
-    if (hit) {
-      pin('allow');
-      return finish('allow', { elevationState: 'approved', approvalScope: hit.scope }, { workflow_highest: clip(top.requested) });
-    }
     const signature = workflowSignature(d.scripts);
-    const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), signature, nowMs, a.attemptWindowMs)) : undefined;
-    const attemptCount = typeof count === 'number' ? count : null;
-    if (sessionId) safely(() => deps.approvals?.deny(sessionId, top.requested, nowMs));
+    const highest = top ? { workflow_highest: clip(top.requested) } : {};
+    const effortLog = (decision: string, scope?: string): Record<string, unknown> =>
+      topEffort
+        ? { effort_level: topEffort, effort_decision: decision, workflow_effort_sites: d.efforts.length, ...(scope ? { effort_approval_scope: scope } : {}) }
+        : {};
+    // The same rule as an Agent call (one answer, one run): the gates only peek, and what they found is spent below, together,
+    // only when the Workflow goes ahead. The model gate comes first (its question is asked before the effort's). One effort
+    // answer covers the whole script: the highest level among its sites (max covers xhigh).
+    const denyModel = (e: Elevation): WorkflowEvaluation => {
+      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), signature, nowMs, a.attemptWindowMs)) : undefined;
+      const attemptCount = typeof count === 'number' ? count : null;
+      if (sessionId) safely(() => deps.approvals?.deny(sessionId, e.requested, nowMs));
+      return finish(
+        'denied',
+        { verdict: { decision: 'deny', reason: workflowChoiceReason(e, d.scripts, attemptCount) }, elevationState: 'denied', attemptCount },
+        { ...highest }
+      );
+    };
+    const denyEffort = (level: EffortLevel): WorkflowEvaluation => {
+      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), `${signature}:effort`, nowMs, a.attemptWindowMs)) : undefined;
+      const attemptCount = typeof count === 'number' ? count : null;
+      if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs));
+      return finish(
+        'denied',
+        {
+          verdict: { decision: 'deny', reason: workflowEffortChoiceReason(level, d.highestEffortReason ?? '', d.scripts, attemptCount, d.effortCounts) },
+          elevationState: 'denied',
+          attemptCount
+        },
+        { ...highest, ...effortLog('denied') }
+      );
+    };
+    const peekModel = (): Approval | null =>
+      top && sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, top.requested, nowMs, a.rankCtx)) ?? null) : null;
+    if (top && !peekModel()) return denyModel(top);
+    const effortHit = topEffort && sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs)) ?? null) : null;
+    if (topEffort && !effortHit) return denyEffort(topEffort);
+    const wants = { ...(top ? { model: { requested: top.requested, ctx: a.rankCtx } } : {}), ...(topEffort ? { effort: topEffort } : {}) };
+    const spent = sessionId ? (safely(() => deps.approvals?.consume?.(sessionId, wants, nowMs)) ?? null) : null;
+    if (!spent) {
+      // Spent by a parallel call since the peek (nothing was consumed here): ask again for what is no longer covered.
+      if (top && !peekModel()) return denyModel(top);
+      if (topEffort) return denyEffort(topEffort);
+      return denyModel(top as Elevation);
+    }
+    pin('allow');
     return finish(
-      'denied',
-      { verdict: { decision: 'deny', reason: workflowChoiceReason(top, d.scripts, attemptCount) }, elevationState: 'denied', attemptCount },
-      { workflow_highest: clip(top.requested) }
+      'allow',
+      { elevationState: 'approved', approvalScope: spent.model?.scope ?? spent.effort?.scope ?? null },
+      { ...highest, ...effortLog('approved', spent.effort?.scope) }
     );
   } catch {
     return { ...none, log: { workflow_guard: 'error' } };

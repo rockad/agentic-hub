@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { onPostToolUse, onPreToolUse, type HookDeps, type HookInput } from '../claude/hook.ts';
 import { parseUserIntent } from '../claude/logic.ts';
 import { out, rig, type Rig } from './workflow-helpers.ts';
+import { HAIKU, catalogue as pricedCatalogue, memoryDowngrades } from './downgrade-helpers.ts';
 
 const SAMPLE = JSON.parse(fs.readFileSync(path.join(import.meta.dir, 'fixtures', 'posttooluse-askuserquestion.json'), 'utf8'));
 const EFFORT_Q = (level: string) => `[jev-elevate-effort:${level}] Run the deep delegation at ${level} effort (session high): refactor the parser module?`;
@@ -35,6 +36,7 @@ const writeAgent = (file: string, text: string): void => {
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, text);
 };
+const MAX_ONLY = { description: 'd', effort: 'max' };
 const call = (toolInput: Record<string, unknown>, tool = 'Agent'): HookInput => ({ session_id: 's1', prompt_id: 'p1', tool_name: tool, cwd: r.project, tool_input: toolInput as any });
 
 describe('call effort', () => {
@@ -96,20 +98,25 @@ describe('call effort', () => {
     expect(r.logs.at(-1)).toMatchObject({ elevation_attempt: 1 });
   });
 
-  it('a model verdict keeps priority: the elevation question first, the effort question follows once it is approved', async () => {
-    setup();
+  it.each(['Yes, for this session', 'Yes, once'])(
+    'a model verdict keeps priority: the elevation question first, the effort question follows once it is approved ("%s")',
+    async (label) => {
+      setup();
 
-    const first = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
+      const first = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
 
-    expect(first.permissionDecision).toBe('deny');
-    expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
-    expect(first.permissionDecisionReason).not.toContain('jev-elevate-effort');
+      expect(first.permissionDecision).toBe('deny');
+      expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
+      expect(first.permissionDecisionReason).not.toContain('jev-elevate-effort');
 
-    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, for this session'), r.d);
-    const second = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
-    expect(second.permissionDecision).toBe('deny');
-    expect(second.permissionDecisionReason).toContain('[jev-elevate-effort:max]');
-  });
+      await onPostToolUse(answered(MODEL_Q('opus'), label), r.d);
+      const second = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
+      expect(second.permissionDecision).toBe('deny');
+      expect(second.permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+      // the deny for the effort did not use up the model answer: the approval is still on record
+      expect(r.approvals.states.get('s1')?.approvals).toHaveLength(1);
+    }
+  );
 
   it('under the opt-in clamp the effort deny is not hidden by the clamp allow; once approved the clamp applies', async () => {
     setup({ env: { JEV_ELEVATION: 'clamp' } });
@@ -475,5 +482,114 @@ describe('relative effort values ("lower" | "higher": one step from the agent\'s
     writeAgent('deep.md', def('ludicrous'));
 
     expect(await onPreToolUse(withSession('high', { description: 'd', subagent_type: 'deep', effort: 'higher' }), r.d)).toBeNull();
+  });
+});
+
+describe('one answer, one run: an approval is consumed only by a call that actually goes ahead', () => {
+  const BOTH = { description: 'd', model: 'opus', effort: 'max' };
+  const states = () => r.approvals.states.get('s1');
+  const denied = async (input: Record<string, unknown>) => out(await onPreToolUse(call(input), r.d));
+
+  it('model once + effort once: the third attempt passes, both approvals are consumed exactly once, and the fourth is denied again', async () => {
+    setup();
+
+    expect((await denied(BOTH)).permissionDecisionReason).toContain('[jev-elevate:opus]');
+    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, once'), r.d);
+
+    expect((await denied(BOTH)).permissionDecisionReason).toContain('[jev-elevate-effort:max]'); // the effort gate denies...
+    expect(states()?.approvals).toHaveLength(1); // ...and the model answer is still there
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    expect(states()?.effortApprovals).toHaveLength(1);
+
+    expect(await onPreToolUse(call(BOTH), r.d)).toBeNull(); // the third attempt runs
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'pass', elevation: 'approved', approval_scope: 'once', effort_decision: 'approved', effort_approval_scope: 'once' });
+    expect(states()?.approvals ?? []).toEqual([]); // both spent, once each
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+
+    // once means once: the next call (a retry, or a parallel call of the same shape) is denied for the model again
+    expect((await denied(BOTH)).permissionDecisionReason).toContain('[jev-elevate:opus]');
+  });
+
+  it('the effort answer given first is not spent by the model deny either: effort once, then model once, then it runs', async () => {
+    setup();
+    await onPreToolUse(call(MAX_ONLY), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+
+    expect((await denied(BOTH)).permissionDecisionReason).toContain('[jev-elevate:opus]'); // a model deny: the effort answer is untouched
+    expect(states()?.effortApprovals).toHaveLength(1);
+    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, once'), r.d);
+
+    expect(await onPreToolUse(call(BOTH), r.d)).toBeNull();
+    expect(states()?.approvals ?? []).toEqual([]);
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+  });
+
+  it('a once effort answer is not used up by a call that is denied for something else (an unreadable definition)', async () => {
+    setup();
+    await onPreToolUse(call(MAX_ONLY), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    writeAgent('deep.md', '---\nname: deep\neffort: [max]\n---\n');
+
+    const o = await denied({ description: 'd', subagent_type: 'deep', effort: 'max' });
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('unreadable or ambiguous');
+    expect(states()?.effortApprovals).toHaveLength(1);
+    expect(await onPreToolUse(call(MAX_ONLY), r.d)).toBeNull(); // still good for the call that does run
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+  });
+
+  it('effort once + the downgrade question: the downgrade deny does not use up the effort answer; the retry runs and spends it', async () => {
+    // NOTE: whether an accepted effort should skip the downgrade question is an open owner decision; this pins the invariant
+    // (a once is not spent by a denied call) under today's behaviour, where the downgrade question is still asked.
+    setup({ downgrades: memoryDowngrades(), rankContext: () => pricedCatalogue(), rateTask: async () => HAIKU });
+    const input = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'sonnet', effort: 'max' };
+    await onPreToolUse(call(input), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+
+    const asked = await denied(input);
+    expect(asked.permissionDecision).toBe('deny');
+    expect(asked.permissionDecisionReason).toContain('[jev-downgrade:');
+    expect(states()?.effortApprovals).toHaveLength(1);
+
+    const marker = /\[jev-downgrade:[a-z_-]+\]/.exec(asked.permissionDecisionReason)![0];
+    await onPostToolUse(answered(`${marker} Run the delegation on haiku instead of sonnet?`, 'No, keep sonnet'), r.d);
+
+    expect(await onPreToolUse(call(input), r.d)).toBeNull();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'pass', effort_decision: 'approved', effort_approval_scope: 'once' });
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+    expect((await denied(input)).permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+  });
+
+  it('a parallel call that spent the once between the peek and the consume wins; this call is denied and consumes nothing', async () => {
+    setup();
+    await onPreToolUse(call(MAX_ONLY), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    const peekEffort = r.approvals.peekEffort!;
+    r.approvals.peekEffort = (s, level, nowMs) => {
+      const hit = peekEffort(s, level, nowMs);
+      r.approvals.consume!(s, { effort: level }, nowMs); // the other call goes ahead first
+      return hit;
+    };
+
+    const o = await denied(MAX_ONLY);
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', effort_decision: 'denied' });
+    expect(r.logs.at(-1)).not.toHaveProperty('effort_approval_scope');
+    expect(states()?.effortApprovals ?? []).toEqual([]); // spent once, by the other call
+  });
+
+  it('a standing session approval is never spent: peek and consume leave it for every call', async () => {
+    setup();
+    await onPreToolUse(call(BOTH), r.d);
+    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, for this session'), r.d);
+    await onPreToolUse(call(BOTH), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
+
+    for (let i = 0; i < 3; i++) expect(await onPreToolUse(call(BOTH), r.d)).toBeNull();
+    expect(states()?.approvals).toHaveLength(1);
+    expect(states()?.effortApprovals).toHaveLength(1);
   });
 });

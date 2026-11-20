@@ -1043,6 +1043,9 @@ export function checkScriptText(
         break;
       }
       case 'effort': {
+        // TODO(owner decision pending): a literal xhigh or max is classed unverifiable here and denied with no route, while an
+        // Agent call gets the [jev-elevate-effort] choice question (and an instructed prompt passes). The finding text below
+        // says it "needs your approval", which the unverifiable deny cannot give. Not changed yet.
         const reason = effortReason(f.effort, 'agent() call');
         if (reason) sites.push(unverifiableSite(label, f, reason));
         break;

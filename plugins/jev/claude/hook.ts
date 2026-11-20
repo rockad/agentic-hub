@@ -96,6 +96,7 @@ import {
   elevationUnrankedDenyReason,
   effortChoiceReason,
   claimEffortApproval,
+  consumeApprovals,
   instructedEffort,
   noteDenied,
   noteEffortDenied,
@@ -251,6 +252,22 @@ export type ApprovalStore = {
   /** When the choice question was last prescribed for `model` or a stronger one (epoch ms), or null when there is no note of one. Absent: unknown. */
   deniedAt?: (sessionId: string, model: string) => number | null;
   claimEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => EffortApproval | null;
+  /**
+   * Find the approval covering `requested` WITHOUT consuming it (a `once` stays). The gates of one call peek; the approvals
+   * are spent by `consume` only once the call's final verdict is allow. Absent: no approval is ever found.
+   */
+  peek?: (sessionId: string, requested: string, nowMs: number, ctx?: RankContext | null) => Approval | null;
+  /** The same peek for the effort approval covering `level`. */
+  peekEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => EffortApproval | null;
+  /**
+   * Consume every approval the call needs (model and/or effort) under one lock, re-checking there: null, with nothing
+   * consumed, when any of them is no longer covered (a parallel call spent the `once`, or it expired since the peek).
+   */
+  consume?: (
+    sessionId: string,
+    wants: { model?: { requested: string; ctx?: RankContext | null }; effort?: EffortLevel },
+    nowMs: number
+  ) => { model: Approval | null; effort: EffortApproval | null } | null;
 };
 
 export type HookOutput = { hookSpecificOutput: Record<string, unknown> } | null;
@@ -568,6 +585,34 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     return typeof count === 'number' ? count : null;
   };
   let instructedBy: string | null = null;
+  // One answer, one run: the gates below only PEEK for a covering approval. What they found is spent by `consume` after the
+  // last gate, and only when the call's final verdict is allow, so a call that is denied (by another gate, or because the
+  // approval was spent in the meantime) never uses up an approval the user gave.
+  let pendingModel: { requested: string } | null = null;
+  let pendingEffort: EffortLevel | null = null;
+  let effortFound: { level: EffortLevel; reason: string } | null = null;
+  // The deny of the elevation choice flow (the prescribed question): counted per delegation, noted as prescribed.
+  const denyModelChoice = (e: NonNullable<typeof elevation>, nowMs: number): void => {
+    const signature = callSignature(call as Record<string, unknown>);
+    const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
+    attemptCount = typeof count === 'number' ? count : null;
+    verdict = { decision: 'deny', reason: elevationChoiceReason(e, call.subagent_type, attemptCount) };
+    elevationState = 'denied';
+    approvalScope = null;
+    clamp = null;
+    // The question is now prescribed for this model: only an answer after this can record an approval.
+    if (sessionId) safely(() => deps.approvals?.deny(sessionId, e.requested, nowMs));
+  };
+  // The deny of the effort choice flow.
+  const denyEffortChoice = (found: { level: EffortLevel; reason: string }, nowMs: number): void => {
+    attemptCount = denyAttempt('effort');
+    verdict = { decision: 'deny', reason: effortChoiceReason(found.level, found.reason, call.subagent_type, attemptCount) };
+    elevationState = 'denied';
+    effortLog = { effort_level: found.level, effort_decision: 'denied' };
+    clamp = null; // a deny cannot share an output with the clamp's allow
+    // The question is now prescribed for this level: only an answer after this can record an approval.
+    if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs));
+  };
   if (elevation?.kind === 'elevating' && resolved?.source === 'env-force' && elevMode !== 'dialog') {
     // CLAUDE_CODE_SUBAGENT_MODEL_FORCE: the user's own environment picks the model and replaces the call's own, so there is
     // nothing to clamp and nothing to ask: it is their instruction, and the call passes (dialog mode still asks, below).
@@ -590,19 +635,14 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     // dialog unseen, so every attempt is denied, and from the third attempt of one delegation in a prompt the reason says
     // to stop retrying (the same text as Antigravity).
     const nowMs = (deps.now ?? Date.now)();
-    const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, elevation.requested, nowMs, rankCtx)) ?? null) : null;
+    const hit = sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, elevation.requested, nowMs, rankCtx)) ?? null) : null;
     if (hit) {
+      // Found, not spent: it is consumed below, once the call is allowed (a once is spent by a call that runs).
       elevationState = 'approved';
-      approvalScope = hit.scope;
+      pendingModel = { requested: elevation.requested };
     } else {
       // Counted per delegation: several different workstreams, each answered, are not repeated attempts of one call.
-      const signature = callSignature(call as Record<string, unknown>);
-      const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
-      attemptCount = typeof count === 'number' ? count : null;
-      verdict = { decision: 'deny', reason: elevationChoiceReason(elevation, call.subagent_type, attemptCount) };
-      elevationState = 'denied';
-      // The question is now prescribed for this model: only an answer after this can record an approval.
-      if (sessionId) safely(() => deps.approvals?.deny(sessionId, elevation.requested, nowMs));
+      denyModelChoice(elevation, nowMs);
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
     verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
@@ -667,17 +707,13 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
         effortLog = { effort_level: level, effort_decision: 'instructed' };
       } else {
         const nowMs = (deps.now ?? Date.now)();
-        const hit = sessionId ? (safely(() => deps.approvals?.claimEffort?.(sessionId, level, nowMs)) ?? null) : null;
+        const hit = sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, level, nowMs)) ?? null) : null;
+        effortFound = finding;
         if (hit) {
-          effortLog = { effort_level: level, effort_decision: 'approved', effort_approval_scope: hit.scope };
+          // Found, not spent: consumed below, once the call is allowed.
+          pendingEffort = level;
         } else {
-          attemptCount = denyAttempt('effort');
-          verdict = { decision: 'deny', reason: effortChoiceReason(level, finding.reason, call.subagent_type, attemptCount) };
-          elevationState = 'denied';
-          effortLog = { effort_level: level, effort_decision: 'denied' };
-          clamp = null; // a deny cannot share an output with the clamp's allow
-          // The question is now prescribed for this level: only an answer after this can record an approval.
-          if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs));
+          denyEffortChoice(finding, nowMs);
         }
       }
     }
@@ -700,6 +736,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // offered a cheaper catalogue step when one is enough and strictly cheaper (see `planDowngrade`). It runs only when no
   // instruction names the model, the elevation guard did not decide the call, nothing is on record for this delegation
   // and the session did not switch it off; the router rating fails open (any error, timeout or missing key: no question).
+  // TODO(owner decision pending): whether an effort that was accepted (named by the user, or covered by an approval) should
+  // skip this question, since the user has explicitly taken a costly run. Today it does not skip: the evaluation runs as
+  // before. A downgrade deny no longer wastes the effort answer, because a covering approval is only consumed at the commit
+  // below, when the call's verdict is allow.
   const effortSuggested = state?.recEffort ?? null;
   const effortSession = readEffort(input.effort);
   const downgradeModeNow = downgradeMode(deps.env ?? {}, safely(() => deps.downgradeConfig?.()));
@@ -721,6 +761,28 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     downgradeLog = evaluated.log;
     downgradeOut = evaluated.out;
     if (evaluated.verdict) verdict = evaluated.verdict;
+  }
+
+  // The commit: every gate has run. Only now are the approvals the gates found spent, and only for a call that goes ahead.
+  // The store consumes them together under its lock and re-checks there; when a parallel call spent a `once` in the meantime
+  // nothing is consumed and this call is denied with the question for what is no longer covered. (A pending approval implies a
+  // session id: the peek needs one.)
+  if (!verdict && (pendingModel || pendingEffort) && sessionId) {
+    const nowMs = (deps.now ?? Date.now)();
+    const wants = { ...(pendingModel ? { model: { requested: pendingModel.requested, ctx: rankCtx } } : {}), ...(pendingEffort ? { effort: pendingEffort } : {}) };
+    const spent = safely(() => deps.approvals?.consume?.(sessionId, wants, nowMs)) ?? null;
+    if (spent) {
+      if (spent.model) approvalScope = spent.model.scope;
+      if (spent.effort && effortFound) {
+        effortLog = { effort_level: effortFound.level, effort_decision: 'approved', effort_approval_scope: spent.effort.scope };
+      }
+    } else {
+      // Not covered any more: the model first (as on a first attempt), else the effort.
+      const modelHit = pendingModel && elevation ? (safely(() => deps.approvals?.peek?.(sessionId, pendingModel!.requested, nowMs, rankCtx)) ?? null) : null;
+      if (pendingModel && elevation && !modelHit) denyModelChoice(elevation, nowMs);
+      else if (effortFound && pendingEffort) denyEffortChoice(effortFound, nowMs);
+      else if (pendingModel && elevation) denyModelChoice(elevation, nowMs);
+    }
   }
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
@@ -906,6 +968,12 @@ function evaluateWorkflowCall(a: {
         { workflow_reasons: d.sites.length }
       );
     }
+    // The model gate is the only gate of a Workflow (the effort of an agent() call is classed unverifiable above), so the
+    // claim is also the final step: it spends a `once` only for a call that goes ahead.
+    // TODO(owner decision pending): a literal agent() effort of xhigh or max is still denied as unverifiable with no route,
+    // while an Agent call gets the [jev-elevate-effort] choice question (an instructed prompt passes). Make Workflow effort
+    // follow the Agent rule (and fix the contradictory finding text) once the owner has decided; the Agent-path peek and
+    // consume below are the pattern to reuse.
     const nowMs = (deps.now ?? Date.now)();
     const hit = sessionId ? (safely(() => deps.approvals?.claim(sessionId, top.requested, nowMs, a.rankCtx)) ?? null) : null;
     if (hit) {
@@ -1327,6 +1395,19 @@ const approvalStore: ApprovalStore = {
       const { state, approval } = claimEffortApproval(before, level, nowMs);
       if (approval?.scope === 'once' || (state.effortApprovals?.length ?? 0) !== (before.effortApprovals?.length ?? 0)) writeApprovalState(sessionId, state);
       return approval;
+    }),
+  // A peek writes nothing (not even the pruning of an expiry): it only reads the state under the lock.
+  peek: (sessionId, requested, nowMs, ctx) =>
+    withApprovalsLock(sessionId, () => claimApproval(readApprovalState(sessionId), requested, nowMs, ctx).approval),
+  peekEffort: (sessionId, level, nowMs) =>
+    withApprovalsLock(sessionId, () => claimEffortApproval(readApprovalState(sessionId), level, nowMs).approval),
+  consume: (sessionId, wants, nowMs) =>
+    withApprovalsLock(sessionId, () => {
+      const before = readApprovalState(sessionId);
+      const done = consumeApprovals(before, wants, nowMs);
+      if (!done) return null;
+      writeApprovalState(sessionId, done.state);
+      return { model: done.model, effort: done.effort };
     })
 };
 

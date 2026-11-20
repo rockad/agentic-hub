@@ -17,7 +17,7 @@ import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
-import { modeBehaviour } from '../src/core/mode-policy.js';
+import { isModeOff, modeBehaviour } from '../src/core/mode-policy.js';
 import { loadJevConfigSync } from '../src/core/config.js';
 import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
@@ -28,6 +28,7 @@ import {
   pollForAskAnswer,
   pollForAskAnswers,
   askAnswerKey,
+  askQuestionCount,
   extractChildConversationId,
   findServedModelFromTranscript,
   recordPendingServed,
@@ -46,6 +47,9 @@ import {
 import { readRegularFileTail } from '../claude/safe-read.js';
 import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
+import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
+import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
+import { antigravityCostFields } from '../src/core/cost-estimate.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -71,6 +75,14 @@ function appendDecisionLog(entry: Record<string, unknown>): void {
     privateFile(file);
   } catch {
     // fail open on logging failure
+  }
+}
+
+function safelyPrune(dir: string): void {
+  try {
+    pruneWorkflowPins(dir);
+  } catch {
+    // best-effort
   }
 }
 
@@ -183,7 +195,7 @@ async function main() {
     }
 
     const mode: JevMode = await readJevMode('antigravity');
-    if (mode === 'off') {
+    if (isModeOff(mode)) {
       passThrough(event);
     }
     // The config carries the `modeChangedAt` stamp: a denial or question from before the last mode change is never approved.
@@ -274,7 +286,8 @@ async function main() {
             // from that one row (N questions must not cost N wait windows: the hook has a timeout).
             const rawAnswers = await pollForAskAnswers(
               input,
-              downgradeQuestions.map((q) => q.index)
+              downgradeQuestions.map((q) => q.index),
+              { questionCount: askQuestionCount(input.toolCall?.args) }
             );
             downgradeQuestions.forEach((q, n) => {
               const rawAnswer = rawAnswers[n] ?? null;
@@ -330,6 +343,8 @@ async function main() {
 
           if (Array.isArray(questions)) {
             questions.forEach((q, index) => {
+              // The first marker question wins, as in the transcript pull (the earliest open question of the ask).
+              if (elevateModel !== undefined) return;
               const qText = typeof q === 'string' ? q : (q && typeof q === 'object' ? (q as Record<string, unknown>).question : '');
               if (typeof qText === 'string' && qText.includes(ELEVATE_MARKER_PREFIX)) {
                 const m = qText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
@@ -359,7 +374,7 @@ async function main() {
 
           // Only an elevation question is worth waiting for: a bounded wait (~150 ms polls, <= 2 s) for the answer row
           // when content is not on stdin and transcriptPath + stepIdx are given. Any other question returns at once.
-          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex) : null;
+          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex, { questionCount: askQuestionCount(input.toolCall?.args) }) : null;
           rowFound = rawAnswer !== null;
 
           const parsedResult = parseElevationAnswer(rawAnswer);
@@ -415,6 +430,13 @@ async function main() {
           outcome
         });
 
+        await flushTelemetry();
+        console.log('{}');
+        process.exit(0);
+      } else if (toolName === RUN_WORKFLOW_TOOL) {
+        // The drift recorder: re-hashes the script files the PreToolUse guard analysed and logs `workflow_changed` when one
+        // differs. No prompt and nothing printed beyond the empty object; mode off never gets here, on-demand logs silently.
+        await recordRunWorkflowPostToolUse(input, { dir: antigravityWorkflowPinDir(jevDir), readMode: () => mode, log: appendDecisionLog });
         await flushTelemetry();
         console.log('{}');
         process.exit(0);
@@ -486,21 +508,68 @@ async function main() {
         ? input.modelName.trim()
         : undefined;
 
+    // The session model: what the store holds after this write. An Orchestrator conversation keeps its planner id when
+    // an execution turn reports the worker id (`turn_model` in the record, and `inputModelName` in the telemetry rows,
+    // still carry the model the turn ran on).
+    let sessionModel = trimmedModel;
     if (trimmedModel && input.conversationId) {
-      writeAntigravitySessionModel(input.conversationId, trimmedModel);
+      sessionModel = writeAntigravitySessionModel(input.conversationId, trimmedModel) ?? trimmedModel;
     }
 
     let activeModel: string | undefined;
     let quotaView: QuotaView | undefined;
     try {
       quotaView = await readQuotaView({ conversationId: input.conversationId });
-      const rawModel = trimmedModel || quotaView?.active_model;
+      const rawModel = sessionModel || quotaView?.active_model;
       activeModel = ceilingModelForHarness('antigravity', rawModel);
     } catch {
       // ignore
     }
-    if (!activeModel && trimmedModel) {
-      activeModel = ceilingModelForHarness('antigravity', trimmedModel);
+    if (!activeModel && sessionModel) {
+      activeModel = ceilingModelForHarness('antigravity', sessionModel);
+    }
+
+    // run_workflow: the agents a script launches never reach this hook, so the script itself is analysed (workflow-guard.ts).
+    // A mode without decisions (on-demand) passes it untouched: no analysis, no pin, one decisions-log row.
+    if (input.toolCall?.name === RUN_WORKFLOW_TOOL) {
+      const pinDir = antigravityWorkflowPinDir(jevDir);
+      const w = evaluateAntigravityWorkflowCall(input, {
+        mode,
+        sessionModel: activeModel,
+        approvals,
+        config: jevConfig,
+        pinDir
+      });
+      const wf = w.decision;
+      const wfPrompt = taskFingerprint(input.lastUserInput || '');
+      // Never the script and never the reason text (it carries script-supplied literals): counts, hashes and decision fields.
+      appendDecisionLog({
+        event: 'workflow_call',
+        harness: 'antigravity',
+        session_id: input.conversationId || null,
+        call_key: antigravityCallKey(input),
+        tool_name: RUN_WORKFLOW_TOOL,
+        session_model: activeModel || null,
+        ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
+        decision: wf.decision,
+        elevation: wf.elevation || null,
+        approval_scope: wf.approvalScope || null,
+        attempt_count: wf.attemptCount || null,
+        prompt_length: wfPrompt.taskLen,
+        prompt_hash: wfPrompt.taskLen > 0 ? wfPrompt.taskHash : null,
+        ...(wf.pullFallback ? { pull_fallback: wf.pullFallback } : {}),
+        ...(wf.autoApproveWarning ? { auto_approve_warning: true } : {}),
+        ...w.log
+      });
+      if (modeBehaviour(mode).decisions) safelyPrune(pinDir);
+      await flushTelemetry();
+      if (wf.decision === 'pass') {
+        passThrough(event);
+      }
+      const wfOut: Record<string, unknown> = { decision: wf.decision };
+      if (wf.reason) wfOut.reason = wf.reason;
+      console.log(JSON.stringify(wfOut));
+      process.exit(0);
     }
 
     let decision = evaluateAntigravitySubagentCall(input, {
@@ -539,14 +608,18 @@ async function main() {
     const promptHash = promptLength > 0 ? fingerprint.taskHash : null;
 
     const callKey = antigravityCallKey(input);
-    appendDecisionLog({
+    // An agent_call row is the record of an invoke_subagent call and of nothing else: any other tool name that reaches
+    // this hook (a missing name included) writes no row and no telemetry.
+    const isSubagentCall = input.toolCall?.name === 'invoke_subagent';
+    if (isSubagentCall) appendDecisionLog({
       event: 'agent_call',
       harness: 'antigravity',
       session_id: input.conversationId || null,
       call_key: callKey,
-      tool_name: input.toolCall?.name || 'invoke_subagent',
+      tool_name: 'invoke_subagent',
       requested_model: requestedModel,
       session_model: activeModel || null,
+      ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
       decision: decision.decision,
       elevation: decision.elevation || null,
       approval_scope: decision.approvalScope || null,
@@ -557,10 +630,12 @@ async function main() {
       prompt_hash: promptHash,
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
       ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
-      ...downgradeLog
+      ...downgradeLog,
+      // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
+      ...antigravityCostFields(requestedModel, activeModel)
     });
 
-    if (input.toolCall?.name === 'invoke_subagent' && modeBehaviour(mode).telemetry) {
+    if (isSubagentCall && modeBehaviour(mode).telemetry) {
       const cleaned = cleanUserInput(input.lastUserInput || '');
       const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
       const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>

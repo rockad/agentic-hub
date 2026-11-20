@@ -144,15 +144,26 @@ describe('the elevation choice flow for a Workflow', () => {
     expect(String(o.permissionDecisionReason)).not.toContain('stop retrying');
   });
 
-  it('JEV_ELEVATION=dialog and =clamp ask at once (a script cannot be run on another model)', async () => {
-    for (const mode of ['dialog', 'clamp']) {
-      setup({ env: { JEV_ELEVATION: mode } });
-      const o = out(await onPreToolUse(wf({ script: OPUS }, r), r.d));
-      expect(o.permissionDecision).toBe('ask');
-      expect(o).not.toHaveProperty('updatedInput');
-      expect(o.permissionDecisionReason).toContain('<inline>:2:');
-      r.cleanup();
-    }
+  it('JEV_ELEVATION=dialog asks at once, with the sites listed', async () => {
+    setup({ env: { JEV_ELEVATION: 'dialog' } });
+    const o = out(await onPreToolUse(wf({ script: OPUS }, r), r.d));
+    expect(o.permissionDecision).toBe('ask');
+    expect(o).not.toHaveProperty('updatedInput');
+    expect(o.permissionDecisionReason).toContain('<inline>:2:');
+  });
+
+  it('JEV_ELEVATION=clamp takes the choice flow (a script cannot be clamped): deny with the prescribed question, approval passes, never ask', async () => {
+    setup({ env: { JEV_ELEVATION: 'clamp' } });
+
+    const o = out(await onPreToolUse(wf({ script: OPUS }, r), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o).not.toHaveProperty('updatedInput');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(r.logs[0]).toMatchObject({ workflow_guard: 'denied', elevation: 'denied', elevation_attempt: 1 });
+
+    await answer('Yes, for this session');
+    expect(await onPreToolUse(wf({ script: OPUS }, r, {}, 'toolu_2'), r.d)).toBeNull();
   });
 
   it('the PostToolUse recorder accepts the answer to the Workflow question like any other marked question', () => {
@@ -216,7 +227,7 @@ describe('what passes', () => {
   });
 });
 
-describe('what is understood, and what asks', () => {
+describe('what is understood, and what is denied with guidance (dialog mode asks)', () => {
   it("`const M = 'opus'` then `model: M` is understood: the model is ranked as if written", async () => {
     setup();
 
@@ -236,40 +247,61 @@ describe('what is understood, and what asks', () => {
     ['a dynamic import', `await import('x')`, 'dynamic import'],
     ['an escape identifier', `globalThis.agent('p')`, 'globalThis'],
     ['an unknown model', `await agent('p', {model: 'gpt-5'})`, 'not a model Jev can rank'],
-    ['an effort above the interim threshold', `await agent('p', {effort: 'max'})`, 'interim effort threshold']
-  ])('%s opens the permission dialog, not a deny loop', async (_n, script, why) => {
-    setup();
+    ['an effort level Jev does not recognise', `await agent('p', {effort: 'ludicrous'})`, 'not a level Jev recognises'],
+    ['an effort that is not a literal', `await agent('p', {effort: args.level})`, 'effort is not a plain string literal']
+  ])('%s is denied with guidance in choice and clamp (never asked), and asks in dialog mode', async (_n, script, why) => {
+    for (const mode of ['choice', 'clamp']) {
+      setup({ env: { JEV_ELEVATION: mode } });
 
-    const o = out(await onPreToolUse(wf({ script }, r), r.d));
+      const o = out(await onPreToolUse(wf({ script }, r), r.d));
 
-    expect(o.permissionDecision).toBe('ask');
-    expect(o.permissionDecisionReason).toContain(why);
-    expect(o.permissionDecisionReason).toContain('sha256:');
+      expect(o.permissionDecision).toBe('deny');
+      expect(o.permissionDecisionReason).toContain(why);
+      expect(o.permissionDecisionReason).toContain('Change the Workflow');
+      expect(o.permissionDecisionReason).toMatch(/\d+ site\(s\) Jev cannot verify/);
+      expect(r.logs[0]).toMatchObject({ decision: 'deny', workflow_guard: 'denied-unverifiable', elevation: 'denied', workflow_reasons: expect.any(Number) });
+      expect(r.logs[0]).not.toHaveProperty('elevation_attempt');
+      // the reason carries sites and reasons, never script text
+      expect(String(o.permissionDecisionReason)).not.toContain(script);
+      r.cleanup();
+    }
+
+    setup({ env: { JEV_ELEVATION: 'dialog' } });
+    const asked = out(await onPreToolUse(wf({ script }, r), r.d));
+    expect(asked.permissionDecision).toBe('ask');
+    expect(asked.permissionDecisionReason).toContain(why);
+    expect(asked.permissionDecisionReason).toContain('sha256:');
     expect(r.logs[0]).toMatchObject({ workflow_guard: 'asked', elevation: 'asked' });
-    expect(r.logs[0]).not.toHaveProperty('elevation_attempt');
   });
 
-  it('a mix of an elevation and an unverifiable site asks once, naming both', async () => {
+  it('a mix of an elevation and an unverifiable site is denied once, naming both; fixing the unverifiable site then reaches the choice question', async () => {
     setup();
 
     const o = out(await onPreToolUse(wf({ script: `await agent('a', {model: 'opus'})\nawait agent('b', {model: args.m})` }, r), r.d));
 
-    expect(o.permissionDecision).toBe('ask');
+    expect(o.permissionDecision).toBe('deny');
     expect(o.permissionDecisionReason).toContain('stronger than the session model');
     expect(o.permissionDecisionReason).toContain('not a plain string literal');
+    expect(o.permissionDecisionReason).not.toContain('[jev-elevate:');
+
+    const fixed = out(await onPreToolUse(wf({ script: `await agent('a', {model: 'opus'})\nawait agent('b', {model: 'haiku'})` }, r, {}, 'toolu_2'), r.d));
+    expect(fixed.permissionDecisionReason).toContain('[jev-elevate:opus]');
   });
 
-  it('a Workflow input with none of script, scriptPath or name asks', async () => {
+  it('a Workflow input with none of script, scriptPath or name is denied', async () => {
     setup();
 
-    expect(out(await onPreToolUse(wf({ args: { a: 1 } }, r), r.d)).permissionDecision).toBe('ask');
+    expect(out(await onPreToolUse(wf({ args: { a: 1 } }, r), r.d)).permissionDecision).toBe('deny');
   });
 
-  it('an unrankable id in a catalogue session asks as unverifiable (never as a choice question it cannot name)', async () => {
+  it('an unrankable id in a catalogue session is denied as unverifiable (never as a choice question it cannot name)', async () => {
     const cat = { models: [{ id: 'claude-sonnet-5-5', status: 'ok' }] } as any;
     setup({ rankContext: () => ({ cat }) as RankContext });
 
-    expect(out(await onPreToolUse(wf({ script: `await agent('p', {model: 'some-new-model'})` }, r), r.d)).permissionDecision).toBe('ask');
+    const o = out(await onPreToolUse(wf({ script: `await agent('p', {model: 'some-new-model'})` }, r), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).not.toContain('[jev-elevate:');
   });
 });
 
@@ -299,11 +331,11 @@ describe('agent definitions', () => {
     expect(await onPreToolUse(wf({ script: `await agent('p', {agentType: 'plain'})\nawait agent('q', {agentType: 'cheap'})` }, r), r.d)).toBeNull();
   });
 
-  it('an agentType with no definition asks; an explicit model on the call wins over the definition', async () => {
+  it('an agentType with no definition is denied; an explicit model on the call wins over the definition', async () => {
     setup();
     fs.writeFileSync(path.join(agents(), 'deep.md'), '---\nmodel: opus\n---\n');
 
-    expect(out(await onPreToolUse(wf({ script: `await agent('p', {agentType: 'ghost'})` }, r), r.d)).permissionDecision).toBe('ask');
+    expect(out(await onPreToolUse(wf({ script: `await agent('p', {agentType: 'ghost'})` }, r), r.d)).permissionDecision).toBe('deny');
     expect(await onPreToolUse(wf({ script: `await agent('p', {agentType: 'deep', model: 'haiku'})` }, r), r.d)).toBeNull();
   });
 });
@@ -360,12 +392,12 @@ describe('failing open', () => {
     expect(r.logs[0]).toMatchObject({ workflow_guard: 'error' });
   });
 
-  it('an oversized script asks (the analysis refuses it), it is not an internal error', async () => {
+  it('an oversized script is denied (the analysis refuses it), it is not an internal error', async () => {
     setup();
 
     const o = out(await onPreToolUse(wf({ script: `// ${'x'.repeat(600 * 1024)}\nawait agent('p')` }, r), r.d));
 
-    expect(o.permissionDecision).toBe('ask');
+    expect(o.permissionDecision).toBe('deny');
     expect(o.permissionDecisionReason).toContain('byte limit');
   });
 });

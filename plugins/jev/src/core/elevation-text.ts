@@ -13,10 +13,16 @@ export const STOP_RETRYING_FROM_ATTEMPT = 3;
  * so a repeated denial has to say plainly what to do instead. Only `askTool` differs between harnesses
  * (`ask_question` in Antigravity, `AskUserQuestion` in Claude Code).
  */
-export function stopRetryingText(attempt: number | null | undefined, requestedModel: string, ceiling: string, askTool: string): string {
+export function stopRetryingText(
+  attempt: number | null | undefined,
+  requestedModel: string,
+  ceiling: string,
+  askTool: string,
+  field: string = 'Model'
+): string {
   if (typeof attempt !== 'number' || attempt < STOP_RETRYING_FROM_ATTEMPT) return '';
   return (
     `This is attempt ${attempt} for the same delegation: stop retrying '${requestedModel}'. ` +
-    `Proceed with an explicit Model: "${ceiling}", or ask the user again with ${askTool}.`
+    `Proceed with an explicit ${field}: "${ceiling}", or ask the user again with ${askTool}.`
   );
 }

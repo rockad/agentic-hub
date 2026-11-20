@@ -13,6 +13,7 @@ import {
 } from './cache.js';
 import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
+import { isModeOff, modeBehaviour } from './mode-policy.js';
 import { getTracer } from '../tracing.js';
 import { privateDir, privateFile, PRIVATE_FILE_MODE, jevHomeDir } from './private-fs.js';
 import { safeSessionId } from '../../claude/logic.js';
@@ -148,6 +149,11 @@ export type AntigravitySessionRecord = {
   conversationId: string;
   model: string;
   updated_at: number;
+  /**
+   * The model the latest turn actually ran on, written only when it differs from `model`: an Orchestrator session keeps
+   * its planner id as `model` while an execution turn reports the worker id (see `writeAntigravitySessionModel`).
+   */
+  turn_model?: string;
 };
 
 export type ActiveModelSource = 'argument' | 'env' | 'latest' | 'quota-state';
@@ -311,15 +317,42 @@ export function writeAntigravitySessionModel(
   model: string,
   nowSec?: number,
   overrideSessionsDir?: string
-): void {
+): string | undefined {
   const safeId = safeSessionId(conversationId);
   if (!safeId || !model || typeof model !== 'string' || model.trim().length === 0) {
-    return;
+    return undefined;
   }
 
-  const trimmedModel = model.trim();
+  const reported = model.trim();
   const currentSec = typeof nowSec === 'number' ? nowSec : Math.floor(Date.now() / 1000);
   const sessionsDir = overrideSessionsDir || getAntigravitySessionsDir();
+
+  // The Orchestrator identity is sticky for the conversation: the planning turns report the planner id and the execution
+  // turns report the worker id, so a worker id arriving for a conversation whose stored session model is the planner keeps
+  // the planner as the session model (the variant, ceiling and explicit-Model rule follow it) and records the worker only
+  // as `turn_model`. Any other id is a real model switch (/model) and replaces the stored one.
+  let trimmedModel = reported;
+  let turnModel: string | undefined;
+  if (isOrchestratorWorker(reported) && !isOrchestratorPlanner(reported)) {
+    try {
+      const read = readRegularFile(path.join(sessionsDir, `${safeId}.model.json`), 64 * 1024);
+      if (read.kind === 'ok') {
+        const prev = JSON.parse(read.text);
+        if (
+          prev &&
+          typeof prev.model === 'string' &&
+          typeof prev.updated_at === 'number' &&
+          currentSec - prev.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC &&
+          isOrchestratorPlanner(prev.model)
+        ) {
+          trimmedModel = prev.model.trim();
+          turnModel = reported;
+        }
+      }
+    } catch {
+      // unreadable previous record: the reported model stands
+    }
+  }
 
   try {
     privateDir(sessionsDir);
@@ -327,7 +360,8 @@ export function writeAntigravitySessionModel(
     const record: AntigravitySessionRecord = {
       conversationId: safeId,
       model: trimmedModel,
-      updated_at: currentSec
+      updated_at: currentSec,
+      ...(turnModel ? { turn_model: turnModel } : {})
     };
     const content = JSON.stringify(record, null, 2) + '\n';
 
@@ -352,6 +386,7 @@ export function writeAntigravitySessionModel(
   } catch {
     // best-effort; never crash the caller
   }
+  return trimmedModel;
 }
 
 /**
@@ -632,9 +667,34 @@ export function quotaRecommendation(strategy: string): string {
 }
 
 // ── Model Tier Ranking & Clamping ────────────────────────────────────────────
-export function isOrchestratorModel(model?: string | null): boolean {
+/**
+ * The Antigravity Orchestrator is one conversation that reports two model ids: the planning turns run on the planner
+ * (`gemini-pro-orchestrator-g1-pro`, or the display name `Orchestrator (Argon)`), and the execution turns after
+ * `exit_plan_mode` run on the execution worker (`gemini-flash-worker-agy`). Planning draws the frontier (Argon) pool,
+ * execution draws the Gemini pool (consolidated plan, section 32.10).
+ *
+ * Planner: any id that names the Orchestrator.
+ */
+export function isOrchestratorPlanner(model?: string | null): boolean {
   if (!model || typeof model !== 'string') return false;
   return /orchestrator/i.test(model);
+}
+
+/**
+ * Execution worker: the id carries the token `flash-worker` or `worker-agy`, delimited by the start or end of the id or a
+ * `-`, `_` or space (so `gemini-flash-worker-agy` and any `<family>-worker-agy` match; a bare `worker`, `worker-agy2`,
+ * `flash-workers` and `gemini-3.8-flash-low` do not).
+ */
+const ORCHESTRATOR_WORKER_RE = /(?:^|[-_\s])(?:flash-worker|worker-agy)(?:$|[-_\s])/i;
+
+export function isOrchestratorWorker(model?: string | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+  return ORCHESTRATOR_WORKER_RE.test(model);
+}
+
+/** "This session is an Orchestrator session": the planner or the execution worker. Drives the subagent ceiling and the explicit-Model rule. */
+export function isOrchestratorModel(model?: string | null): boolean {
+  return isOrchestratorPlanner(model) || isOrchestratorWorker(model);
 }
 
 export function subagentCeilingRank(sessionModel?: string | null): number {
@@ -843,10 +903,10 @@ export function applyLowQuotaClamp(
   const { pool, strategy, min_remaining } = quotaView.active;
   const poolName = pool || 'gemini';
   const unchanged: QuotaClampResult = { tier, wasClampedByQuota: false, strategy, pool: poolName };
-  if (mode === 'off' || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
+  if (isModeOff(mode) || (strategy !== 'conserve' && strategy !== 'free_only')) return unchanged;
 
   const rank = modelTierRank(tier);
-  if (mode === 'on') {
+  if (modeBehaviour(mode).decisions) {
     const floorTier = strategy === 'free_only' ? (editsFiles ? 'flash_lite' : 'openrouter_free') : 'flash_lite';
     if (rank > modelTierRank(floorTier)) {
       return { ...unchanged, tier: floorTier, wasClampedByQuota: true };

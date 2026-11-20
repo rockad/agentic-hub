@@ -65,11 +65,11 @@ describe('PreToolUse Workflow as a process', () => {
     expect(decision(r)).toBeNull();
   });
 
-  it('an unparseable script opens the permission dialog (ask), exit 0', () => {
+  it('an unparseable script is denied with guidance (never asked), exit 0', () => {
     const r = run('pre-tool-use', payload({ script: "await agent('p', {model: )" }));
 
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout).hookSpecificOutput).toMatchObject({ permissionDecision: 'ask' });
+    expect(JSON.parse(r.stdout).hookSpecificOutput).toMatchObject({ permissionDecision: 'deny' });
   });
 
   it('mode off passes whatever the script holds and writes no pin', () => {

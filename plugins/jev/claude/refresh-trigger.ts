@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readJevModeSync } from '../src/core/config.js';
+import { modeBehaviour } from '../src/core/mode-policy.js';
 import {
   DEFAULT_MAX_AGE_DAYS,
   compareVersions,
@@ -116,7 +117,8 @@ export function maybeStartCatalogueRefresh(deps: TriggerDeps = {}): TriggerResul
     const env = deps.env ?? process.env;
     if (env.JEV_MODEL_REFRESH === 'off') return 'disabled';
     const mode = (deps.readMode ?? (() => readJevModeSync(REFRESH_HARNESS)))();
-    if (mode !== 'on') return 'mode-off';
+    // The catalogue refresh is a background network action that feeds routing: only a mode with routing advice (`on`) runs it.
+    if (!modeBehaviour(mode).routingAdvice) return 'mode-off';
     const cfg = (deps.loadConfig ?? (() => loadRefreshConfig()))();
     if (!cfg.enabled) return 'disabled';
     const now = deps.now ?? new Date();

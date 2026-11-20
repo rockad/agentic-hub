@@ -91,6 +91,8 @@ Key generation, hashing and verification are S1-AUTH's (`auth.keys`); this strea
 
 **Handed to S1-WAKE:** `/wake/listen` does not exist yet, so nothing here parks or closes a listener. When WAKE builds the parked-listener table it registers `hooks.register("wake", table.close_key)` (reachable as `app.state.admin.hooks`), where `close_key` answers every parked request of the key with `403` and returns the count. The acceptance line "revoking a key closes its parked `/wake/listen` request (403)" is therefore half done: the MCP half is built and tested, the listener half is the hook WAKE registers. WAKE also passes `listener_count=` to `build_admin` so `status` can show parked listeners.
 
+**Done by S1-WAKE (2026-11-18):** `build_server_app` registers `admin.hooks.register("wake", table.close_key)` and passes `listener_count=table.count`. Revoking a key answers its parked `/wake/listen` requests `403`, and `status` shows the parked count; both are tested in-process and over the real admin socket against a running server. See [wake.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/wake.md).
+
 ## 7. `status` (spec 3.7)
 
 Counts and identifiers only; no body, no secret, no hash. Fields, and what is filled today:
@@ -98,9 +100,9 @@ Counts and identifiers only; no body, no secret, no hash. Fields, and what is fi
 | field | source | today |
 | --- | --- | --- |
 | `sessions` | `sessions` table (registered, active within 15 min, ended, by card); `mcp_bound` is the in-memory `Mcp-Session-Id` map | real; the table stays empty until S1-ID registers sessions |
-| `listeners.parked` | the parked-listener table | **`null` until S1-WAKE** |
+| `listeners.parked` | the parked-listener table | real since S1-WAKE (`null` only where `build_admin` is given no `listener_count`, as in the admin tests) |
 | `pending` | `task_index` joined to the SDK `tasks` table: submitted, in a card queue, held, working, submitted by card | real |
-| `budgets` | `wakes` table, last hour, against `A2A_WAKE_BUDGET_PER_H`, per handle | real; **empty until S1-WAKE writes wake rows** |
+| `budgets` | `wakes` table, last hour, against `A2A_WAKE_BUDGET_PER_H`, per handle | real; has rows since S1-WAKE writes one per wake |
 | `stale_offers` | `SUBMITTED` tasks offered `A2A_REOFFER_MAX` times and still unconfirmed **[design: the meaning of "stale"]**, count and up to 20 ids | real |
 | `schema` | `coord_schema_version` and the SDK's Alembic revision | real |
 | `backup` | `dump_age_h` from the sidecar's `last_ok` file (`null` = unknown) **[design: an addition]** | real |
@@ -157,7 +159,7 @@ Run from the host that runs the stack, with the stack up. Use a throwaway `--age
 
 ## 12. Not done here
 
-- Closing parked `/wake/listen` requests on revoke, and the parked count in `status`: S1-WAKE (section 6).
+- Closing parked `/wake/listen` requests on revoke, and the parked count in `status`: done by S1-WAKE (section 6). `cli/render.py` no longer prints "(null until S1-WAKE)" beside the count (removed with Z18).
 - `expose check` (S3-EXPOSE-CHECK) and `admin-apply` (GL-IMPORT): named, not built.
 - `--tailnet-login`: waits for the real identity source (S2-TS, Z14).
 - `a2a-coord install` (S1-INST).

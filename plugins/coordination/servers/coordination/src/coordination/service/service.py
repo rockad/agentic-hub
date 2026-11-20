@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -86,6 +86,7 @@ from coordination.service.types import (
     InboxResult,
     ServiceSettings,
     SweepResult,
+    WakeSnapshot,
     card_of,
     derive_task_id,
 )
@@ -141,6 +142,11 @@ def _struct_dict(struct: Any) -> dict[str, Any]:
     return json_format.MessageToDict(struct) if struct is not None and len(struct) else {}
 
 
+IdleEnder = Callable[[datetime], Awaitable[Sequence[Any]]]
+"""Ends every live session idle since the given time and returns what it ended
+(`IdentityService.end_idle`): by name, so the end hooks fire and the audit row is written."""
+
+
 class CoordinationService:
     def __init__(
         self,
@@ -153,6 +159,7 @@ class CoordinationService:
         listeners: ListenerView | None = None,
         notifier: Notifier | None = None,
         limiter: SlidingWindowLimiter | None = None,
+        idle_ender: IdleEnder | None = None,
     ) -> None:
         self._store = store
         self._dir = directory
@@ -162,6 +169,13 @@ class CoordinationService:
         self._listeners: ListenerView = listeners if listeners is not None else NoListeners()
         self._notifier = notifier
         self._limiter = limiter if limiter is not None else SlidingWindowLimiter(clock)
+        self._idle_ender = idle_ender
+
+    def bind_idle_ender(self, idle_ender: IdleEnder) -> None:
+        """Hand the sweep the function that ends idle sessions by name (Z18). The identity service
+        is built after this one (it takes `pending_count`), so the app binds it here, as it binds
+        the wake service."""
+        self._idle_ender = idle_ender
 
     # ======================================================================================
     # SendMessage
@@ -272,9 +286,13 @@ class CoordinationService:
                 raise
             return await self._view_of(again.task)
         index = await self._store.get_index(task_id)
+        # The view is built before the wake machinery is told: `recipientListening` says whether
+        # the recipient was parked when the task arrived (it is about to be woken, which takes it
+        # out of the table), not whether it is parked a moment after its own wake (S1-WAKE).
+        view = await self._view(task, index)
         if admission.state is State.SUBMITTED:
             await self._notify(index)
-        return await self._view(task, index)
+        return view
 
     async def _admit(self, caller: Caller, tenant: str, to: str | None, now: datetime) -> _Admission:
         """Decide the first state and routing of a new task from the caller and the address."""
@@ -553,6 +571,36 @@ class CoordinationService:
             return True
         return counts.queued_wakeable > 0 and self._listeners.newest_listening(card) == handle
 
+    async def wake_snapshot(self, handle: str) -> WakeSnapshot:
+        """What the wake endpoint needs to decide one wake, in as few queries as it can: the ids of
+        the tasks that make a wake pending for `handle` (spec 7.4, the same rule as
+        `has_wake_pending`, but naming the tasks so the anti-loop rule can tell whether the pending
+        set changed; empty means nothing is wakeable) and `pending_count`. Ids and a count only, no
+        content. The ids query runs only when the counts say something is wakeable."""
+        card = card_of(handle)
+        session = await self._dir.session(handle) if card else None
+        if card is None or session is None or session.ended:
+            return WakeSnapshot(frozenset(), 0)
+        counts = await self._store.count_pending(handle, card, self._clock.now(), self._s.reoffer_max)
+        unread = {t.id for t in await self._store.working_for_handle(handle) if C.coord_unread(t) > 0}
+        include_queued = self._listeners.newest_listening(card) == handle
+        ids = set(unread)
+        if counts.own_wakeable > 0 or (include_queued and counts.queued_wakeable > 0):
+            ids.update(
+                await self._store.wakeable_task_ids(
+                    handle, card, self._clock.now(), self._s.reoffer_max, include_queued=include_queued
+                )
+            )
+        return WakeSnapshot(frozenset(ids), counts.own_submitted + counts.queued_card + len(unread))
+
+    async def wake_pending_set(self, handle: str) -> frozenset[str]:
+        """The ids of the tasks that make a wake pending for `handle` (see `wake_snapshot`)."""
+        return (await self.wake_snapshot(handle)).ids
+
+    async def held_count(self, card_id: str) -> int:
+        """Held tasks waiting for a human on `card_id` (the `held_for_review` count), no bodies."""
+        return await self._store.count_held_for_card(card_id)
+
     # ======================================================================================
     # Recipient: respond
     # ======================================================================================
@@ -756,9 +804,17 @@ class CoordinationService:
 
     async def sweep(self) -> SweepResult:
         """One pass of the TTL rules (spec 1.5, 6.2). Safe to run at any rate; each step is its own
-        compare-and-swap, and a task that changed under the sweep is skipped, never forced."""
+        compare-and-swap, and a task that changed under the sweep is skipped, never forced.
+
+        Idle sessions are ended through the bound idle ender (`IdentityService.end_idle`, Z18) so the
+        end hooks fire and the audit row is written; a service built without one (a caller that
+        builds the parts alone) falls back to `Directory.end_idle`, which does neither."""
         now = self._clock.now()
-        ended = await self._dir.end_idle(now - timedelta(hours=self._s.session_idle_ttl_h), now)
+        idle_cutoff = now - timedelta(hours=self._s.session_idle_ttl_h)
+        if self._idle_ender is not None:
+            ended = len(await self._idle_ender(idle_cutoff))
+        else:
+            ended = await self._dir.end_idle(idle_cutoff, now)
         submitted = held = failed = 0
         for task_id, hold in await self._store.expired(now, 500):
             to_reason = C.REASON_QUARANTINE_EXPIRED if hold else C.REASON_EXPIRED

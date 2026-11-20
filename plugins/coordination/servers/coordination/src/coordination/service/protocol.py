@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from a2a.types import a2a_pb2 as pb
-from coordination.service.types import Caller, InboxResult, SweepResult
+from coordination.service.types import Caller, InboxResult, SweepResult, WakeSnapshot
 
 
 @runtime_checkable
@@ -48,6 +48,12 @@ class TaskService(Protocol):
     async def pending_count(self, handle: str) -> int: ...
 
     async def has_wake_pending(self, handle: str) -> bool: ...
+
+    async def wake_snapshot(self, handle: str) -> WakeSnapshot: ...
+
+    async def wake_pending_set(self, handle: str) -> frozenset[str]: ...
+
+    async def held_count(self, card_id: str) -> int: ...
 
     async def release_hold(self, task_id: str, *, actor: str) -> pb.Task: ...
 

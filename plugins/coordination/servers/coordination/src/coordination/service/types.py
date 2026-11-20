@@ -140,6 +140,15 @@ class InboxResult:
 
 
 @dataclass(frozen=True)
+class WakeSnapshot:
+    """What one wake decision needs (S1-WAKE): the ids of the tasks that make a wake pending (empty:
+    nothing is wakeable) and the pending count. Ids and a number only, never content."""
+
+    ids: frozenset[str]
+    pending: int
+
+
+@dataclass(frozen=True)
 class SweepResult:
     sessions_ended: int = 0
     submitted_expired: int = 0

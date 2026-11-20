@@ -23,7 +23,7 @@ from coordination.config import Config
 from coordination.identity import IdentityService
 from coordination.mcp.server import McpEndpoint
 from coordination.mcp.sessions import McpSessions, SessionRegistry
-from coordination.mcp.tools import WAIT_POLL_S, McpTools, Sleep
+from coordination.mcp.tools import WAIT_POLL_S, Confirm, McpTools, Sleep
 from coordination.service import CoordinationService, ListenerView
 
 
@@ -36,19 +36,30 @@ def build_endpoint(
     audit: AuditLog | None = None,
     listeners: ListenerView | None = None,
     identity: IdentityService | None = None,
+    confirm: Confirm | None = None,
     sleep: Sleep = asyncio.sleep,
     poll_s: float = WAIT_POLL_S,
 ) -> McpEndpoint:
     """The `/mcp` ASGI app for one server process. `listeners` is the same parked-listener view
-    the service was given (WAKE owns the real one); `identity` is the S1-ID service the `/sessions`
-    routes share (one is built over the same registry when none is given); `sleep` and `poll_s`
-    exist so a test can run a 50 second wait in virtual time."""
+    the service was given (S1-WAKE's `ListenerTable`); `identity` is the S1-ID service the
+    `/sessions` routes share (one is built over the same registry when none is given); `confirm`
+    is S1-WAKE's wake confirmation, called by `a2a_inbox`, `a2a_wait` and `a2a_hello` (spec 7.5);
+    `sleep` and `poll_s` exist so a test can run a 50 second wait in virtual time."""
     if identity is None:
         identity = IdentityService(
             SessionRegistry(engine, clock), clock, audit=audit, listeners=listeners, pending=service.pending_count
         )
     tools = McpTools(
-        config, service, identity.registry, clock, audit=audit, listeners=listeners, identity=identity, sleep=sleep, poll_s=poll_s
+        config,
+        service,
+        identity.registry,
+        clock,
+        audit=audit,
+        listeners=listeners,
+        identity=identity,
+        confirm=confirm,
+        sleep=sleep,
+        poll_s=poll_s,
     )
     sessions = McpSessions(clock, idle_ttl_s=config.session_idle_ttl_h * 3600)
     return McpEndpoint(tools, sessions)

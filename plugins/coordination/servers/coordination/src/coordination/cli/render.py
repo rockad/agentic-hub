@@ -131,7 +131,7 @@ def status(out: TextIO, r: dict[str, Any]) -> None:
     )
     for c in s["by_card"]:
         print(f"  {clean(c['card'])}: {c['registered']} registered, {c['active']} active", file=out)
-    print(f"listeners:    {val(r['listeners']['parked'])} parked (null until S1-WAKE)", file=out)
+    print(f"listeners:    {val(r['listeners']['parked'])} parked", file=out)
     p = r["pending"]
     print(
         f"pending:      {p['submitted']} submitted ({p['card_queue']} in a card queue), "

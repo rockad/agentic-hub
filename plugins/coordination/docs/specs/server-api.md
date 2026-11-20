@@ -1194,6 +1194,17 @@ When there is nothing to announce it returns `{}` with status 200. The string is
 - agy has no idle wake. Accepted asymmetry [D9]. Pending tasks surface at the next model call through the PreInvocation hook, at session start through the `SessionStart` `injectSteps` instruction [D27], and on demand through `a2a_wait`.
 - Held Stop park for agy: spike only, not shipped [D9]. Needs the agy spikes in section 12.
 
+- As built (S1-WAKE, 2026-11-18): the listener table, `POST /wake/listen`, `GET|POST /wake/pending`, the budget, the anti-loop rule and the wake confirmation are in `coordination/wake/`; see [wake.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/wake.md). No table or migration changed (`wakes` is migration 2's). Additions to this section, all [design]:
+  - a wake in flight (the handle's newest `wakes` row, unconfirmed and under 120 s old) blocks a second `200`; the listener stays parked and is looked at again when that wake counts as lost (the reading of 7.5's "the next listener then gets an immediate 200" from the other side);
+  - a parked listener looks again every 20 s for work no notification announced (a re-offer that came due, a queued card task), checks the session is still live (`410 ended` if not) and refreshes `last_seen_at`;
+  - header, query and hook-body errors the 7.1 table does not list are `400` `application/problem+json`; a mismatched `X-Coord-Handle` is `403`; a key never reaches another card's session (it looks `410 unregistered`);
+  - `429` is a park limiter, 30 parks per 60 s per handle (the spec names no number);
+  - the anti-loop state is in memory (the budget in the database is the hard bound);
+  - `GET /wake/pending` takes `announce=0|1`; a zero count observed with `announce=1` clears the dedupe memory; the `POST` hook form answers `{}` for an unknown or ended session;
+  - the 200 body is the pending count clamped to 1 to 9999 (the same number `a2a_hello` and `/wake/pending` show).
+  - BP7: the `410 unregistered` 15 s retry stays in the client (SP2 C7: the `SessionStart` hooks run in parallel); the server answers it at once.
+  - Measured with 200 parked listeners: p99 70 ms wake and 145 ms send-to-200 at 100 wakes per second with other traffic running (three runs: 69 to 114 ms and 142 to 180 ms); a simultaneous burst of 200 is 2.4 s p99 and is a stress figure, not a gate (wake.md section 9).
+
 ## 8. Authentication and authorisation [D11]
 
 ### 8.1 API key kinds and scopes

@@ -746,7 +746,7 @@ describe('a lost approval race never turns into an allow (JEV_DOWNGRADE=auto)', 
     expect(states()?.effortApprovals).toHaveLength(1);
   });
 
-  it('the same for a model approval lost between the peek and the consume (model once, session opus-class call, auto downgrade)', async () => {
+  it('a model once whose consume returns null (lost between the peek and the consume) is a deny with the model question and no updatedInput', async () => {
     autoRig();
     const MODEL_INPUT = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'opus' };
     await onPreToolUse(call(MODEL_INPUT), r.d);
@@ -758,6 +758,65 @@ describe('a lost approval race never turns into an allow (JEV_DOWNGRADE=auto)', 
     expect(o.permissionDecision).toBe('deny');
     expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
     expect(o.updatedInput).toBeUndefined();
-    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny' });
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', elevation: 'denied' });
+    expect(r.logs.at(-1)).not.toHaveProperty('approval_scope');
+  });
+});
+
+describe('a deny that drops a clamp says so (JEV_ELEVATION=clamp)', () => {
+  const INPUT = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'opus', effort: 'max' };
+  const clampRig = () => setup({ env: { JEV_ELEVATION: 'clamp' } });
+  const states = () => r.approvals.states.get('s1');
+  const approveEffortOnce = async () => {
+    await onPreToolUse(call(INPUT), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+  };
+
+  it('control: with the effort once approved and nothing racing, the clamp goes ahead (allow + updatedInput) and spends the once', async () => {
+    clampRig();
+    await approveEffortOnce();
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('allow');
+    expect(o.updatedInput).toMatchObject({ model: 'sonnet' });
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'allow', elevation: 'clamped', clamped_from: 'opus', clamped_to: 'sonnet' });
+    expect(r.logs.at(-1)).not.toHaveProperty('clamp');
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+  });
+
+  it('clamp + effort once + consume returning null: a deny, no updatedInput, no clamped_from, and the log says the clamp was discarded', async () => {
+    clampRig();
+    await approveEffortOnce();
+    r.approvals.consume = () => null; // the once is gone between the peek and the consume
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+    expect(o.updatedInput).toBeUndefined();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', elevation: 'denied', effort_decision: 'denied', clamp: 'discarded', clamp_to: 'sonnet' });
+    expect(r.logs.at(-1)).not.toHaveProperty('clamped_from');
+  });
+
+  it('the effort question itself is a deny that drops the clamp: logged as discarded, nothing clamped', async () => {
+    clampRig();
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.updatedInput).toBeUndefined();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', clamp: 'discarded', clamp_to: 'sonnet' });
+    expect(r.logs.at(-1)).not.toHaveProperty('clamped_from');
+  });
+
+  it('a clamp with no deny after it is not logged as discarded', async () => {
+    clampRig();
+
+    const o = out(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d));
+
+    expect(o.permissionDecision).toBe('allow');
+    expect(r.logs.at(-1)).toMatchObject({ elevation: 'clamped', clamped_from: 'opus' });
+    expect(r.logs.at(-1)).not.toHaveProperty('clamp');
   });
 });

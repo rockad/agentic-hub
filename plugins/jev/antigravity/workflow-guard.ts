@@ -28,6 +28,15 @@
  *   `import ... as agent`, a decorator, a keyword argument named `agent`);
  * - `exec`, `eval`, `compile`, `importlib`, `runpy`, `pkgutil`, `zipimport`, `__import__`, `globals`, `locals`, `vars`, `__builtins__`, `builtins` (a name
  *   after a `.` is an attribute and is not one of these: `re.compile` is fine);
+ * - string-based dynamic access, which reaches a module or a function by a name the analysis cannot read:
+ *   - `getattr`, `setattr`, `delattr`, `hasattr` (and `operator.attrgetter` / `methodcaller`) whose attribute name is not a plain
+ *     string literal, is `agent`, `modules` or a dunder, or that are used other than as a direct call (`map(getattr, ...)`);
+ *     a plain `getattr(obj, "name")` stays allowed;
+ *   - `sys.modules` (also under an alias, `from sys import modules`, `from sys import *`), `__dict__`, `f_globals`, `f_locals`,
+ *     `__globals__`, `__getattribute__`, `__subclasses__`, `__loader__`, `__spec__`, `globals()`, `locals()`, `vars()`,
+ *     `__builtins__`, `builtins`;
+ *   - the modules `inspect`, `pydoc`, `pickle`, `marshal`, `shelve`, `dill`, `cloudpickle`, `imp` and `unittest` (its loaders import
+ *     by name: `loadTestsFromName`, `loadTestsFromModule`);
  * - an f-string whose text names one of those or `agent`;
  * - a `type_name` that is not a string literal while `model` is absent, a definition that cannot be found, a model
  *   that is `openrouter`/`free` or that no tier recognises, a script that cannot be tokenized, an unreadable,
@@ -36,12 +45,18 @@
  * - a LOCAL import: an `import` or `from ... import` whose top-level name is a sibling `<name>.py` file or a `<name>/` package
  *   directory next to the script (a `ScriptPath`) or under its `Cwd`, and any relative import (`from . import x`, `from .m import y`).
  *   The imported file may launch agents the analysis never sees, so it is unverifiable ("inline the agent() calls or remove the
- *   local import"). The standard library and installed packages stay allowed: only a sibling file or directory is checked.
+ *   local import"). The standard library and installed packages stay allowed: only a sibling file or directory is checked. A
+ *   directory named like a standard library module counts only when it is a package or holds an importable file (`.py`, `.pyc`,
+ *   `.so`, ...) or a subpackage, because the stdlib module can be missing at runtime; a plain data directory does not.
  *
- * Limits (not a sandbox, a fail-closed filter): a local file is not followed (see above), and a module that is neither a sibling
- * nor reachable from the script's own directory or Cwd (a `sys.path` change, a `.pth` file) is not noticed; a script cannot be re-checked between the analysis and the harness's own read of it (every decision is bound
- * to the sha256 of the text analysed, and a PostToolUse recorder reports drift, see workflow-pin.ts); the run's actual
- * served model is not observable here.
+ * Limits (not a sandbox, a fail-closed filter; static analysis cannot be complete). What is caught is what is listed above: the
+ * agent(...) call sites, the escape names, string-based dynamic access (getattr-style calls with a non-literal or dangerous
+ * name, `sys.modules`, the namespace and frame attributes, the code-loading modules) and a local import. What is NOT caught: a
+ * local file is not followed (see above), and a module that is neither a sibling nor reachable from the script's own directory
+ * or Cwd (a `sys.path` change, a `.pth` file) is not noticed; any other way to run code by name or text (a subprocess, `timeit`,
+ * `code`, `pdb`, `ctypes`, a network fetch, a framework's own plugin loader) is not enumerated; a script cannot be re-checked
+ * between the analysis and the harness's own read of it (every decision is bound to the sha256 of the text analysed, and a
+ * PostToolUse recorder reports drift, see workflow-pin.ts); the run's actual served model is not observable here.
  *
  * The result separates `elevations` from `unverifiable` sites; `evaluateAntigravityWorkflowCall` turns them into a hook
  * decision with the mode semantics of src/core/mode-policy.ts:
@@ -297,10 +312,31 @@ const AGENT_SIGNATURE_MODEL_SLOT = 5;
 const AGENT_SIGNATURE_TYPE_NAME_SLOT = 3;
 /** Names the analysis cannot see through. Matched as bare names, never after a `.` (`re.compile` is an attribute). */
 /** `runpy`, `pkgutil` and `zipimport` load and run code by name or path, like `importlib`: the code they run cannot be seen. */
+/**
+ * Also here: the modules that load or run code by a string or a path, or hand out the interpreter's own namespaces:
+ * `inspect` (frames), `pydoc` (`locate`, `importfile`), `pickle`, `marshal`, `shelve`, `dill`, `cloudpickle` (they run the code
+ * a payload names), `unittest` (its loaders import by name) and `imp` (the legacy importer).
+ */
 const RESTRICTED_NAMES = new Set([
-  'exec', 'eval', 'compile', 'importlib', '__import__', 'globals', 'locals', 'vars', '__builtins__', 'builtins', 'runpy', 'pkgutil', 'zipimport'
+  'exec', 'eval', 'compile', 'importlib', '__import__', 'globals', 'locals', 'vars', '__builtins__', 'builtins', 'runpy', 'pkgutil', 'zipimport',
+  'inspect', 'pydoc', 'pickle', 'marshal', 'shelve', 'dill', 'cloudpickle', 'unittest', 'imp'
 ]);
-const FSTRING_RESTRICTED = /\b(?:agent|exec|eval|compile|importlib|__import__|globals|locals|vars|__builtins__|builtins|runpy|pkgutil|zipimport)\b/;
+/** Attribute names that reach a namespace, a frame or a loader. Flagged after a `.` too (`sys.modules` is checked separately, with the names `sys` goes by). */
+const RESTRICTED_ATTRS = new Set([
+  '__dict__', 'f_globals', 'f_locals', '__globals__', '__getattribute__', '__subclasses__', '__loader__', '__spec__',
+  'loadTestsFromName', 'loadTestsFromNames', 'loadTestsFromModule'
+]);
+/** The builtins that reach an attribute by its name: the name must be a plain string literal that names nothing dangerous. */
+const ATTR_ACCESSORS = new Set(['getattr', 'setattr', 'delattr', 'hasattr']);
+/** `operator.attrgetter` / `methodcaller`: the same rule for every name they are given (after a `.` too: `operator.attrgetter(...)`). */
+const ATTR_BUILDERS = new Set(['attrgetter', 'methodcaller']);
+const FSTRING_RESTRICTED =
+  /\b(?:agent|exec|eval|compile|importlib|__import__|globals|locals|vars|__builtins__|builtins|runpy|pkgutil|zipimport|getattr|setattr|delattr|hasattr|attrgetter|methodcaller|pickle|pydoc|marshal|shelve|dill|cloudpickle|unittest|__dict__|f_globals|f_locals|loadTestsFromNames?|loadTestsFromModule)\b|\bsys\s*\.\s*modules\b/;
+
+/** Is this literal attribute name one the guard will not let a `getattr`-style call reach? `agent`, `modules` (`sys.modules`), a dunder, or a namespace, frame or loader attribute. */
+function dangerousAttr(name: string): boolean {
+  return name === 'agent' || name === 'modules' || /^__.*__$/.test(name) || RESTRICTED_ATTRS.has(name);
+}
 
 export interface AnalysisContext {
   /** The session model (the ceiling is derived from it). */
@@ -318,8 +354,9 @@ export interface AnalysisContext {
 /**
  * The top-level names of the Python standard library: `sys.stdlib_module_names` of CPython 3.12.13 (the 3.12 list; a later
  * release only adds and removes a few). A namespace directory (a `<name>/` with no `__init__.py`) never shadows a stdlib
- * module, because a regular module found later on the path wins over a namespace portion, so such a directory is local only
- * for a name that is NOT in this list. Regenerate with `python3.12 -c "import sys; print(sorted(sys.stdlib_module_names))"`.
+ * module, because a regular module found later on the path wins over a namespace portion, so such a directory is local for a
+ * name that is NOT in this list, and for a name that is only when it holds an importable file or subpackage (the stdlib module
+ * may be missing at runtime). Regenerate with `python3.12 -c "import sys; print(sorted(sys.stdlib_module_names))"`.
  */
 const PYTHON_STDLIB_MODULES: ReadonlySet<string> = new Set([
   '__future__', '_abc', '_aix_support', '_ast', '_asyncio', '_bisect', '_blake2', '_bz2', '_codecs', '_codecs_cn',
@@ -364,10 +401,34 @@ function isModuleFile(entry: string, name: string): boolean {
   return /^[A-Za-z0-9_.-]+\.(so|pyd)$/.test(ext);
 }
 
+/** Does the directory hold an importable module file (`.py`, `.pyw`, `.pyc`, `.so`, `.pyd`) or, up to `depth` levels down, a subpackage that does? Never throws. */
+function holdsImportable(dir: string, depth: number): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of entries) {
+    try {
+      if (e.name === '__pycache__') continue; // cached bytecode is not importable from there
+      const full = path.join(dir, e.name);
+      const isFile = e.isFile() || (e.isSymbolicLink() && fs.statSync(full).isFile());
+      if (isFile && /\.(?:py|pyw|pyc|so|pyd)$/.test(e.name)) return true;
+      const isDir = e.isDirectory() || (e.isSymbolicLink() && fs.statSync(full).isDirectory());
+      if (isDir && depth > 0 && holdsImportable(full, depth - 1)) return true;
+    } catch {
+      // unreadable entry: not a module we can name
+    }
+  }
+  return false;
+}
+
 /**
  * Is `name` a sibling module the import machinery would load from one of `dirs`? A source or compiled file (see
  * `isModuleFile`), a package directory (`<name>/__init__.py`, `.pyc` or extension), or a namespace directory (no
- * `__init__`) for a name that is not a standard library module (see `PYTHON_STDLIB_MODULES`). Never throws.
+ * `__init__`): for a name that is not a standard library module (see `PYTHON_STDLIB_MODULES`) always, for a stdlib name only
+ * when it holds an importable module file or subpackage (`holdsImportable`). Never throws.
  */
 function isLocalModule(name: string, dirs: readonly string[]): boolean {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
@@ -388,6 +449,10 @@ function isLocalModule(name: string, dirs: readonly string[]): boolean {
         const inner = fs.readdirSync(path.join(dir, name));
         const regular = inner.some((f) => f === '__init__.py' || f === '__init__.pyc' || (f.startsWith('__init__.') && /\.(so|pyd)$/.test(f)));
         if (regular || !PYTHON_STDLIB_MODULES.has(name)) return true;
+        // A stdlib-named namespace directory: the stdlib module may be missing at runtime (no python3-tk on Debian, cgi / imghdr /
+        // lib2to3 / telnetlib removed in 3.13, a Windows-only name on POSIX), and then this directory is what the import finds.
+        // So it counts as local when it holds anything importable; a plain data directory (`secrets/` with .txt or .json) does not.
+        if (holdsImportable(path.join(dir, name), 3)) return true;
       } catch {
         // unreadable entry: not a module we can name
       }
@@ -601,9 +666,46 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
     );
   };
 
+  // The names `sys` goes by (`import sys as s`): `<sys>.modules` is the table of every loaded module, a way to reach one by a string.
+  const sysNames = new Set<string>(['sys']);
+  for (let i = 0; i + 2 < toks.length; i++) {
+    if (toks[i].t === 'name' && toks[i].v === 'sys' && toks[i + 1].t === 'name' && toks[i + 1].v === 'as' && toks[i + 2].t === 'name') sysNames.add(toks[i + 2].v);
+  }
+  /** `from sys import ...` at `i`: `modules`, or a star import (which brings `modules` in), is unverifiable. */
+  const checkFromSys = (i: number): void => {
+    let depth = 0;
+    for (let j = i + 3; j < toks.length; j++) {
+      const u = toks[j];
+      if (u.t === 'op' && (u.v === '(' || u.v === '[' || u.v === '{')) depth++;
+      else if (u.t === 'op' && (u.v === ')' || u.v === ']' || u.v === '}')) depth--;
+      else if (depth <= 0 && u.line !== toks[i].line) break;
+      if ((u.t === 'name' && u.v === 'modules') || (u.t === 'op' && u.v === '*')) {
+        site(u, '`sys.modules` is not analysable (it reaches any loaded module by a string)');
+        return;
+      }
+    }
+  };
+  /** The names the arguments of the call whose `(` is at `open` give an attribute: every positional, or the first (`first`). Returns a reason when one is not a safe literal. */
+  const attrNamesProblem = (open: number, which: 'second' | 'all' | 'first'): string | null => {
+    const parsed = parseArgs(toks, open);
+    if (!parsed) return 'the parentheses of this call never balance';
+    if (parsed.args.some((a) => a.star)) return 'it is called with *args or **kwargs, so the attribute name cannot be known';
+    const chosen = parsed.args.filter((a) => a.keyword === null && (which === 'all' || a.positional === (which === 'first' ? 0 : 1)));
+    if (chosen.length === 0) return 'the attribute name is missing';
+    for (const a of chosen) {
+      const v = valueOf(toks, a);
+      if (v.kind !== 'literal') return `the attribute name is ${v.kind === 'dynamic' ? v.why : 'missing'}, not a string literal`;
+      if (v.text.split('.').some(dangerousAttr)) return `the attribute '${clip(v.text)}' reaches the agent function, a dunder or a namespace`;
+    }
+    return null;
+  };
+
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
-    if (t.t === 'name' && (t.v === 'import' || t.v === 'from') && !(toks[i - 1]?.t === 'op' && toks[i - 1].v === '.') && statementStart(i)) checkImport(i);
+    if (t.t === 'name' && (t.v === 'import' || t.v === 'from') && !(toks[i - 1]?.t === 'op' && toks[i - 1].v === '.') && statementStart(i)) {
+      checkImport(i);
+      if (t.v === 'from' && toks[i + 1]?.v === 'sys' && toks[i + 2]?.t === 'name' && toks[i + 2].v === 'import') checkFromSys(i);
+    }
     if (t.t === 'str') {
       if (t.prefix?.includes('f') && FSTRING_RESTRICTED.test(t.body ?? '') && (t.body ?? '').includes('{')) {
         site(t, 'an f-string expression names agent, exec, eval, compile, importlib or a similar escape');
@@ -615,6 +717,28 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
     const afterDot = prev?.t === 'op' && prev.v === '.';
     if (RESTRICTED_NAMES.has(t.v) && !afterDot) {
       site(t, `\`${t.v}\` is not analysable`);
+      continue;
+    }
+    if (RESTRICTED_ATTRS.has(t.v)) {
+      site(t, `\`${t.v}\` is not analysable (it reaches a namespace, a frame or a loader)`);
+      continue;
+    }
+    if (afterDot && t.v === 'modules' && toks[i - 2]?.t === 'name' && sysNames.has(toks[i - 2].v)) {
+      site(t, '`sys.modules` is not analysable (it reaches any loaded module by a string)');
+      continue;
+    }
+    // getattr / setattr / delattr / hasattr reach an attribute by its name: only a plain string literal that is not `agent`,
+    // a dunder or a namespace attribute can be followed; used any other way than a direct call, the name they are given is unknowable.
+    if (ATTR_ACCESSORS.has(t.v) && !afterDot) {
+      const direct = toks[i + 1]?.t === 'op' && toks[i + 1].v === '(' && !(prev?.t === 'name' && (prev.v === 'def' || prev.v === 'class'));
+      const why = direct ? attrNamesProblem(i + 1, 'second') : 'it is used other than as a direct call';
+      if (why) site(t, `\`${t.v}\` is not analysable: ${why}`);
+      continue;
+    }
+    if (ATTR_BUILDERS.has(t.v)) {
+      const direct = toks[i + 1]?.t === 'op' && toks[i + 1].v === '(' && !(prev?.t === 'name' && (prev.v === 'def' || prev.v === 'class'));
+      const why = direct ? attrNamesProblem(i + 1, t.v === 'methodcaller' ? 'first' : 'all') : 'it is used other than as a direct call';
+      if (why) site(t, `\`${t.v}\` is not analysable: ${why}`);
       continue;
     }
     if (t.v !== 'agent') continue;

@@ -99,7 +99,7 @@ describe('Antigravity run_workflow: local imports', () => {
     expect(analyse('import notes\nimport stubby\nimport prefixed\n', [dir])).toEqual([]);
   });
 
-  describe('a directory: a package counts, a namespace directory only for a name that is not in the standard library', () => {
+  describe('a directory: a package counts, a namespace directory for a name that is not in the standard library or that holds an importable file', () => {
     it('a plain data directory named like a standard library module does not shadow it', () => {
       fs.mkdirSync(path.join(dir, 'secrets'));
       fs.writeFileSync(path.join(dir, 'secrets', 'token.txt'), 'x');
@@ -115,6 +115,42 @@ describe('Antigravity run_workflow: local imports', () => {
 
       expect(s).toHaveLength(1);
       expect(s[0].reason).toContain("'secrets'");
+    });
+
+    it('a stdlib-named namespace directory holding an importable file is local (the stdlib module may be missing at runtime)', () => {
+      fs.mkdirSync(path.join(dir, 'tkinter'));
+      fs.writeFileSync(path.join(dir, 'tkinter', 'evil.py'), 'print(1)\n');
+
+      const s = analyse('import tkinter.evil\n', [dir]);
+
+      expect(s).toHaveLength(1);
+      expect(s[0].reason).toContain("'tkinter'");
+    });
+
+    it.each(['mod.pyc', 'ext.so', 'ext.cpython-312-x86_64-linux-gnu.so', 'ext.pyd'])('a stdlib-named namespace directory holding %s is local', (file) => {
+      fs.mkdirSync(path.join(dir, 'cgi'));
+      fs.writeFileSync(path.join(dir, 'cgi', file), '');
+
+      expect(analyse('import cgi\n', [dir])).toHaveLength(1);
+    });
+
+    it('a stdlib-named namespace directory holding only a subpackage with a module is local', () => {
+      fs.mkdirSync(path.join(dir, 'telnetlib', 'inner'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'telnetlib', 'inner', 'x.py'), '');
+
+      expect(analyse('import telnetlib\n', [dir])).toHaveLength(1);
+    });
+
+    it('a stdlib-named directory with only data files, empty subdirectories or cached bytecode is not local', () => {
+      fs.mkdirSync(path.join(dir, 'secrets'));
+      fs.writeFileSync(path.join(dir, 'secrets', 'data.json'), '{}');
+      fs.mkdirSync(path.join(dir, 'json'));
+      fs.mkdirSync(path.join(dir, 'json', 'empty'));
+      fs.mkdirSync(path.join(dir, 'json', '__pycache__'));
+      fs.writeFileSync(path.join(dir, 'json', '__pycache__', 'x.cpython-312.pyc'), '');
+      fs.writeFileSync(path.join(dir, 'json', 'notes.md'), '');
+
+      expect(analyse('import secrets\nimport json\nfrom secrets import token_hex\n', [dir])).toEqual([]);
     });
 
     it('a plain directory with a name that is not in the standard library can provide it, so it is unverifiable', () => {

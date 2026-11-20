@@ -587,6 +587,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // session model (JEV_ELEVATION=clamp: allow + updatedInput, every call of a prompt alike). Choice and clamp never ask.
   // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
+  // Set when a deny withdrew a clamp (see `dropAllowOutputs`): logged as `clamp: "discarded"` with `clamp_to`.
+  let clampDiscarded: Record<string, unknown> = {};
   // The downgrade's own allow (mode `auto`: allow + updatedInput) and its log. Declared here because a deny below must be able to
   // withdraw them: a deny never shares an output with an allow (see `dropAllowOutputs`).
   let downgradeOut: ReturnType<typeof applyDowngrade> = null;
@@ -621,7 +623,11 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // A deny never shares an output with an allow: every output that would let the call run (the clamp's allow + updatedInput, the
   // auto downgrade's) is withdrawn, and the log says the downgrade did not take effect.
   const dropAllowOutputs = (): void => {
-    clamp = null;
+    if (clamp) {
+      // Logged like the downgrade's: the clamp did not take effect, and the model it would have clamped to.
+      clampDiscarded = { clamp: 'discarded', clamp_to: elevation?.sessionAlias ?? null };
+      clamp = null;
+    }
     if (downgradeOut) {
       downgradeOut = null;
       downgradeLog = { ...downgradeLog, downgrade: 'discarded' };
@@ -870,6 +876,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     // A dialog-mode `ask` while the permission mode approves without showing it: informational only, the decision is unchanged.
     ...(verdict?.decision === 'ask' && isAutoApprovePermissionMode(input.permission_mode) ? { auto_approve_warning: true } : {}),
     ...downgradeLog,
+    ...clampDiscarded,
     ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
     ...(effortSession ? { effort_session: effortSession } : {}),

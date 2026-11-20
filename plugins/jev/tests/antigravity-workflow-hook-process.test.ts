@@ -172,7 +172,7 @@ describe('run_workflow through the hook process: on-demand and off make no decis
 describe('run_workflow pin store and the PostToolUse drift recorder', () => {
   const scriptFile = () => path.join(home, 'wf.py');
 
-  it('logs workflow_changed when the file differs after the run, consumes the pin, prints {}', () => {
+  it('logs workflow_changed when the file differs after the run, marks the pin drifted and keeps it, prints {}', () => {
     fs.writeFileSync(scriptFile(), CLEAN);
     expect(stdout(run('pre-tool-use', pre({ ScriptPath: scriptFile() })))).toBe('');
     expect(pins()).toEqual(['call_wf.json']);
@@ -180,7 +180,8 @@ describe('run_workflow pin store and the PostToolUse drift recorder', () => {
     const p = run('post-tool-use', post({ ScriptPath: scriptFile() }));
     expect(p.exitCode).toBe(0);
     expect(stdout(p)).toBe('{}');
-    expect(pins()).toEqual([]);
+    expect(pins()).toEqual(['call_wf.json']); // kept as the record
+    expect(JSON.parse(fs.readFileSync(path.join(pinDir(), 'call_wf.json'), 'utf8'))).toMatchObject({ drifted: true, drift: [{ file: scriptFile(), current: sha(PRO) }] });
     const d = rows().filter((r) => r.event === 'workflow_changed');
     expect(d).toHaveLength(1);
     expect(d[0].analysed_sha256).toBe(sha(CLEAN));

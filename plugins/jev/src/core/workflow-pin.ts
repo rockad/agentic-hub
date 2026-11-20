@@ -11,7 +11,11 @@
  *   hashes, never the text;
  * - pin those hashes under the call's id, and let a PostToolUse recorder re-hash the files after the run and report any
  *   drift (a `workflow_changed` audit event, and a user-visible message where the harness has a channel for it). There
- *   is deliberately no prompt on a hash difference: the run already happened.
+ *   is deliberately no prompt on a hash difference: the run already happened. A pin whose files drifted is kept and marked
+ *   `drifted` (with the files and both hashes) until it is pruned, as the audit record; an unchanged one is dropped;
+ * - NEVER read a pin as a verdict: PreToolUse does not read the pin store at all, so a call (a re-invocation, a resume, the
+ *   same tool call id) is always analysed from the file on disk as it is now and gets the normal verdict. Only the PostToolUse
+ *   recorder reads pins.
  *
  * Limits: the drift check is detection after the fact, not prevention; a file swapped and put back inside the window is
  * not seen; an inline script has no file to re-check.
@@ -46,6 +50,11 @@ export interface WorkflowPin {
   decision: 'allow' | 'ask';
   at: string;
   scripts: ScriptFact[];
+  /** Set by the PostToolUse recorder when a file's content differs from the analysed one; the pin is then kept, not dropped. */
+  drifted?: boolean;
+  drifted_at?: string;
+  /** The drifted files with both hashes (`current` null: gone or unreadable). */
+  drift?: Array<{ file: string; analysed: string; current: string | null }>;
 }
 
 export const PIN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -89,6 +98,21 @@ function readPin(dir: string, toolUseId: unknown): WorkflowPin | null {
     return Array.isArray(parsed?.scripts) ? (parsed as WorkflowPin) : null;
   } catch {
     return null;
+  }
+}
+
+/** Mark the pin `drifted` and keep it (best effort; the audit event is already in the decisions log). */
+function markPinDrifted(dir: string, toolUseId: unknown, pin: WorkflowPin, drift: DriftedFile[]): void {
+  const file = pinFile(dir, toolUseId);
+  if (!file) return;
+  try {
+    const marked: WorkflowPin = { ...pin, drifted: true, drifted_at: new Date().toISOString(), drift };
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(marked), { mode: PRIVATE_FILE_MODE });
+    fs.renameSync(tmp, file);
+    privateFile(file);
+  } catch {
+    // the log has it
   }
 }
 
@@ -150,9 +174,9 @@ export interface DriftDeps {
 }
 
 /**
- * PostToolUse for a workflow call: re-hash every file the PreToolUse analysis read and compare. Consumes the pin and logs
- * one `workflow_changed` event per drifted file. Never throws. Silent (`no-pin`) when the guard did not run for this call.
- * When Jev has been switched to on-demand since (`status: 'off'`, the pin dropped) drift is still logged and `speaks` is
+ * PostToolUse for a workflow call: re-hash every file the PreToolUse analysis read and compare. Drops the pin when nothing
+ * changed; when a file drifted, logs one `workflow_changed` event per drifted file and keeps the pin, marked `drifted`. Never throws. Silent (`no-pin`) when the guard did not run for this call.
+ * When Jev has been switched to on-demand since (`status: 'off'`) drift is still logged and `speaks` is
  * false. When it has been switched off nothing is dropped or logged (mode off writes nothing; the orphaned pin is pruned
  * by the next call made while Jev is not off).
  *
@@ -161,12 +185,11 @@ export interface DriftDeps {
 export async function checkWorkflowDrift(toolUseId: unknown, toolName: string, deps: DriftDeps, extraLog: Record<string, unknown> = {}): Promise<DriftCheckResult> {
   try {
     const pin = readPin(deps.dir, toolUseId);
-    if (!pin) return { status: 'no-pin' };
+    if (!pin || pin.drifted) return { status: 'no-pin' }; // none, or already reported (and kept as the record)
     const mode = await deps.readMode();
     // Off writes nothing: the pin is not dropped (the next prune takes it) and no drift is logged.
     if (!modeBehaviour(mode).telemetry) return { status: 'off' };
-    dropPin(deps.dir, toolUseId);
-    // Mode on only speaks (stdout); on-demand drops the pin and logs the drift silently.
+    // Mode on only speaks (stdout); on-demand logs the drift silently.
     const speaks = modeBehaviour(mode).decisions;
     const drift: DriftedFile[] = [];
     for (const s of pin.scripts) {
@@ -174,7 +197,11 @@ export async function checkWorkflowDrift(toolUseId: unknown, toolName: string, d
       const current = currentHash(s.label);
       if (current !== s.sha256) drift.push({ file: s.label, analysed: s.sha256, current });
     }
-    if (drift.length === 0) return { status: speaks ? 'unchanged' : 'off', pin };
+    if (drift.length === 0) {
+      dropPin(deps.dir, toolUseId);
+      return { status: speaks ? 'unchanged' : 'off', pin };
+    }
+    markPinDrifted(deps.dir, toolUseId, pin, drift);
     for (const d of drift) {
       deps.log({
         hook: 'PostToolUse',

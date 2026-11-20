@@ -140,6 +140,7 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
+import { COST_WEIGHTS_VERSION, costEffortOf, costFields, type CostFields } from '../src/core/cost-estimate.js';
 import { agentEffortFinding, resolveAgentModel, type EffortLevel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
@@ -391,6 +392,26 @@ async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId
  * the model it is expected to run on (via the same resolution), the session model. No approvals, elevation state,
  * clamp, downgrade or recommendation fields.
  */
+/**
+ * The combined cost estimate of an Agent/Task call (`costEstimate`, `costRatio`, `costWeightsVersion`; telemetry only, see
+ * `src/core/cost-estimate.ts`): the model the call will run on (the resolved one, else the call's own, else the session's)
+ * at the call's literal effort, else its definition's, else the session's, against the session's own. A Workflow has no model
+ * or effort of its own (its agents choose theirs), so its row carries the version and no estimate. It never changes a decision.
+ */
+function agentCostFields(
+  tool: string,
+  call: AgentCall & Record<string, unknown>,
+  resolved: ResolvedAgentModel | null,
+  sessionModel: string | null,
+  sessionEffort: string | null
+): CostFields {
+  if (tool === 'Workflow') return { costEstimate: null, costRatio: null, costWeightsVersion: COST_WEIGHTS_VERSION };
+  return costFields(
+    { model: resolved?.model ?? call.model, effort: costEffortOf(call.effort) ?? costEffortOf(resolved?.definitionEffort) },
+    { model: sessionModel, effort: sessionEffort }
+  );
+}
+
 function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: string): void {
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
@@ -412,7 +433,8 @@ function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: 
     requested_model: typeof call.model === 'string' ? call.model : null,
     sessionModel,
     session_model_source: sessionModelSource,
-    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {})
+    ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
+    ...agentCostFields(tool, call, resolved, sessionModel, readEffort(input.effort))
   });
 }
 
@@ -837,6 +859,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
     ...(effortSession ? { effort_session: effortSession } : {}),
+    // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
+    ...agentCostFields(tool, call, resolved, sessionModel, effortSession),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
     ...(approvalScope ? { approval_scope: approvalScope } : {}),
     ...(attemptCount !== null ? { elevation_attempt: attemptCount } : {}),
@@ -1603,7 +1627,11 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
           modelRecommended: str(entry.recommended_model),
           ...(entry.hook === 'PreToolUse' && str(entry.decision) ? { decision: str(entry.decision) } : {}),
           // The model the call asked for stays on a denied row, where modelUsed is unset.
-          ...(entry.hook === 'PreToolUse' && str(entry.requested_model) ? { requestedModel: str(entry.requested_model) } : {})
+          ...(entry.hook === 'PreToolUse' && str(entry.requested_model) ? { requestedModel: str(entry.requested_model) } : {}),
+          // The combined cost estimate of an `agent_call` (telemetry only; see src/core/cost-estimate.ts).
+          ...(entry.hook === 'PreToolUse' && entry.event === 'agent_call' && 'costWeightsVersion' in entry
+            ? { costEstimate: entry.costEstimate ?? null, costRatio: entry.costRatio ?? null, costWeightsVersion: entry.costWeightsVersion }
+            : {})
         }),
     quotaStrategy: str(entry.quota)
   };

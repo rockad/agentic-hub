@@ -20,6 +20,7 @@ import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
+import { antigravityCostFields } from '../src/core/cost-estimate.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -1767,6 +1768,8 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     decision: params.decision.decision,
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
     ...(downgrade ? { downgrade } : {}),
+    // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
+    ...antigravityCostFields(requestedModel, sessionModel),
     ...(quotaStrategy ? { quotaStrategy } : {})
   };
 }

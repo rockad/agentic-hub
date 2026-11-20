@@ -247,7 +247,8 @@ describe('what is understood, and what is denied with guidance (dialog mode asks
     ['a dynamic import', `await import('x')`, 'dynamic import'],
     ['an escape identifier', `globalThis.agent('p')`, 'globalThis'],
     ['an unknown model', `await agent('p', {model: 'gpt-5'})`, 'not a model Jev can rank'],
-    ['an effort above the interim threshold', `await agent('p', {effort: 'max'})`, 'interim effort threshold']
+    ['an effort level Jev does not recognise', `await agent('p', {effort: 'ludicrous'})`, 'not a level Jev recognises'],
+    ['an effort that is not a literal', `await agent('p', {effort: args.level})`, 'effort is not a plain string literal']
   ])('%s is denied with guidance in choice and clamp (never asked), and asks in dialog mode', async (_n, script, why) => {
     for (const mode of ['choice', 'clamp']) {
       setup({ env: { JEV_ELEVATION: mode } });

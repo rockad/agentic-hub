@@ -50,11 +50,12 @@
  *   sandbox exposes an object that holds the function. Unknown sandbox objects are not modelled.
  * - Options of `pipeline`/`parallel`/`phase` helpers are not inspected, only `agent()` and `meta`.
  * - `effort` in the agent() options has only an INTERIM threshold, with no spec behind it (cognitive-engine
- *   docs/rfc/007-subagent-effort-bounding.md): a literal `xhigh` or `max` asks, `low`, `medium` and
+ *   docs/rfc/007-subagent-effort-bounding.md): a literal `xhigh` or `max` is an `effort` site, which follows the
+ *   same rule as an Agent call (a prompt that names the effort passes, otherwise the hook puts the
+ *   `[jev-elevate-effort:<level>]` choice question, approvals as for Agent), `low`, `medium` and
  *   `high` pass, and any other literal or a non-literal value (variable, expression, spread) is
- *   unverifiable and asks. The `effort:` of an agentType's definition is checked the same way (the
- *   same `effortReason`). The session's own effort is not read, so it is not compared, and effort
- *   does not compose with the elevation flow.
+ *   unverifiable. The `effort:` of an agentType's definition is checked the same way (the
+ *   same `effortReason`). The session's own effort is not read, so it is not compared.
  * - The environment can set an agent's model: `CLAUDE_CODE_SUBAGENT_MODEL` (when the call and its
  *   definition set none), and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` / `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`
  *   (replacing the call's and the definition's). The hook's own environment is read, and the model
@@ -102,6 +103,7 @@ import {
   definitionOrBuiltin,
   describeAgentLookup,
   effortReason,
+  type EffortLevel,
   inheritsSessionModel,
   missingAgentDetail,
   readAgentDefinition,
@@ -113,9 +115,12 @@ import {
 } from './agent-definitions.js';
 import {
   CHOICE_LABELS,
+  EFFORT_FALLBACK,
+  EFFORT_NO_LABEL,
   catalogueKnows,
   classifyElevation,
   compareFamilyFirst,
+  instructedEffort,
   modelAlias,
   modelRank,
   type Elevation,
@@ -135,11 +140,14 @@ export interface CallSite {
   reason: string;
   /**
    * `elevation`: a literal model stronger than the session model (a choice question can answer it).
+   * `effort`: a literal `xhigh` or `max` effort the user has not named (the effort choice question can answer it).
    * `unverifiable`: everything the analysis could not establish (only the permission dialog can answer it).
    */
-  kind: 'elevation' | 'unverifiable';
+  kind: 'elevation' | 'effort' | 'unverifiable';
   /** Set on an `elevation` site: how the model classified (instructed models pass and are not sites). */
   elevation?: Elevation;
+  /** Set on an `effort` site: the level (`xhigh` or `max`). */
+  effort?: EffortLevel;
 }
 
 /** The pure result: what the hook turns into a hook response. */
@@ -153,12 +161,18 @@ export interface WorkflowDecision {
   /** Its classification (the session alias, for the choice question's last option). */
   highestElevation?: Elevation;
   sites: CallSite[];
-  /** The elevation sites, and the sites that are not elevations (fail-closed shapes, unknown models, effort, missing definitions). */
+  /** The elevation sites, the effort sites (a literal xhigh or max), and the sites nothing can answer but the dialog (fail-closed shapes, unknown models or efforts, missing definitions). */
   elevations: CallSite[];
+  efforts: CallSite[];
+  /** The strongest level among the effort sites (`max` over `xhigh`), and the finding text of one such site; absent when there is none. */
+  highestEffort?: EffortLevel;
+  highestEffortReason?: string;
+  /** How many agent() calls (and agent definitions) are held at each level, for the effort question ("3 agents at max"). */
+  effortCounts?: { max: number; xhigh: number };
   unverifiable: CallSite[];
   /** Every literal model that was ranked (call, definition, phase hint and environment candidates), in script order, de-duplicated. */
   models: string[];
-  /** True when at least one model above the session model passed because the user named it in the prompt. */
+  /** True when at least one model above the session model, or one xhigh or max effort, passed because the user named it in the prompt. */
   instructed: boolean;
   /** Ask text naming each offending call site; empty when allowed. */
   message: string;
@@ -172,7 +186,7 @@ export interface GuardContext {
   intent?: UserIntent | null;
   /** The hook's environment (the subagent model variables are read from it); default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
-  /** Collects every literal model that was ranked, and whether one passed by instruction (filled by `checkScriptText`). */
+  /** Collects every literal model that was ranked, and whether a model or an effort passed by instruction (filled by `checkScriptText`). */
   seen?: { models: string[]; instructed: boolean };
 }
 
@@ -983,6 +997,24 @@ function siteOf(file: string, f: { line: number; col: number }, a: Assessment, w
     : unverifiableSite(file, f, reason);
 }
 
+/**
+ * One `effort` value (an agent() option, or an agentType's definition): null when it passes, an `effort` site for a literal
+ * `xhigh` or `max` the user has not named (a prompt that names it passes, as for an Agent call), and an `unverifiable` site
+ * for any other value (an unrecognised level, a non-string): only the dialog can answer those.
+ */
+function effortSite(file: string, f: { line: number; col: number }, effort: unknown, what: string, g: GuardContext): CallSite | null {
+  const reason = effortReason(effort, what);
+  if (reason === null) return null;
+  if (effort === 'xhigh' || effort === 'max') {
+    if (instructedEffort(g.intent ?? null, effort)) {
+      if (g.seen) g.seen.instructed = true;
+      return null;
+    }
+    return { file, line: f.line, col: f.col, reason, kind: 'effort', effort };
+  }
+  return unverifiableSite(file, f, reason);
+}
+
 /** A `meta.phases[].model`: only a progress-display hint, so it is ranked as written and no environment override applies. */
 function hintSite(file: string, f: { line: number; col: number }, requested: string, session: string | null, g: GuardContext): CallSite | null {
   g.seen?.models.push(requested);
@@ -1043,11 +1075,8 @@ export function checkScriptText(
         break;
       }
       case 'effort': {
-        // TODO(owner decision pending): a literal xhigh or max is classed unverifiable here and denied with no route, while an
-        // Agent call gets the [jev-elevate-effort] choice question (and an instructed prompt passes). The finding text below
-        // says it "needs your approval", which the unverifiable deny cannot give. Not changed yet.
-        const reason = effortReason(f.effort, 'agent() call');
-        if (reason) sites.push(unverifiableSite(label, f, reason));
+        const s = effortSite(label, f, f.effort, 'agent() call', g);
+        if (s) sites.push(s);
         break;
       }
       case 'inherit': {
@@ -1071,8 +1100,8 @@ export function checkScriptText(
             if (s) sites.push(s);
           }
           // The definition's own effort applies whatever model the call names (the call's literal `effort` is its own finding).
-          const reason = def.effort === undefined || def.effort === null ? null : effortReason(def.effort, `agentType "${clip(f.agentType)}" definition`);
-          if (reason) sites.push(unverifiableSite(label, f, reason));
+          const s = def.effort === undefined || def.effort === null ? null : effortSite(label, f, def.effort, `agentType "${clip(f.agentType)}" definition`, g);
+          if (s) sites.push(s);
         }
         break;
       }
@@ -1133,14 +1162,24 @@ export function evaluateWorkflowInput(
   const g: GuardContext = { ...ctx, seen };
   const finish = (sites: CallSite[]): WorkflowDecision => {
     const elevations = sites.filter((s) => s.kind === 'elevation');
+    const efforts = sites.filter((s) => s.kind === 'effort');
     const unverifiable = sites.filter((s) => s.kind === 'unverifiable');
     const top = strongest(elevations, g);
+    const topEffort = efforts.find((s) => s.effort === 'max') ?? efforts[0];
     return {
       decision: sites.length === 0 ? 'allow' : 'ask',
       reasons: sites.map((s) => `${s.file}:${s.line}:${s.col} ${s.reason}`),
       ...(top?.elevation ? { highestRequested: top.elevation.requested, highestElevation: top.elevation } : {}),
       sites,
       elevations,
+      efforts,
+      ...(topEffort?.effort
+        ? {
+            highestEffort: topEffort.effort,
+            highestEffortReason: topEffort.reason,
+            effortCounts: { max: efforts.filter((s) => s.effort === 'max').length, xhigh: efforts.filter((s) => s.effort === 'xhigh').length }
+          }
+        : {}),
       unverifiable,
       models: [...new Set(seen.models)],
       instructed: seen.instructed,
@@ -1187,7 +1226,8 @@ export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | '
     `[jev] This Workflow cannot be cleared against the session model ${sessionModel ? `"${sessionModel}"` : '(unknown)'}: ` +
     `${d.sites.length} site(s) Jev cannot verify (${d.unverifiable.length} unverifiable):\n${shown.join('\n')}\n` +
     'Change the Workflow so every agent() call names a literal model at or below the session model (or inherits it) and a literal effort of low, medium or high ' +
-    '(no variables, spreads or computed values, a script and agent definitions Jev can read), then call it again.'
+    '(no variables, spreads or computed values, a script and agent definitions Jev can read), then call it again. ' +
+    'A literal effort of xhigh or max is not one of these sites: once nothing is unverifiable it is put to the user as a question.'
   );
 }
 
@@ -1218,4 +1258,40 @@ export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[
     `do not ask in any other form.` +
     (stop ? ` ${stop}` : '')
   );
+}
+
+/**
+ * The deny reason of the effort choice flow for a Workflow (a literal `xhigh` or `max` on an agent() call or on an agentType's
+ * definition): the same marker and four options as an Agent delegation's effort question, naming the Workflow by its script
+ * hash. `interim` is the finding's own wording. A Yes: call the Workflow again unchanged; No: set the efforts to `high`.
+ */
+export function workflowEffortChoiceReason(
+  level: EffortLevel,
+  interim: string,
+  scripts: readonly ScriptFact[],
+  attempt?: number | null,
+  counts?: { max: number; xhigh: number }
+): string {
+  const l = CHOICE_LABELS;
+  const stop = stopRetryingText(attempt, level, EFFORT_FALLBACK, 'AskUserQuestion', 'effort');
+  const ids = scripts.slice(0, 3).map((s) => `sha256:${s.sha256.slice(0, 12)}`).join(', ') || 'unhashed';
+  return (
+    `[jev] This Workflow: ${interim} The user has not approved it. ` +
+    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate-effort:${level}] followed by a short question ` +
+    `naming the Workflow (${ids}), the held agents (${effortCountsText(counts, level)}; one answer covers the whole script), and a 10-word summary of what the workflow does; ` +
+    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${EFFORT_NO_LABEL}'. ` +
+    `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() efforts to "${EFFORT_FALLBACK}" (or leave them out) and call it again, or do the work directly; ` +
+    `If AskUserQuestion is not available, edit the workflow to use effort "${EFFORT_FALLBACK}" and call it again now and do not stop; ` +
+    `do not ask in any other form.` +
+    (stop ? ` ${stop}` : '')
+  );
+}
+
+/** "3 agents at max, 1 agent at xhigh": the number of agent() calls the effort question is about. */
+function effortCountsText(counts: { max: number; xhigh: number } | undefined, level: EffortLevel): string {
+  const part = (n: number, at: string): string => `${n} ${n === 1 ? 'agent' : 'agents'} at ${at}`;
+  const parts: string[] = [];
+  if (counts && counts.max > 0) parts.push(part(counts.max, 'max'));
+  if (counts && counts.xhigh > 0) parts.push(part(counts.xhigh, 'xhigh'));
+  return parts.join(', ') || `agents at ${level}`;
 }

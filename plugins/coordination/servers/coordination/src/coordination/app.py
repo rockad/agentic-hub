@@ -44,7 +44,14 @@ S1-ADMIN adds, here (wiring only; the admin plane is `coordination.admin`):
   not an HTTP route and has no scope: `create_app` takes an `admin` server only to keep it on
   `app.state.admin`, where S1-WAKE reaches `admin.hooks` to register what a key revocation must
   close. `main` builds it in `build_server_app`, whose lifespan starts and stops it. A socket that
-  cannot be opened stops the server from starting."""
+  cannot be opened stops the server from starting.
+
+S1-ID adds, here (wiring only; the identity code is `coordination.identity`):
+
+- `POST /sessions`, `GET /sessions` and `POST /sessions/end` (spec 3.5), added only when
+  `create_app` is given an `identity` service; `main` passes the one `/mcp` uses, so the tools and
+  the routes share one registry. `app.state.identity.end_hooks` is where S1-WAKE registers
+  what closes a parked listener with `410` when a session ends."""
 
 from __future__ import annotations
 
@@ -73,6 +80,7 @@ from coordination.auth.store import ApiKeyStore
 from coordination.backup_status import STALE_AFTER_H, is_stale, status_fields
 from coordination.clock import Clock, SystemClock
 from coordination.config import Config, load
+from coordination.identity import IdentityService, SessionsEndpoint
 from coordination.logging import AuthorizationRedactionMiddleware, configure_logging
 from coordination.mcp import McpEndpoint
 
@@ -143,6 +151,7 @@ def create_app(
     mcp: McpEndpoint | None = None,
     a2a: A2AEndpoint | None = None,
     admin: AdminServer | None = None,
+    identity: IdentityService | None = None,
     lifespan: Lifespan[Starlette] | None = None,
 ) -> Starlette:
     config = config if config is not None else load()
@@ -156,6 +165,8 @@ def create_app(
         routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))
     if a2a is not None:
         routes.extend(a2a.routes())
+    if identity is not None:
+        routes.extend(SessionsEndpoint(identity).routes())  # `/sessions` and `/sessions/end`, local-harness only
     # First in the list = outermost: the redaction runs before every other layer, the access
     # control included, so the access control only ever sees the masked header and the Credential.
     middleware = [Middleware(AuthorizationRedactionMiddleware)]
@@ -181,6 +192,7 @@ def create_app(
     app.state.a2a = a2a
     app.state.mcp = mcp  # S1-ADMIN reaches `mcp.sessions.drop_key` through it when it revokes a key
     app.state.admin = admin  # not a route: the Unix socket, started by `build_server_app`'s lifespan
+    app.state.identity = identity  # S1-WAKE registers `identity.end_hooks.register("wake", ...)` here
     return app
 
 
@@ -228,7 +240,15 @@ def build_server_app(config: Config) -> Starlette:
             await engine.dispose()
 
     return create_app(
-        config, clock=clock, audit=audit, key_store=keys, mcp=mcp, a2a=a2a, admin=admin, lifespan=lifespan
+        config,
+        clock=clock,
+        audit=audit,
+        key_store=keys,
+        mcp=mcp,
+        a2a=a2a,
+        admin=admin,
+        identity=mcp.identity,  # the service the `/mcp` tools use, so the routes and the tools share one registry
+        lifespan=lifespan,
     )
 
 

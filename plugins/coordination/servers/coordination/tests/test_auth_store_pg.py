@@ -30,7 +30,7 @@ from sqlalchemy.pool import NullPool
 from coordination.audit import AuditLog, AuditRow
 from coordination.auth import LOCAL_HARNESS, REMOTE_PEER, STATUS_CLIENT, ApiKeyRecord, SqlApiKeyStore, generate_key, parse_key
 from coordination.logging import configure_logging
-from coordination.store import schema
+from coordination.store import migrations, schema
 from coordination.store.connect import params_from_config
 from coordination.store.tables import api_keys, audit as audit_table
 
@@ -143,7 +143,8 @@ def test_the_table_is_the_one_migration_1_made_and_needs_no_new_column(db):
             return await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns("api_keys")})
 
     assert run(columns()) == {c.name for c in api_keys.columns}
-    assert run(schema.versions(engine)).coord_schema_version == 2  # S1-AUTH adds no migration
+    # S1-AUTH added no migration (it ended at 2); S1-ID's m0003 is the only later step it sees.
+    assert run(schema.versions(engine)).coord_schema_version == migrations.LATEST == 3
 
 
 # the middleware on the SQL store ----------------------------------------------------------------

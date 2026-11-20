@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from coordination.audit import AuditLog
 from coordination.clock import Clock
 from coordination.config import Config
+from coordination.identity import IdentityService
 from coordination.mcp.server import McpEndpoint
 from coordination.mcp.sessions import McpSessions, SessionRegistry
 from coordination.mcp.tools import WAIT_POLL_S, McpTools, Sleep
@@ -34,14 +35,21 @@ def build_endpoint(
     *,
     audit: AuditLog | None = None,
     listeners: ListenerView | None = None,
+    identity: IdentityService | None = None,
     sleep: Sleep = asyncio.sleep,
     poll_s: float = WAIT_POLL_S,
 ) -> McpEndpoint:
     """The `/mcp` ASGI app for one server process. `listeners` is the same parked-listener view
-    the service was given (WAKE owns the real one); `sleep` and `poll_s` exist so a test can run
-    a 50 second wait in virtual time."""
-    registry = SessionRegistry(engine, clock)
-    tools = McpTools(config, service, registry, clock, audit=audit, listeners=listeners, sleep=sleep, poll_s=poll_s)
+    the service was given (WAKE owns the real one); `identity` is the S1-ID service the `/sessions`
+    routes share (one is built over the same registry when none is given); `sleep` and `poll_s`
+    exist so a test can run a 50 second wait in virtual time."""
+    if identity is None:
+        identity = IdentityService(
+            SessionRegistry(engine, clock), clock, audit=audit, listeners=listeners, pending=service.pending_count
+        )
+    tools = McpTools(
+        config, service, identity.registry, clock, audit=audit, listeners=listeners, identity=identity, sleep=sleep, poll_s=poll_s
+    )
     sessions = McpSessions(clock, idle_ttl_s=config.session_idle_ttl_h * 3600)
     return McpEndpoint(tools, sessions)
 

@@ -32,7 +32,12 @@ class AuditEvent(StrEnum):
     KEY_ROTATED = "key_rotated"
     KEY_REVOKED = "key_revoked"
     AUTH_FAILURE_SAMPLED = "auth_failure_sampled"  # one row per window, with a count
-    REGISTRATION = "registration"
+    # Session lifecycle (S1-ID, decision Z17). `session_registered` replaces the S1-OBS name
+    # `registration`; nothing but the identity service wrote it.
+    SESSION_REGISTERED = "session_registered"
+    SESSION_ENDED = "session_ended"
+    SESSION_REBOUND = "session_rebound"
+    ALIAS_ADDED = "alias_added"
     WAKE_SENT = "wake_sent"
     HOLD_ENTERED = "hold_entered"
     HOLD_RELEASED = "hold_released"
@@ -48,7 +53,16 @@ REQUIRED_DETAIL: dict[AuditEvent, frozenset[str]] = {
     AuditEvent.HANDLE_PROBE_LIMITED: frozenset({"key_id", "window_count"}),
     AuditEvent.STATE_TRANSITION: frozenset({"task_id", "from_state", "to_state"}),
     AuditEvent.AUTH_FAILURE_SAMPLED: frozenset({"count", "window_s", "window_started_at"}),
+    AuditEvent.SESSION_REGISTERED: frozenset({"card_id", "via", "revived"}),
+    AuditEvent.SESSION_ENDED: frozenset({"via"}),
+    AuditEvent.SESSION_REBOUND: frozenset({"from_binding", "to_binding"}),
+    AuditEvent.ALIAS_ADDED: frozenset({"alias"}),
 }
+
+#: Allowed `via` values (S1-ID, Z17). `session_registered`: who registered the session.
+REGISTERED_VIA = frozenset({"hook", "hello", "auto_agy"})
+#: `session_ended`: an explicit `POST /sessions/end`, or the idle-TTL expiry.
+ENDED_VIA = frozenset({"explicit", "idle_ttl"})
 
 #: Words that mark a field as content. A detail key containing any of them (split on `_`) is
 #: refused, as is the exact name `api_key`. `key_id` is fine: `key` alone is not on the list.

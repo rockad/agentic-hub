@@ -111,6 +111,10 @@
     {
       "id": "sync-main",
       "path": "skills/sync-main"
+    },
+    {
+      "id": "todo",
+      "path": "skills/todo"
     }
   ]
 }

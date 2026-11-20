@@ -117,6 +117,13 @@
       "description": "Merge the latest main into the current branch, then build, test and lint with failure attribution. Never pushes on its own.",
       "version": "1.0.0",
       "category": "skills"
+    },
+    {
+      "name": "todo",
+      "source": "./skills/todo",
+      "description": "A shortcut to the harness's built-in todo: create it if missing, reconcile it if it exists, and carry subagent and workflow progress into it. Use via /todo or automatically on multi-step work.",
+      "version": "1.0.0",
+      "category": "skills"
     }
   ]
 }

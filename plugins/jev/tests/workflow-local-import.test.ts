@@ -76,6 +76,55 @@ describe('Antigravity run_workflow: local imports', () => {
     expect(analyse(script, [dir])).toEqual([]);
   });
 
+  it.each([
+    ['fastmod.pyw', 'fastmod'],
+    ['compiled.pyc', 'compiled'],
+    ['native.so', 'native'],
+    ['native2.cpython-312-x86_64-linux-gnu.so', 'native2'],
+    ['native3.abi3.so', 'native3'],
+    ['winmod.pyd', 'winmod'],
+    ['winmod2.cp312-win_amd64.pyd', 'winmod2']
+  ])('a sibling %s is a local module the import machinery would load', (file, name) => {
+    fs.writeFileSync(path.join(dir, file), '');
+
+    const s = analyse(`import ${name}\n`, [dir]);
+
+    expect(s).toHaveLength(1);
+    expect(s[0].reason).toContain(`'${name}'`);
+  });
+
+  it('files that are not importable modules do not count (a .txt, a .pyi stub, another name with the same prefix)', () => {
+    for (const f of ['notes.txt', 'stubby.pyi', 'prefixed_extra.py']) fs.writeFileSync(path.join(dir, f), '');
+
+    expect(analyse('import notes\nimport stubby\nimport prefixed\n', [dir])).toEqual([]);
+  });
+
+  describe('a directory: a package counts, a namespace directory only for a name that is not in the standard library', () => {
+    it('a plain data directory named like a standard library module does not shadow it', () => {
+      fs.mkdirSync(path.join(dir, 'secrets'));
+      fs.writeFileSync(path.join(dir, 'secrets', 'token.txt'), 'x');
+
+      expect(analyse('import secrets\nfrom secrets import token_hex\n', [dir])).toEqual([]);
+    });
+
+    it('the same directory with an __init__.py is a real package and is unverifiable', () => {
+      fs.mkdirSync(path.join(dir, 'secrets'));
+      fs.writeFileSync(path.join(dir, 'secrets', '__init__.py'), '');
+
+      const s = analyse('import secrets\n', [dir]);
+
+      expect(s).toHaveLength(1);
+      expect(s[0].reason).toContain("'secrets'");
+    });
+
+    it('a plain directory with a name that is not in the standard library can provide it, so it is unverifiable', () => {
+      fs.mkdirSync(path.join(dir, 'plainpkg'));
+      fs.writeFileSync(path.join(dir, 'plainpkg', 'data.json'), '{}');
+
+      expect(analyse('import plainpkg\n', [dir])).toHaveLength(1);
+    });
+  });
+
   it('a sibling under the script directory is found, one only under the Cwd is found too, and one elsewhere is not', () => {
     const where = { cwd: dir };
     const check = (script: string, extra: Record<string, unknown> = {}) =>
@@ -107,6 +156,28 @@ describe('Antigravity run_workflow: local imports', () => {
     expect(asked.decision.decision).toBe('ask');
     expect(asked.decision.reason).toContain("'helpers'");
     expect(call('on-demand', 'choice').decision.decision).toBe('pass');
+  });
+});
+
+describe('Antigravity run_workflow: runpy, pkgutil and zipimport are not analysable (like importlib)', () => {
+  it.each([
+    ['import runpy\nrunpy.run_path("other.py")'],
+    ['import pkgutil\nm = pkgutil.get_loader("x")'],
+    ['import zipimport\nz = zipimport.zipimporter("a.zip")'],
+    ['from runpy import run_module'],
+    ['from pkgutil import iter_modules'],
+    ['import importlib']
+  ])('%j is unverifiable', (script) => {
+    const s = analyse(`${script}\nawait agent("p")\n`, []);
+
+    expect(s.length).toBeGreaterThan(0);
+    expect(s.every((x) => x.kind === 'unverifiable')).toBe(true);
+    expect(s.some((x) => x.reason.includes('is not analysable'))).toBe(true);
+  });
+
+  it('an attribute of that name (obj.runpy) and an f-string naming one are handled like the existing escapes', () => {
+    expect(analyse('x = obj.runpy\ny = cfg.pkgutil\n', [])).toEqual([]);
+    expect(analyse('s = f"{runpy.run_path(p)}"\n', []).length).toBeGreaterThan(0);
   });
 });
 

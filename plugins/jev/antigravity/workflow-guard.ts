@@ -26,7 +26,7 @@
  * - `**kwargs` or `*args` inside an `agent(...)` call;
  * - any use of the name `agent` other than a direct call (aliasing, `parallel(items, agent)`, `.agent(...)`, `def agent`,
  *   `import ... as agent`, a decorator, a keyword argument named `agent`);
- * - `exec`, `eval`, `compile`, `importlib`, `__import__`, `globals`, `locals`, `vars`, `__builtins__`, `builtins` (a name
+ * - `exec`, `eval`, `compile`, `importlib`, `runpy`, `pkgutil`, `zipimport`, `__import__`, `globals`, `locals`, `vars`, `__builtins__`, `builtins` (a name
  *   after a `.` is an attribute and is not one of these: `re.compile` is fine);
  * - an f-string whose text names one of those or `agent`;
  * - a `type_name` that is not a string literal while `model` is absent, a definition that cannot be found, a model
@@ -296,8 +296,11 @@ export function tokenizePython(src: string): Tok[] {
 const AGENT_SIGNATURE_MODEL_SLOT = 5;
 const AGENT_SIGNATURE_TYPE_NAME_SLOT = 3;
 /** Names the analysis cannot see through. Matched as bare names, never after a `.` (`re.compile` is an attribute). */
-const RESTRICTED_NAMES = new Set(['exec', 'eval', 'compile', 'importlib', '__import__', 'globals', 'locals', 'vars', '__builtins__', 'builtins']);
-const FSTRING_RESTRICTED = /\b(?:agent|exec|eval|compile|importlib|__import__|globals|locals|vars|__builtins__|builtins)\b/;
+/** `runpy`, `pkgutil` and `zipimport` load and run code by name or path, like `importlib`: the code they run cannot be seen. */
+const RESTRICTED_NAMES = new Set([
+  'exec', 'eval', 'compile', 'importlib', '__import__', 'globals', 'locals', 'vars', '__builtins__', 'builtins', 'runpy', 'pkgutil', 'zipimport'
+]);
+const FSTRING_RESTRICTED = /\b(?:agent|exec|eval|compile|importlib|__import__|globals|locals|vars|__builtins__|builtins|runpy|pkgutil|zipimport)\b/;
 
 export interface AnalysisContext {
   /** The session model (the ceiling is derived from it). */
@@ -312,19 +315,82 @@ export interface AnalysisContext {
   localModuleDirs?: readonly string[];
 }
 
-/** Is `name` a sibling module: `<dir>/<name>.py` or a `<dir>/<name>/` directory, in one of `dirs`? Never throws. */
+/**
+ * The top-level names of the Python standard library: `sys.stdlib_module_names` of CPython 3.12.13 (the 3.12 list; a later
+ * release only adds and removes a few). A namespace directory (a `<name>/` with no `__init__.py`) never shadows a stdlib
+ * module, because a regular module found later on the path wins over a namespace portion, so such a directory is local only
+ * for a name that is NOT in this list. Regenerate with `python3.12 -c "import sys; print(sorted(sys.stdlib_module_names))"`.
+ */
+const PYTHON_STDLIB_MODULES: ReadonlySet<string> = new Set([
+  '__future__', '_abc', '_aix_support', '_ast', '_asyncio', '_bisect', '_blake2', '_bz2', '_codecs', '_codecs_cn',
+  '_codecs_hk', '_codecs_iso2022', '_codecs_jp', '_codecs_kr', '_codecs_tw', '_collections', '_collections_abc',
+  '_compat_pickle', '_compression', '_contextvars', '_crypt', '_csv', '_ctypes', '_curses', '_curses_panel',
+  '_datetime', '_dbm', '_decimal', '_elementtree', '_frozen_importlib', '_frozen_importlib_external', '_functools',
+  '_gdbm', '_hashlib', '_heapq', '_imp', '_io', '_json', '_locale', '_lsprof', '_lzma', '_markupbase', '_md5',
+  '_msi', '_multibytecodec', '_multiprocessing', '_opcode', '_operator', '_osx_support', '_overlapped', '_pickle',
+  '_posixshmem', '_posixsubprocess', '_py_abc', '_pydatetime', '_pydecimal', '_pyio', '_pylong', '_queue', '_random',
+  '_scproxy', '_sha1', '_sha2', '_sha3', '_signal', '_sitebuiltins', '_socket', '_sqlite3', '_sre', '_ssl', '_stat',
+  '_statistics', '_string', '_strptime', '_struct', '_symtable', '_thread', '_threading_local', '_tkinter',
+  '_tokenize', '_tracemalloc', '_typing', '_uuid', '_warnings', '_weakref', '_weakrefset', '_winapi', '_wmi',
+  '_zoneinfo', 'abc', 'aifc', 'antigravity', 'argparse', 'array', 'ast', 'asyncio', 'atexit', 'audioop', 'base64',
+  'bdb', 'binascii', 'bisect', 'builtins', 'bz2', 'cProfile', 'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd',
+  'code', 'codecs', 'codeop', 'collections', 'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
+  'contextvars', 'copy', 'copyreg', 'crypt', 'csv', 'ctypes', 'curses', 'dataclasses', 'datetime', 'dbm', 'decimal',
+  'difflib', 'dis', 'doctest', 'email', 'encodings', 'ensurepip', 'enum', 'errno', 'faulthandler', 'fcntl',
+  'filecmp', 'fileinput', 'fnmatch', 'fractions', 'ftplib', 'functools', 'gc', 'genericpath', 'getopt', 'getpass',
+  'gettext', 'glob', 'graphlib', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'idlelib', 'imaplib',
+  'imghdr', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json', 'keyword', 'lib2to3', 'linecache',
+  'locale', 'logging', 'lzma', 'mailbox', 'mailcap', 'marshal', 'math', 'mimetypes', 'mmap', 'modulefinder',
+  'msilib', 'msvcrt', 'multiprocessing', 'netrc', 'nis', 'nntplib', 'nt', 'ntpath', 'nturl2path', 'numbers',
+  'opcode', 'operator', 'optparse', 'os', 'ossaudiodev', 'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes',
+  'pkgutil', 'platform', 'plistlib', 'poplib', 'posix', 'posixpath', 'pprint', 'profile', 'pstats', 'pty', 'pwd',
+  'py_compile', 'pyclbr', 'pydoc', 'pydoc_data', 'pyexpat', 'queue', 'quopri', 'random', 're', 'readline', 'reprlib',
+  'resource', 'rlcompleter', 'runpy', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil',
+  'signal', 'site', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd', 'sqlite3', 'sre_compile', 'sre_constants',
+  'sre_parse', 'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess', 'sunau', 'symtable',
+  'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile', 'termios', 'textwrap', 'this',
+  'threading', 'time', 'timeit', 'tkinter', 'token', 'tokenize', 'tomllib', 'trace', 'traceback', 'tracemalloc',
+  'tty', 'turtle', 'turtledemo', 'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv',
+  'warnings', 'wave', 'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp',
+  'zipfile', 'zipimport', 'zlib', 'zoneinfo',
+]);
+
+/** File names of a compiled or source module the import machinery loads for `name`: `<name>.py|pyw|pyc|so|pyd`, `<name>.cpython-*.so`, `<name>.abi3.so`, `<name>.*.pyd`. */
+function isModuleFile(entry: string, name: string): boolean {
+  if (!entry.startsWith(`${name}.`)) return false;
+  const ext = entry.slice(name.length + 1);
+  if (['py', 'pyw', 'pyc', 'so', 'pyd'].includes(ext)) return true;
+  // `<name>.cpython-312-x86_64-linux-gnu.so`, `<name>.abi3.so`, `<name>.cp312-win_amd64.pyd`: a tag, then the extension.
+  return /^[A-Za-z0-9_.-]+\.(so|pyd)$/.test(ext);
+}
+
+/**
+ * Is `name` a sibling module the import machinery would load from one of `dirs`? A source or compiled file (see
+ * `isModuleFile`), a package directory (`<name>/__init__.py`, `.pyc` or extension), or a namespace directory (no
+ * `__init__`) for a name that is not a standard library module (see `PYTHON_STDLIB_MODULES`). Never throws.
+ */
 function isLocalModule(name: string, dirs: readonly string[]): boolean {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
   for (const dir of dirs) {
+    let entries: fs.Dirent[];
     try {
-      if (fs.statSync(path.join(dir, `${name}.py`)).isFile()) return true;
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      // not a file
+      continue;
     }
-    try {
-      if (fs.statSync(path.join(dir, name)).isDirectory()) return true;
-    } catch {
-      // not a directory
+    for (const e of entries) {
+      try {
+        const isFile = e.isFile() || (e.isSymbolicLink() && fs.statSync(path.join(dir, e.name)).isFile());
+        if (isFile && isModuleFile(e.name, name)) return true;
+        if (e.name !== name) continue;
+        const isDir = e.isDirectory() || (e.isSymbolicLink() && fs.statSync(path.join(dir, e.name)).isDirectory());
+        if (!isDir) continue;
+        const inner = fs.readdirSync(path.join(dir, name));
+        const regular = inner.some((f) => f === '__init__.py' || f === '__init__.pyc' || (f.startsWith('__init__.') && /\.(so|pyd)$/.test(f)));
+        if (regular || !PYTHON_STDLIB_MODULES.has(name)) return true;
+      } catch {
+        // unreadable entry: not a module we can name
+      }
     }
   }
   return false;

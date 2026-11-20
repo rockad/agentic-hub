@@ -540,8 +540,8 @@ describe('one answer, one run: an approval is consumed only by a call that actua
   });
 
   it('effort once + the downgrade question: the downgrade deny does not use up the effort answer; the retry runs and spends it', async () => {
-    // NOTE: whether an accepted effort should skip the downgrade question is an open owner decision; this pins the invariant
-    // (a once is not spent by a denied call) under today's behaviour, where the downgrade question is still asked.
+    // Decided: an accepted effort still gets the downgrade question (the effort question first, the downgrade after it). This
+    // pins that, and the invariant that a once is not spent by a call that is denied.
     setup({ downgrades: memoryDowngrades(), rankContext: () => pricedCatalogue(), rateTask: async () => HAIKU });
     const input = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'sonnet', effort: 'max' };
     await onPreToolUse(call(input), r.d);
@@ -688,5 +688,76 @@ describe('Workflow effort follows the Agent rule (instructed passes, otherwise t
     dialog();
 
     expect(out(await onPreToolUse(wfCall(SCRIPT), r.d)).permissionDecision).toBe('ask');
+  });
+});
+
+describe('a lost approval race never turns into an allow (JEV_DOWNGRADE=auto)', () => {
+  const INPUT = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'sonnet', effort: 'max' };
+  const states = () => r.approvals.states.get('s1');
+  const autoRig = () => setup({ env: { JEV_DOWNGRADE: 'auto' }, downgrades: memoryDowngrades(), rankContext: () => pricedCatalogue(), rateTask: async () => HAIKU });
+  const approveEffortOnce = async () => {
+    await onPreToolUse(call(INPUT), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+  };
+
+  it('control: with the effort approved and nothing racing, auto applies the downgrade (allow + updatedInput) and spends the once', async () => {
+    autoRig();
+    await approveEffortOnce();
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('allow');
+    expect(o.updatedInput).toMatchObject({ model: 'haiku' });
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'allow', downgrade: 'applied' });
+    expect(states()?.effortApprovals ?? []).toEqual([]);
+  });
+
+  it('consume returns null (a parallel call spent the once): the output is a deny with no updatedInput, and the log agrees', async () => {
+    autoRig();
+    await approveEffortOnce();
+    const peekEffort = r.approvals.peekEffort!;
+    r.approvals.peekEffort = (s, level, nowMs) => {
+      const hit = peekEffort(s, level, nowMs);
+      r.approvals.consume!(s, { effort: level }, nowMs); // the other call goes ahead first
+      return hit;
+    };
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate-effort:max]');
+    expect(o.updatedInput).toBeUndefined();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', elevation: 'denied', effort_decision: 'denied', downgrade: 'discarded' });
+    expect(r.logs.at(-1)).not.toHaveProperty('approval_scope');
+  });
+
+  it('the consume throws under the lock (swallowed by the hook): still a deny, no updatedInput, and the approval is not spent', async () => {
+    autoRig();
+    await approveEffortOnce();
+    r.approvals.consume = () => {
+      throw new Error('lock timeout');
+    };
+
+    const o = out(await onPreToolUse(call(INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.updatedInput).toBeUndefined();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny', downgrade: 'discarded' });
+    expect(states()?.effortApprovals).toHaveLength(1);
+  });
+
+  it('the same for a model approval lost between the peek and the consume (model once, session opus-class call, auto downgrade)', async () => {
+    autoRig();
+    const MODEL_INPUT = { description: 'WS1: refactor the parser', prompt: 'Refactor it.', model: 'opus' };
+    await onPreToolUse(call(MODEL_INPUT), r.d);
+    await onPostToolUse(answered(MODEL_Q('opus'), 'Yes, once'), r.d);
+    r.approvals.consume = () => null;
+
+    const o = out(await onPreToolUse(call(MODEL_INPUT), r.d));
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(o.updatedInput).toBeUndefined();
+    expect(r.logs.at(-1)).toMatchObject({ decision: 'deny' });
   });
 });

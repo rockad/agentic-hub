@@ -95,6 +95,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import type * as AcornTypes from 'acorn';
 import { readRegularFile } from './safe-read.js';
+import { MAX_SCRIPT_BYTES, type ScriptFact } from '../src/core/workflow-pin.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import {
   clip,
@@ -122,8 +123,8 @@ import {
   type UserIntent
 } from './logic.js';
 
-/** Largest script (inline or file) the guard will parse. Bigger asks. */
-export const MAX_SCRIPT_BYTES = 512 * 1024;
+/** Largest script (inline or file) the guard will parse (shared with the pin drift check, src/core/workflow-pin.ts). Bigger asks. */
+export { MAX_SCRIPT_BYTES, type ScriptFact };
 
 export interface CallSite {
   /** Where the script came from: `<inline>`, a file path, or a workflow name. */
@@ -173,14 +174,6 @@ export interface GuardContext {
   env?: Readonly<Record<string, string | undefined>>;
   /** Collects every literal model that was ranked, and whether one passed by instruction (filled by `checkScriptText`). */
   seen?: { models: string[]; instructed: boolean };
-}
-
-/** What the analysis read: bind a decision to this exact text. Never carries the text itself. */
-export interface ScriptFact {
-  /** `<inline>`, or the resolved file path. */
-  label: string;
-  sha256: string;
-  bytes: number;
 }
 
 /** Everything the analysis needs from the outside world, injectable so tests need no filesystem. */

@@ -706,6 +706,8 @@ type ChoiceElevationContext = {
   promptHash: string;
   signature: string;
   config?: ModeChangeConfigLike;
+  /** Builds the whole deny reason from the attempt count (the run_workflow guard words the question for a script, not a subagent). */
+  reasonOverride?: (attempt: number) => string;
 };
 
 /**
@@ -714,7 +716,7 @@ type ChoiceElevationContext = {
  * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
  * unapproved.
  */
-function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
+export function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
   const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
@@ -787,14 +789,19 @@ function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDec
   approvalStore?.deny(sessionId, requestedModel, nowMs);
   // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
   // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
-  const baseReason = buildElevationReason({
-    typeName,
-    requestedModel,
-    sessionCeilingTier,
-    isOrchestrator
-  });
-  const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
-  const reason = stop ? `${baseReason} ${stop}` : baseReason;
+  let reason: string;
+  if (ctx.reasonOverride) {
+    reason = ctx.reasonOverride(count);
+  } else {
+    const baseReason = buildElevationReason({
+      typeName,
+      requestedModel,
+      sessionCeilingTier,
+      isOrchestrator
+    });
+    const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
+    reason = stop ? `${baseReason} ${stop}` : baseReason;
+  }
   return {
     decision: 'deny',
     reason,

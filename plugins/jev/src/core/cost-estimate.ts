@@ -56,7 +56,8 @@ export function costTierOf(model: unknown): CostTier | null {
   if (typeof model !== 'string') return null;
   const id = model.trim().toLowerCase().replace(EFFORT_SUFFIX_RE, '');
   if (!id) return null;
-  if (id.includes(':free') || id.includes('openrouter_free') || id.includes('openrouter-free')) return 'openrouter_free';
+  // The free pool: `openrouter/free`, `free`, `openrouter_free`, and any `<model>:free` id.
+  if (id === 'free' || id.includes(':free') || id.includes('openrouter/free') || id.includes('openrouter_free') || id.includes('openrouter-free')) return 'openrouter_free';
   if (/flash[-_ ]?lite/.test(id) || id.includes('haiku')) return 'flash_lite';
   if (id.includes('sonnet') || id.includes('flash')) return 'flash';
   if (id.includes('opus') || id.includes('fable') || /(^|[^a-z])pro([^a-z]|$)/.test(id)) return 'pro';

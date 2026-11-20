@@ -47,6 +47,9 @@ describe('model tiers', () => {
     ['gemini-pro', 'pro'],
     ['gemini-3.5-pro-high', 'pro'],
     ['openrouter_free', 'openrouter_free'],
+    ['openrouter/free', 'openrouter_free'],
+    ['free', 'openrouter_free'],
+    ['FREE', 'openrouter_free'],
     ['google/gemma-4-31b-it:free', 'openrouter_free']
   ])('%s is %s', (model, tier) => expect(costTierOf(model)).toBe(tier));
 
@@ -87,6 +90,13 @@ describe('cost = W_model[tier] * W_effort[level], ratio = cost(call) / cost(sess
 
   it('no model, or inherit, is the session model', () => {
     for (const model of [undefined, 'inherit', 'INHERIT', '']) expect(costFields({ model, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 9, costRatio: 2, costWeightsVersion: 1 });
+  });
+
+  it('the free pool costs 0 at any effort, whatever spelling names it', () => {
+    for (const m of ['openrouter/free', 'free', 'openrouter_free']) {
+      expect(costOf(m, 'max')).toBe(0);
+      expect(costFields({ model: m, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 0, costRatio: 0, costWeightsVersion: 1 });
+    }
   });
 
   it('a call at the session model and effort costs exactly the session: ratio 1', () => {

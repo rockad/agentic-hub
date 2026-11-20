@@ -587,6 +587,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // session model (JEV_ELEVATION=clamp: allow + updatedInput, every call of a prompt alike). Choice and clamp never ask.
   // An instructed call passes.
   let clamp: ReturnType<typeof clampElevation> | null = null;
+  // The downgrade's own allow (mode `auto`: allow + updatedInput) and its log. Declared here because a deny below must be able to
+  // withdraw them: a deny never shares an output with an allow (see `dropAllowOutputs`).
+  let downgradeOut: ReturnType<typeof applyDowngrade> = null;
+  let downgradeLog: Record<string, unknown> = {};
   let verdict: AgentDecision = null;
   let elevationState: 'clamped' | 'asked' | 'instructed' | 'approved' | 'denied' | null =
     elevation?.kind === 'instructed' ? 'instructed' : null;
@@ -614,6 +618,15 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let pendingModel: { requested: string } | null = null;
   let pendingEffort: EffortLevel | null = null;
   let effortFound: { level: EffortLevel; reason: string } | null = null;
+  // A deny never shares an output with an allow: every output that would let the call run (the clamp's allow + updatedInput, the
+  // auto downgrade's) is withdrawn, and the log says the downgrade did not take effect.
+  const dropAllowOutputs = (): void => {
+    clamp = null;
+    if (downgradeOut) {
+      downgradeOut = null;
+      downgradeLog = { ...downgradeLog, downgrade: 'discarded' };
+    }
+  };
   // The deny of the elevation choice flow (the prescribed question): counted per delegation, noted as prescribed.
   const denyModelChoice = (e: NonNullable<typeof elevation>, nowMs: number): void => {
     const signature = callSignature(call as Record<string, unknown>);
@@ -622,7 +635,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     verdict = { decision: 'deny', reason: elevationChoiceReason(e, call.subagent_type, attemptCount) };
     elevationState = 'denied';
     approvalScope = null;
-    clamp = null;
+    dropAllowOutputs();
     // The question is now prescribed for this model: only an answer after this can record an approval.
     if (sessionId) safely(() => deps.approvals?.deny(sessionId, e.requested, nowMs));
   };
@@ -632,7 +645,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     verdict = { decision: 'deny', reason: effortChoiceReason(found.level, found.reason, call.subagent_type, attemptCount) };
     elevationState = 'denied';
     effortLog = { effort_level: found.level, effort_decision: 'denied' };
-    clamp = null; // a deny cannot share an output with the clamp's allow
+    dropAllowOutputs(); // a deny cannot share an output with an allow (the clamp's, the auto downgrade's)
     // The question is now prescribed for this level: only an answer after this can record an approval.
     if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs));
   };
@@ -765,8 +778,6 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const effortSuggested = state?.recEffort ?? null;
   const effortSession = readEffort(input.effort);
   const downgradeModeNow = downgradeMode(deps.env ?? {}, safely(() => deps.downgradeConfig?.()));
-  let downgradeOut: ReturnType<typeof applyDowngrade> = null;
-  let downgradeLog: Record<string, unknown> = {};
   if (tool !== 'Workflow' && elevationState === null && downgradeModeNow !== 'off' && deps.downgrades) {
     const evaluated = await evaluateDowngrade({
       input,
@@ -806,6 +817,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       else if (pendingModel && elevation) denyModelChoice(elevation, nowMs);
     }
   }
+
+  // Whatever denied the call, no allow-shaped output survives it (nothing above should leave one, this makes it an invariant).
+  if (verdict?.decision === 'deny') dropAllowOutputs();
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
   // agent call in the window, or a turn whose prompt named a workflow), at most once, never blocks.
@@ -868,6 +882,17 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     ...(clamp && elevation ? { clamped_from: elevation.requested, clamped_to: elevation.sessionAlias } : {}),
     preflight_reminder: reminder !== null
   });
+  // A deny is answered first: no later output (a clamp, an applied downgrade) can turn it into an allow.
+  if (verdict?.decision === 'deny') {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: verdict.decision,
+        permissionDecisionReason: verdict.reason,
+        ...(reminder ? { additionalContext: reminder } : {})
+      }
+    };
+  }
   if (clamp) {
     const out = clamp.hookSpecificOutput;
     return { hookSpecificOutput: { ...out, additionalContext: reminder ? `${out.additionalContext}\n\n${reminder}` : out.additionalContext } };

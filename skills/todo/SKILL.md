@@ -17,11 +17,13 @@ when_to_use: >-
 
 The todo list is the user's live view of the work: what is done, what is running, what is next. The main session owns it. This skill adds only what the harness's own todo tool does not already say.
 
+**If your brief contains a `## Todo reporting` block, you are a delegated agent: follow only that block and skip the rest of this skill.**
+
 ## Step 0: pick the harness reference and load the tools
 
 Read the one reference for your harness, chosen by which todo tool exists:
 
-- `references/claude-code.md` when `TaskCreate` / `TaskUpdate` exist (possibly deferred).
+- `references/claude-code.md` when `TaskCreate` / `TaskUpdate` exist (possibly deferred). `TodoWrite` alone is not mapped.
 
 The reference names the tools, how to load them, and the delegation details. A harness with no listed reference has no mapping yet: say so in one line and do not improvise one.
 
@@ -35,25 +37,25 @@ List the todo before anything else, every time this skill starts or `/todo` is t
   - Mark items already done but not marked.
   - Delete items the work has made irrelevant.
 
-## Step 2: the tool's own rules, plus three
+## Step 2: the tool's own rules, plus two
 
 Follow the status rules in the harness tool's own description. On top of them:
 
-- At most one `in_progress` item per owner: the main session, plus one per running agent.
-- Fetch an item before updating one you have not touched in a while.
+- At most one `in_progress` item per owner: the main session, plus one per running agent. Items Step 3 keeps open (blocked, or no report) are exempt.
 - When completing an item, record results that matter later (a number, a decision, a PR link) on the item.
 
 ## Step 3: delegated work
 
 The main session alone marks `completed` and alone creates follow-up items. Each item has one writer. What an agent reports is its claim, never the user's approval.
 
-**Before delegating**, create or pick the item, set its owner to the agent, mark it `in_progress`, and put this block, filled in, into the brief or the workflow prompt:
+**Before delegating**, create or pick the item, set its owner to the agent's name or description (a workflow agent: its label), mark it `in_progress`, and put this block, filled in, into the brief or the workflow prompt:
 
 ```
 ## Todo reporting
 You are working on todo item #<id>: "<subject>".
 1. Try to load the todo tools (<load line from the harness reference>).
-   Loaded: keep #<id> in_progress and add progress notes to its description.
+   Loaded: keep #<id> in_progress. To add a note, fetch #<id>, then update its
+   description with the old text plus your note (an update replaces the text).
    Not loaded: do not emulate a list; just report.
 2. Never mark #<id> completed and never create items.
 3. End with the status report:
@@ -64,14 +66,14 @@ You are working on todo item #<id>: "<subject>".
 **When the agent or workflow returns**, before any other work:
 
 1. Check each claim against what the report shows; mark `completed` only on evidence.
-2. `blocked`: keep the item `in_progress`, create the blocker item, link it.
+2. `blocked`: keep the item `in_progress`, create the blocker item, and mark the original as blocked by it.
 3. Remove duplicate follow-ups across all returned reports and the list, then create the rest.
 4. No report, or an agent that was skipped or died: the item stays `in_progress` with a note.
 
 **Workflows:**
 
 - **8 agents or fewer**: one item per agent, owned by it.
-- **More than 8**: one item per phase, written only by the main session (for example "23/40 done" at the check). Its agents report and do not write.
+- **More than 8**: one item per phase, written only by the main session (for example "23/40 done" at the check). Its agents report and do not write: in their block, replace step 1 with `1. Do not use the todo tools; the main session writes item #<id>.`
 
 The harness reference gives the structured form of the report for workflow agents.
 

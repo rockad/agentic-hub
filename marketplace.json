@@ -114,8 +114,6 @@
     },
     {
       "id": "todo",
-      "name": "Harness Todo Keeper",
-      "description": "Keep the harness todo list current across the session and subagents: create, update, reconcile.",
       "path": "skills/todo"
     }
   ]

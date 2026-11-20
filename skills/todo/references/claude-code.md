@@ -5,6 +5,8 @@ Claude Code has a built-in todo, so this file is only the shortcut: tool names, 
 ## Tools
 
 - `TaskList` (list), `TaskGet` (fetch one), `TaskCreate` (create), `TaskUpdate` (status, owner, description, metadata, `addBlockedBy`, `status: "deleted"`).
+- `TaskUpdate` `description` replaces the whole text: fetch first and append.
+- "Blocked by": `TaskUpdate` on the original item with `addBlockedBy: ["<blocker id>"]`.
 - They are deferred. Load all four in one call: `ToolSearch` with query `select:TaskCreate,TaskUpdate,TaskList,TaskGet`.
 - Set `activeForm` on create: the spinner shows it while the item is `in_progress`.
 
@@ -12,7 +14,7 @@ Claude Code has a built-in todo, so this file is only the shortcut: tool names, 
 
 | Delegation | Todo tools | Sees the main list |
 | --- | --- | --- |
-| `Agent` tool subagent (`general-purpose`, custom types such as `code-engineer`) | no: `ToolSearch` returns "No matching deferred tools found" | no |
+| `Agent` tool subagent (`general-purpose` and custom agent types) | no: `ToolSearch` returns "No matching deferred tools found" | no |
 | Workflow `agent()` call | yes, all four | yes: reads, updates and creates in the same list |
 | Fork, agent-team teammate | not verified | not verified |
 

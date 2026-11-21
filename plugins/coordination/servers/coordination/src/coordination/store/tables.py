@@ -142,6 +142,9 @@ wakes = sa.Table(
     sa.Column("at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("pending_n", sa.Integer, nullable=False),
     sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+    #: The pending set the wake was for (first 16 hex characters of the SHA-256 of the sorted task
+    #: ids); the anti-loop streak is derived from it. NULL on rows written before migration 4.
+    sa.Column("set_hash", sa.String(16), nullable=True),
 )
 sa.Index("ix_wakes_handle_at", wakes.c.handle, wakes.c.at)
 

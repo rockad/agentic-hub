@@ -1,5 +1,5 @@
 """S1-WAKE without a database: the listener table, the release outcomes, and the three small rules
-(anti-loop, announce dedupe, park limiter). The behaviour of the endpoints over a real Postgres is
+(anti-loop over wake rows, announce dedupe, park limiter). The behaviour of the endpoints over a real Postgres is
 in `test_wake.py` and `test_wake_e2e.py`."""
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from coordination.wake.outcomes import (
     woken,
 )
 from coordination.wake.routes import response_for
-from coordination.wake.rules import Announcer, AntiLoop, ParkLimiter, fingerprint
+from coordination.wake.rules import Announcer, ParkLimiter, anti_loop_blocked, fingerprint
+from coordination.wake.store import WakeRow
 from coordination.wake.table import ListenerTable
 
 T0 = datetime(2026, 11, 18, 12, 0, 0, tzinfo=UTC)
@@ -179,57 +180,66 @@ def test_fingerprint_names_a_set_not_an_order():
     assert fingerprint(frozenset()) == fingerprint(frozenset())
 
 
+KEY = fingerprint(frozenset({"t1"}))
+OTHER = fingerprint(frozenset({"t1", "t2"}))
+
+
+def wake_row(n: int, at: datetime, set_hash: str | None = KEY, *, confirmed: bool = False) -> WakeRow:
+    return WakeRow(n, at, 1, at + timedelta(seconds=30) if confirmed else None, set_hash)
+
+
+def newest_first(*rows: WakeRow) -> list[WakeRow]:
+    return sorted(rows, key=lambda r: r.at, reverse=True)
+
+
+def three_wakes(first: datetime = T0, gap: timedelta = timedelta(seconds=130)) -> list[WakeRow]:
+    return newest_first(*(wake_row(n, first + gap * n) for n in (1, 2, 3)))
+
+
 def test_three_unconfirmed_wakes_for_one_set_stop_wakes_for_an_hour():
-    rule = AntiLoop()
-    key = fingerprint(frozenset({"t1"}))
-    assert not rule.blocked(H1, key, T0)
-    for n in (1, 2, 3):
-        assert rule.sent(H1, key, T0 + timedelta(seconds=130 * n)) == n
-    last = T0 + timedelta(seconds=130 * 3)
-    assert rule.blocked(H1, key, last + timedelta(seconds=1))
-    assert rule.blocked(H1, key, last + timedelta(minutes=59))
-    assert not rule.blocked(H1, key, last + timedelta(hours=1))  # one hour passes
-    assert not rule.blocked(H2, key, last)  # another handle is unaffected
+    assert not anti_loop_blocked([], KEY, T0)
+    rows = three_wakes()
+    last = rows[0].at
+    assert not anti_loop_blocked(rows[1:], KEY, last)  # two wakes are not a streak
+    assert anti_loop_blocked(rows, KEY, last + timedelta(seconds=1))
+    assert anti_loop_blocked(rows, KEY, last + timedelta(minutes=59))
+    assert not anti_loop_blocked(rows, KEY, last + timedelta(hours=1))  # one hour since the last wake
 
 
 def test_a_changed_pending_set_lifts_the_stop():
-    rule = AntiLoop()
-    key = fingerprint(frozenset({"t1"}))
-    for n in range(3):
-        rule.sent(H1, key, T0 + timedelta(minutes=n))
-    assert rule.blocked(H1, key, T0 + timedelta(minutes=4))
-    other = fingerprint(frozenset({"t1", "t2"}))
-    assert not rule.blocked(H1, other, T0 + timedelta(minutes=4))
-    assert rule.sent(H1, other, T0 + timedelta(minutes=4)) == 1  # a new set starts a new streak
+    rows = three_wakes()
+    now = rows[0].at + timedelta(minutes=1)
+    assert anti_loop_blocked(rows, KEY, now)
+    assert not anti_loop_blocked(rows, OTHER, now)  # a new set has a new hash and no streak
 
 
-def test_a_confirmed_wake_resets_the_streak():
-    rule = AntiLoop()
-    key = fingerprint(frozenset({"t1"}))
-    rule.sent(H1, key, T0)
-    rule.sent(H1, key, T0 + timedelta(minutes=3))
-    rule.confirmed(H1, T0 + timedelta(minutes=3, seconds=30), timedelta(seconds=120))
-    assert rule.sent(H1, key, T0 + timedelta(minutes=10)) == 1
-    for n in range(2):
-        rule.sent(H1, key, T0 + timedelta(minutes=20 + n))
-    assert rule.blocked(H1, key, T0 + timedelta(minutes=30))
+def test_a_set_that_came_back_after_another_does_not_continue_the_old_streak():
+    a, b, c = wake_row(1, T0), wake_row(2, T0 + timedelta(minutes=3), OTHER), wake_row(3, T0 + timedelta(minutes=6))
+    assert not anti_loop_blocked(newest_first(a, b, c), KEY, T0 + timedelta(minutes=7))
 
 
-def test_a_confirmation_after_the_window_does_not_count():
-    rule = AntiLoop()
-    key = fingerprint(frozenset({"t1"}))
-    for n in range(3):
-        rule.sent(H1, key, T0 + timedelta(minutes=n))
-    rule.confirmed(H1, T0 + timedelta(minutes=2, seconds=121), timedelta(seconds=120))  # too late
-    assert rule.blocked(H1, key, T0 + timedelta(minutes=5))
+def test_a_confirmed_wake_ends_the_streak():
+    first, second, third = three_wakes()[::-1]
+    confirmed_third = wake_row(3, third.at, confirmed=True)
+    assert not anti_loop_blocked(newest_first(first, second, confirmed_third), KEY, third.at + timedelta(minutes=1))
+    # after the confirmation the same set counts afresh: two more wakes are not yet a stop
+    later = [wake_row(4, T0 + timedelta(minutes=20)), wake_row(5, T0 + timedelta(minutes=23))]
+    rows = newest_first(first, second, confirmed_third, *later)
+    assert not anti_loop_blocked(rows, KEY, T0 + timedelta(minutes=24))
+    rows = newest_first(*rows, wake_row(6, T0 + timedelta(minutes=26)))
+    assert anti_loop_blocked(rows, KEY, T0 + timedelta(minutes=27))
 
 
-def test_the_anti_loop_memory_is_bounded():
-    rule = AntiLoop()
-    key = fingerprint(frozenset({"t"}))
-    for n in range(5000):
-        rule.sent(f"{CARD}/h{n}~00000000", key, T0)
-    assert len(rule._state) <= 4096
+def test_a_gap_of_an_hour_between_wakes_ends_the_streak():
+    rows = newest_first(wake_row(1, T0), wake_row(2, T0 + timedelta(minutes=70)), wake_row(3, T0 + timedelta(minutes=75)))
+    assert not anti_loop_blocked(rows, KEY, T0 + timedelta(minutes=76))
+    rows = newest_first(wake_row(1, T0), wake_row(2, T0 + timedelta(minutes=50)), wake_row(3, T0 + timedelta(minutes=75)))
+    assert anti_loop_blocked(rows, KEY, T0 + timedelta(minutes=76))  # each gap under an hour: still one streak
+
+
+def test_rows_written_before_migration_4_never_count():
+    old = [wake_row(n, T0 + timedelta(minutes=n), None) for n in (1, 2, 3)]
+    assert not anti_loop_blocked(newest_first(*old), KEY, T0 + timedelta(minutes=4))
 
 
 # -- the announce dedupe --------------------------------------------------------------------

@@ -627,6 +627,96 @@ def test_a_confirmed_wake_never_trips_the_anti_loop(wk):
     run_wake(wk, scenario)
 
 
+async def three_unconfirmed_wakes(wk: WakeEnv, *, advance_after_last: int = 121, http=None) -> None:
+    """Three lost wakes of H_CLAUDE for one set. Pass `http` to keep using an open client: closing
+    `wk.client()` shuts the wake table down, so a later listener on the same app gets `503`."""
+    await two_sessions(wk)
+    await wk.send(H_CLAUDE, "stuck")
+    if http is None:
+        async with wk.client() as own:
+            await _three_lost(wk, own, advance_after_last)
+    else:
+        await _three_lost(wk, http, advance_after_last)
+
+
+async def _three_lost(wk: WakeEnv, http, advance_after_last: int) -> None:
+    for n in range(3):  # each is lost after 120 s, except the last, which is `advance_after_last` old
+        assert (await wk.settle(wk.listen(http, wk.keys.claude, HS_CLAUDE), 8)).status_code == 200
+        wk.clock.advance(seconds=121 if n < 2 else advance_after_last)
+
+
+def test_every_wake_row_records_the_hash_of_its_pending_set(wk):
+    async def scenario(wk):
+        await three_unconfirmed_wakes(wk)
+        rows = await wk.wake_rows(H_CLAUDE)
+        assert [r.set_hash for r in rows] == [rows[0].set_hash] * 3
+        assert re.fullmatch(r"[0-9a-f]{16}", rows[0].set_hash)
+
+    run_wake(wk, scenario)
+
+
+def test_the_anti_loop_stop_survives_a_restart(wk):
+    async def scenario(wk):
+        await three_unconfirmed_wakes(wk)
+        again = wk.restarted()  # a fresh app on the same database: no streak in memory
+        try:
+            async with again.client() as http:
+                r = await again.settle(again.listen(http, again.keys.claude, HS_CLAUDE, wait=1))
+                assert r.status_code == 408  # the set is still stopped
+                assert len(await again.wake_rows(H_CLAUDE)) == 3
+        finally:
+            await again.app.state.engine.dispose()
+
+    run_wake(wk, scenario)
+
+
+def test_a_changed_set_wakes_again_after_a_restart(wk):
+    async def scenario(wk):
+        await three_unconfirmed_wakes(wk)
+        again = wk.restarted()
+        try:
+            async with again.client() as http:
+                listener = again.listen(http, again.keys.claude, HS_CLAUDE)
+                await again.parked_and_checked(H_CLAUDE)
+                assert not listener.done()
+                await again.send(H_CLAUDE, "something new")
+                r = await again.settle(listener, 5)
+                assert r.status_code == 200 and r.text == "2"
+                hashes = [row.set_hash for row in await again.wake_rows(H_CLAUDE)]
+                assert len(hashes) == 4 and hashes[3] != hashes[0]
+        finally:
+            await again.app.state.engine.dispose()
+
+    run_wake(wk, scenario)
+
+
+def test_a_confirmation_after_a_restart_ends_the_streak(wk):
+    async def scenario(wk):
+        await three_unconfirmed_wakes(wk, advance_after_last=30)  # the third wake is 30 s old
+        again = wk.restarted()
+        try:
+            assert await again.wake.confirm(H_CLAUDE) == 1  # the handle shows up, on the new process
+            async with again.client() as http:
+                r = await again.settle(again.listen(http, again.keys.claude, HS_CLAUDE), 8)
+                assert r.status_code == 200  # the same set wakes again
+                assert len(await again.wake_rows(H_CLAUDE)) == 4
+        finally:
+            await again.app.state.engine.dispose()
+
+    run_wake(wk, scenario)
+
+
+def test_wakes_of_two_handles_do_not_count_toward_each_others_streak(wk):
+    async def scenario(wk):
+        async with wk.client() as http:
+            await three_unconfirmed_wakes(wk, http=http)
+            await wk.send(H_CLAUDE2, "stuck")
+            r = await wk.settle(wk.listen(http, wk.keys.claude, HS_CLAUDE2), 8)
+            assert r.status_code == 200
+
+    run_wake(wk, scenario)
+
+
 # =============================================================================================
 # what makes a task wakeable (spec 7.4)
 # =============================================================================================

@@ -95,6 +95,13 @@ class WakeEnv:
     def table(self):
         return self.app.state.wake.table
 
+    def restarted(self, *, recheck_s: float = 0.05) -> WakeEnv:
+        """A fresh app on the same database and clock: a server restart. Nothing in memory carries
+        over (the listener table, the announce memory, the park counters); the caller disposes
+        `.app.state.engine` of the result."""
+        app = build_server_app(self.env.config, clock=self.env.clock, wake_recheck_s=recheck_s)
+        return WakeEnv(self.env, app)
+
     @asynccontextmanager
     async def client(self):
         transport = httpx.ASGITransport(app=self.app, client=("127.0.0.1", 50000))

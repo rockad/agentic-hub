@@ -1,23 +1,27 @@
-"""The small stateful rules of the wake path, in memory (spec 7.4, 7.5, 7.1).
+"""The small rules of the wake path (spec 7.4, 7.5, 7.1).
 
-- `AntiLoop`: after three consecutive wakes of a handle that were not confirmed for the same
-  pending set, wakes for that set stop until the set changes or one hour passes (spec 7.4).
+- `anti_loop_blocked`: after three consecutive wakes of a handle that were not confirmed for the
+  same pending set, wakes for that set stop until the set changes or one hour passes (spec 7.4).
+  It is a pure function of the handle's newest `wakes` rows (each carries its `set_hash`), so it
+  has no state of its own and a restart does not forget a stop (user decision 2026-11-20).
 - `Announcer`: the `announce` dedupe of `/wake/pending`: true only when the count is above zero
   and changed since the last announcement to the handle, or ten minutes passed (spec 7.5).
 - `ParkLimiter`: the `429` of spec 7.1 ("listener polling faster than allowed").
 
-State is per process and lost at a restart. That is safe for each: the hard bound on wakes is the
-budget, which is read from the `wakes` rows and survives a restart; a restart only lets a stopped
-set wake again (still inside the budget), repeats one announcement, and clears the park counters.
-[design] for all three numbers that the spec does not fix (the limiter's, below).
+`Announcer` and `ParkLimiter` keep per-process state, lost at a restart. That is safe for each:
+the hard bound on wakes is the budget, read from the `wakes` rows; a restart only repeats one
+announcement and clears the park counters. [design] for the numbers the spec does not fix (the
+limiter's, below).
 """
 
 from __future__ import annotations
 
 import hashlib
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import datetime, timedelta
+
+from coordination.wake.store import WakeRow
 
 #: Spec 7.4: "three consecutive wakes ... for the same pending set", then "one hour".
 ANTI_LOOP_STREAK = 3
@@ -41,44 +45,28 @@ def fingerprint(task_ids: frozenset[str]) -> str:
     return h.hexdigest()[:16]
 
 
-@dataclass
-class _Loop:
-    key: str
-    streak: int
-    last_at: datetime
-    confirmed: bool
+def anti_loop_blocked(
+    newest_first: Sequence[WakeRow],
+    key: str,
+    now: datetime,
+    *,
+    streak: int = ANTI_LOOP_STREAK,
+    hold: timedelta = ANTI_LOOP_HOLD,
+) -> bool:
+    """True while wakes of a handle for the pending set `key` are stopped.
 
-
-class AntiLoop:
-    def __init__(self, *, streak: int = ANTI_LOOP_STREAK, hold: timedelta = ANTI_LOOP_HOLD) -> None:
-        self._streak = streak
-        self._hold = hold
-        self._state: dict[str, _Loop] = {}
-
-    def blocked(self, handle: str, key: str, now: datetime) -> bool:
-        """True while wakes of `handle` for the pending set `key` are stopped."""
-        s = self._state.get(handle)
-        if s is None or s.key != key or s.confirmed or s.streak < self._streak:
-            return False
-        return now - s.last_at < self._hold
-
-    def sent(self, handle: str, key: str, now: datetime) -> int:
-        """Record a wake of `handle` for set `key`. Returns the unconfirmed streak it makes."""
-        s = self._state.get(handle)
-        if s is not None and s.key == key and not s.confirmed and now - s.last_at < self._hold:
-            s.streak += 1
-            s.last_at = now
-        else:
-            if s is None and len(self._state) >= MAX_TRACKED:
-                self._state.pop(next(iter(self._state)))
-            self._state[handle] = s = _Loop(key, 1, now, False)
-        return s.streak
-
-    def confirmed(self, handle: str, now: datetime, window: timedelta) -> None:
-        """The handle showed up: its last wake counts as confirmed if it was inside `window`."""
-        s = self._state.get(handle)
-        if s is not None and now - s.last_at <= window:
-            s.confirmed = True
+    `newest_first` is the handle's newest `wakes` rows (at least `streak` of them are read). The
+    streak is the run of newest rows that are for `key` and unconfirmed, each less than `hold`
+    after the one before it. A row for another set, a confirmed row, or a gap of an hour ends the
+    run, so a changed set (a new hash) or a confirmation starts a fresh streak. The set is stopped
+    when the run has `streak` rows and the newest is less than `hold` old.
+    """
+    if len(newest_first) < streak or now - newest_first[0].at >= hold:
+        return False
+    run = newest_first[:streak]
+    if any(r.set_hash != key or r.confirmed_at is not None for r in run):
+        return False
+    return all(older.at + hold > newer.at for newer, older in zip(run, run[1:], strict=False))
 
 
 class Announcer:

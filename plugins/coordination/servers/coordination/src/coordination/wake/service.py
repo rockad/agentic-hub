@@ -46,10 +46,11 @@ from coordination.service.directory import Session
 from coordination.service.protocol import TaskService
 from coordination.wake.outcomes import ENDED, GONE, MAX_COUNT, ROUND_END, Release, woken
 from coordination.wake.rules import (
+    ANTI_LOOP_STREAK,
     MAX_TRACKED,
     Announcer,
-    AntiLoop,
     ParkLimiter,
+    anti_loop_blocked,
     fingerprint,
 )
 from coordination.wake.store import BUDGET_WINDOW, WakeStore
@@ -83,7 +84,6 @@ class WakeService:
         *,
         audit: AuditLog | None = None,
         recheck_s: float = RECHECK_S,
-        anti_loop: AntiLoop | None = None,
         announcer: Announcer | None = None,
         park_limiter: ParkLimiter | None = None,
     ) -> None:
@@ -94,7 +94,6 @@ class WakeService:
         self.table = table
         self._audit = audit
         self._recheck_s = recheck_s
-        self._loop_rule = anti_loop if anti_loop is not None else AntiLoop()
         self._announcer = announcer if announcer is not None else Announcer()
         self._parks = park_limiter if park_limiter is not None else ParkLimiter()
         self._service: TaskService | None = None
@@ -157,7 +156,7 @@ class WakeService:
                 return None
             self._exhausted.discard(handle)
             key = fingerprint(wake_set)
-            if self._loop_rule.blocked(handle, key, now):
+            if anti_loop_blocked(await self._store.latest(handle, ANTI_LOOP_STREAK), key, now):
                 if (handle, key) not in self._stopped:
                     if len(self._stopped) >= MAX_TRACKED:
                         self._stopped.clear()
@@ -168,8 +167,7 @@ class WakeService:
             count = min(max(snapshot.pending, len(wake_set)), MAX_COUNT)
             if entry.done:
                 return None
-            await self._store.insert(handle, now, count)
-            self._loop_rule.sent(handle, key, now)
+            await self._store.insert(handle, now, count, key)
             entry.release(woken(count))
             await self._audit_wake(handle, count)
             return None
@@ -254,7 +252,6 @@ class WakeService:
         except Exception as exc:  # noqa: BLE001
             log.warning("wake confirmation failed", extra={"fields": {"error": type(exc).__name__}})
             return 0
-        self._loop_rule.confirmed(handle, now, CONFIRM_WINDOW)
         return n
 
     # -- /wake/pending ---------------------------------------------------------------------

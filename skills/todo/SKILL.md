@@ -77,6 +77,20 @@ You are working on todo item #<id>: "<subject>".
 
 The harness reference gives the structured form of the report for workflow agents.
 
+## Numbering and visual clues
+
+Every task the user sees is numbered, so they can refer to it ("do 3", "drop 5") and scan status at a glance.
+
+- **The number is the item's tool id**, written `#<id>`. Never invent a separate sequence: the number in a reply must match the id the tools and the Step 3 brief use, and it stays fixed when other items finish or are deleted.
+- **Whenever you show the list to the user** (the `/todo` summary, a checkpoint, open items in the final reply), render it as a vertical list, one item per line, each starting with its number and a status marker:
+  - `✅` completed
+  - `🔄` in_progress
+  - `⏳` pending
+  - `⛔` blocked: add `(blocked by #<id>)`
+- **Keep the order by id**, not by status, so a number never moves between replies.
+- **Subjects are imperative and short**, so a line reads as a command: `#4 🔄 Rebase PR branch onto main`. Do not put the number inside the stored subject; the id already carries it.
+- Refer to items by number everywhere else too: follow-ups, blockers, and the "still open" lines in the final reply (`#7 ⏳ Verify on core: waiting on the restart window`).
+
 ## Step 4: checkpoints
 
 List and reconcile:
@@ -87,4 +101,4 @@ List and reconcile:
 
 ## /todo
 
-Typed by the user: load the tools, list, reconcile against the conversation so far (Step 1), and reply with a short summary of what changed. Do not start new work.
+Typed by the user: load the tools, list, reconcile against the conversation so far (Step 1), and reply with a short summary of what changed, followed by the numbered list (see Numbering and visual clues). Do not start new work.

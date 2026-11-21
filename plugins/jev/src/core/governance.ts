@@ -19,6 +19,8 @@ import { privateDir, privateFile, PRIVATE_FILE_MODE, jevHomeDir } from './privat
 import { safeSessionId } from '../../claude/logic.js';
 export { safeSessionId };
 import { readRegularFile } from '../../claude/safe-read.js';
+import { modelFamilyOf, modelRankOf, type ModelFamily } from './model-tier.js';
+import { hasOrchestratorMarker } from './orchestrator-marker.js';
 
 // ── Antigravity quota view ───────────────────────────────────────────────────
 /** Default quota-state path, fixed when the module loads. `readQuotaView` resolves `quotaStateFile()` at call time instead. */
@@ -154,6 +156,12 @@ export type AntigravitySessionRecord = {
    * its planner id as `model` while an execution turn reports the worker id (see `writeAntigravitySessionModel`).
    */
   turn_model?: string;
+  /**
+   * Written as `true` once the conversation is known to be an Antigravity 1.5.14 Orchestrator conversation (the
+   * `plan_execute:true` annotation marker, see src/core/orchestrator-marker.ts), so later turns do not read the marker
+   * again. Absent for a plain conversation and for a legacy-id Orchestrator conversation (the id says it there).
+   */
+  orchestrator?: boolean;
 };
 
 export type ActiveModelSource = 'argument' | 'env' | 'latest' | 'quota-state';
@@ -193,6 +201,8 @@ export interface QuotaView {
   /** Pool backing the currently selected model (Gemini buckets for Gemini models, 3p buckets otherwise). */
   active: QuotaPoolView & { pool: 'gemini' | '3p' };
   variant?: OrchestratorVariant;
+  /** True when the resolved session is an Orchestrator conversation (a stored `orchestrator` flag, or a legacy Orchestrator id). Set with `variant` and `pools`. */
+  orchestrator?: boolean;
   pools?: {
     execution: QuotaPoolView;
     frontier: QuotaPoolView;
@@ -312,12 +322,112 @@ export function pruneExpiredSessionModels(sessionsDir: string, nowSec: number, f
   }
 }
 
-export function writeAntigravitySessionModel(
+/** What {@link recordAntigravitySession} stored: the session model, whether the conversation is an Orchestrator one, and the turn model when it differs. */
+export type AntigravitySessionWrite = {
+  /** The sticky session model: the planner for an Orchestrator conversation, else the reported id. */
+  model: string;
+  /** True when this is an Orchestrator conversation (the 1.5.14 annotation marker, a stored flag, or a legacy Orchestrator id). */
+  orchestrator: boolean;
+  /** The id the turn ran on, only when it differs from `model` (an executor turn of an Orchestrator conversation). */
+  turnModel?: string;
+};
+
+export type RecordSessionOptions = {
+  /** `artifactDirectoryPath` from the hook stdin: where the Orchestrator annotation marker is looked for. Absent: the marker is not read. */
+  artifactDirectoryPath?: string;
+  /** False when the caller has no time left for the marker read (the pre-flight deadline budget). Default true. */
+  readMarker?: boolean;
+};
+
+/**
+ * The sticky session model for one turn. `prev` is the conversation's fresh stored record (or null) and
+ * `markerOrchestrator` says it is an Orchestrator conversation by the 1.5.14 marker (or its stored flag). An executor-family
+ * id after a stored planner keeps the planner as the model and becomes the turn model; every other id stands as reported.
+ * With no marker, only the legacy pair (a legacy worker id after a legacy planner id) is sticky.
+ */
+function stickyModelFor(
+  reported: string,
+  prev: { model: string } | null,
+  markerOrchestrator: boolean
+): { model: string; turnModel?: string } {
+  if (prev && isExecutorFamilyModel(reported) && !isPlannerFamilyModel(reported)) {
+    if (markerOrchestrator) {
+      if (isPlannerFamilyModel(prev.model)) return { model: prev.model, turnModel: reported };
+    } else if (isOrchestratorWorker(reported) && isOrchestratorPlanner(prev.model)) {
+      return { model: prev.model, turnModel: reported };
+    }
+  }
+  return { model: reported };
+}
+
+function readFreshSessionRecord(
+  safeId: string,
+  sessionsDir: string,
+  currentSec: number
+): { model: string; orchestrator: boolean | undefined } | null {
+  try {
+    const read = readRegularFile(path.join(sessionsDir, `${safeId}.model.json`), 64 * 1024);
+    if (read.kind !== 'ok') return null;
+    const parsed = JSON.parse(read.text);
+    if (
+      parsed &&
+      typeof parsed.model === 'string' &&
+      typeof parsed.updated_at === 'number' &&
+      currentSec - parsed.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC
+    ) {
+      return {
+        model: parsed.model.trim(),
+        orchestrator: typeof parsed.orchestrator === 'boolean' ? parsed.orchestrator : undefined
+      };
+    }
+  } catch {
+    // unreadable record: nothing stored
+  }
+  return null;
+}
+
+/**
+ * Read-only counterpart of {@link recordAntigravitySession}: the session model a turn that reported `reported` belongs to,
+ * from the stored record (the planner for an executor turn of an Orchestrator conversation, else `reported`), without writing
+ * anything and without reading the marker. For hook paths that do not write the record (PostToolUse) and for telemetry rows.
+ */
+export function resolveAntigravityTurnModel(
+  conversationId: string | null | undefined,
+  reported: string | null | undefined,
+  nowSec?: number,
+  overrideSessionsDir?: string
+): { model: string | null; turnModel?: string } {
+  const r = typeof reported === 'string' ? reported.trim() : '';
+  if (!r) return { model: null };
+  const safeId = conversationId ? safeSessionId(conversationId) : null;
+  if (!safeId) return { model: r };
+  const currentSec = typeof nowSec === 'number' ? nowSec : Math.floor(Date.now() / 1000);
+  const prev = readFreshSessionRecord(safeId, overrideSessionsDir || getAntigravitySessionsDir(), currentSec);
+  return stickyModelFor(r, prev, prev?.orchestrator === true);
+}
+
+/**
+ * Store the session model of one Antigravity conversation (`<id>.model.json` and `latest.json`) and decide whether it is an
+ * Orchestrator conversation.
+ *
+ * Antigravity 1.5.14 reports, on every Orchestrator turn, the model the user chose (planner ids neon, argon, opus, carbon;
+ * executor ids hydrogen, sonnet) and those are also plain `/model` choices, so the id cannot tell the two apart. The
+ * conversation is an Orchestrator one when the annotation marker says so (read once, then kept as `orchestrator: true` in the
+ * record), or when the id is a legacy Orchestrator one (`gemini-pro-orchestrator-g1-pro`, `gemini-flash-worker-agy`).
+ *
+ * The Orchestrator identity is sticky: the planner family sets the session model (the variant, ceiling and explicit-Model
+ * rule follow it), and an executor-family id keeps the stored planner as the session model and is recorded only as
+ * `turn_model`. A `/model` switch to an id outside both families is a real switch: it replaces the stored model and clears the
+ * Orchestrator flag (`orchestrator: false` stops the marker being read again for this conversation). With no marker an
+ * executor-family id is a plain model, except a legacy worker id after a legacy planner (the 2.3.18 rule).
+ */
+export function recordAntigravitySession(
   conversationId: string,
   model: string,
   nowSec?: number,
-  overrideSessionsDir?: string
-): string | undefined {
+  overrideSessionsDir?: string,
+  opts?: RecordSessionOptions
+): AntigravitySessionWrite | undefined {
   const safeId = safeSessionId(conversationId);
   if (!safeId || !model || typeof model !== 'string' || model.trim().length === 0) {
     return undefined;
@@ -327,32 +437,28 @@ export function writeAntigravitySessionModel(
   const currentSec = typeof nowSec === 'number' ? nowSec : Math.floor(Date.now() / 1000);
   const sessionsDir = overrideSessionsDir || getAntigravitySessionsDir();
 
-  // The Orchestrator identity is sticky for the conversation: the planning turns report the planner id and the execution
-  // turns report the worker id, so a worker id arriving for a conversation whose stored session model is the planner keeps
-  // the planner as the session model (the variant, ceiling and explicit-Model rule follow it) and records the worker only
-  // as `turn_model`. Any other id is a real model switch (/model) and replaces the stored one.
-  let trimmedModel = reported;
-  let turnModel: string | undefined;
-  if (isOrchestratorWorker(reported) && !isOrchestratorPlanner(reported)) {
-    try {
-      const read = readRegularFile(path.join(sessionsDir, `${safeId}.model.json`), 64 * 1024);
-      if (read.kind === 'ok') {
-        const prev = JSON.parse(read.text);
-        if (
-          prev &&
-          typeof prev.model === 'string' &&
-          typeof prev.updated_at === 'number' &&
-          currentSec - prev.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC &&
-          isOrchestratorPlanner(prev.model)
-        ) {
-          trimmedModel = prev.model.trim();
-          turnModel = reported;
-        }
-      }
-    } catch {
-      // unreadable previous record: the reported model stands
+  // An unreadable or stale previous record is no record: the reported model stands.
+  const prev = readFreshSessionRecord(safeId, sessionsDir, currentSec);
+
+  const reportedPlanner = isPlannerFamilyModel(reported);
+  const reportedExecutor = isExecutorFamilyModel(reported);
+  const inFamilies = reportedPlanner || reportedExecutor;
+
+  // Only an id of a role family can belong to an Orchestrator conversation, so only then is the flag or the marker consulted.
+  let markerOrchestrator = false;
+  if (inFamilies) {
+    if (prev?.orchestrator === true) {
+      markerOrchestrator = true;
+    } else if (prev?.orchestrator !== false && opts?.readMarker !== false) {
+      markerOrchestrator = hasOrchestratorMarker(opts?.artifactDirectoryPath, safeId);
     }
   }
+
+  const { model: trimmedModel, turnModel } = stickyModelFor(reported, prev, markerOrchestrator);
+
+  const orchestrator = markerOrchestrator || isOrchestratorModel(trimmedModel) || isOrchestratorModel(reported);
+  // A switch out of an Orchestrator conversation is remembered, so the marker (still on disk) does not bring it back.
+  const cleared = !inFamilies && prev?.orchestrator === true;
 
   try {
     privateDir(sessionsDir);
@@ -361,7 +467,8 @@ export function writeAntigravitySessionModel(
       conversationId: safeId,
       model: trimmedModel,
       updated_at: currentSec,
-      ...(turnModel ? { turn_model: turnModel } : {})
+      ...(turnModel ? { turn_model: turnModel } : {}),
+      ...(markerOrchestrator ? { orchestrator: true } : cleared || prev?.orchestrator === false ? { orchestrator: false } : {})
     };
     const content = JSON.stringify(record, null, 2) + '\n';
 
@@ -386,7 +493,18 @@ export function writeAntigravitySessionModel(
   } catch {
     // best-effort; never crash the caller
   }
-  return trimmedModel;
+  return { model: trimmedModel, orchestrator, ...(turnModel ? { turnModel } : {}) };
+}
+
+/** {@link recordAntigravitySession}, returning only the session model (what the store holds after the write). */
+export function writeAntigravitySessionModel(
+  conversationId: string,
+  model: string,
+  nowSec?: number,
+  overrideSessionsDir?: string,
+  opts?: RecordSessionOptions
+): string | undefined {
+  return recordAntigravitySession(conversationId, model, nowSec, overrideSessionsDir, opts)?.model;
 }
 
 /**
@@ -436,6 +554,8 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   const sessionsDir = opts?.overrideSessionsDir || getAntigravitySessionsDir();
   let activeModel: string | undefined = rawActiveModel;
   let activeModelSource: ActiveModelSource = 'quota-state';
+  // The resolved record says this is an Orchestrator conversation (the 1.5.14 marker was found when it was written).
+  let recordOrchestrator = false;
 
   const readSessionFile = (fileName: string): AntigravitySessionRecord | null => {
     const filePath = path.join(sessionsDir, fileName);
@@ -453,7 +573,8 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
           return {
             conversationId: typeof parsed.conversationId === 'string' ? parsed.conversationId : '',
             model: parsed.model.trim(),
-            updated_at: parsed.updated_at
+            updated_at: parsed.updated_at,
+            ...(parsed.orchestrator === true ? { orchestrator: true } : {})
           };
         }
       }
@@ -470,6 +591,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     if (rec && nowSec - rec.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC) {
       activeModel = rec.model;
       activeModelSource = 'argument';
+      recordOrchestrator = rec.orchestrator === true;
     }
   }
 
@@ -481,6 +603,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     if (rec && nowSec - rec.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC) {
       activeModel = rec.model;
       activeModelSource = 'latest';
+      recordOrchestrator = rec.orchestrator === true;
     }
   }
 
@@ -492,8 +615,9 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     if (b) buckets[k] = b;
   }
 
-  const isOrchestrator = isOrchestratorModel(activeModel);
-  const isArgonActive = Boolean(activeModel && /argon/i.test(activeModel));
+  const isOrchestrator = recordOrchestrator || isOrchestratorModel(activeModel);
+  // Neon and Argon both draw the Argon weekly bucket (Neon is pro-class and uses the argon variant pool).
+  const isArgonActive = Boolean(activeModel && /argon|neon/i.test(activeModel));
   const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
@@ -511,7 +635,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     const qm = activeModel || '';
     if (/carbon/i.test(qm)) {
       variant = 'carbon';
-    } else if (/argon/i.test(qm)) {
+    } else if (/argon|neon/i.test(qm)) {
       variant = 'argon';
     } else if (planTier && /pro/i.test(planTier)) {
       variant = 'argon';
@@ -592,6 +716,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
       geminiRemainingFraction: execMin,
       active: orchestratorActive,
       variant,
+      orchestrator: true,
       pools: {
         execution: execPool,
         frontier: frontierPool
@@ -630,7 +755,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   }
 
   // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
-  const isGeminiActive = !activeModel || /gemini|argon|hydrogen/i.test(activeModel) || p3Min === null;
+  const isGeminiActive = !activeModel || /gemini|argon|neon|carbon|hydrogen/i.test(activeModel) || p3Min === null;
   const active = isGeminiActive
     ? { pool: 'gemini' as const, five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining, strategy: geminiStrategy }
     : { pool: '3p' as const, five_hour: p3Five, weekly: p3Weekly, min_remaining: p3Min, strategy: p3Strategy };
@@ -668,10 +793,14 @@ export function quotaRecommendation(strategy: string): string {
 
 // ── Model Tier Ranking & Clamping ────────────────────────────────────────────
 /**
- * The Antigravity Orchestrator is one conversation that reports two model ids: the planning turns run on the planner
- * (`gemini-pro-orchestrator-g1-pro`, or the display name `Orchestrator (Argon)`), and the execution turns after
- * `exit_plan_mode` run on the execution worker (`gemini-flash-worker-agy`). Planning draws the frontier (Argon) pool,
- * execution draws the Gemini pool (consolidated plan, section 32.10).
+ * The Antigravity Orchestrator is one conversation whose planning and execution turns report different model ids. Up to
+ * 1.5.13 those were legacy ids: the planner `gemini-pro-orchestrator-g1-pro` (or the display name `Orchestrator (Argon)`) and the
+ * execution worker `gemini-flash-worker-agy`. From 1.5.14 they are the chosen models (see `isPlannerFamilyModel` and
+ * `isExecutorFamilyModel` below), and the annotation marker is what says the conversation is an Orchestrator one. Planning
+ * draws the frontier pool, execution draws the Gemini pool (consolidated plan, section 32.10).
+ *
+ * `isOrchestratorPlanner`, `isOrchestratorWorker` and `isOrchestratorModel` are the LEGACY-id checks: they stay true for the
+ * ids older agy versions report, and are false for every 1.5.14 id, which is a plain model until the marker says otherwise.
  *
  * Planner: any id that names the Orchestrator.
  */
@@ -697,8 +826,37 @@ export function isOrchestratorModel(model?: string | null): boolean {
   return isOrchestratorPlanner(model) || isOrchestratorWorker(model);
 }
 
-export function subagentCeilingRank(sessionModel?: string | null): number {
-  if (isOrchestratorModel(sessionModel)) {
+const PLANNER_FAMILIES: ReadonlySet<ModelFamily> = new Set<ModelFamily>(['neon', 'argon', 'carbon', 'opus']);
+const EXECUTOR_FAMILIES: ReadonlySet<ModelFamily> = new Set<ModelFamily>(['hydrogen', 'sonnet']);
+
+/**
+ * Role families of an Orchestrator conversation (Antigravity 1.5.14, plus the legacy ids). Planner: neon, argon, opus,
+ * carbon (and any legacy id naming the Orchestrator). Executor: hydrogen, sonnet (and the legacy worker ids).
+ *
+ * These say which role an id MAY play inside an Orchestrator conversation. They do NOT say a session is one: the same ids are
+ * plain `/model` choices, and only the annotation marker (src/core/orchestrator-marker.ts) tells the two apart. Outside an
+ * Orchestrator conversation these ids are plain models ranked by tier. `isOrchestratorModel` stays the legacy-id check.
+ */
+export function isPlannerFamilyModel(model?: string | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+  if (isOrchestratorPlanner(model)) return true;
+  const family = modelFamilyOf(model);
+  return family !== null && PLANNER_FAMILIES.has(family);
+}
+
+export function isExecutorFamilyModel(model?: string | null): boolean {
+  if (!model || typeof model !== 'string') return false;
+  if (isOrchestratorWorker(model)) return true;
+  const family = modelFamilyOf(model);
+  return family !== null && EXECUTOR_FAMILIES.has(family);
+}
+
+/**
+ * The subagent ceiling of a session. An Orchestrator session has the flash ceiling. `orchestrator` is what the session
+ * record says (the 1.5.14 marker); it defaults to the legacy id check, which is all a bare model id can answer.
+ */
+export function subagentCeilingRank(sessionModel?: string | null, orchestrator?: boolean): number {
+  if (orchestrator === true || isOrchestratorModel(sessionModel)) {
     return 2; // flash
   }
   return modelTierRank(sessionModel ?? '');
@@ -732,13 +890,9 @@ export function poolForTier(view: QuotaView, tier: string): QuotaPoolView {
   return view.active;
 }
 
+/** The rank (0 free, 1 flash_lite, 2 flash, 3 pro) of a tier name, alias or model id: `modelTierOf` (src/core/model-tier.ts), the one tier table. An id nothing places ranks 2. */
 export function modelTierRank(tierOrModel: string): number {
-  const t = (tierOrModel || '').toLowerCase();
-  if (t.includes('free') || t === 'openrouter_free') return 0;
-  if (t.includes('flash_lite') || t.includes('flash-lite')) return 1;
-  if (t.includes('flash') || t.includes('hydrogen') || t.includes('cheap') || t.includes('standard')) return 2;
-  if (t.includes('pro') || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t === 'deep') return 3;
-  return 2;
+  return modelRankOf(tierOrModel);
 }
 
 export function rankToTierName(rank: number): 'openrouter_free' | 'flash_lite' | 'flash' | 'pro' {
@@ -846,7 +1000,9 @@ export function isExplicitProOverride(promptText?: string, requestedModel?: stri
 export function clampTierToSessionCeiling(
   recommendedTier: string,
   activeModel?: string,
-  promptText: string = ''
+  promptText: string = '',
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker); see `subagentCeilingRank`. */
+  orchestrator?: boolean
 ): { clampedTier: string; wasClamped: boolean; ceilingTier: string } {
   if (!activeModel) {
     return { clampedTier: recommendedTier, wasClamped: false, ceilingTier: 'pro' };
@@ -855,7 +1011,7 @@ export function clampTierToSessionCeiling(
   // Whole phrases with negation handling, shared with the Antigravity hook (a bare "argon" is not an override).
   const explicitProOverride = isExplicitProOverride(promptText, recommendedTier);
 
-  const ceilingRank = subagentCeilingRank(activeModel);
+  const ceilingRank = subagentCeilingRank(activeModel, orchestrator);
   const ceilingTier = rankToTierName(ceilingRank);
   const recRank = modelTierRank(recommendedTier);
 

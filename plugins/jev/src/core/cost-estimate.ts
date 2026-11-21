@@ -16,10 +16,12 @@
  * - `costWeightsVersion`: the version of the table above.
  */
 
+import { modelTierOf, type ModelTier } from './model-tier.js';
+
 /** The version of the weights table below. */
 export const COST_WEIGHTS_VERSION = 1;
 
-export type CostTier = 'openrouter_free' | 'flash_lite' | 'flash' | 'pro';
+export type CostTier = ModelTier;
 export type CostEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Model weights (version 1): free 0, flash_lite or haiku 1, flash or sonnet 3, pro or opus 15. */
@@ -39,8 +41,8 @@ export function costEffortOf(v: unknown): CostEffort | null {
   return isEffort(s) ? s : null;
 }
 
-/** A trailing `-low`, `-medium`, `-high` or `-xhigh` on a model id (how Antigravity serves one model at several efforts). */
-const EFFORT_SUFFIX_RE = /-(low|medium|high|xhigh)$/i;
+/** A trailing `-low`, `-medium`, `-high`, `-xhigh` or `-max` on a model id (how Antigravity serves one model at several efforts). */
+const EFFORT_SUFFIX_RE = /-(low|medium|high|xhigh|max)$/i;
 
 /** The effort an Antigravity model id carries as its suffix, or null when it has none. */
 export function effortFromModelId(model: unknown): CostEffort | null {
@@ -49,19 +51,13 @@ export function effortFromModelId(model: unknown): CostEffort | null {
 }
 
 /**
- * The cost tier of a model id or alias, or null when nothing places it: a free model (`:free`, `openrouter_free`),
- * `flash_lite` or `haiku`, `flash` or `sonnet`, and `pro`, `opus` or `fable` (the strongest family). An effort suffix is ignored.
+ * The cost tier of a model id or alias, or null when nothing places it. It is `modelTierOf` (src/core/model-tier.ts, the
+ * one tier table: free, `flash_lite` or `haiku`, `flash`, `hydrogen` or `sonnet`, and `pro`, `neon`, `argon`, `carbon`,
+ * `opus` or `fable`). An effort suffix is ignored.
  */
 export function costTierOf(model: unknown): CostTier | null {
   if (typeof model !== 'string') return null;
-  const id = model.trim().toLowerCase().replace(EFFORT_SUFFIX_RE, '');
-  if (!id) return null;
-  // The free pool: `openrouter/free`, `free`, `openrouter_free`, and any `<model>:free` id.
-  if (id === 'free' || id.includes(':free') || id.includes('openrouter/free') || id.includes('openrouter_free') || id.includes('openrouter-free')) return 'openrouter_free';
-  if (/flash[-_ ]?lite/.test(id) || id.includes('haiku')) return 'flash_lite';
-  if (id.includes('sonnet') || id.includes('flash')) return 'flash';
-  if (id.includes('opus') || id.includes('fable') || /(^|[^a-z])pro([^a-z]|$)/.test(id)) return 'pro';
-  return null;
+  return modelTierOf(model.trim().replace(EFFORT_SUFFIX_RE, ''));
 }
 
 /** The cost of one model at one effort, or null when the model has no tier. */

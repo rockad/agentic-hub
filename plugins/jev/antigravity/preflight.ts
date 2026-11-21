@@ -10,7 +10,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import {
   readJevMode,
   readQuotaView,
-  writeAntigravitySessionModel,
+  recordAntigravitySession,
   isOrchestratorModel,
   clampTierToSessionCeiling,
   defaultEffortForSubagent,
@@ -43,6 +43,8 @@ interface PreInvocationInput {
   conversationId?: string;
   workspacePaths?: string[];
   modelName?: string;
+  /** Where the Orchestrator annotation marker is looked for (see src/core/orchestrator-marker.ts). */
+  artifactDirectoryPath?: string;
   lastUserInput?: string;
   invocationNum?: number;
   initialNumSteps?: number;
@@ -135,6 +137,9 @@ export function autoHealAgyMcp(mode: string, deps: AutoHealDeps = {}): void {
  *   - pending-served flush: lock wait PREFLIGHT_LOCK_WAIT_MS + 200 ms of work (PENDING_SERVED_BUDGET_MS) = 450 ms
  *   - turn-state commit: lock wait PREFLIGHT_LOCK_WAIT_MS = 250 ms
  *   - quota-state, session-model and config reads: local files, no wait
+ *   - the Orchestrator annotation marker (one stat and a read of at most ORCHESTRATOR_ANNOTATION_MAX_BYTES, a few hundred
+ *     microseconds): read once per conversation (the record then keeps the flag), skipped when under
+ *     PREFLIGHT_MIN_MARKER_MS of the deadline is left
  * Asynchronous waits (each clipped to what is left of the deadline):
  *   - the decisions router call: PREFLIGHT_ROUTER_MS (1500 ms), mode `on` only
  *   - the Recall memory read: PREFLIGHT_MEMORY_MS (1000 ms; two 800 ms fetches before), mode `on` only, started at the
@@ -154,6 +159,8 @@ export const PREFLIGHT_HEAL_MS = 750;
 const PREFLIGHT_ROUTER_RESERVE_MS = 300;
 const PREFLIGHT_MIN_ROUTER_MS = 400;
 const PREFLIGHT_MIN_MEMORY_MS = 100;
+/** Under this much of the deadline left, the Orchestrator marker is not read (the legacy id rules apply). */
+export const PREFLIGHT_MIN_MARKER_MS = 100;
 
 export type PreflightDeps = {
   /** MCP auto-heal; the only thing mode `off` runs. */
@@ -308,10 +315,18 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
       try {
         // 3. Persist live modelName & flush any deferred subagent_served entries
         // The session model is what the store holds after the write: an Orchestrator conversation keeps its planner id
-        // when an execution turn reports the worker id. Telemetry rows below keep the reported `modelName`.
+        // when an execution turn reports the worker id. Telemetry rows below carry that sticky model as `sessionModel` and the reported `modelName` as `turnModel` when they differ.
         let sessionModel: string | null = modelName;
+        let sessionOrchestrator = false;
         if (modelName && conversationId) {
-          sessionModel = writeAntigravitySessionModel(conversationId, modelName) ?? modelName;
+          const readMarker = remaining() >= PREFLIGHT_MIN_MARKER_MS;
+          if (!readMarker) logSkipped('orchestrator-marker', 'deadline');
+          const recorded = recordAntigravitySession(conversationId, modelName, undefined, undefined, {
+            artifactDirectoryPath: hookInput?.artifactDirectoryPath,
+            readMarker
+          });
+          sessionModel = recorded?.model ?? modelName;
+          sessionOrchestrator = recorded?.orchestrator ?? false;
         }
         if (conversationId) {
           flushPendingServed(
@@ -337,7 +352,9 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
                     buildAntigravityTelemetryEvent({
                       kind: 'subagent_served',
                       conversationId: typeof entry.session_id === 'string' ? entry.session_id : (safeId ?? null),
-                      inputModelName: modelName,
+                      // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.
+                      inputModelName: sessionModel,
+                      turnModel: modelName,
                       childConversationId: String(entry.child_conversation_id),
                       requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
                       servedModel: String(entry.served_model),
@@ -358,7 +375,8 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
         const quota: QuotaView = await readQuotaView({ conversationId });
 
         // 5. Determine pool and evaluatePoolStrategy
-        const isOrchestrator = isOrchestratorModel(sessionModel || quota.active_model);
+        const isOrchestrator =
+          sessionOrchestrator || isOrchestratorModel(sessionModel || quota.active_model) || (!modelName && quota.orchestrator === true);
         const routinePool = isOrchestrator
           ? (quota.pools?.execution ?? quota.active)
           : quota.active;
@@ -483,7 +501,7 @@ ${sessionHint}
                 const rawTier = typeof tierChoice === 'string' && tierChoice in TIER_CRITERIA ? tierChoice : 'flash';
 
                 const activeModel = sessionModel || quota.active_model || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
-                const { clampedTier } = clampTierToSessionCeiling(rawTier, activeModel, cleanTask);
+                const { clampedTier } = clampTierToSessionCeiling(rawTier, activeModel, cleanTask, isOrchestrator);
                 const recommendedTier = clampedTier;
                 const recommendedSubagent = rawSubagent;
 
@@ -515,7 +533,9 @@ ${sessionHint}
                       buildAntigravityTelemetryEvent({
                         kind: 'pre_invocation',
                         conversationId: safeId ?? null,
-                        inputModelName: modelName,
+                        // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.
+                        inputModelName: sessionModel,
+                        turnModel: modelName,
                         quotaView: quota,
                         lastUserInput: cleanTask,
                         recommendedSubagent,
@@ -565,7 +585,9 @@ ${sessionHint}
                 buildAntigravityTelemetryEvent({
                   kind: 'pre_invocation',
                   conversationId: safeId ?? null,
-                  inputModelName: modelName,
+                  // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.
+                  inputModelName: sessionModel,
+                  turnModel: modelName,
                   quotaView: quota,
                   lastUserInput: cleanTask,
                   taskLen,

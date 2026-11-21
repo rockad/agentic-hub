@@ -78,6 +78,7 @@ import {
   rankToTierName,
   subagentCeilingRank
 } from '../src/core/governance.js';
+import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import { jevHomeDir } from '../src/core/private-fs.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
 import type { JevMode } from '../src/core/config.js';
@@ -341,6 +342,8 @@ function dangerousAttr(name: string): boolean {
 export interface AnalysisContext {
   /** The session model (the ceiling is derived from it). */
   sessionModel: string;
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker); a legacy Orchestrator id is one on its own. */
+  sessionOrchestrator?: boolean;
   /** What the user said in this turn (a model named there passes). */
   lastUserInput?: string;
   /** Where `type_name` definitions are looked up. */
@@ -558,7 +561,7 @@ function valueOf(toks: Tok[], arg: Arg | undefined): Value {
 }
 
 function recognisedModel(model: string): boolean {
-  return /^(?:flash_lite|flash-lite|flash|pro)$/i.test(model) || /^(?:gemini|claude|hydrogen|argon)/i.test(model);
+  return isRecognisedSubagentModel(model);
 }
 
 /** Analyse one script's text. Pushes the facts it read into `facts`. Never throws. */
@@ -579,9 +582,9 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
   const site = (t: Tok, reason: string): void => {
     sites.push({ file: label, line: t.line, col: t.col, reason, kind: 'unverifiable' });
   };
-  const sessionRank = subagentCeilingRank(ctx.sessionModel);
+  const orchestrator = ctx.sessionOrchestrator === true || isOrchestratorModel(ctx.sessionModel);
+  const sessionRank = subagentCeilingRank(ctx.sessionModel, orchestrator);
   const ceilingTier = rankToTierName(sessionRank);
-  const orchestrator = isOrchestratorModel(ctx.sessionModel);
 
   /** Rank one literal model for the call at `at`. */
   const rankLiteral = (model: string, at: Tok, source: string): void => {
@@ -934,6 +937,8 @@ export interface WorkflowCallDeps {
   mode: JevMode;
   /** The session model (from the hook's session sync); the ceiling is derived from it. */
   sessionModel?: string;
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker); a legacy Orchestrator id is one on its own. */
+  sessionOrchestrator?: boolean;
   approvals?: ApprovalStore;
   config?: ModeChangeConfigLike;
   now?: () => number;
@@ -971,12 +976,14 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const approvals = typeof rawId === 'string' && rawId.length > 0 && !safeSessionId(rawId) ? undefined : deps.approvals;
     const nowMs = (deps.now ?? Date.now)();
     const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
-    const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel));
+    const sessionOrchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
+    const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, sessionOrchestrator));
     const d = evaluateWorkflowInput(
       input.toolCall?.args,
       { cwd: input.cwd, workspacePaths: input.workspacePaths },
       {
         sessionModel,
+        sessionOrchestrator,
         lastUserInput: input.lastUserInput,
         definitions: deps.definitions ?? fsDefinitionResolver([input.cwd, ...(input.workspacePaths ?? [])].filter((x): x is string => typeof x === 'string' && x.length > 0))
       }
@@ -1036,7 +1043,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
       requestedModel: top.tier,
       typeName: 'run_workflow',
       sessionCeilingTier: ceilingTier,
-      isOrchestrator: isOrchestratorModel(sessionModel),
+      isOrchestrator: sessionOrchestrator,
       nowMs,
       transcriptPath: input.transcriptPath,
       promptHash,

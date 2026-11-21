@@ -9,6 +9,7 @@ export const JEV_CONFIG_FILE = process.env.JEV_CONFIG_FILE || path.join(os.homed
 export type JevHarness = 'antigravity' | 'claude-code' | 'opencode' | 'cli';
 
 import type { ZdrPolicy } from './egress.js';
+import { modelTierOf, type ModelTier } from './model-tier.js';
 
 export type CognitiveTier = 'free' | 'cheap' | 'standard' | 'deep';
 
@@ -295,12 +296,24 @@ export function findProjectConfigFile(startDir: string = process.cwd()): string 
   return null;
 }
 
+const COGNITIVE_OF_TIER: Readonly<Record<ModelTier, CognitiveTier>> = {
+  openrouter_free: 'free',
+  flash_lite: 'cheap',
+  flash: 'standard',
+  pro: 'deep'
+};
+
+/**
+ * A tier name, alias or model id as a cognitive tier. A model id is placed by `modelTierOf` (src/core/model-tier.ts, the
+ * one tier table, so this agrees with `modelTierRank` and `costTierOf`); the plain aliases (`cheap`, `lite`, `deep`,
+ * `expensive`, `standard`) come after it. Anything else, an unknown model id included, is `standard`.
+ */
 export function normalizeTier(rawTier: string): CognitiveTier {
   const t = (rawTier || '').toLowerCase().trim();
-  if (t === 'free' || t === 'openrouter_free' || t.includes('free')) return 'free';
-  if (t === 'cheap' || t === 'flash_lite' || t.includes('haiku') || t.includes('lite') || t.includes('cheap')) return 'cheap';
-  if (t === 'deep' || t === 'pro' || t.includes('argon') || t.includes('opus') || t.includes('fable') || t.includes('expensive') || t.includes('deep') || t === 'pro' || /(?:^|[-_/:])pro(?:$|[-_/:])/.test(t)) return 'deep';
-  if (t === 'standard' || t === 'flash' || t.includes('sonnet') || t.includes('hydrogen') || t.includes('standard') || t.includes('flash')) return 'standard';
+  const tier = modelTierOf(t);
+  if (tier !== null) return COGNITIVE_OF_TIER[tier];
+  if (t.includes('lite') || t.includes('cheap')) return 'cheap';
+  if (t.includes('expensive') || t.includes('deep')) return 'deep';
   return 'standard';
 }
 

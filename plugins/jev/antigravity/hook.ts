@@ -5,7 +5,8 @@ import {
   readJevMode,
   readQuotaView,
   safeSessionId,
-  writeAntigravitySessionModel,
+  recordAntigravitySession,
+  resolveAntigravityTurnModel,
   privateDir,
   privateFile,
   jevHomeDir,
@@ -152,6 +153,20 @@ function passThrough(event: string): void {
   process.exit(0);
 }
 
+/**
+ * The session model and the turn model a telemetry row carries for a turn that reported `modelName`: the sticky session
+ * model of the conversation (the planner, for an executor turn of an Orchestrator conversation) and, when the turn ran on
+ * another id, that id. Read-only; a hook path that already wrote the record passes its own result instead.
+ */
+function stickyTurn(conversationId: string | undefined, modelName: string | undefined): { inputModelName: string | undefined; turnModel?: string } {
+  try {
+    const r = resolveAntigravityTurnModel(conversationId, modelName);
+    return { inputModelName: r.model ?? undefined, ...(r.turnModel ? { turnModel: r.turnModel } : {}) };
+  } catch {
+    return { inputModelName: modelName };
+  }
+}
+
 async function main() {
   const event = (process.argv[2] || 'pre-tool-use').toLowerCase();
   const pendingTelemetry: Promise<unknown>[] = [];
@@ -215,7 +230,7 @@ async function main() {
               buildAntigravityTelemetryEvent({
                 kind: 'subagent_served',
                 conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
-                inputModelName: input.modelName,
+                ...stickyTurn(input.conversationId, input.modelName),
                 childConversationId: String(entry.child_conversation_id),
                 requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
                 servedModel: String(entry.served_model),
@@ -473,7 +488,7 @@ async function main() {
                 buildAntigravityTelemetryEvent({
                   kind: 'subagent_served',
                   conversationId,
-                  inputModelName: input.modelName,
+                  ...stickyTurn(input.conversationId, input.modelName),
                   childConversationId: childConvId,
                   requestedModel: requestedModel || null,
                   servedModel,
@@ -512,14 +527,22 @@ async function main() {
     // an execution turn reports the worker id (`turn_model` in the record, and `inputModelName` in the telemetry rows,
     // still carry the model the turn ran on).
     let sessionModel = trimmedModel;
+    // Whether the conversation is an Orchestrator one: the 1.5.14 annotation marker (read once, then kept in the record) or a legacy id.
+    let sessionOrchestrator = false;
     if (trimmedModel && input.conversationId) {
-      sessionModel = writeAntigravitySessionModel(input.conversationId, trimmedModel) ?? trimmedModel;
+      const recorded = recordAntigravitySession(input.conversationId, trimmedModel, undefined, undefined, {
+        artifactDirectoryPath: input.artifactDirectoryPath
+      });
+      sessionModel = recorded?.model ?? trimmedModel;
+      sessionOrchestrator = recorded?.orchestrator ?? false;
     }
 
     let activeModel: string | undefined;
     let quotaView: QuotaView | undefined;
     try {
       quotaView = await readQuotaView({ conversationId: input.conversationId });
+      // No model name on this call: the stored record (read by the quota view) still says whether this is an Orchestrator conversation.
+      if (!trimmedModel && quotaView?.orchestrator === true) sessionOrchestrator = true;
       const rawModel = sessionModel || quotaView?.active_model;
       activeModel = ceilingModelForHarness('antigravity', rawModel);
     } catch {
@@ -536,6 +559,7 @@ async function main() {
       const w = evaluateAntigravityWorkflowCall(input, {
         mode,
         sessionModel: activeModel,
+        sessionOrchestrator,
         approvals,
         config: jevConfig,
         pinDir
@@ -575,6 +599,7 @@ async function main() {
     let decision = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: activeModel,
+      sessionOrchestrator,
       quotaView,
       mode,
       config: jevConfig
@@ -590,6 +615,7 @@ async function main() {
         jevMode: mode,
         config: jevConfig,
         sessionModel: activeModel,
+        sessionOrchestrator,
         env: process.env,
         downgradeConfig: loadDowngradeMode,
         downgradeMinProbability: loadDowngradeMinProbability,
@@ -642,7 +668,9 @@ async function main() {
         buildAntigravityTelemetryEvent({
           kind: 'agent_call',
           conversationId: input.conversationId,
-          inputModelName: input.modelName,
+          // The sticky session model (the planner, for an executor turn of an Orchestrator conversation), and the id the turn ran on.
+          inputModelName: sessionModel,
+          turnModel: trimmedModel,
           quotaView,
           lastUserInput: input.lastUserInput,
           toolName: 'invoke_subagent',

@@ -12,6 +12,7 @@ import {
   type ActiveModelSource,
   type QuotaView
 } from '../src/core/governance.js';
+import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
@@ -65,6 +66,8 @@ export type AntigravityHookDecision = {
 export type AntigravityLogicDeps = {
   approvals?: ApprovalStore;
   sessionModelOverride?: string;
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker). A legacy Orchestrator id is an Orchestrator session on its own. */
+  sessionOrchestrator?: boolean;
   elevationMode?: 'choice' | 'dialog' | 'clamp';
   quotaView?: QuotaView;
   mode?: JevMode;
@@ -848,10 +851,7 @@ export function evaluateAntigravitySubagentCall(
         reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.'
       };
     }
-    const isRecognized =
-      /^(?:flash_lite|flash-lite|flash|pro)$/i.test(reqLower) ||
-      /^(?:gemini|claude|hydrogen|argon)/i.test(reqLower);
-    if (!isRecognized) {
+    if (!isRecognisedSubagentModel(reqLower)) {
       return {
         decision: 'deny',
         reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`
@@ -860,7 +860,7 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // 2. Orchestrator omitted/inherit rule
-  const isOrchestrator = isOrchestratorModel(sessionModel);
+  const isOrchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
   let effectiveTier: string;
 
   if (!isExplicit || !requestedModel) {
@@ -870,7 +870,7 @@ export function evaluateAntigravitySubagentCall(
         reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
       };
     }
-    effectiveTier = rankToTierName(subagentCeilingRank(sessionModel));
+    effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
   } else {
     effectiveTier = requestedModel;
   }
@@ -912,7 +912,7 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // 4. Ceiling / Elevation
-  const sessionCeilingRank = subagentCeilingRank(sessionModel);
+  const sessionCeilingRank = subagentCeilingRank(sessionModel, isOrchestrator);
   const sessionCeilingTier = rankToTierName(sessionCeilingRank);
   const requestedRank = modelTierRank(requestedModel);
 
@@ -1601,6 +1601,8 @@ export type AntigravityTelemetryInput =
       kind: 'pre_invocation';
       conversationId?: string | null;
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
       lastUserInput?: string | null;
       /** Absent on the row of a mode without routing advice (on-demand): no recommendation fields are written. */
@@ -1615,6 +1617,8 @@ export type AntigravityTelemetryInput =
       kind: 'agent_call';
       conversationId?: string | null;
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
       lastUserInput?: string | null;
       toolName?: string;
@@ -1641,12 +1645,20 @@ export type AntigravityTelemetryInput =
       conversationId?: string | null;
       /** The session model from the hook input (PostToolUse, or the hook that flushed a backfill); absent when not known. */
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
       childConversationId?: string | null;
       requestedModel?: string | null;
       servedModel?: string | null;
       backfilled?: boolean;
     };
+
+/** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
+function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
+  const t = typeof turnModel === 'string' ? turnModel.trim() : '';
+  return t.length > 0 && t !== sessionModel ? { turnModel: t } : {};
+}
 
 export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
@@ -1665,6 +1677,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       ...(params.taskHash ? { taskHash: params.taskHash } : {}),
       sessionModel,
       sessionModelSource,
+      ...turnModelField(sessionModel, params.turnModel),
       ...(params.recommendedSubagent ? { recommendedSubagent: params.recommendedSubagent } : {}),
       ...(params.recommendedTier ? { recommendedTier: params.recommendedTier, modelRecommended: params.recommendedTier } : {}),
       ...(params.effort ? { effort: params.effort } : {}),
@@ -1704,6 +1717,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       sessionId: params.conversationId ?? null,
       sessionModel,
       sessionModelSource,
+      ...turnModelField(sessionModel, params.turnModel),
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,
@@ -1757,6 +1771,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     ...(subagentType ? { taskSummary: `subagent: ${subagentType}` } : {}),
     sessionModel,
     sessionModelSource,
+    ...turnModelField(sessionModel, params.turnModel),
     ...(matchedRecommendedTier
       ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
       : {}),

@@ -32,6 +32,8 @@ export interface JevTelemetryEvent {
   sessionModel?: string | null;
   /** Where `sessionModel` was read from (hook input, stored file, transcript, quota state); null when not known. */
   sessionModelSource?: string | null;
+  /** The model the turn itself ran on, written only when it differs from `sessionModel` (an executor turn of an Antigravity Orchestrator conversation, whose `sessionModel` is the sticky planner). */
+  turnModel?: string;
   /**
    * The model an Agent / subagent call is expected to run on (PreToolUse `agent_call` only, never on a prompt record):
    * the clamp's, else the applied downgrade's, else the one the call named, else the session model.

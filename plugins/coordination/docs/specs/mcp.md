@@ -89,19 +89,19 @@ Results: `structuredContent` and one JSON text block of the same object. A failu
 - `a2a_wait` returns the inbox shape when something is wakeable (a new task, a re-offer that is due, an unread follow-up) and records the offer, or when a watched task (`task_ids`) changed state, or was already finished when the wait began. Otherwise `{"timed_out": true}`. [design] At most 20 watched ids.
 - `a2a_send` with `wait_seconds` waits for a terminal or interrupted state (`INPUT_REQUIRED`, `AUTH_REQUIRED`) and returns the latest state.
 - Tests run the waits in virtual time (a hand-moved clock and a `sleep` that advances it), so a 50 s cap is exact and fast. [verified] The wait sums to exactly 50 s for a request of 240 and to 30 s by default.
-- Not done: "marks the most recent wake confirmed" (spec 4.3 and 4.5, 7.5). The `wakes` table belongs to WAKE.
+- "Marks the most recent wake confirmed" (spec 4.3 and 4.5, 7.5): done by S1-WAKE (`McpTools` takes a `confirm` callable; [wake.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/wake.md) section 4).
 
 ## 7. Wiring in `app.py`
 
 - `create_app(..., mcp=endpoint)`: the route is added only when an endpoint is passed, so a bare `create_app` serves what it always did.
 - `build_server_app` now builds the SQL audit log (`SqlAuditStore`) and the `CoordinationService`, passes the audit log to the middleware and the service, and mounts `/mcp`. This is the audit wiring S1-AUTH listed as not done (auth failures are now sampled into `audit`); it is minimal wiring in a file this stream may change.
 - `app.state.mcp` is the endpoint, so S1-ADMIN can call `app.state.mcp.sessions.drop_key(key_id)` when it revokes a key. Not wired here: a revoked key is refused by the middleware on its next request in any case.
-- Not started here: the service's TTL sweep (`run_forever`) and the audit auth-failure flush timer. Neither stream owns them; the A2A, WAKE or ADMIN stream starting the lifespan tasks should.
+- Not started here: the service's TTL sweep (`run_forever`) and the audit auth-failure flush timer. The sweep is started by the app lifespan since Z18 (identity.md section 6); the flush timer is still not started by any stream.
 
 ## 8. Not built here (handed on)
 
 - S1-ID: `POST /sessions`, `GET /sessions`, `POST /sessions/end`; aliases for a later `SessionStart` name; `parent_conversation_id` provenance; the decision on the unnamed form; whether a resumed ended session revives. `SessionRegistry` registers and finds sessions only as far as the MCP acceptance needs. **Done by S1-ID (2026-11-18)**: see [identity.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/identity.md). The registry moved to `coordination/identity/registry.py` and `coordination.mcp.sessions` re-exports it; `a2a_hello` in `name` mode and the agy binding call `IdentityService`. The two open questions were decided the same day (Z17) and built in a follow-up commit: the unnamed form is `<sid8>~<sid8>`, and a resumed ended session revives (agy path and `a2a_hello` included), with rebind and lifecycle audit events.
-- S1-WAKE: the parked-listener table (`ListenerView`; `NoListeners` stands in), the wake confirmation, a change notifier.
+- S1-WAKE: the parked-listener table (`ListenerView`; `NoListeners` stands in), the wake confirmation, a change notifier. **Done by S1-WAKE (2026-11-18)**, see [wake.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/wake.md) section 7: `build_server_app` passes the real table, `a2a_inbox`, `a2a_wait` and `a2a_hello` confirm the handle's wake, and the task service's existing notifier hook is the wake service. `NoListeners` remains the default for a caller that builds the parts alone.
 - S1-ADMIN: calling `drop_key` on revoke.
 - LT-SRV: `status_runs`, so `a2a_runs` has data.
 - The rate limiter and the handle-guess counter (S3-LIMITS, S2-LISTEN) are unchanged; the tools add no limiter of their own beyond the service layer's.

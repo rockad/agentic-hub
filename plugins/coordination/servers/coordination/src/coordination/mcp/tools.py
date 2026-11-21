@@ -313,6 +313,8 @@ def fail(code: str, message: str) -> dict[str, Any]:
 
 
 Sleep = Callable[[float], Awaitable[None]]
+#: `confirm(handle)`: the wake endpoint's confirmation of a wake (spec 7.5). Must not raise.
+Confirm = Callable[[str], Awaitable[object]]
 
 
 class McpTools:
@@ -326,6 +328,7 @@ class McpTools:
         audit: AuditLog | None = None,
         listeners: ListenerView | None = None,
         identity: IdentityService | None = None,
+        confirm: Confirm | None = None,
         sleep: Sleep = asyncio.sleep,
         poll_s: float = WAIT_POLL_S,
     ) -> None:
@@ -333,6 +336,8 @@ class McpTools:
         self._service = service
         self._clock = clock
         self._audit = audit
+        # S1-WAKE (spec 7.5): `a2a_inbox`, `a2a_wait` and `a2a_hello` confirm the handle's wake.
+        self._confirm = confirm
         self._listeners: ListenerView = listeners if listeners is not None else NoListeners()
         # Registration and the agy conversation binding are S1-ID's (`coordination.identity`); the
         # tools call into it so the HTTP routes and the tools cannot drift. `registry` is the same
@@ -498,6 +503,7 @@ class McpTools:
             handle = registration.session.handle
             await self._bind(ctx, key_id, card, handle)
         await self._registry.touch(handle)
+        await self._confirmed(handle)
         pending, held = await self._counts(handle, card)
         return ok(
             {
@@ -524,8 +530,14 @@ class McpTools:
 
     # -- reads ---------------------------------------------------------------------------
 
+    async def _confirmed(self, handle: str) -> None:
+        """Spec 7.5: this call confirms the handle's wake, if one is in flight."""
+        if self._confirm is not None:
+            await self._confirm(handle)
+
     async def _inbox(self, ctx: CallContext, args: dict[str, Any]) -> dict[str, Any]:
         handle = await self._handle(ctx, args)
+        await self._confirmed(handle)
         caller = self._caller(ctx, handle)
         result = await self._service.inbox(
             caller, limit=args.get("limit", 10), include_followups=args.get("include_followups", True)
@@ -584,6 +596,7 @@ class McpTools:
 
     async def _wait(self, ctx: CallContext, args: dict[str, Any]) -> dict[str, Any]:
         handle = await self._handle(ctx, args)
+        await self._confirmed(handle)
         caller = self._caller(ctx, handle)
         card = ctx.principal.card_id
         assert card is not None

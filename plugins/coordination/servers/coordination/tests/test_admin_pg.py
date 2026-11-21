@@ -448,7 +448,7 @@ def test_build_server_app_opens_the_socket_with_its_lifespan_and_serves_no_admin
     assert not sock.exists()  # building the app opens nothing
     with TestClient(app, base_url="http://127.0.0.1:8120") as client:
         assert sock.exists() and stat.S_IMODE(sock.stat().st_mode) == 0o600
-        assert app.state.admin.hooks.names() == ["mcp"]  # revoke closes MCP sessions; WAKE adds its own
+        assert app.state.admin.hooks.names() == ["mcp", "wake"]  # revoke closes MCP sessions and (S1-WAKE) parked listeners
         out, err = io.StringIO(), io.StringIO()
         term = FakeTerminal()
         env = {"A2A_ADMIN_SOCKET": str(sock)}

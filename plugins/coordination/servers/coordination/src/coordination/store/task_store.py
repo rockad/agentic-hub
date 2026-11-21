@@ -635,6 +635,46 @@ class CoordTaskStore:
             a, b, c, d = (await session.execute(stmt)).one()
         return PendingCounts(int(a), int(b), int(c), int(d))
 
+    async def wakeable_task_ids(
+        self, handle: str, card_id: str, now: datetime, reoffer_max: int, *, include_queued: bool
+    ) -> list[str]:
+        """Ids of the `SUBMITTED` tasks that make a wake pending for `handle` (spec 7.4), by the
+        same conditions as `count_pending`'s wakeable counts: bound to the handle and new or due
+        again under the offer cap, and (only when `include_queued`, that is when the handle is the
+        newest parked listener of its card) unclaimed card tasks that are due. Ids only, no bodies,
+        so the anti-loop rule (S1-WAKE) can tell whether the pending set changed. Capped at 1000."""
+        ix, tm = task_index, self._tm
+        submitted = tm.status["state"].as_string() == S.Name(S.TASK_STATE_SUBMITTED)
+        under_cap = ix.c.offer_count < reoffer_max
+        due = sa.or_(ix.c.next_offer_at.is_(None), ix.c.next_offer_at <= now)
+        own = sa.and_(
+            ix.c.to_handle == handle,
+            ix.c.hold.is_(None),
+            submitted,
+            sa.or_(ix.c.offer_count == 0, sa.and_(due, under_cap)),
+        )
+        wanted: sa.ColumnElement[bool] = own
+        if include_queued:
+            queued = sa.and_(
+                ix.c.to_card == card_id,
+                ix.c.addressing == "card",
+                ix.c.to_handle.is_(None),
+                ix.c.hold.is_(None),
+                submitted,
+                due,
+                under_cap,
+            )
+            wanted = sa.or_(own, queued)
+        stmt = (
+            sa.select(ix.c.task_id)
+            .select_from(ix.join(tm.__table__, tm.id == ix.c.task_id))
+            .where(wanted)
+            .order_by(ix.c.task_id)
+            .limit(1000)
+        )
+        async with self._maker() as session:
+            return list((await session.execute(stmt)).scalars())
+
     async def working_for_handle(self, handle: str) -> list[pb.Task]:
         """`WORKING` tasks bound to `handle` (a small set); the caller reads the unread flags."""
         stmt = (

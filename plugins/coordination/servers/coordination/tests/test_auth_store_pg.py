@@ -143,8 +143,9 @@ def test_the_table_is_the_one_migration_1_made_and_needs_no_new_column(db):
             return await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns("api_keys")})
 
     assert run(columns()) == {c.name for c in api_keys.columns}
-    # S1-AUTH added no migration (it ended at 2); S1-ID's m0003 is the only later step it sees.
-    assert run(schema.versions(engine)).coord_schema_version == migrations.LATEST == 3
+    # S1-AUTH added no migration (it ended at 2); later steps (S1-ID m0003, S1-WAKE m0004) leave
+    # `api_keys` alone, which the column check above proves. The database is at the latest step.
+    assert run(schema.versions(engine)).coord_schema_version == migrations.LATEST >= 3
 
 
 # the middleware on the SQL store ----------------------------------------------------------------

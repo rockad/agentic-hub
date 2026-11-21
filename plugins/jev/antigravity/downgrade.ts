@@ -181,6 +181,8 @@ export type DowngradeDeps = {
   config?: ModeChangeConfigLike;
   /** The session model the call would inherit (the one the ceiling uses). */
   sessionModel?: string | null;
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker); a legacy Orchestrator id is one on its own. */
+  sessionOrchestrator?: boolean;
   env?: Record<string, string | undefined>;
   /** The configured `models.downgrade.mode` (the environment's JEV_DOWNGRADE wins). */
   downgradeConfig?: () => string | undefined;
@@ -251,6 +253,7 @@ export async function applyAntigravityDowngrade(
   const inheritsFlash =
     !isExplicit &&
     !!sessionModel &&
+    deps.sessionOrchestrator !== true &&
     !isOrchestratorModel(sessionModel) &&
     /flash/i.test(sessionModel) &&
     !/lite/i.test(sessionModel) &&

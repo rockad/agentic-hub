@@ -1253,7 +1253,7 @@ export async function evaluatePreToolGuards(input: PreToolHookInput): Promise<{
         if (read.kind === 'ok') {
           const parsed = JSON.parse(read.text) as AntigravitySessionRecord;
           if (parsed && typeof parsed.model === 'string' && nowSec - parsed.updated_at <= 7200) {
-            if (isOrchestratorModel(parsed.model)) {
+            if (parsed.orchestrator === true || isOrchestratorModel(parsed.model)) {
               isOrchestrator = true;
             }
           }

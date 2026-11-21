@@ -475,7 +475,7 @@ export async function handleDispatchTool(args: unknown): Promise<{ content: Arra
   // not Antigravity's quota file, and it is reported rather than clamped (5.11): the guard asks before an
   // escalation runs. An unknown session model reads as the top tier.
   const claudeModel = isClaude ? activeClaudeSessionModel() : null;
-  const clamped = clampTierToSessionCeiling(recommendedTier, ceilingModelForHarness(harness, quotaView.active_model), task);
+  const clamped = clampTierToSessionCeiling(recommendedTier, ceilingModelForHarness(harness, quotaView.active_model), task, quotaView.orchestrator);
   const ceilingClamping = isClaude ? { ...clamped, ceilingTier: claudeModelTier(claudeModel) ?? 'pro' } : clamped;
   // The quota step follows the ceiling: its only threshold source is the active pool's strategy (evaluatePoolStrategy).
   // Mode "on" clamps a low pool whatever the task text says; "on-demand" lets pro through with a quotaWarning.
@@ -732,7 +732,7 @@ export async function handleBatchDispatchTool(args: unknown): Promise<{ content:
     // On Claude Code no ceiling model is read here, so the ceiling changes nothing.
     const ceilingModel = ceilingModelForHarness(activeHarness, quotaView.active_model);
     const ceilingExempt = kind === 'judgement' || (tierSource !== 'keyword' && modelTierRank(rawTier) >= 3);
-    const clamped = ceilingExempt ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText);
+    const clamped = ceilingExempt ? { clampedTier: rawTier } : clampTierToSessionCeiling(rawTier, ceilingModel, taskText, quotaView.orchestrator);
     // Quota step: one threshold source (the active pool's strategy). Mode "on" clamps a low pool regardless of
     // approvals or override phrases in the task; "on-demand" leaves pro standing with a quotaWarning.
     const quotaStep = quotaStepForHarness(activeHarness, clamped.clampedTier, quotaView, jevMode, edits);

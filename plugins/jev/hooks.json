@@ -10,7 +10,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "invoke_subagent",
+        "matcher": "invoke_subagent|run_workflow",
         "hooks": [
           {
             "type": "command",
@@ -32,7 +32,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "ask_question|invoke_subagent",
+        "matcher": "ask_question|invoke_subagent|run_workflow",
         "hooks": [
           {
             "type": "command",

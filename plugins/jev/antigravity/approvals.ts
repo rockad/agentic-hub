@@ -289,7 +289,9 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
 }
 
 export function createAntigravityApprovalStore(sessionsDir: string): ApprovalStore {
-  privateDir(sessionsDir);
+  // The sessions directory is created lazily, by the first call that really writes (a lock or a state file), never when
+  // the store is only built or asked a question it can answer from nothing: mode on-demand, or a call with no stored
+  // state, creates no directory.
 
   // Defence in depth: a conversation id comes from hook stdin and ends up in file names, so it is normalised here
   // too (the hook entry already does). An id with nothing safe in it means "no stored state": no file I/O at all.
@@ -297,7 +299,17 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
   const lockDir = (safeId: string) => path.join(sessionsDir, `${safeId}.approvals.lock`);
 
   function withLock<T>(safeId: string, fn: () => T): T {
+    privateDir(sessionsDir);
     return withDirLock(lockDir(safeId), fn);
+  }
+
+  /**
+   * For a call that only reads (or writes nothing when there is no state): with no approvals file there is nothing to
+   * read, race or change, so `fn` runs on the empty state without a lock and without creating the directory.
+   */
+  function withLockIfState<T>(safeId: string, fn: () => T): T {
+    if (!fs.existsSync(approvalsFile(safeId))) return fn();
+    return withLock(safeId, fn);
   }
 
   function readState(sessionId: string): ApprovalState {
@@ -351,7 +363,7 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
     claim: (rawId, requested, nowMs) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
-      return withLock(sessionId, () => {
+      return withLockIfState(sessionId, () => {
         const { state, approval } = claimApproval(readState(sessionId), requested, nowMs);
         if (approval?.scope === 'once' || state.approvals.length !== readState(sessionId).approvals.length) {
           writeState(sessionId, state);
@@ -371,7 +383,7 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
     wasDeniedRecently: (rawId, model, nowMs) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
-      return withLock(sessionId, () => {
+      return withLockIfState(sessionId, () => {
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       });
     },
@@ -388,17 +400,17 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
     getAnswerStep: (rawId, model, nowMs) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
-      return withLock(sessionId, () => getAnswerStep(readState(sessionId), model, nowMs));
+      return withLockIfState(sessionId, () => getAnswerStep(readState(sessionId), model, nowMs));
     },
     getAnswerQuestion: (rawId, model, nowMs) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
-      return withLock(sessionId, () => getAnswerQuestion(readState(sessionId), model, nowMs));
+      return withLockIfState(sessionId, () => getAnswerQuestion(readState(sessionId), model, nowMs));
     },
     getConsumedAnswers: (rawId) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return [];
-      return withLock(sessionId, () => readState(sessionId).consumedAnswers ?? []);
+      return withLockIfState(sessionId, () => readState(sessionId).consumedAnswers ?? []);
     }
   };
 }

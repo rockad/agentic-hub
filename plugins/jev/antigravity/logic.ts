@@ -12,13 +12,16 @@ import {
   type ActiveModelSource,
   type QuotaView
 } from '../src/core/governance.js';
+import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
+import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
+import { antigravityCostFields } from '../src/core/cost-estimate.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -63,6 +66,8 @@ export type AntigravityHookDecision = {
 export type AntigravityLogicDeps = {
   approvals?: ApprovalStore;
   sessionModelOverride?: string;
+  /** The session record says this is an Orchestrator conversation (the 1.5.14 marker). A legacy Orchestrator id is an Orchestrator session on its own. */
+  sessionOrchestrator?: boolean;
   elevationMode?: 'choice' | 'dialog' | 'clamp';
   quotaView?: QuotaView;
   mode?: JevMode;
@@ -243,10 +248,21 @@ const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
 export const TRANSCRIPT_TAIL_WINDOW_BYTES = 1024 * 1024; // 1 MB
 export const MAX_TRANSCRIPT_READ_BYTES = TRANSCRIPT_TAIL_WINDOW_BYTES;
 
+/**
+ * How many questions an ask_question call carries (`args.questions`: an array of strings or objects, or one string),
+ * or undefined when the payload does not say. Used so a bare answer is never read for one question of several.
+ */
+export function askQuestionCount(args: unknown): number | undefined {
+  const questions = args && typeof args === 'object' ? (args as Record<string, unknown>).questions : undefined;
+  if (Array.isArray(questions)) return questions.length;
+  return typeof questions === 'string' ? 1 : undefined;
+}
+
 export function extractAskAnswer(
   input: AntigravityHookInput | undefined,
   questionIndex = 0,
-  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES
+  maxBytes = TRANSCRIPT_TAIL_WINDOW_BYTES,
+  questionCount?: number
 ): string | null {
   let content = input?.content;
   if ((!content || typeof content !== 'string') && input?.transcriptPath && typeof input?.stepIdx === 'number') {
@@ -305,6 +321,9 @@ export function extractAskAnswer(
     }
   }
   if (answers.size === 0) {
+    // A bare one-line answer (no `A<n>:` prefix) belongs to a lone question. With several questions it could be any of
+    // them, so it is nobody's: only question 0 of an ask not known to carry more than one reads it.
+    if (questionIndex !== 0 || (typeof questionCount === 'number' && questionCount > 1)) return null;
     const bare = content.trim();
     return bare.includes('\n') ? null : bare;
   }
@@ -314,13 +333,14 @@ export function extractAskAnswer(
 export async function pollForAskAnswer(
   input: AntigravityHookInput | undefined,
   questionIndex = 0,
-  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number; questionCount?: number }
 ): Promise<string | null> {
   const maxWaitMs = opts?.maxWaitMs ?? 2000;
   const pollIntervalMs = opts?.pollIntervalMs ?? 150;
   const maxBytes = opts?.maxBytes;
+  const questionCount = opts?.questionCount;
 
-  let answer = extractAskAnswer(input, questionIndex, maxBytes);
+  let answer = extractAskAnswer(input, questionIndex, maxBytes, questionCount);
   if (answer !== null) return answer;
 
   const contentOnStdin = typeof input?.content === 'string' && input.content.trim().length > 0;
@@ -335,7 +355,7 @@ export async function pollForAskAnswer(
     if (remaining <= 0) break;
     const delay = Math.min(pollIntervalMs, remaining);
     await new Promise((resolve) => setTimeout(resolve, delay));
-    answer = extractAskAnswer(input, questionIndex, maxBytes);
+    answer = extractAskAnswer(input, questionIndex, maxBytes, questionCount);
     if (answer !== null) return answer;
   }
   return null;
@@ -484,6 +504,8 @@ export function pullAskAnswerFromTranscript(
       markerIndex: number;
       /** How many tool calls the planner step made: 0 for a prose match. */
       toolCallCount: number;
+      /** How many questions the matched ask carries (undefined for a prose match). */
+      questionCount?: number;
     };
 
     let latestToolMatch: AskMatch | null = null;
@@ -524,6 +546,7 @@ export function pullAskAnswerFromTranscript(
       let matchedProse = false;
       let toolCallId: string | undefined;
       let markerIndex = 0;
+      let questionCount: number | undefined;
 
       const toolCalls = Array.isArray(step.tool_calls)
         ? step.tool_calls
@@ -556,12 +579,14 @@ export function pullAskAnswerFromTranscript(
                     if (isConsumed(askAnswerKey(callId, keyIdx, callId ? undefined : idlessAnswerStep(i, toolCalls.length)))) return;
                     matchedTool = true;
                     markerIndex = idx;
+                    questionCount = questions.length;
                     if (typeof rec.id === 'string') toolCallId = rec.id;
                   }
                 });
               } else if (typeof questions === 'string' && questionMatches(questions)) {
                 matchedTool = true;
                 markerIndex = 0;
+                questionCount = 1;
                 if (typeof rec.id === 'string') toolCallId = rec.id;
               }
             }
@@ -598,7 +623,8 @@ export function pullAskAnswerFromTranscript(
           stepIndexInArray: i,
           toolCallId,
           markerIndex,
-          toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0
+          toolCallCount: Array.isArray(toolCalls) ? toolCalls.length : 0,
+          questionCount
         };
       } else if (matchedProse) {
         latestProseMatch = {
@@ -661,7 +687,7 @@ export function pullAskAnswerFromTranscript(
     // A row the recorded step named is read at the recorded question, not at the matched call's own.
     const questionIndex =
       !latestMatch.toolCallId && typeof opts.answerStepIdx === 'number' && recordedQuestion !== undefined ? recordedQuestion : latestMatch.markerIndex;
-    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex);
+    const rawAnswer = extractAskAnswer({ content: genericStep.content }, questionIndex, undefined, latestMatch.questionCount);
     return {
       raw: rawAnswer,
       questionIndex,
@@ -684,6 +710,8 @@ type ChoiceElevationContext = {
   promptHash: string;
   signature: string;
   config?: ModeChangeConfigLike;
+  /** Builds the whole deny reason from the attempt count (the run_workflow guard words the question for a script, not a subagent). */
+  reasonOverride?: (attempt: number) => string;
 };
 
 /**
@@ -692,7 +720,7 @@ type ChoiceElevationContext = {
  * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
  * unapproved.
  */
-function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
+export function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
   const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
@@ -765,14 +793,19 @@ function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDec
   approvalStore?.deny(sessionId, requestedModel, nowMs);
   // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
   // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
-  const baseReason = buildElevationReason({
-    typeName,
-    requestedModel,
-    sessionCeilingTier,
-    isOrchestrator
-  });
-  const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
-  const reason = stop ? `${baseReason} ${stop}` : baseReason;
+  let reason: string;
+  if (ctx.reasonOverride) {
+    reason = ctx.reasonOverride(count);
+  } else {
+    const baseReason = buildElevationReason({
+      typeName,
+      requestedModel,
+      sessionCeilingTier,
+      isOrchestrator
+    });
+    const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
+    reason = stop ? `${baseReason} ${stop}` : baseReason;
+  }
   return {
     decision: 'deny',
     reason,
@@ -797,7 +830,7 @@ export function evaluateAntigravitySubagentCall(
   const rawId = input.conversationId;
   const approvalStore = typeof rawId === 'string' && rawId.length > 0 && !safeSessionId(rawId) ? undefined : deps.approvals;
   const nowMs = (deps.now ?? Date.now)();
-  const sessionModel = deps.sessionModelOverride || input.modelName || 'gemini-3.8-flash-low';
+  const sessionModel = deps.sessionModelOverride || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
   const mode: JevMode = deps.mode ?? 'on';
 
   // A mode without decisions (on-demand; the hook never calls this for off) makes none: every invoke_subagent passes
@@ -818,10 +851,7 @@ export function evaluateAntigravitySubagentCall(
         reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.'
       };
     }
-    const isRecognized =
-      /^(?:flash_lite|flash-lite|flash|pro)$/i.test(reqLower) ||
-      /^(?:gemini|claude|hydrogen|argon)/i.test(reqLower);
-    if (!isRecognized) {
+    if (!isRecognisedSubagentModel(reqLower)) {
       return {
         decision: 'deny',
         reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`
@@ -830,7 +860,7 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // 2. Orchestrator omitted/inherit rule
-  const isOrchestrator = isOrchestratorModel(sessionModel);
+  const isOrchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
   let effectiveTier: string;
 
   if (!isExplicit || !requestedModel) {
@@ -840,7 +870,7 @@ export function evaluateAntigravitySubagentCall(
         reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
       };
     }
-    effectiveTier = rankToTierName(subagentCeilingRank(sessionModel));
+    effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
   } else {
     effectiveTier = requestedModel;
   }
@@ -882,7 +912,7 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // 4. Ceiling / Elevation
-  const sessionCeilingRank = subagentCeilingRank(sessionModel);
+  const sessionCeilingRank = subagentCeilingRank(sessionModel, isOrchestrator);
   const sessionCeilingTier = rankToTierName(sessionCeilingRank);
   const requestedRank = modelTierRank(requestedModel);
 
@@ -1166,7 +1196,8 @@ export function flushPendingServed(
   logFn: (entry: Record<string, unknown>) => void,
   homedir = jevHomeDir(),
   nowMs = Date.now(),
-  clock: () => number = Date.now
+  clock: () => number = Date.now,
+  lockWaitMs = PENDING_SERVED_LOCK_WAIT_MS
 ): void {
   if (!sessionId) return;
   const file = pendingServedFile(sessionsDir, sessionId);
@@ -1260,7 +1291,7 @@ export function flushPendingServed(
           // logging is best-effort
         }
       },
-      { waitMs: PENDING_SERVED_LOCK_WAIT_MS }
+      { waitMs: lockWaitMs }
     );
   } catch {
     // fail-open
@@ -1291,9 +1322,9 @@ export function askAnswerKey(toolCallId: string | undefined, questionIndex: numb
 export async function pollForAskAnswers(
   input: AntigravityHookInput | undefined,
   questionIndexes: number[],
-  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number }
+  opts?: { maxWaitMs?: number; pollIntervalMs?: number; maxBytes?: number; questionCount?: number }
 ): Promise<Array<string | null>> {
-  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes));
+  const readAll = (): Array<string | null> => questionIndexes.map((i) => extractAskAnswer(input, i, opts?.maxBytes, opts?.questionCount));
   const anyAnswer = (list: Array<string | null>) => list.some((a) => a !== null);
 
   let answers = readAll();
@@ -1315,15 +1346,24 @@ export async function pollForAskAnswers(
   return answers;
 }
 
-export type AntigravitySessionModelSource = 'hook' | ActiveModelSource;
+/**
+ * Where a telemetry row's session model came from: `hook` (the model the hook input reported), `session-record` (the
+ * stored record's sticky session model, the Orchestrator planner, kept for a turn that reported another id), or the
+ * quota view's own source.
+ */
+export type AntigravitySessionModelSource = 'hook' | 'session-record' | ActiveModelSource;
 
 export function resolveAntigravitySessionModel(
   inputModelName?: string | null,
-  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null
+  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null,
+  /** The id the turn itself reported. When it differs from `inputModelName`, that one is the stored sticky model, not raw hook input. */
+  turnModel?: string | null
 ): { sessionModel: string | null; sessionModelSource: AntigravitySessionModelSource | null } {
   const hookModel = typeof inputModelName === 'string' ? inputModelName.trim() : '';
   if (hookModel.length > 0) {
-    return { sessionModel: hookModel, sessionModelSource: 'hook' };
+    const reported = typeof turnModel === 'string' ? turnModel.trim() : '';
+    const sticky = reported.length > 0 && reported !== hookModel;
+    return { sessionModel: hookModel, sessionModelSource: sticky ? 'session-record' : 'hook' };
   }
   const quotaModel = typeof quotaView?.active_model === 'string' ? quotaView.active_model.trim() : '';
   if (quotaModel.length > 0) {
@@ -1529,7 +1569,8 @@ export function claimTurnRecommendation(
 export function commitAntigravityTurn(
   sessionsDir: string,
   sessionId: string | undefined | null,
-  state: AntigravityTurnState
+  state: AntigravityTurnState,
+  lockWaitMs = TURN_LOCK_WAIT_MS
 ): PendingRecommendationCall[] {
   if (!sessionId) return [];
   const lock = turnLock(sessionsDir, sessionId);
@@ -1552,7 +1593,7 @@ export function commitAntigravityTurn(
       () => {
         // lock busy: written unlocked below
       },
-      { waitMs: TURN_LOCK_WAIT_MS }
+      { waitMs: lockWaitMs }
     );
     if (taken) return taken;
   } catch {
@@ -1569,6 +1610,8 @@ export type AntigravityTelemetryInput =
       kind: 'pre_invocation';
       conversationId?: string | null;
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
       lastUserInput?: string | null;
       /** Absent on the row of a mode without routing advice (on-demand): no recommendation fields are written. */
@@ -1583,6 +1626,8 @@ export type AntigravityTelemetryInput =
       kind: 'agent_call';
       conversationId?: string | null;
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource' | 'strategy' | 'active'> | null;
       lastUserInput?: string | null;
       toolName?: string;
@@ -1609,6 +1654,8 @@ export type AntigravityTelemetryInput =
       conversationId?: string | null;
       /** The session model from the hook input (PostToolUse, or the hook that flushed a backfill); absent when not known. */
       inputModelName?: string | null;
+      /** The id the turn ran on when it differs from `inputModelName` (the sticky session model); written as `turnModel`. */
+      turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
       childConversationId?: string | null;
       requestedModel?: string | null;
@@ -1616,11 +1663,17 @@ export type AntigravityTelemetryInput =
       backfilled?: boolean;
     };
 
+/** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
+function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
+  const t = typeof turnModel === 'string' ? turnModel.trim() : '';
+  return t.length > 0 && t !== sessionModel ? { turnModel: t } : {};
+}
+
 export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
 
   if (params.kind === 'pre_invocation') {
-    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
     const cleaned = cleanUserInput(params.lastUserInput || '');
     const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
     const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
@@ -1633,6 +1686,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       ...(params.taskHash ? { taskHash: params.taskHash } : {}),
       sessionModel,
       sessionModelSource,
+      ...turnModelField(sessionModel, params.turnModel),
       ...(params.recommendedSubagent ? { recommendedSubagent: params.recommendedSubagent } : {}),
       ...(params.recommendedTier ? { recommendedTier: params.recommendedTier, modelRecommended: params.recommendedTier } : {}),
       ...(params.effort ? { effort: params.effort } : {}),
@@ -1664,7 +1718,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
   }
 
   if (params.kind === 'subagent_served') {
-    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
     return {
       harness: 'antigravity',
       toolOrHook: 'PostToolUse',
@@ -1672,6 +1726,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
       sessionId: params.conversationId ?? null,
       sessionModel,
       sessionModelSource,
+      ...turnModelField(sessionModel, params.turnModel),
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,
@@ -1679,7 +1734,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     };
   }
 
-  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
   const cleaned = cleanUserInput(params.lastUserInput || '');
   const currentTurn = cleaned.length > 0 ? turnId(cleaned) : undefined;
   const matchedRecommendedTier =
@@ -1725,6 +1780,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     ...(subagentType ? { taskSummary: `subagent: ${subagentType}` } : {}),
     sessionModel,
     sessionModelSource,
+    ...turnModelField(sessionModel, params.turnModel),
     ...(matchedRecommendedTier
       ? { modelRecommended: matchedRecommendedTier, recommendedTier: matchedRecommendedTier }
       : {}),
@@ -1736,6 +1792,8 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     decision: params.decision.decision,
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
     ...(downgrade ? { downgrade } : {}),
+    // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
+    ...antigravityCostFields(requestedModel, sessionModel),
     ...(quotaStrategy ? { quotaStrategy } : {})
   };
 }

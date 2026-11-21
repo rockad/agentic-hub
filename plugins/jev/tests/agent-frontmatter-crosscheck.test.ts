@@ -1,7 +1,7 @@
 /**
  * The agent definition reader is cross-checked against Claude Code's own frontmatter pipeline (its block regex,
  * Bun.YAML.parse, then its quoting fallback): wherever the plugin's strict reader and that pipeline disagree on
- * `name`, `model` or `effort`, the field is unreadable and the guard asks, instead of reading "no model" where Claude
+ * `name`, `model` or `effort`, the field is unreadable and the guard stops the call (deny with guidance; dialog mode asks), instead of reading "no model" where Claude
  * Code reads `opus`. The inputs are cognitive-engine's (packages/jev/tests: agent-frontmatter-differential,
  * agent-frontmatter, agent-name-matching, agent-lookup-consistency, agent-definition-root), adapted to this plugin's
  * API. Cases where the reference's own stricter reader goes further than Claude Code are listed in
@@ -59,23 +59,23 @@ describe('the three shapes Claude Code reads as opus and the strict reader read 
       expect(def.found).toBe(true);
       expect(def.unreadable).toBeDefined();
     });
-    it(`${name}: Workflow agent(p, {agentType}) asks (no model was set in the script)`, async () => {
+    it(`${name}: Workflow agent(p, {agentType}) is denied (no model was set in the script)`, async () => {
       setup();
       put(projectAgents(), 'x.md', text);
-      expect(await workflowVerdict('x')).toBe('ask');
+      expect(await workflowVerdict('x')).toBe('deny');
     });
-    it(`${name}: the Agent tool asks, never denies`, async () => {
+    it(`${name}: the Agent tool denies with guidance, never asks`, async () => {
       setup();
       put(projectAgents(), 'x.md', text);
-      expect(await agentVerdict('x')).toBe('ask');
+      expect(await agentVerdict('x')).toBe('deny');
     });
   }
 
-  it('a flow mapping with no model in it reads model none (both agree); the name it hides is unreadable, so the lookup still asks', async () => {
+  it('a flow mapping with no model in it reads model none (both agree); the name it hides is unreadable, so the lookup still denies', async () => {
     setup();
     put(projectAgents(), 'x.md', '---\n{name: x}\n---\nbody\n');
     expect(parseFrontmatter('---\n{name: x}\n---\n')).toEqual({ name: UNREADABLE, model: NONE, effort: NONE });
-    expect(await agentVerdict('x')).toBe('ask');
+    expect(await agentVerdict('x')).toBe('deny');
   });
 
   it('a tab-only indented model (no sibling key) is unreadable too', () => {
@@ -100,8 +100,8 @@ describe('a hidden second claimant makes the lookup ambiguous', () => {
 
       expect(def.found).toBe(true);
       expect(def.unreadable).toBeDefined();
-      expect(await workflowVerdict('helper')).toBe('ask');
-      expect(await agentVerdict('helper')).toBe('ask');
+      expect(await workflowVerdict('helper')).toBe('deny');
+      expect(await agentVerdict('helper')).toBe('deny');
     });
   }
 
@@ -191,12 +191,12 @@ describe('frontmatter whose model cannot be established is unreadable (reference
     it(`unreadable: ${name}`, () => expect(model(text)).toEqual(UNREADABLE));
   }
 
-  it('every one of them asks through the Agent guard, never "no model"', async () => {
+  it('every one of them is denied through the Agent guard, never "no model"', async () => {
     setup();
     for (const [name, text] of unreadable) {
       put(projectAgents(), 'q.md', text);
       const verdict = await agentVerdict('q');
-      expect({ name, verdict }).toEqual({ name, verdict: 'ask' });
+      expect({ name, verdict }).toEqual({ name, verdict: 'deny' });
     }
   });
 
@@ -205,7 +205,7 @@ describe('frontmatter whose model cannot be established is unreadable (reference
     for (const [name, text] of unreadable) {
       put(projectAgents(), 'q.md', text);
       const verdict = await workflowVerdict('q');
-      expect({ name, verdict }).toEqual({ name, verdict: 'ask' });
+      expect({ name, verdict }).toEqual({ name, verdict: 'deny' });
     }
   });
 });
@@ -333,7 +333,7 @@ describe('definitions are found by their declared name (reference agent-name-mat
 
     expect(def.found).toBe(true);
     expect(def.unreadable).toBeDefined();
-    expect(await agentVerdict('helper')).toBe('ask');
+    expect(await agentVerdict('helper')).toBe('deny');
   });
 
   it('a file with another file name but the right name is the definition; quoted names match; subdirectories are scanned', () => {
@@ -460,7 +460,7 @@ describe('the first definition found decides (reference agent-frontmatter.test.t
     setup();
     put(projectAgents(), 'q.md', fm('{model: opus}'));
     put(userAgents(), 'q.md', fm('model: haiku'));
-    expect(await agentVerdict('q')).toBe('ask');
+    expect(await agentVerdict('q')).toBe('deny');
   });
 });
 
@@ -483,35 +483,35 @@ describe('a subdirectory definition cannot shadow the root definition (reference
 
     expect(def.unreadable).toContain(rootFile);
     expect(def.unreadable).toContain(subFile);
-    expect(await agentVerdict('x', sub())).toBe('ask');
+    expect(await agentVerdict('x', sub())).toBe('deny');
   });
 
   it('root haiku, subdirectory opus; two levels down; a nearer definition with no model against a root one that has one', async () => {
     arrange();
     define(r.project, 'x', 'haiku');
     define(sub(), 'x', 'opus');
-    expect(await agentVerdict('x', sub())).toBe('ask');
+    expect(await agentVerdict('x', sub())).toBe('deny');
     define(r.project, 'x', 'opus');
     define(sub(), 'x', 'haiku');
-    expect(await agentVerdict('x', deep())).toBe('ask');
+    expect(await agentVerdict('x', deep())).toBe('deny');
     define(sub(), 'x', null);
-    expect(await agentVerdict('x', sub())).toBe('ask');
+    expect(await agentVerdict('x', sub())).toBe('deny');
   });
 
-  it('a nearer unreadable frontmatter against a root definition asks', async () => {
+  it('a nearer unreadable frontmatter against a root definition is denied', async () => {
     arrange();
     define(r.project, 'x', 'haiku');
     put(path.join(sub(), '.claude', 'agents'), 'x.md', '---\n{model: haiku}\n---\n');
-    expect(await agentVerdict('x', sub())).toBe('ask');
+    expect(await agentVerdict('x', sub())).toBe('deny');
   });
 
-  it('CLAUDE_PROJECT_DIR set: the root definition is found from a deep cwd, and a conflicting deep one asks', async () => {
+  it('CLAUDE_PROJECT_DIR set: the root definition is found from a deep cwd, and a conflicting deep one is denied', async () => {
     arrange();
     process.env.CLAUDE_PROJECT_DIR = r.project;
     define(r.project, 'x', 'opus');
     expect(readAgentDefinition('x', deep())).toEqual({ found: true, model: 'opus' });
     define(deep(), 'x', 'haiku');
-    expect(await agentVerdict('x', deep())).toBe('ask');
+    expect(await agentVerdict('x', deep())).toBe('deny');
   });
 
   it('definitions that agree (same model; case; inherit versus none) are not a conflict', () => {

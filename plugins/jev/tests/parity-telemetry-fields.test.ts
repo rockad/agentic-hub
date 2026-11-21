@@ -76,7 +76,7 @@ describe('PreToolUse record', () => {
 
     const event = telemetryEvent(log[0]);
 
-    expect(keys(event)).toEqual(['decision', 'harness', 'modelRecommended', 'modelUsed', 'modelUsedSource', 'requestedModel', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(keys(event)).toEqual(['costEstimate', 'costRatio', 'costWeightsVersion', 'decision', 'harness', 'modelRecommended', 'modelUsed', 'modelUsedSource', 'requestedModel', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
     expect(event.modelUsedSource).toBe('requested');
     expect([event.modelUsed, event.modelRecommended, event.turn, event.tierRecommended]).toEqual(['sonnet', 'sonnet', advice.turn, 'flash']);
   });

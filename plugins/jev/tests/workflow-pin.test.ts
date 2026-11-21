@@ -119,13 +119,14 @@ describe('pins and the PostToolUse drift check', () => {
     expect([fs.statSync(r.pins).mode & 0o777, fs.statSync(path.join(r.pins, pins[0])).mode & 0o777]).toEqual([0o700, 0o600]);
   });
 
-  it('a dialog (ask) is pinned too; a deny is not (the call never runs)', async () => {
-    r = rig();
+  it('a dialog (ask, dialog mode) is pinned too; a deny is not (the call never runs)', async () => {
+    r = rig({ env: { JEV_ELEVATION: 'dialog' } });
     const f = script('wf.js', UNPROVABLE);
     await onPreToolUse(wf({ scriptPath: f }, r), r.d);
     const pin = JSON.parse(fs.readFileSync(path.join(r.pins, fs.readdirSync(r.pins)[0]), 'utf8'));
     expect(pin.decision).toBe('ask');
 
+    r.d.env = {}; // the default (choice) mode: a deny
     const g = script('bad.js', BAD);
     expect(out(await onPreToolUse(wf({ scriptPath: g }, r, {}, 'toolu_deny'), r.d)).permissionDecision).toBe('deny');
     expect(fs.readdirSync(r.pins)).toHaveLength(1);

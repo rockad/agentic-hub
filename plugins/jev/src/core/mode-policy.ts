@@ -48,6 +48,11 @@ export function modeBehaviour(mode: JevMode | string | null | undefined): ModeBe
   return OFF;
 }
 
+/** True when the mode is `off`, which is also what an unknown value is. Compare nothing to the literal `'off'` outside this file. */
+export function isModeOff(mode: JevMode | string | null | undefined): boolean {
+  return modeBehaviour(mode) === OFF;
+}
+
 /** One quota pool as the notice needs it. */
 export interface LowQuotaPool {
   /** Human label of the pool, from {@link quotaPoolLabel} or the harness's own (for example "Argon"). */

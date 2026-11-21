@@ -82,7 +82,6 @@ def test_hello_handle_mode_checks_the_handle(env):
         f"{CARD_CLAUDE}/nobody~aaaaaaa7": "unknown_handle",
         "not a handle": "unknown_handle",
         H_AGY: "wrong_card",  # a Claude key cannot take an antigravity@ handle
-        f"{CARD_CLAUDE}/gone~aaaaaaa9": "session_ended",
     }
     for handle, code in cases.items():
         result = c.call(env.keys.claude, "a2a_hello", {"handle": handle})
@@ -93,6 +92,10 @@ def test_hello_handle_mode_checks_the_handle(env):
     assert ok.data["handle"] == H_CLAUDE and ok.data["card"] == CARD_CLAUDE and ok.data["bound"] is True
     assert ok.data["writes_enabled"] is True and ok.data["server_version"] == "0.1.0"
     assert ok.data["pending"] == 0 and ok.data["held_for_review"] == 0
+    # Z17: an ended handle is not refused any more: `a2a_hello` revives it (was `session_ended`).
+    revived = c.call(env.keys.claude, "a2a_hello", {"handle": f"{CARD_CLAUDE}/gone~aaaaaaa9"})
+    assert revived.is_error is False and revived.data["handle"] == f"{CARD_CLAUDE}/gone~aaaaaaa9"
+    assert {r.handle: r.ended_at for r in env.session_rows()}[f"{CARD_CLAUDE}/gone~aaaaaaa9"] is None
 
 
 def test_hello_needs_exactly_one_of_handle_and_name(env):
@@ -113,14 +116,14 @@ def test_hello_name_mode_registers_a_session_with_a_server_built_handle(env):
     assert [(r.handle, r.card_id, r.harness_session_id, r.ended_at) for r in rows] == [
         (hello.data["handle"], CARD_CLAUDE, c.session_id, None)
     ]
-    audit = env.audit_rows("registration")
+    audit = env.audit_rows("session_registered")
     assert [(r.subject, r.detail_json["card_id"], r.actor) for r in audit] == [
         (hello.data["handle"], CARD_CLAUDE, env.keys.ids["claude"])
     ]
     # Idempotent: the same Mcp-Session-Id gives the same handle and no second row.
     again = c.call(env.keys.claude, "a2a_hello", {"name": "another name"})
     assert again.data["handle"] == hello.data["handle"]
-    assert len(env.session_rows()) == 1 and len(env.audit_rows("registration")) == 1
+    assert len(env.session_rows()) == 1 and len(env.audit_rows("session_registered")) == 1
     # And it is bound: identity-bound tools work with no handle given.
     assert c.call(env.keys.claude, "a2a_inbox").is_error is False
 
@@ -202,14 +205,14 @@ def test_agy_unknown_conversation_registers_on_its_first_call(env):
     assert not first.is_error, first.text
     (row,) = env.session_rows()
     assert (row.handle, row.card_id, row.harness_session_id) == (f"{CARD_AGY}/9b4e7a02~9b4e7a02", CARD_AGY, conv)
-    (logged,) = env.audit_rows("registration")
+    (logged,) = env.audit_rows("session_registered")
     assert (logged.subject, logged.actor) == (row.handle, env.keys.ids["agy"])
     # A second call and a restart find the same row; the binding is durable.
     c.call(env.keys.agy, "a2a_inbox", meta=agy_meta(conv))
     again = env.client(env.app())
     again.initialize(env.keys.agy)
     assert again.call(env.keys.agy, "a2a_hello", {"name": "ignored"}, meta=agy_meta(conv)).data["handle"] == row.handle
-    assert len(env.session_rows()) == 1 and len(env.audit_rows("registration")) == 1
+    assert len(env.session_rows()) == 1 and len(env.audit_rows("session_registered")) == 1
 
 
 def test_agy_two_conversations_in_one_mcp_session_stay_apart(env):
@@ -263,13 +266,16 @@ def test_agy_malformed_conversation_ids_are_not_identity(env):
     assert env.session_rows() == []
 
 
-def test_agy_ended_session_is_refused_not_revived(env):
+def test_agy_ended_session_is_revived_by_its_next_call(env):
+    """Z17: a resumed conversation brings its ended session back, same handle (was `session_ended`)."""
     conv = str(uuid.uuid4())
     env.add_session(H_AGY, harness_session_id=conv, ended=True)
     c = env.client()
     c.initialize(env.keys.agy)
     result = c.call(env.keys.agy, "a2a_inbox", meta=agy_meta(conv))
-    assert result.is_error and result.data["error"] == "session_ended"
+    assert result.is_error is False
+    (row,) = env.session_rows()
+    assert row.handle == H_AGY and row.ended_at is None
 
 
 def test_a_conversation_id_of_another_card_is_never_matched(env):
@@ -727,4 +733,4 @@ def test_a_handle_held_by_another_session_is_refused_never_suffixed(env):
     c.initialize(env.keys.agy)
     result = c.call(env.keys.agy, "a2a_inbox", meta=agy_meta("9b4e7a02-aaaa-4bbb-8ccc-ddddeeeeffff"))
     assert result.is_error and result.data["error"] == "handle_collision"
-    assert len(env.session_rows()) == 1 and env.audit_rows("registration") == []
+    assert len(env.session_rows()) == 1 and env.audit_rows("session_registered") == []

@@ -15,7 +15,7 @@ Labels: **spec** is written in `server-api.md`. **[design]** is a choice S1-OBS 
 
 S1-STORE owns the `audit` table and the migration. S1-OBS added no table and no migration. S1-STATE (decision Z6, 2026-11-15) added the writer that puts a row on a database transaction, and no table.
 
-- The writer (`AuditLog`) builds validated rows. `AuditStore` in `coordination/audit/protocol.py` is the one-method interface `append_audit(row)`; `coordination.audit.sql.SqlAuditStore` implements it over the `audit` table, in its own transaction, for the events that do not ride on a task write (registration, wake sent, key lifecycle, a guess-counter trip).
+- The writer (`AuditLog`) builds validated rows. `AuditStore` in `coordination/audit/protocol.py` is the one-method interface `append_audit(row)`; `coordination.audit.sql.SqlAuditStore` implements it over the `audit` table, in its own transaction, for the events that do not ride on a task write (session lifecycle, wake sent, key lifecycle, a guess-counter trip).
 - **The transaction-joining variant [design, chosen by S1-STATE]:** `coordination.audit.sql.insert_audit(tx, row)` writes one row on a connection or session the caller already holds, and `SqlAuditStore.append_audit_in(tx, row)` (the `TransactionalAuditStore` protocol) is the same call as a method. It opens and closes no transaction of its own. There is no unit-of-work object and no `AuditLog` bound to a transaction: the writer only builds rows (`AuditLog.state_transition_row`, `hold_entered_row`, `hold_released_row`, `hold_denied_row`, which write nothing), and the store writes them.
 - **Who writes a transition's row:** `CoordTaskStore.transition(..., audit=builder)` and `CoordTaskStore.create(..., audit_rows=...)` (`store/task_store.py`). One database transaction holds the version compare-and-swap, the task row, the `task_index` change and the audit rows. If any of them fails, all of them roll back. The service layer (`coordination/service/service.py`) is the only caller that passes rows.
 - The creation of a task is a transition from nothing: its row has `from_state` null and is written in the creating transaction. A follow-up message that changes no state writes no `state_transition` row. A transition that also enters or leaves a hold writes a second row in the same transaction (`hold_entered`, `hold_released` or `hold_denied`, actor the human at the admin socket for the last two).
@@ -30,7 +30,7 @@ The plan's S1-OBS acceptance line has two halves.
 | end-to-end half (S1-STATE, Z6) | the transition and its audit row commit in one transaction, against the real state machine and the Postgres test container: a failed audit insert leaves the task state, version and index unchanged and no row; a normal transition leaves exactly one row naming the actor | `tests/test_audit.py`: `test_transition_and_its_audit_row_commit_together_against_postgres` (replaces the skipped placeholder of the same name), `test_a_forced_audit_insert_failure_rolls_back_state_version_and_index_with_no_row` (a real database error from the INSERT), `test_an_audit_insert_that_raises_anything_leaves_nothing_behind`, `test_a_failed_audit_insert_on_creation_leaves_no_task_version_or_index_row`, `test_sql_audit_store_appends_alone_and_inside_a_transaction`; the audit chain per task is also checked after every step of the random-sequence property test, `tests/test_service_property.py` | tested against Postgres, see the S1-STATE report for the run |
 
 - The end-to-end half is an exit test of S1-STATE (decision Z6, 2026-11-15; see its acceptance list in `master-plan.md`), built on the `audit` table S1-STORE created. It closes a gap in how the acceptance list was assigned, not a defect found in S1-OBS. S1-SEC and S1-GATE depend on it.
-- Not covered by this guarantee: events that do not ride on a task write are appended by `SqlAuditStore.append_audit` in their own transaction. A crash between such an event's cause (for example a registration) and its row can lose the row. Those events are not state transitions, and no stream has claimed an atomic guarantee for them.
+- Not covered by this guarantee: events that do not ride on a task write are appended by `SqlAuditStore.append_audit` in their own transaction. A crash between such an event's cause (for example a session registration) and its row can lose the row. Those events are not state transitions, and no stream has claimed an atomic guarantee for them.
 
 ## 3. Event types
 
@@ -42,7 +42,10 @@ Only `handle_probe_limited` and its two fields are fixed by the spec. The other 
 | `key_rotated` | admin caller | key id | `key_id`, `new_key_id` |
 | `key_revoked` | admin caller | key id | `key_id` |
 | `auth_failure_sampled` | `system` | none | `count`, `window_s`, `window_started_at` |
-| `registration` | the registering key | handle | `card_id` |
+| `session_registered` (Z17; was `registration`) | the registering key | handle | `card_id`, `via`, `revived` |
+| `session_ended` (Z17) | the ending key, or `system` for `idle_ttl` | handle | `via` |
+| `session_rebound` (Z17) | the key of the `a2a_hello` that took the handle | handle | `from_binding`, `to_binding` |
+| `alias_added` (Z17) | the registering key | handle | `alias` |
 | `wake_sent` | `system` | handle | `pending_n` |
 | `hold_entered` | the sending key | task id | `origin` |
 | `hold_released` | the releasing human | task id | none |
@@ -52,6 +55,21 @@ Only `handle_probe_limited` and its two fields are fixed by the spec. The other 
 | `handle_probe_limited` (spec) | the limited key | key id | `key_id`, `window_count` (spec) |
 
 State names are the A2A 1.0.1 enum names plus `QUARANTINED`; `TASK_STATE_AUTH_REQUIRED` is refused. `from_state` is `null` for the row that records a task's creation [design].
+
+### 3.1 Session lifecycle events (S1-ID, decision Z17)
+
+Added 2026-11-18 on branch `feat/coordination-id`. Written by `IdentityService` through the same `AuditLog` writer, in their own transaction (section 2, "Not covered by this guarantee"). A failed write is logged (the error type only) and never undoes the action. Each event is written exactly once per action [verified in `tests/test_identity.py`].
+
+| event | written when | `via` | other detail |
+| --- | --- | --- | --- |
+| `session_registered` | a session is created, or an ended one is revived | `hook` (`POST /sessions`), `hello` (`a2a_hello`, in `name` mode or by revival through `a2a_hello(handle)`), `auto_agy` (an unseen agy conversation, or an ended one resuming on a tool call) | `card_id`; `revived` is `false` for a new session and `true` for one that came back. A refresh of a live session writes nothing. A concurrent revive writes one row |
+| `session_ended` | the call that ends a session; a repeat of an end on an ended session writes nothing | `explicit` (`POST /sessions/end`, actor the key id), `idle_ttl` (`IdentityService.end_idle`, actor `system`) | none |
+| `session_rebound` | `a2a_hello(H)` from one `Mcp-Session-Id` takes `H` from another live one of the same card; one row per binding dropped | none | `from_binding` and `to_binding`: the first 8 characters of the old and new `Mcp-Session-Id`, never the full value |
+| `alias_added` | a later name becomes an alias of a handle (at most 8 per handle); a repeat, the handle's own name and a ninth alias write nothing | none | `alias` |
+
+- `via` is checked by the writer: an unknown value is a `ValueError` before any row is built.
+- Renamed: `registration` (S1-OBS) became `session_registered`, and gained `via` and `revived`. Only `IdentityService` wrote the old name and nothing reads it, so no alias or backward-compatible writer was kept; rows already stored under the old name stay as they are. The enum, the writer method (`AuditLog.registration` became `AuditLog.session_registered`) and the tests that named it were updated.
+- `session_rebound` is the only event here that names a transport binding. The two ids are a prefix of a server-issued id and are not credentials; the usual row rules (section 4) apply to every field.
 
 ## 4. What a row may hold
 

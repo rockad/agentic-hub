@@ -1278,7 +1278,7 @@ The dry run is rerun at go-live on the live channel files, and its report is com
 ### 5.5 Where a git worktree per stream is needed
 - Needed, because streams edit overlapping server files at the same time: S1-STORE, S1-STATE, S1-AUTH, S1-ADMIN, S1-A2A, S1-MCP, S1-ID, S1-WAKE, S2-LISTEN, S3-LIMITS, GL-IMPORT, LT-SRV. Hot spots are `app.py` (router mounting), `pyproject.toml`, `uv.lock` and the migration directory; S1-SCAF pre-creates one module and one migration file per stream to keep them apart **[proposal]**.
 - Worktree needed as well: S1-OBS (its redaction middleware edits `app.py`).
-- Not needed: S0 spikes (scratch, outside git), S1-CLAUDE and S1-AGY (own files under `bin/` and `hooks/`), S1-DOC, S1-TEST skeleton.
+- Not needed by file overlap: S0 spikes (scratch, outside git), S1-DOC, S1-TEST skeleton. S1-CLAUDE and S1-AGY own separate files under `bin/`, `hooks/` and `agy/` but both edit `docs/specs/server-api.md` (11.1 and 11.2), and were built in worktrees (W5b, 2026-11-21).
 - LT-ADP is a separate repository with its own process.
 - Branch naming **[proposal]**: topic branches `feat/coordination-<stream>` off `feat/coordination`, merged by the user's word. [AGENTS.md][agentsmd] says no commits or branch switches unless the user asks, so this needs the user's go at S1.
 
@@ -2072,7 +2072,7 @@ Folded on 2026-11-15 from the S1 plan drafts (`s1-remaining-plan.md` sections 2 
 - **W4a**: AUTH and STATE, two worktrees in parallel (different modules). They start only after STORE is merged.
 - **W4b**: MCP, A2A and ADMIN, one stream at a time (decision Z8), in the order MCP, A2A, ADMIN (confirmed, Z8 and Z10 to Z12), on stacked branches merged in order (Z11), run by another account or Antigravity (Z10). It starts after AUTH and STATE are merged (the independent check of STATE comes first). Verification: full for MCP and A2A, lean for ADMIN (Z12).
 - **W5a**: ID, then WAKE (sequential, same session surface).
-- **W5b**: CLAUDE and AGY in parallel (own files, no worktree). The user's live checks follow.
+- **W5b**: CLAUDE and AGY in parallel (own files). They were built in their own worktrees and branches anyway (`feat/coordination-claude`, `feat/coordination-agy`), because both also edit `docs/specs/server-api.md` and the shared checkout is not safe to build in; the second PR to merge needs a rebase of that file. The user's live checks follow.
 - **W6**: INST, DOC, the SEC suite and the full TEST; then the opus review of SEC; then GATE.
 - **W7** (S2): DEPLOY, TS, ONBOARD, WAKE and GATE, sequential, the user on <storage-host> and the workstations.
 - **W8** (S2 and S3 build): S2-LISTEN and the per-key part of S3-LIMITS, then S3-FUZZ against the 8121 listener before the S2 gate; then S3-CARD and S3-PEER after the S2 gate. No route on <storage-host>.

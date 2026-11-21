@@ -138,8 +138,9 @@ export function autoHealAgyMcp(mode: string, deps: AutoHealDeps = {}): void {
  *   - turn-state commit: lock wait PREFLIGHT_LOCK_WAIT_MS = 250 ms
  *   - quota-state, session-model and config reads: local files, no wait
  *   - the Orchestrator annotation marker (one stat and a read of at most ORCHESTRATOR_ANNOTATION_MAX_BYTES, a few hundred
- *     microseconds): read once per conversation (the record then keeps the flag), skipped when under
- *     PREFLIGHT_MIN_MARKER_MS of the deadline is left
+ *     microseconds): once an Orchestrator conversation is detected the record keeps the flag, so it is not read again;
+ *     a plain conversation on a planner or executor family id looks for the marker on each call (one failed lookup, a stat
+ *     on a missing file); skipped when under PREFLIGHT_MIN_MARKER_MS of the deadline is left
  * Asynchronous waits (each clipped to what is left of the deadline):
  *   - the decisions router call: PREFLIGHT_ROUTER_MS (1500 ms), mode `on` only
  *   - the Recall memory read: PREFLIGHT_MEMORY_MS (1000 ms; two 800 ms fetches before), mode `on` only, started at the

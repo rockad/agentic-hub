@@ -527,7 +527,7 @@ async function main() {
     // an execution turn reports the worker id (`turn_model` in the record, and `inputModelName` in the telemetry rows,
     // still carry the model the turn ran on).
     let sessionModel = trimmedModel;
-    // Whether the conversation is an Orchestrator one: the 1.5.14 annotation marker (read once, then kept in the record) or a legacy id.
+    // Whether the conversation is an Orchestrator one: the 1.5.14 annotation marker (kept in the record once detected; a plain conversation on a family id looks for it on each call) or a legacy id.
     let sessionOrchestrator = false;
     if (trimmedModel && input.conversationId) {
       const recorded = recordAntigravitySession(input.conversationId, trimmedModel, undefined, undefined, {

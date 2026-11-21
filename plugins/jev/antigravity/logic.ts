@@ -1346,15 +1346,24 @@ export async function pollForAskAnswers(
   return answers;
 }
 
-export type AntigravitySessionModelSource = 'hook' | ActiveModelSource;
+/**
+ * Where a telemetry row's session model came from: `hook` (the model the hook input reported), `session-record` (the
+ * stored record's sticky session model, the Orchestrator planner, kept for a turn that reported another id), or the
+ * quota view's own source.
+ */
+export type AntigravitySessionModelSource = 'hook' | 'session-record' | ActiveModelSource;
 
 export function resolveAntigravitySessionModel(
   inputModelName?: string | null,
-  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null
+  quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null,
+  /** The id the turn itself reported. When it differs from `inputModelName`, that one is the stored sticky model, not raw hook input. */
+  turnModel?: string | null
 ): { sessionModel: string | null; sessionModelSource: AntigravitySessionModelSource | null } {
   const hookModel = typeof inputModelName === 'string' ? inputModelName.trim() : '';
   if (hookModel.length > 0) {
-    return { sessionModel: hookModel, sessionModelSource: 'hook' };
+    const reported = typeof turnModel === 'string' ? turnModel.trim() : '';
+    const sticky = reported.length > 0 && reported !== hookModel;
+    return { sessionModel: hookModel, sessionModelSource: sticky ? 'session-record' : 'hook' };
   }
   const quotaModel = typeof quotaView?.active_model === 'string' ? quotaView.active_model.trim() : '';
   if (quotaModel.length > 0) {
@@ -1664,7 +1673,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
 
   if (params.kind === 'pre_invocation') {
-    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
     const cleaned = cleanUserInput(params.lastUserInput || '');
     const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
     const quotaStrategy = params.quotaStrategy ?? params.quotaView?.active?.strategy ?? params.quotaView?.strategy;
@@ -1709,7 +1718,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
   }
 
   if (params.kind === 'subagent_served') {
-    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+    const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
     return {
       harness: 'antigravity',
       toolOrHook: 'PostToolUse',
@@ -1725,7 +1734,7 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     };
   }
 
-  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView);
+  const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);
   const cleaned = cleanUserInput(params.lastUserInput || '');
   const currentTurn = cleaned.length > 0 ? turnId(cleaned) : undefined;
   const matchedRecommendedTier =

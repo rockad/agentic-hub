@@ -1,7 +1,9 @@
 /**
  * The one place a model id or alias is placed in a tier (2.3.18). `costTierOf` (cost-estimate.ts), `modelTierRank`
- * (governance.ts), `normalizeTier` (config.ts) and the Antigravity subagent-model check (`isRecognisedSubagentModel`)
- * are all views of {@link modelTierOf}, so they cannot drift apart.
+ * (governance.ts) and `normalizeTier` (config.ts) are views of {@link modelTierOf}. The Antigravity subagent-model check
+ * (`isRecognisedSubagentModel`) is a separate prefix pattern (the aliases, or an id starting with a known family name),
+ * not built on the table; a test (tests/model-tier-table.test.ts) asserts that it agrees with {@link modelTierOf} over the
+ * whole Antigravity 1.5.14 catalogue, which is what keeps the two together, so a new family has to be added to both.
  *
  * The table:
  *

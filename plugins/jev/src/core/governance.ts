@@ -412,13 +412,14 @@ export function resolveAntigravityTurnModel(
  *
  * Antigravity 1.5.14 reports, on every Orchestrator turn, the model the user chose (planner ids neon, argon, opus, carbon;
  * executor ids hydrogen, sonnet) and those are also plain `/model` choices, so the id cannot tell the two apart. The
- * conversation is an Orchestrator one when the annotation marker says so (read once, then kept as `orchestrator: true` in the
- * record), or when the id is a legacy Orchestrator one (`gemini-pro-orchestrator-g1-pro`, `gemini-flash-worker-agy`).
+ * conversation is an Orchestrator one when the annotation marker says so (read while the record does not say yet, then kept
+ * as `orchestrator: true` in the record), or when the id is a legacy Orchestrator one (`gemini-pro-orchestrator-g1-pro`, `gemini-flash-worker-agy`).
  *
  * The Orchestrator identity is sticky: the planner family sets the session model (the variant, ceiling and explicit-Model
  * rule follow it), and an executor-family id keeps the stored planner as the session model and is recorded only as
  * `turn_model`. A `/model` switch to an id outside both families is a real switch: it replaces the stored model and clears the
- * Orchestrator flag (`orchestrator: false` stops the marker being read again for this conversation). With no marker an
+ * Orchestrator flag (`orchestrator: false` stops the marker being read again for this conversation within the record's
+ * lifetime, ANTIGRAVITY_SESSION_TTL_SEC; after it expires the marker is read again). With no marker an
  * executor-family id is a plain model, except a legacy worker id after a legacy planner (the 2.3.18 rule).
  */
 export function recordAntigravitySession(
@@ -457,7 +458,9 @@ export function recordAntigravitySession(
   const { model: trimmedModel, turnModel } = stickyModelFor(reported, prev, markerOrchestrator);
 
   const orchestrator = markerOrchestrator || isOrchestratorModel(trimmedModel) || isOrchestratorModel(reported);
-  // A switch out of an Orchestrator conversation is remembered, so the marker (still on disk) does not bring it back.
+  // A switch out of an Orchestrator conversation is remembered, so the marker (still on disk) does not bring it back within
+  // the session record's lifetime (ANTIGRAVITY_SESSION_TTL_SEC). Once the record has expired the marker is read again and
+  // turns the Orchestrator back on; that fails toward the stricter Orchestrator rules, and is kept on purpose.
   const cleared = !inFamilies && prev?.orchestrator === true;
 
   try {
@@ -603,7 +606,9 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
     if (rec && nowSec - rec.updated_at <= ANTIGRAVITY_SESSION_TTL_SEC) {
       activeModel = rec.model;
       activeModelSource = 'latest';
-      recordOrchestrator = rec.orchestrator === true;
+      // latest.json is last-writer-wins across conversations, so its Orchestrator flag speaks for the current conversation
+      // only when it was written by that conversation; otherwise it is unknown (not Orchestrator; the legacy id rules apply).
+      recordOrchestrator = rec.orchestrator === true && safeId !== null && rec.conversationId === safeId;
     }
   }
 

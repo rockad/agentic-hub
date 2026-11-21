@@ -22,6 +22,7 @@ import {
 } from '../src/core/governance.ts';
 import {
   hasOrchestratorMarker,
+  hasPlanExecuteField,
   orchestratorAnnotationPath,
   ORCHESTRATOR_ANNOTATION_MAX_BYTES
 } from '../src/core/orchestrator-marker.ts';
@@ -75,6 +76,35 @@ describe('the annotation marker', () => {
       writeMarker(t);
       expect(hasOrchestratorMarker(artifactDir(), CONV)).toBe(false);
     }
+  });
+
+  it('the field is matched as a field: the single-line real form and the multi-line form are detected', () => {
+    for (const t of [
+      'title:"notes" plan_execute:true',
+      'title:"say \\"hi\\"" plan_execute:true other:1',
+      'title: "a"\nplan_execute: true\nx: 1\n',
+      'meta { plan_execute: true }',
+      'a:1, plan_execute:true'
+    ]) {
+      writeMarker(t);
+      expect(hasOrchestratorMarker(artifactDir(), CONV)).toBe(true);
+    }
+  });
+
+  it('a title that mentions plan_execute:true is not the field, even when the real field is false', () => {
+    for (const t of [
+      'title: "notes on plan_execute:true flag" plan_execute:false',
+      'title:"notes on plan_execute:true flag" plan_execute:false\n',
+      "title: 'plan_execute: true' plan_execute:false",
+      'title: "say \\"x\\" plan_execute:true" plan_execute:false',
+      'title: "plan_execute:true"',
+      '# plan_execute: true\nplan_execute: false'
+    ]) {
+      writeMarker(t);
+      expect(hasOrchestratorMarker(artifactDir(), CONV)).toBe(false);
+    }
+    expect(hasPlanExecuteField('title:"a plan_execute:true b" plan_execute:false')).toBe(false);
+    expect(hasPlanExecuteField('title:"a plan_execute:true b" plan_execute:true')).toBe(true);
   });
 
   it('unreadable (a directory in its place) is not detected, and nothing throws', () => {
@@ -347,6 +377,28 @@ describe('quota view: variant and pools follow the stored planner', () => {
     expect(hydrogen.pools).toBeUndefined();
   });
 
+  it('latest.json speaks for the Orchestrator flag only for the conversation that wrote it', async () => {
+    const OTHER = '00000000-0000-4000-8000-0000000000b2';
+    writeMarker();
+    record('gemini-4-neon-high', now);
+    expect(rec('latest.json').conversationId).toBe(CONV);
+    // the conversation's own record is gone (missing or expired): latest.json is the fallback
+    fs.rmSync(path.join(sessions, `${CONV}.model.json`));
+    const own = await readQuotaView({ conversationId: CONV, overrideSessionsDir: sessions });
+    expect(own.activeModelSource).toBe('latest');
+    expect(own.orchestrator).toBe(true);
+    expect(own.pools).toBeDefined();
+    // another conversation (no record of its own) must not inherit the flag; the model still comes from latest.json
+    const other = await readQuotaView({ conversationId: OTHER, overrideSessionsDir: sessions });
+    expect(other.activeModelSource).toBe('latest');
+    expect(other.active_model).toBe('gemini-4-neon-high');
+    expect(other.orchestrator).toBeUndefined();
+    expect(other.pools).toBeUndefined();
+    // no conversation id at all: unknown, not Orchestrator
+    const none = await readQuotaView({ overrideSessionsDir: sessions });
+    expect(none.orchestrator).toBeUndefined();
+  });
+
   it('legacy planner ids keep their pools with no flag', async () => {
     record('gemini-pro-orchestrator-g1-pro', now, { withDir: false });
     const view = await readQuotaView({ conversationId: CONV, overrideSessionsDir: sessions });
@@ -474,6 +526,9 @@ describe('PreToolUse hook (a process, a temp HOME)', () => {
     expect(planner.turnModel).toBeUndefined();
     expect(executor.sessionModel).toBe('gemini-4-neon-high');
     expect(executor.turnModel).toBe('gemini-4-hydrogen-medium');
+    // the planner turn reported its own id; the executor turn's session model is the stored sticky planner
+    expect(planner.sessionModelSource).toBe('hook');
+    expect(executor.sessionModelSource).toBe('session-record');
     expect(executor.costRatio).not.toBeNull();
     // the decisions log agrees
     const log = fs
@@ -602,6 +657,8 @@ describe('PreInvocation pre-flight (in process, a temp HOME)', () => {
     expect(prompts[0].turnModel).toBeUndefined();
     expect(prompts[1].sessionModel).toBe('gemini-4-argon-high');
     expect(prompts[1].turnModel).toBe('gemini-4-hydrogen-medium');
+    expect(prompts[0].sessionModelSource).toBe('hook');
+    expect(prompts[1].sessionModelSource).toBe('session-record');
   });
 
   it('under the deadline budget the marker is not read (the legacy rules apply) and the skip is logged', async () => {

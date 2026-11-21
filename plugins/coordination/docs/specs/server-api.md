@@ -1659,6 +1659,15 @@ The inbox instruction for agy [D27]:
 
 Nothing in this configuration launches, drives or wraps agy [D9, DDR-003].
 
+As built (S1-AGY, 2026-11-21; full text in [agy-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/agy-hooks.md)). The scripts are `bin/a2a-agy-session` and `bin/a2a-agy-pending`, the entries are the shipped fragment `agy/hooks.fragment.json`, and where this section's sketches differ the as-built form is:
+
+- The `injectSteps` item is the nested object `{"systemMessage": {"systemMessage": "<text>"}}`, the form SP2 and SP3 ran; the plain-string form in the sketches above was never tried and is [unverified].
+- The hook entries are the flat form agy reads (SP2 and SP3): one named group (`a2a-coord`) with an array per event and the handler objects directly in it, not the `{"hooks": [...]}` wrapper of the `hooks.json` sketch above, which stays [unverified].
+- `a2a-agy-pending` prints `{}` on every failure and when nothing is to be announced (Y6, 11.0); `a2a-agy-session` prints nothing on failure. Both exit 0 always.
+- `a2a-agy-session` reads the count with `GET /wake/pending?session=<conversationId>` without `announce`, so the first `PreInvocation` still announces it; it sends no name hint, so the handle is `antigravity@<machine>/<c8>~<c8>` (Z17).
+- The scripts use no `jq`: they parse the two input keys and the server's reply with `grep` and `sed`, validate every extracted value, and pass the key to `curl` on stdin. Client settings are `A2A_SERVER_URL`, `A2A_AGY_KEY_FILE`, `A2A_AGY_CARD`, `A2A_AGY_CONNECT_TIMEOUT` and `A2A_AGY_MAX_TIME` [design: names and defaults].
+- The `.a2a-optout` marker is looked for under the first `workspacePaths` entry [design]; it is still a [proposal].
+
 ## 12. Spikes and open points
 
 ### 12.1 Spikes needed before the matching feature is relied on

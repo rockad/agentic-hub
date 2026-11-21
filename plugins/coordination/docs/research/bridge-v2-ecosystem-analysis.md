@@ -1,4 +1,10 @@
-﻿Multi-Agent Bridge v2: Ecosystem Analysis & Live-Env Evaluation Spec
+﻿> [!WARNING]
+> **SUPERSEDED / HISTORICAL RESEARCH (2026-11-21)**
+> This research document predates the implementation of the PostgreSQL-backed A2A Coordination Server (`plugins/coordination`).
+> - **Violations & Deprecations:** Proposals recommending `mcp_agent_mail_rust` (`DDR-001`), `bompus/swarmail` (`DDR-001`/`DDR-004`), `opencode acp`, or tmux-driving wrappers (`antigravity-for-claude-code`, `agy-staff`, `phone-a-friend`, etc.) violate active repository decisions and symmetric agency (`DDR-003`).
+> - **Canonical Implementation:** See [`plugins/coordination/docs/plans/master-tasklist.md`](../plans/master-tasklist.md) and [`cognitive-engine/docs/backlog.md`](https://github.com/rockad/cognitive-engine/blob/main/docs/backlog.md#L77-L80).
+
+Multi-Agent Bridge v2: Ecosystem Analysis & Live-Env Evaluation Spec
 Target Project: rockad/cognitive-engine (~/projects/cognitive-engine)
 Participating Harnesses: Claude Code ⇄ Google Antigravity CLI (agy)
 Baseline Reference: ~/.agents/antigravity-claude-bridge-cognitive-engine.md & docs/handoffs/antigravity-claude-bridge.md (Bridge v1, built 2026-10-29/30)

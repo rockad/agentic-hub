@@ -1,4 +1,10 @@
-﻿________________
+﻿> [!WARNING]
+> **SUPERSEDED / HISTORICAL RESEARCH (2026-11-21)**
+> This research document predates the implementation of the PostgreSQL-backed A2A Coordination Server (`plugins/coordination`).
+> - **Violations & Deprecations:** Proposals recommending `mcp_agent_mail_rust` (`DDR-001`), `bompus/swarmail` (`DDR-001`/`DDR-004`), `opencode acp`, or tmux-driving wrappers violate active repository decisions and symmetric agency (`DDR-003`).
+> - **Canonical Implementation:** See [`plugins/coordination/docs/plans/master-tasklist.md`](../plans/master-tasklist.md) and [`cognitive-engine/docs/backlog.md`](https://github.com/rockad/cognitive-engine/blob/main/docs/backlog.md#L77-L80).
+
+________________
 
 
 project: rockad/cognitive-engine author_agent: gemini-workspace target_agent: all host_origin: cloud timestamp_utc: 2026-11-03T15:15:00Z git_branch: docs/bridge-v2-update git_head_sha: N/A status: ready-for-pickup supersedes: bridge-v2-ecosystem-analysis.md

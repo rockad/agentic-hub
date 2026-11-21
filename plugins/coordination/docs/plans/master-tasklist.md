@@ -111,7 +111,7 @@ W5a: parked 2026-11-18 (quota), paused 2026-11-19 for the jev work, resumed 2026
    - Full suite re-run by the main session with Docker on `e8acb73`: **1368 passed, 3 skipped** [verified].
    - The WAKE built defaults were decided on 2026-11-20 (decision Z19, master-plan 12.3): eight kept as built; the anti-loop streak is derived from the `wakes` rows (m0004 `set_hash`), built as `7946398` (the build agent stopped on quota; the main session finished it, fixed two tests, re-ran the suite and the latency gate: wake p99 111.5 ms [verified]). The built rule (three newest rows in a row) differs from the round's sketch (a count in the last hour); the user kept the built rule on 2026-11-21 and Z19 now states it.
 3. Merged on the user's word (2026-11-21): #85 (S1-ID) as `56c254d`, then #86 (S1-WAKE, GitHub retargeted it to `main` itself when #85 merged; all three CI checks passed) as `0322a9b` [verified].
-4. Then the end-to-end wake test with the user (paused at step 1). Helper scripts are in `~/.config/a2a-coord/` (`register.sh`, `listen.sh`, `pending.sh`, `send.sh`, `probe.sh`). The flow: register a session, park a listener, the peer sends a task that is held for review, the user releases it, and the listener wakes with the count.
+4. End-to-end wake test **passed on 2026-11-21** [verified, user and main session]: new 7-day keys (`local-harness` on `handrun@local`, `remote-peer` `e2e-peer`), both probes `404`; `register.sh` `201`; the peer's task was held (`INPUT_REQUIRED` to the sender) and the parked listener stayed parked for the 51 s it was held; the user's `review release` answered the listener `200` with body `1` within the release command's run (log: `/wake/listen` 200 at 15:42:38.290Z, `review.release` logged at .293Z after commit); `pending.sh` confirmed the wake. Original plan of the test: Helper scripts are in `~/.config/a2a-coord/` (`register.sh`, `listen.sh`, `pending.sh`, `send.sh`, `probe.sh`). The flow: register a session, park a listener, the peer sends a task that is held for review, the user releases it, and the listener wakes with the count.
 
 W5a brief (started 2026-11-17; the brief for the account or Antigravity session that runs it):
 
@@ -153,7 +153,7 @@ W5a brief (started 2026-11-17; the brief for the account or Antigravity session 
 - Quota: the main session parks agent work when the weekly quota nears its limit (user rule, section 0.1 item 9); see section 0.7.
 - Not started: TEST-skel (planned beside W3a, not done), S1-CLAUDE to S1-GATE (W5b and W6), all of S2, S3, go-live and the later tracks.
 - Docs updates go straight to `main` from 2026-11-15 (user decision, no PR for docs); stream code goes one PR per stream, merged on the user's word.
-- Open for the user: the end-to-end wake test (new keys first), A8c in agy, the attended tests, the W5b and W6 live checks, the secret files at W6, and the user-only items in section 4.7. The two S1-ID [design] questions were decided as Z17 and the sweep placement as Z18 (master-plan 12.3); no design question is open for the agents.
+- Open for the user: A8c in agy, the attended tests, the W5b and W6 live checks, the secret files at W6, and the user-only items in section 4.7. The two S1-ID [design] questions were decided as Z17 and the sweep placement as Z18 (master-plan 12.3); no design question is open for the agents.
 
 ## 2. Milestones
 

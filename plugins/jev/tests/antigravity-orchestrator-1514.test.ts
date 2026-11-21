@@ -18,10 +18,12 @@ import {
   isOrchestratorModel,
   subagentCeilingRank,
   clampTierToSessionCeiling,
-  readQuotaView
+  readQuotaView,
+  logOrchestratorMarkerUnavailable
 } from '../src/core/governance.ts';
 import {
   hasOrchestratorMarker,
+  readOrchestratorMarker,
   hasPlanExecuteField,
   orchestratorAnnotationPath,
   ORCHESTRATOR_ANNOTATION_MAX_BYTES
@@ -127,6 +129,27 @@ describe('the annotation marker', () => {
     for (const id of [undefined, '', '../x', 'a/b', '..', 'a..b', '.hidden', `${CONV}\0`]) {
       expect(hasOrchestratorMarker(artifactDir(), id)).toBe(false);
     }
+  });
+
+  it('readOrchestratorMarker returns detailed status for each condition', () => {
+    writeMarker('plan_execute:true');
+    expect(readOrchestratorMarker(artifactDir(), CONV)).toEqual({ kind: 'found' });
+
+    fs.rmSync(annotationFile(), { force: true });
+    expect(readOrchestratorMarker(artifactDir(), CONV)).toEqual({ kind: 'missing' });
+    writeMarker('plan_execute:false');
+    expect(readOrchestratorMarker(artifactDir(), CONV)).toEqual({ kind: 'missing' });
+
+    fs.rmSync(annotationFile(), { recursive: true, force: true });
+    fs.mkdirSync(annotationFile(), { recursive: true });
+    expect(readOrchestratorMarker(artifactDir(), CONV).kind).toBe('unreadable');
+
+    fs.rmSync(annotationFile(), { recursive: true, force: true });
+    writeMarker('plan_execute:true\n' + 'x'.repeat(ORCHESTRATOR_ANNOTATION_MAX_BYTES));
+    expect(readOrchestratorMarker(artifactDir(), CONV).kind).toBe('oversized');
+
+    expect(readOrchestratorMarker('relative/path', CONV)).toEqual({ kind: 'invalid-path' });
+    expect(readOrchestratorMarker(artifactDir(), '../bad')).toEqual({ kind: 'invalid-path' });
   });
 });
 
@@ -669,5 +692,124 @@ describe('PreInvocation pre-flight (in process, a temp HOME)', () => {
     expect(stored().orchestrator).toBeUndefined();
     const log = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
     expect(fs.readFileSync(log, 'utf8')).toContain('orchestrator-marker');
+  });
+
+  it('logs orchestrator_marker_unavailable for missing (deduped to once per conversation)', async () => {
+    setMode('on-demand');
+    // Plain Neon turn with no marker file on disk
+    await pre('gemini-4-neon-high', 'plain turn 1');
+    await Bun.sleep(50);
+
+    const rows1 = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable');
+    expect(rows1.length).toBe(1);
+    expect(rows1[0].reason).toBe('missing');
+    expect(rows1[0].model).toBe('gemini-4-neon-high');
+    expect(rows1[0].sessionId).toBe(CONV);
+
+    // Second turn in same conversation on executor family id (plain Hydrogen): missing should NOT be logged again
+    await pre('gemini-4-hydrogen-medium', 'plain turn 2');
+    await Bun.sleep(50);
+
+    const rows2 = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable');
+    expect(rows2.length).toBe(1); // Still 1: deduped!
+
+    // Another conversation CONV2 should log its own missing once
+    const CONV2 = '00000000-0000-4000-8000-0000000000b2';
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV2, artifactDirectoryPath: artifactDir(CONV2), modelName: 'gemini-4-neon-high', lastUserInput: 'other conv' }),
+      { autoHeal: () => {}, callJev: async () => null }
+    );
+    await Bun.sleep(50);
+
+    const rows3 = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable' && r.sessionId === CONV2);
+    expect(rows3.length).toBe(1);
+    expect(rows3[0].reason).toBe('missing');
+  });
+
+  it('logs orchestrator_marker_unavailable for each error reason (unreadable, oversized, invalid-path, deadline)', async () => {
+    setMode('on-demand');
+
+    // 1. unreadable
+    const CONV_UNREADABLE = '00000000-0000-4000-8000-0000000000c1';
+    fs.mkdirSync(annotationFile(CONV_UNREADABLE), { recursive: true });
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV_UNREADABLE, artifactDirectoryPath: artifactDir(CONV_UNREADABLE), modelName: 'gemini-4-neon-high', lastUserInput: 'test' }),
+      { autoHeal: () => {}, callJev: async () => null }
+    );
+    await Bun.sleep(50);
+    const unreadableRows = telemetryRows().filter((r) => r.sessionId === CONV_UNREADABLE && r.event === 'orchestrator_marker_unavailable');
+    expect(unreadableRows.length).toBe(1);
+    expect(unreadableRows[0].reason).toBe('unreadable');
+
+    // Repeated unreadable is logged each time
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV_UNREADABLE, artifactDirectoryPath: artifactDir(CONV_UNREADABLE), modelName: 'gemini-4-neon-high', lastUserInput: 'test 2' }),
+      { autoHeal: () => {}, callJev: async () => null }
+    );
+    await Bun.sleep(50);
+    const unreadableRows2 = telemetryRows().filter((r) => r.sessionId === CONV_UNREADABLE && r.event === 'orchestrator_marker_unavailable');
+    expect(unreadableRows2.length).toBe(2);
+
+    // 2. oversized
+    const CONV_OVERSIZED = '00000000-0000-4000-8000-0000000000c2';
+    writeMarker('plan_execute:true\n' + 'x'.repeat(ORCHESTRATOR_ANNOTATION_MAX_BYTES), CONV_OVERSIZED);
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV_OVERSIZED, artifactDirectoryPath: artifactDir(CONV_OVERSIZED), modelName: 'gemini-4-argon-medium', lastUserInput: 'test' }),
+      { autoHeal: () => {}, callJev: async () => null }
+    );
+    await Bun.sleep(50);
+    const oversizedRows = telemetryRows().filter((r) => r.sessionId === CONV_OVERSIZED && r.event === 'orchestrator_marker_unavailable');
+    expect(oversizedRows.length).toBe(1);
+    expect(oversizedRows[0].reason).toBe('oversized');
+
+    // 3. invalid-path
+    const CONV_BADPATH = '00000000-0000-4000-8000-0000000000c3';
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV_BADPATH, artifactDirectoryPath: 'relative/invalid/path', modelName: 'claude-opus-5-5-high', lastUserInput: 'test' }),
+      { autoHeal: () => {}, callJev: async () => null }
+    );
+    await Bun.sleep(50);
+    const badPathRows = telemetryRows().filter((r) => r.sessionId === CONV_BADPATH && r.event === 'orchestrator_marker_unavailable');
+    expect(badPathRows.length).toBe(1);
+    expect(badPathRows[0].reason).toBe('invalid-path');
+
+    // 4. deadline
+    const CONV_DEADLINE = '00000000-0000-4000-8000-0000000000c4';
+    await runPreflight(
+      JSON.stringify({ conversationId: CONV_DEADLINE, artifactDirectoryPath: artifactDir(CONV_DEADLINE), modelName: 'gemini-4-neon-high', lastUserInput: 'test' }),
+      { autoHeal: () => {}, callJev: async () => null, deadlineMs: 20 }
+    );
+    await Bun.sleep(50);
+    const deadlineRows = telemetryRows().filter((r) => r.sessionId === CONV_DEADLINE && r.event === 'orchestrator_marker_unavailable');
+    expect(deadlineRows.length).toBe(1);
+    expect(deadlineRows[0].reason).toBe('deadline');
+  });
+
+  it('mode off logs no orchestrator_marker_unavailable row', async () => {
+    setMode('off');
+    await pre('gemini-4-neon-high', 'turn in mode off');
+    await Bun.sleep(50);
+    const rows = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable');
+    expect(rows.length).toBe(0);
+  });
+
+  it('non-family models do not check the marker and log no orchestrator_marker_unavailable row', async () => {
+    setMode('on-demand');
+    await pre('gemini-3.8-flash-high', 'turn with non-family model');
+    await Bun.sleep(50);
+    const rows = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable');
+    expect(rows.length).toBe(0);
+  });
+
+  it('once orchestrator: true is established, subsequent turns do not log unavailable', async () => {
+    setMode('on-demand');
+    writeMarker();
+    await pre('gemini-4-neon-high', 'planner turn with marker present');
+    await Bun.sleep(50);
+    fs.rmSync(annotationFile(), { force: true });
+    await pre('gemini-4-hydrogen-medium', 'executor turn with marker absent');
+    await Bun.sleep(50);
+    const rows = telemetryRows().filter((r) => r.event === 'orchestrator_marker_unavailable');
+    expect(rows.length).toBe(0);
   });
 });

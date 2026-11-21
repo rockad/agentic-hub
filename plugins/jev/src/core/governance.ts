@@ -20,7 +20,13 @@ import { safeSessionId } from '../../claude/logic.js';
 export { safeSessionId };
 import { readRegularFile } from '../../claude/safe-read.js';
 import { modelFamilyOf, modelRankOf, type ModelFamily } from './model-tier.js';
-import { hasOrchestratorMarker } from './orchestrator-marker.js';
+import {
+  hasOrchestratorMarker,
+  readOrchestratorMarker,
+  type OrchestratorMarkerResult
+} from './orchestrator-marker.js';
+import { readJevModeSync } from './config.js';
+import { logJevTelemetry } from './telemetry.js';
 
 // ── Antigravity quota view ───────────────────────────────────────────────────
 /** Default quota-state path, fixed when the module loads. `readQuotaView` resolves `quotaStateFile()` at call time instead. */
@@ -162,6 +168,11 @@ export type AntigravitySessionRecord = {
    * again. Absent for a plain conversation and for a legacy-id Orchestrator conversation (the id says it there).
    */
   orchestrator?: boolean;
+  /**
+   * Written as `true` once a marker miss of reason "missing" has been logged for this conversation, so subsequent turns
+   * of the plain conversation do not log duplicate "missing" telemetry rows.
+   */
+  marker_missing_logged?: boolean;
 };
 
 export type ActiveModelSource = 'argument' | 'env' | 'latest' | 'quota-state';
@@ -364,7 +375,7 @@ function readFreshSessionRecord(
   safeId: string,
   sessionsDir: string,
   currentSec: number
-): { model: string; orchestrator: boolean | undefined } | null {
+): { model: string; orchestrator: boolean | undefined; marker_missing_logged?: boolean } | null {
   try {
     const read = readRegularFile(path.join(sessionsDir, `${safeId}.model.json`), 64 * 1024);
     if (read.kind !== 'ok') return null;
@@ -377,7 +388,8 @@ function readFreshSessionRecord(
     ) {
       return {
         model: parsed.model.trim(),
-        orchestrator: typeof parsed.orchestrator === 'boolean' ? parsed.orchestrator : undefined
+        orchestrator: typeof parsed.orchestrator === 'boolean' ? parsed.orchestrator : undefined,
+        marker_missing_logged: typeof parsed.marker_missing_logged === 'boolean' ? parsed.marker_missing_logged : undefined
       };
     }
   } catch {
@@ -404,6 +416,34 @@ export function resolveAntigravityTurnModel(
   const currentSec = typeof nowSec === 'number' ? nowSec : Math.floor(Date.now() / 1000);
   const prev = readFreshSessionRecord(safeId, overrideSessionsDir || getAntigravitySessionsDir(), currentSec);
   return stickyModelFor(r, prev, prev?.orchestrator === true);
+}
+
+export type OrchestratorMarkerUnavailableReason =
+  | 'missing'
+  | 'unreadable'
+  | 'oversized'
+  | 'invalid-path'
+  | 'deadline';
+
+export function logOrchestratorMarkerUnavailable(
+  reason: OrchestratorMarkerUnavailableReason,
+  model: string,
+  safeId: string
+): Promise<void> {
+  try {
+    const mode = readJevModeSync('antigravity');
+    if (!modeBehaviour(mode).telemetry) return Promise.resolve();
+    return logJevTelemetry({
+      harness: 'antigravity',
+      toolOrHook: 'orchestrator-marker',
+      event: 'orchestrator_marker_unavailable',
+      reason,
+      model,
+      sessionId: safeId
+    });
+  } catch {
+    return Promise.resolve();
+  }
 }
 
 /**
@@ -447,11 +487,29 @@ export function recordAntigravitySession(
 
   // Only an id of a role family can belong to an Orchestrator conversation, so only then is the flag or the marker consulted.
   let markerOrchestrator = false;
+  let markerMissingLogged = prev?.marker_missing_logged === true;
   if (inFamilies) {
     if (prev?.orchestrator === true) {
       markerOrchestrator = true;
-    } else if (prev?.orchestrator !== false && opts?.readMarker !== false) {
-      markerOrchestrator = hasOrchestratorMarker(opts?.artifactDirectoryPath, safeId);
+    } else if (prev?.orchestrator !== false) {
+      if (opts?.readMarker === false) {
+        void logOrchestratorMarkerUnavailable('deadline', reported, safeId);
+      } else {
+        const marker = readOrchestratorMarker(opts?.artifactDirectoryPath, safeId);
+        if (marker.kind === 'found') {
+          markerOrchestrator = true;
+        } else {
+          const reason = marker.kind;
+          if (reason === 'missing') {
+            if (!markerMissingLogged) {
+              void logOrchestratorMarkerUnavailable('missing', reported, safeId);
+              markerMissingLogged = true;
+            }
+          } else {
+            void logOrchestratorMarkerUnavailable(reason, reported, safeId);
+          }
+        }
+      }
     }
   }
 
@@ -471,7 +529,8 @@ export function recordAntigravitySession(
       model: trimmedModel,
       updated_at: currentSec,
       ...(turnModel ? { turn_model: turnModel } : {}),
-      ...(markerOrchestrator ? { orchestrator: true } : cleared || prev?.orchestrator === false ? { orchestrator: false } : {})
+      ...(markerOrchestrator ? { orchestrator: true } : cleared || prev?.orchestrator === false ? { orchestrator: false } : {}),
+      ...(markerMissingLogged ? { marker_missing_logged: true } : {})
     };
     const content = JSON.stringify(record, null, 2) + '\n';
 

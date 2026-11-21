@@ -11,6 +11,7 @@
  * the caller falls back to the legacy id rules.
  */
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { readRegularFile } from './safe-read.js';
 
 /** The largest annotation file that is read. Anything bigger is treated as "not detected". */
@@ -41,13 +42,54 @@ export function hasPlanExecuteField(text: string): boolean {
   return PLAN_EXECUTE_FIELD_RE.test(text.replace(QUOTED_OR_COMMENT_RE, '""'));
 }
 
+export type OrchestratorMarkerResult =
+  | { kind: 'found' }
+  | { kind: 'missing' }
+  | { kind: 'unreadable'; message?: string }
+  | { kind: 'oversized'; size: number }
+  | { kind: 'invalid-path' };
+
+/**
+ * Inspect the Antigravity 1.5.14 annotation marker. Returns a detailed result indicating whether the marker
+ * was found or why it was unavailable:
+ * - `found`: the file exists and holds `plan_execute:true`.
+ * - `missing`: the file does not exist (or has no `plan_execute:true`).
+ * - `unreadable`: the file exists but cannot be read (directory, FIFO, EACCES, read error).
+ * - `oversized`: the file exceeds ORCHESTRATOR_ANNOTATION_MAX_BYTES.
+ * - `invalid-path`: the path or conversation id is null or malformed.
+ */
+export function readOrchestratorMarker(artifactDirectoryPath: unknown, conversationId: unknown): OrchestratorMarkerResult {
+  const file = orchestratorAnnotationPath(artifactDirectoryPath, conversationId);
+  if (!file) return { kind: 'invalid-path' };
+  const read = readRegularFile(file, ORCHESTRATOR_ANNOTATION_MAX_BYTES);
+  if (read.kind === 'too-large') {
+    return { kind: 'oversized', size: read.size };
+  }
+  if (read.kind === 'not-regular') {
+    try {
+      if (!fs.existsSync(file)) return { kind: 'missing' };
+    } catch {
+      // ignore
+    }
+    return { kind: 'unreadable', message: 'not a regular file' };
+  }
+  if (read.kind === 'error') {
+    try {
+      if (!fs.existsSync(file) || read.message.includes('ENOENT')) {
+        return { kind: 'missing' };
+      }
+    } catch {
+      // ignore
+    }
+    return { kind: 'unreadable', message: read.message };
+  }
+  return hasPlanExecuteField(read.text) ? { kind: 'found' } : { kind: 'missing' };
+}
+
 /** Does the conversation's annotation file say `plan_execute:true`? Never throws. */
 export function hasOrchestratorMarker(artifactDirectoryPath: unknown, conversationId: unknown): boolean {
   try {
-    const file = orchestratorAnnotationPath(artifactDirectoryPath, conversationId);
-    if (!file) return false;
-    const read = readRegularFile(file, ORCHESTRATOR_ANNOTATION_MAX_BYTES);
-    return read.kind === 'ok' && hasPlanExecuteField(read.text);
+    return readOrchestratorMarker(artifactDirectoryPath, conversationId).kind === 'found';
   } catch {
     return false;
   }

@@ -531,7 +531,8 @@ async function main() {
     let sessionOrchestrator = false;
     if (trimmedModel && input.conversationId) {
       const recorded = recordAntigravitySession(input.conversationId, trimmedModel, undefined, undefined, {
-        artifactDirectoryPath: input.artifactDirectoryPath
+        artifactDirectoryPath: input.artifactDirectoryPath,
+        trackTelemetry
       });
       sessionModel = recorded?.model ?? trimmedModel;
       sessionOrchestrator = recorded?.orchestrator ?? false;

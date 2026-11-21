@@ -324,7 +324,10 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
           if (!readMarker) logSkipped('orchestrator-marker', 'deadline');
           const recorded = recordAntigravitySession(conversationId, modelName, undefined, undefined, {
             artifactDirectoryPath: hookInput?.artifactDirectoryPath,
-            readMarker
+            readMarker,
+            trackTelemetry: (p) => {
+              pendingTelemetry.push(p);
+            }
           });
           sessionModel = recorded?.model ?? modelName;
           sessionOrchestrator = recorded?.orchestrator ?? false;

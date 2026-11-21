@@ -348,6 +348,12 @@ export type RecordSessionOptions = {
   artifactDirectoryPath?: string;
   /** False when the caller has no time left for the marker read (the pre-flight deadline budget). Default true. */
   readMarker?: boolean;
+  /**
+   * Receives each marker-miss telemetry promise (`orchestrator_marker_unavailable`), so a caller that exits the process
+   * soon after can await them (the hook's `pendingTelemetry` flush, the pre-flight's bounded flush). Absent: the rows
+   * stay fire-and-forget (long-lived callers such as tests and servers).
+   */
+  trackTelemetry?: (p: Promise<unknown>) => void;
 };
 
 /**
@@ -485,6 +491,11 @@ export function recordAntigravitySession(
   const reportedExecutor = isExecutorFamilyModel(reported);
   const inFamilies = reportedPlanner || reportedExecutor;
 
+  // Fire-and-forget unless the caller tracks the promise to flush it before the process exits.
+  const track = (p: Promise<unknown>): void => {
+    if (opts?.trackTelemetry) opts.trackTelemetry(p);
+    else void p;
+  };
   // Only an id of a role family can belong to an Orchestrator conversation, so only then is the flag or the marker consulted.
   let markerOrchestrator = false;
   let markerMissingLogged = prev?.marker_missing_logged === true;
@@ -493,7 +504,7 @@ export function recordAntigravitySession(
       markerOrchestrator = true;
     } else if (prev?.orchestrator !== false) {
       if (opts?.readMarker === false) {
-        void logOrchestratorMarkerUnavailable('deadline', reported, safeId);
+        track(logOrchestratorMarkerUnavailable('deadline', reported, safeId));
       } else {
         const marker = readOrchestratorMarker(opts?.artifactDirectoryPath, safeId);
         if (marker.kind === 'found') {
@@ -502,11 +513,11 @@ export function recordAntigravitySession(
           const reason = marker.kind;
           if (reason === 'missing') {
             if (!markerMissingLogged) {
-              void logOrchestratorMarkerUnavailable('missing', reported, safeId);
+              track(logOrchestratorMarkerUnavailable('missing', reported, safeId));
               markerMissingLogged = true;
             }
           } else {
-            void logOrchestratorMarkerUnavailable(reason, reported, safeId);
+            track(logOrchestratorMarkerUnavailable(reason, reported, safeId));
           }
         }
       }

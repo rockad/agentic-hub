@@ -694,6 +694,47 @@ describe('PreInvocation pre-flight (in process, a temp HOME)', () => {
     expect(fs.readFileSync(log, 'utf8')).toContain('orchestrator-marker');
   });
 
+  it('hands every marker-miss telemetry promise to opts.trackTelemetry (missing once, error reasons each time, deadline), none in mode off', async () => {
+    setMode('on-demand');
+    const tracked: Promise<unknown>[] = [];
+    const trackTelemetry = (p: Promise<unknown>) => {
+      tracked.push(p);
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const opts = { artifactDirectoryPath: artifactDir(), trackTelemetry };
+
+    recordAntigravitySession(CONV, 'gemini-4-neon-high', now, homeSessions(), opts);
+    expect(tracked.length).toBe(1); // missing
+    recordAntigravitySession(CONV, 'gemini-4-neon-high', now + 1, homeSessions(), opts);
+    expect(tracked.length).toBe(1); // missing is deduped per conversation
+
+    const CONV_BIG = '00000000-0000-4000-8000-0000000000d1';
+    writeMarker('plan_execute:true\n' + 'x'.repeat(ORCHESTRATOR_ANNOTATION_MAX_BYTES), CONV_BIG);
+    recordAntigravitySession(CONV_BIG, 'gemini-4-neon-high', now, homeSessions(), { artifactDirectoryPath: artifactDir(CONV_BIG), trackTelemetry });
+    expect(tracked.length).toBe(2); // oversized
+
+    const CONV_DL = '00000000-0000-4000-8000-0000000000d2';
+    recordAntigravitySession(CONV_DL, 'gemini-4-neon-high', now, homeSessions(), { artifactDirectoryPath: artifactDir(CONV_DL), readMarker: false, trackTelemetry });
+    expect(tracked.length).toBe(3); // deadline
+    await Promise.allSettled(tracked);
+    expect(
+      telemetryRows()
+        .filter((r) => r.event === 'orchestrator_marker_unavailable')
+        .map((r) => r.reason)
+        .sort()
+    ).toEqual(['deadline', 'missing', 'oversized']);
+
+    // mode off: no row, and nothing worth awaiting
+    setMode('off');
+    clearConfigCacheForTesting();
+    const CONV_OFF = '00000000-0000-4000-8000-0000000000d3';
+    const before = telemetryRows().length;
+    const offTracked: Promise<unknown>[] = [];
+    recordAntigravitySession(CONV_OFF, 'gemini-4-neon-high', now, homeSessions(), { artifactDirectoryPath: artifactDir(CONV_OFF), trackTelemetry: (p) => offTracked.push(p) });
+    await Promise.allSettled(offTracked);
+    expect(telemetryRows().length).toBe(before);
+  });
+
   it('logs orchestrator_marker_unavailable for missing (deduped to once per conversation)', async () => {
     setMode('on-demand');
     // Plain Neon turn with no marker file on disk

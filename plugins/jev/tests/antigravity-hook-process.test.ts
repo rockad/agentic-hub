@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { writeAntigravityTurn, turnId } from '../antigravity/logic.ts';
+import { ORCHESTRATOR_ANNOTATION_MAX_BYTES } from '../src/core/orchestrator-marker.ts';
 
 const HOOK = path.join(import.meta.dir, '..', 'antigravity', 'hook.ts');
 const FIXTURE_PATH = path.join(import.meta.dir, 'fixtures', 'agy-invoke-subagent.json');
@@ -1110,5 +1111,84 @@ describe('Antigravity hook as a process in on-demand', () => {
       expect(proc.stdout.toString()).toBe('');
     }
     expect(readTelemetry().map((r) => r.decision)).toEqual(['pass', 'pass']);
+  });
+});
+
+describe('Orchestrator marker-miss telemetry survives the process exit', () => {
+  const PREFLIGHT = path.join(import.meta.dir, '..', 'antigravity', 'preflight.ts');
+  const telemetryPath = () => path.join(home, 'telemetry.jsonl');
+  const markerRows = (): Record<string, any>[] => {
+    const file = telemetryPath();
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator_marker_unavailable');
+  };
+  /** The artifact directory Antigravity passes: `annotations/` sits two levels above it. */
+  const artifactDir = (conv: string) => path.join(home, 'agy', 'brain', conv);
+  const annotation = (conv: string) => path.join(home, 'agy', 'annotations', `${conv}.pbtxt`);
+  const plannerTurn = (conv: string) => ({
+    conversationId: conv,
+    modelName: 'gemini-4-neon-high',
+    artifactDirectoryPath: artifactDir(conv),
+    lastUserInput: 'please refactor the billing module'
+  });
+
+  it('hook: a missing marker for a planner-family id leaves the row in the file after exit', () => {
+    const conv = '00000000-0000-4000-8000-00000000f001';
+    const proc = run('pre-tool-use', { ...plannerTurn(conv), toolCall: { id: 'c1', name: 'view_file', args: {} } }, { JEV_TELEMETRY_FILE: telemetryPath() });
+    expect(proc.exitCode).toBe(0);
+    const rows = markerRows().filter((r) => r.sessionId === conv);
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ reason: 'missing', model: 'gemini-4-neon-high', toolOrHook: 'orchestrator-marker' });
+  });
+
+  it('hook: an oversized marker leaves the row in the file after exit', () => {
+    const conv = '00000000-0000-4000-8000-00000000f002';
+    fs.mkdirSync(path.dirname(annotation(conv)), { recursive: true });
+    fs.writeFileSync(annotation(conv), 'plan_execute:true\n' + 'x'.repeat(ORCHESTRATOR_ANNOTATION_MAX_BYTES));
+    const proc = run('pre-tool-use', { ...plannerTurn(conv), toolCall: { id: 'c2', name: 'view_file', args: {} } }, { JEV_TELEMETRY_FILE: telemetryPath() });
+    expect(proc.exitCode).toBe(0);
+    const rows = markerRows().filter((r) => r.sessionId === conv);
+    expect(rows.length).toBe(1);
+    expect(rows[0].reason).toBe('oversized');
+  });
+
+  it('hook: mode off writes no marker row', () => {
+    fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'off' } }));
+    const conv = '00000000-0000-4000-8000-00000000f003';
+    run('pre-tool-use', { ...plannerTurn(conv), toolCall: { id: 'c3', name: 'view_file', args: {} } }, { JEV_TELEMETRY_FILE: telemetryPath() });
+    expect(markerRows()).toEqual([]);
+  });
+
+  it('pre-flight: a missing and an oversized marker leave their rows in the file after exit', () => {
+    fs.writeFileSync(path.join(home, '.config', 'jev', 'config.json'), JSON.stringify({ defaults: { mode: 'on-demand' } }));
+    const spawnPre = (input: object) =>
+      Bun.spawnSync(['bun', PREFLIGHT], {
+        stdin: new TextEncoder().encode(JSON.stringify(input)),
+        env: {
+          ...process.env,
+          HOME: home,
+          JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'),
+          JEV_TELEMETRY_FILE: telemetryPath()
+        }
+      });
+
+    const missing = '00000000-0000-4000-8000-00000000f004';
+    expect(spawnPre(plannerTurn(missing)).exitCode).toBe(0);
+    const missingRows = markerRows().filter((r) => r.sessionId === missing);
+    expect(missingRows.length).toBe(1);
+    expect(missingRows[0].reason).toBe('missing');
+
+    const oversized = '00000000-0000-4000-8000-00000000f005';
+    fs.mkdirSync(path.dirname(annotation(oversized)), { recursive: true });
+    fs.writeFileSync(annotation(oversized), 'plan_execute:true\n' + 'x'.repeat(ORCHESTRATOR_ANNOTATION_MAX_BYTES));
+    expect(spawnPre(plannerTurn(oversized)).exitCode).toBe(0);
+    const oversizedRows = markerRows().filter((r) => r.sessionId === oversized);
+    expect(oversizedRows.length).toBe(1);
+    expect(oversizedRows[0].reason).toBe('oversized');
   });
 });

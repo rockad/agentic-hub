@@ -9,6 +9,7 @@ Claude Code has a built-in todo, so this file is only the shortcut: tool names, 
 - "Blocked by": `TaskUpdate` on the original item with `addBlockedBy: ["<blocker id>"]`.
 - They are deferred. Load all four in one call: `ToolSearch` with query `select:TaskCreate,TaskUpdate,TaskList,TaskGet`.
 - Set `activeForm` on create: the spinner shows it while the item is `in_progress`.
+- Ids are sequential per list and never reused after a delete (verified 2026-11-21), and `TaskCreate` returns the id (`Task #<id> created`). So the `#<id> ` subject prefix is set by a `TaskUpdate` of `subject` right after create; do not guess the next id.
 
 ## Delegation, verified 2026-11-20
 

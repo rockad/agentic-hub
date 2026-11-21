@@ -88,7 +88,9 @@ Every task the user sees is numbered, so they can refer to it ("do 3", "drop 5")
   - `⏳` pending
   - `⛔` blocked: add `(blocked by #<id>)`
 - **Keep the order by id**, not by status, so a number never moves between replies.
-- **Subjects are imperative and short**, so a line reads as a command: `#4 🔄 Rebase PR branch onto main`. Do not put the number inside the stored subject; the id already carries it.
+- **The number is also in the stored subject**, so it shows in the harness's own task list and not only in your replies. Write it as a prefix: `#4 Rebase PR branch onto main`. The id is only known after create, so right after each create, update the subject to `#<id> <subject>` (several creates: do the updates in one parallel batch). Never put the status marker in the stored subject; the harness list shows status itself and a stored marker goes stale.
+- **Subjects are imperative and short**, so a line reads as a command. In your replies the marker goes between number and subject: `#4 🔄 Rebase PR branch onto main`.
+- **Reconcile renumbering**: when matching existing items (Step 1), fix any subject whose prefix is missing or does not match its id.
 - Refer to items by number everywhere else too: follow-ups, blockers, and the "still open" lines in the final reply (`#7 ⏳ Verify on core: waiting on the restart window`).
 
 ## Step 4: checkpoints

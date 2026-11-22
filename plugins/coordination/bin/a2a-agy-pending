@@ -1,0 +1,117 @@
+#!/bin/sh
+# a2a-agy-pending: the Antigravity PreInvocation hook of the coordination plugin (stream S1-AGY,
+# master plan 4.2, server-api.md 11.2, docs/specs/agy-hooks.md).
+#
+# It runs before every model call. It asks the coordination server how many tasks are pending for
+# this conversation and, only when the server says "announce" (the count changed, or ten minutes
+# passed), prints one injectSteps systemMessage with the count. Task text never reaches the output:
+# the output is a constant with one validated integer in it.
+#
+# Contract
+#   stdin    the hook input JSON (camelCase). Read: conversationId and the first workspacePaths entry.
+#   stdout   `{}` in every case except an announcement. An announcement is exactly
+#            {"injectSteps":[{"systemMessage":{"systemMessage":"[a2a] N pending. Call a2a_inbox."}}]}
+#            with N an integer 1 to 9999 and nothing else varying (Y5, Y6; the nested systemMessage
+#            object is the verified injectSteps shape, SP3 P1b and P4b).
+#   stderr   never written.
+#   exit     always 0, on every failure: a hook must never block or break a model call (Y6, SP3 P5).
+#
+# Environment (all optional)
+#   A2A_SERVER_URL              server base URL, default http://127.0.0.1:8120 [design: name]
+#   A2A_AGY_KEY_FILE            file that holds the local-harness API key as a literal, default
+#                               $HOME/.gemini/config/plugins/coordination/mcp_config.json (the
+#                               unmanaged mode-0600 plugin file of D24 and D34; the first a2ak_ token in it
+#                               is the key) [design: plugin name]
+#   A2A_AGY_CONNECT_TIMEOUT     curl connect timeout in seconds, default 0.2 (Y6)
+#   A2A_AGY_MAX_TIME            curl total time limit in seconds, default 2 (plan 4.2)
+#
+# The API key goes to curl on stdin (`curl -K -`), never in an argument or the environment.
+# A workspace whose root holds a file named .a2a-optout is skipped with no network call
+# [proposal, D26, Y7]. Only the first workspacePaths entry is checked [design].
+#
+# POSIX sh plus curl, grep, sed, tr, head and uname. No jq and no other runtime.
+
+exec 2>/dev/null
+LC_ALL=C
+export LC_ALL
+
+SERVER_URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
+KEY_FILE=${A2A_AGY_KEY_FILE:-${HOME:-/nonexistent}/.gemini/config/plugins/coordination/mcp_config.json}
+CONNECT_T=${A2A_AGY_CONNECT_TIMEOUT:-0.2}
+MAX_T=${A2A_AGY_MAX_TIME:-2}
+
+nothing() {
+  printf '{}\n'
+  exit 0
+}
+
+numeric() {
+  case $1 in
+    '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;;
+  esac
+  return 0
+}
+numeric "$CONNECT_T" || CONNECT_T=0.2
+numeric "$MAX_T" || MAX_T=2
+
+# A hook always gets its input on a pipe; a terminal means a person ran it by hand.
+if [ -t 0 ]; then nothing; fi
+
+# One line, at most 1 MiB. A JSON string cannot hold a bare double quote, so a quoted key token
+# below can only be a real key, never text inside a value such as lastUserInput.
+input=$(head -c 1048576 2>/dev/null | tr '\n\r\t' '   ')
+
+conv=$(printf '%s' "$input" | grep -o '"conversationId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 |
+  sed 's/^[^:]*:[[:space:]]*"\(.*\)"$/\1/')
+# The shape the server accepts for a harness session id (identity.md section 3).
+case $conv in
+  '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.:-]*) nothing ;;
+esac
+[ "${#conv}" -le 128 ] || nothing
+
+ws=$(printf '%s' "$input" | grep -o '"workspacePaths"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]*"' | head -n 1 |
+  sed 's/.*\[[[:space:]]*"\(.*\)"$/\1/')
+case $ws in
+  /*) if [ -e "$ws/.a2a-optout" ]; then nothing; fi ;;
+esac
+
+command -v curl >/dev/null 2>&1 || nothing
+case $SERVER_URL in
+  http://* | https://*) ;;
+  *) nothing ;;
+esac
+case $SERVER_URL in
+  *[!A-Za-z0-9._~:/@%-]*) nothing ;;
+esac
+
+[ -r "$KEY_FILE" ] || nothing
+key=$(head -c 65536 "$KEY_FILE" 2>/dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
+case $key in
+  a2ak_*_*_*) ;;
+  *) nothing ;;
+esac
+
+url="${SERVER_URL%/}/wake/pending?session=${conv}&announce=1"
+body=$(printf 'header = "Authorization: Bearer %s"\n' "$key" |
+  curl -q -K - --silent --fail --noproxy '*' --proto '=http,https' \
+    --connect-timeout "$CONNECT_T" --max-time "$MAX_T" --max-filesize 65536 \
+    -H 'Accept: application/json' "$url") || nothing
+key=
+
+body=$(printf '%s' "$body" | tr '\n\r\t' '   ')
+case $body in
+  *'{'*'}'*) ;;
+  *) nothing ;;
+esac
+
+announce=$(printf '%s' "$body" | grep -o '"announce"[[:space:]]*:[[:space:]]*[a-z]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+[ "$announce" = true ] || nothing
+
+n=$(printf '%s' "$body" | grep -o '"pending"[[:space:]]*:[[:space:]]*[-0-9.eE+]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+case $n in
+  '' | 0* | *[!0-9]*) nothing ;;
+esac
+[ "${#n}" -le 4 ] || nothing
+
+printf '{"injectSteps":[{"systemMessage":{"systemMessage":"[a2a] %s pending. Call a2a_inbox."}}]}\n' "$n"
+exit 0

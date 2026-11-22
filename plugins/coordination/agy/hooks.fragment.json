@@ -1,0 +1,18 @@
+{
+  "a2a-coord": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "~/.local/share/a2a-coord/current/bin/a2a-agy-session",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "~/.local/share/a2a-coord/current/bin/a2a-agy-pending",
+        "timeout": 5
+      }
+    ]
+  }
+}

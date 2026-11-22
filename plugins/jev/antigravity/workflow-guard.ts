@@ -81,6 +81,7 @@ import {
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import { antigravityCostGate, costComparison, effortIndex, type CostGateState, type CostGate } from '../src/core/cost-gate.js';
 import type { CostEffort } from '../src/core/cost-estimate.js';
+import { servedModelGuidance, subagentEnumOf } from '../src/core/served-model.js';
 import { jevHomeDir } from '../src/core/private-fs.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
 import type { JevMode } from '../src/core/config.js';
@@ -631,7 +632,8 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
         tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
         rank,
         gate,
-        effort: gate.callEffort
+        // An enum value carries its effort in what it is (see antigravityMarkerModel): no effort suffix on its marker or its approval.
+        effort: subagentEnumOf(m) === null ? gate.callEffort : undefined
       });
       return;
     }
@@ -947,11 +949,12 @@ export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts
   const tier = marker?.model ?? top.tier ?? 'pro';
   const ids = scriptIds(scripts);
   const o = CHOICE_OPTIONS;
+  const served = servedModelGuidance(top.requested ?? top.tier);
   const stop = stopRetryingText(attempt, tier, ceilingTier, 'ask_question', 'model');
   return (
-    `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}'${marker?.costNote ? ` (its most costly agent ${marker.costNote})` : ''}, and no approval covers it. ` +
+    `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}'${marker?.costNote ? ` (its most costly agent ${marker.costNote})` : ''}, and no approval covers it.${served ? ` ${served}` : ''} ` +
     `Ask the user with ask_question: one question whose text starts with '${ELEVATE_MARKER_PREFIX}${tier}]' followed by a short question naming the script (${ids}), ` +
-    `the strongest requested model and the session ceiling, with four options in this order: '${o.once}', '${o.fiveMin}', '${o.session}', '${o.no(ceilingTier)}'. ` +
+    `the strongest requested model${served ? ' (and what it is served on, as said above)' : ''} and the session ceiling, with four options in this order: '${o.once}', '${o.fiveMin}', '${o.session}', '${o.no(ceilingTier)}'. ` +
     `If the user approves, call run_workflow again unchanged; if No, change the agent(...) calls to '${ceilingTier}' (or 'flash_lite') and call it again, or do the work directly; ` +
     'do not ask in any other form.' +
     (stop ? ` ${stop}` : '')

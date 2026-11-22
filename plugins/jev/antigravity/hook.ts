@@ -52,6 +52,7 @@ import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseD
 import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
 import { antigravityCostFields } from '../src/core/cost-estimate.js';
+import { queueServedNotice } from './served-notice.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -225,6 +226,8 @@ async function main() {
       input.conversationId,
       (entry) => {
         appendDecisionLog(entry);
+        // A late backfill of a served model: queue the "served below requested" notice (mode on only).
+        if (entry.event === 'subagent_served' && entry.served_model) queueServedNotice(sessionsDir, input.conversationId, entry.requested_model, entry.served_model, mode);
         if (entry.event === 'subagent_served' && entry.child_conversation_id && entry.served_model) {
           trackTelemetry(
             logJevTelemetry(
@@ -484,6 +487,7 @@ async function main() {
           // Telemetry only for a served model that was found, as the backfill paths do; the decisions-log row above
           // stays as the audit trail for a call where nothing could be read.
           if (childConvId && servedModel) {
+            queueServedNotice(sessionsDir, conversationId, requestedModel, servedModel, mode);
             trackTelemetry(
               logJevTelemetry(
                 buildAntigravityTelemetryEvent({

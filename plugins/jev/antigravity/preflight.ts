@@ -28,6 +28,8 @@ import {
 } from '../src/shared.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { isModeOff, lowQuotaNotice, modeBehaviour, quotaPoolLabel } from '../src/core/mode-policy.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE } from '../src/core/served-model.js';
+import { queueServedNotice, servedNoticeSteps, takeServedNotices } from './served-notice.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import {
   cleanUserInput,
@@ -211,10 +213,14 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
   const remaining = () => deadlineAt - Date.now();
   const parts: string[] = [];
   let emitted = false;
+  /** Queued "served below requested" lines (mode on only), delivered once with the next injection. */
+  let servedNotices: string[] = [];
   const emit = () => {
     if (emitted) return;
     emitted = true;
-    console.log(parts.length ? JSON.stringify({ injectSteps: [{ ephemeralMessage: parts.join('\n\n') }] }) : JSON.stringify({}));
+    // The hidden directive step, then the user-visible "served below requested" lines (systemMessage with user_markdown).
+    const steps: Array<Record<string, unknown>> = [...(parts.length ? [{ ephemeralMessage: parts.join('\n\n') }] : []), ...servedNoticeSteps(servedNotices)];
+    console.log(steps.length ? JSON.stringify({ injectSteps: steps }) : JSON.stringify({}));
   };
   let activeMode: string = 'off';
   /** A step that was late or skipped; mode `off` never gets here (it writes nothing). Fail open, one row per step. */
@@ -350,6 +356,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
               } catch {
                 // fail open
               }
+              if (entry.event === 'subagent_served' && entry.served_model) queueServedNotice(sessionsDir, conversationId, entry.requested_model, entry.served_model, mode);
               if (entry.event === 'subagent_served' && entry.child_conversation_id && entry.served_model) {
                 pendingTelemetry.push(
                   logJevTelemetry(
@@ -374,6 +381,9 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
             PREFLIGHT_LOCK_WAIT_MS
           );
         }
+
+        // The "served below requested" lines queued for this conversation (mode on only): delivered now, once.
+        if (!emitted) servedNotices = takeServedNotices(sessionsDir, conversationId, mode);
 
         // 4. Read quota view with conversationId
         const quota: QuotaView = await readQuotaView({ conversationId });
@@ -432,7 +442,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
           if (isOrchestrator) {
             modeDirective = `[JEV MODE: ON - ORCHESTRATOR ENFORCEMENT]
 ${sessionHint}
-- Orchestrator Role & Ceiling: Subagents have a hard flash ceiling (subagentCeilingRank = 2). Set Model explicitly on invoke_subagent ("flash" or "flash_lite", never "inherit"). Pro elevation requires [jev-elevate:pro].
+- Orchestrator Role & Ceiling: Subagents have a hard flash ceiling (subagentCeilingRank = 2). Set Model explicitly on invoke_subagent ("flash" or "flash_lite", never "inherit"). ${PRO_SERVED_SENTENCE} Do not request "pro" to get a pro-class model: it passes only when it costs no more than the session, else it needs the [jev-elevate:...] question. ${ARGON_HOW_SENTENCE}
 - Planner Phase: For single-stream refactors <= 6 files, plan and execute in-context. For multi-stream refactors, call jev_batch_dispatch(kind, needsEdit, conversationId) to decompose and delegate in parallel.
 - Executor Phase: Offload mechanical transformations, boilerplate, and summaries to jev_execute_free ($0.00 cost). Always verify changes with jev_judge.`;
           } else {
@@ -441,7 +451,7 @@ ${sessionHint}
 1. Pre-Flight Decision Flow: Run jev_select_model or jev_dispatch before starting complex tasks or spawning subagents. Pass conversationId="${safeId || ''}".
 2. Free-Tier Offloading: Offload boilerplate generation, markdown formatting, draft summaries, and commit messages to jev_execute_free at $0.00 cost (0 Gemini quota).
 3. Quality Gates: Verify diffs and multi-step changes with jev_judge before completing turns.
-4. Subagent Tier Guard: Use flash_lite or flash for subagents. Pro tier (pro) strictly requires explicit manual user approval via ask_question.
+4. Subagent Tier Guard: Use flash_lite or flash for subagents. ${PRO_SERVED_SENTENCE} Do not request "pro" to get a pro-class model: it needs ask_question approval only when it costs more than the session. ${ARGON_HOW_SENTENCE}
 5. Post-Approval Transition Gate: Upon plan approval or /grill-me completion, IMMEDIATELY call jev_batch_dispatch and manage_subagents(Action: "list") to decompose and delegate parallel subagents. Do NOT edit >=3 files sequentially in the main orchestrator context without dispatching first.`;
           }
 

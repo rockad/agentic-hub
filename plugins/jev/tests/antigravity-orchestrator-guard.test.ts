@@ -14,6 +14,7 @@ import {
 import {
   evaluateAntigravitySubagentCall,
   buildElevationReason,
+  ORCHESTRATOR_EXPLICIT_MODEL_REASON,
   type AntigravityHookInput
 } from '../antigravity/logic.ts';
 import {
@@ -235,7 +236,11 @@ describe('Item 4: invoke_subagent guard order', () => {
     // 1st attempt: deny
     const r1 = evaluateAntigravitySubagentCall(inputOrchOmitted, { approvals });
     expect(r1.decision).toBe('deny');
-    expect(r1.reason).toBe('[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).');
+    expect(r1.reason).toBe(ORCHESTRATOR_EXPLICIT_MODEL_REASON);
+    // 2.3.19: it says what "pro" really is and how a subagent reaches Argon, and does not send the agent to "pro" for a pro-class model
+    expect(r1.reason).toContain('Model "pro" runs on Gemini 4 Hydrogen (xhigh), a flash-class model, not on Argon');
+    expect(r1.reason).toContain('A subagent on Argon needs the session itself on Gemini 4 Argon, with Model "inherit"');
+    expect(r1.reason).toContain('Do not request "pro" to get a pro-class model');
     expect(r1.reason).not.toContain('Ask the user with ask_question');
 
     // 2nd attempt: still deny (no attempt count tracking or elevation escalation)
@@ -394,8 +399,9 @@ describe('Item 4: invoke_subagent guard order', () => {
       isOrchestrator: true
     });
     expect(reasonOrch).toContain("re-invoke with 'flash' or 'flash_lite'");
-    expect(reasonOrch).not.toContain('inherit');
-    expect(reasonOrch).toContain('Antigravity has so far served');
+    expect(reasonOrch).not.toContain('(or inherit)');
+    expect(reasonOrch).toContain('Model "pro" runs on Gemini 4 Hydrogen (xhigh), a flash-class model');
+    expect(reasonOrch).not.toContain('Antigravity has so far served');
 
     const reasonNonOrch = buildElevationReason({
       typeName: 'worker',
@@ -404,6 +410,7 @@ describe('Item 4: invoke_subagent guard order', () => {
       isOrchestrator: false
     });
     expect(reasonNonOrch).toContain("re-invoke with 'flash' (or inherit)");
-    expect(reasonNonOrch).toContain('Antigravity has so far served');
+    expect(reasonNonOrch).toContain('Model "pro" runs on Gemini 4 Hydrogen (xhigh), a flash-class model');
+    expect(reasonNonOrch).toContain('A subagent on Argon needs the session itself on Gemini 4 Argon, with Model "inherit"');
   });
 });

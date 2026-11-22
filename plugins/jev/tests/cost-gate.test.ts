@@ -254,9 +254,10 @@ describe('Antigravity: the effort is the suffix of the model id', () => {
     expect(antigravityCostGate('pro-high', 'pro', 'gemini-3.5-pro-high').kind).toBe('pass');
   });
 
-  it('a call whose id names no effort runs at the session\'s: flash on a flash-low session passes, pro on it is the model cause', () => {
+  it('an enum value is priced by the model it is served on: flash on a flash-low session passes (the ceiling alias is the floor), pro on it is held through its effort', () => {
     expect(antigravityCostGate('flash', 'flash', 'gemini-3.8-flash-low').kind).toBe('pass');
-    expect(antigravityCostGate('pro', 'flash', 'gemini-3.8-flash-low')).toMatchObject({ kind: 'over', cause: 'model', callCost: 7.5, sessionCost: 1.5 });
+    // `pro` is served as Hydrogen at xhigh (3 * 2 = 6): above the flash ceiling served at high (4.5) through its effort, no longer a pro-class cost
+    expect(antigravityCostGate('pro', 'flash', 'gemini-3.8-flash-low')).toMatchObject({ kind: 'over', cause: 'effort', callCost: 6, limit: 4.5, sessionCost: 1.5, callModel: 'gemini-4-hydrogen-tiered-xhigh' });
   });
 
   it('a model with no tier falls back to the ceiling by rank', () => {
@@ -265,10 +266,11 @@ describe('Antigravity: the effort is the suffix of the model id', () => {
 
   it('the marker names the tier and the effort when the id names one or the effort is above high; a bare model stands for at most high', () => {
     const gate = (m: string, session: string) => over(antigravityCostGate(m, 'flash', session));
-    // pro with no suffix on a flash-xhigh session runs at xhigh: the marker has to say so
-    expect(antigravityMarkerModel('pro', gate('pro', 'gemini-3.8-flash-xhigh'))).toBe('pro-xhigh');
-    // at or below high a bare model is enough (a record with no effort stands for high)
+    // an enum value carries its effort in what it is (pro is Hydrogen at xhigh): its marker and its approval are the plain value
     expect(antigravityMarkerModel('pro', gate('pro', FLASH_LOW))).toBe('pro');
+    expect(gate('pro', FLASH_LOW).callEffort).toBe('xhigh');
+    // a full id with no suffix runs at the session's effort; at or below high a bare model is enough (a record with no effort stands for high)
+    expect(antigravityMarkerModel('gemini-3.5-pro', gate('gemini-3.5-pro', FLASH_LOW))).toBe('gemini-3.5-pro');
     // a full id (it holds dots, which a marker cannot) is written as the tier and the effort
     expect(antigravityMarkerModel('gemini-3.5-pro-max', gate('gemini-3.5-pro-max', 'gemini-3.8-flash-high'))).toBe('pro-max');
     expect(antigravityMarkerModel('pro', null)).toBe('pro');

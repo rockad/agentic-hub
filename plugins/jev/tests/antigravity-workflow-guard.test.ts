@@ -407,7 +407,7 @@ describe('evaluateAntigravityWorkflowCall', () => {
       const a = evaluateAntigravityWorkflowCall(call(PRO), d());
       expect(a.decision.decision).toBe('ask');
       expect(a.decision.elevation).toBe('asked');
-      expect(a.decision.reason).toContain('above the session ceiling');
+      expect(a.decision.reason).toContain('above the session cost');
       expect(a.log.workflow_guard).toBe('asked');
       const b = evaluateAntigravityWorkflowCall(call(DYN), d());
       expect(b.decision.decision).toBe('ask');

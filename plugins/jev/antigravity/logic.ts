@@ -23,6 +23,7 @@ import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
 import { antigravityCostFields } from '../src/core/cost-estimate.js';
 import { antigravityClampModel, antigravityCostGate, antigravityMarkerModel, costComparison, type CostGateState } from '../src/core/cost-gate.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -91,6 +92,17 @@ export const CHOICE_OPTIONS = {
   no: (ceiling: string) => `No, proceed on ${ceiling}`
 };
 
+/**
+ * The deny reason of an `invoke_subagent` call with no explicit `Model` (or `inherit`) under an Orchestrator session (2.3.19: it says
+ * what `pro` really is, and how a subagent reaches Argon). An omitted or `inherit` Model is served on the planner, so it is not
+ * accepted here; `pro` is Hydrogen at xhigh, so requesting it is no way to a pro-class model.
+ */
+export const ORCHESTRATOR_EXPLICIT_MODEL_REASON =
+  '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (an omitted or inherit Model runs the subagent on the planner). ' +
+  `${PRO_SERVED_SENTENCE} Do not request "pro" to get a pro-class model: it passes when it costs no more than the session, else it needs the [jev-elevate:...] question. ` +
+  ARGON_HOW_SENTENCE;
+
+
 // Moved to src/core/governance.ts (the dispatch ceiling clamp shares it); re-exported so existing imports keep working.
 export { isExplicitProOverride };
 
@@ -155,9 +167,12 @@ export function buildElevationQuestion(opts: {
   requestedModel: string;
   ceilingTier: string;
   taskSummary?: string;
+  /** What the call really is (`servedQuestionPhrase`): the question says it, so the user decides on the model that runs. */
+  servedPhrase?: string;
 }): { question: string; options: string[] } {
   const summaryPart = opts.taskSummary ? ` for ${opts.taskSummary}` : '';
-  const question = `${ELEVATE_MARKER_PREFIX}${opts.requestedModel}] Allow subagent '${opts.typeName}' to run on ${opts.requestedModel}${summaryPart} (session ceiling: ${opts.ceilingTier})?`;
+  const servedPart = opts.servedPhrase ? ` (${opts.servedPhrase})` : '';
+  const question = `${ELEVATE_MARKER_PREFIX}${opts.requestedModel}] Allow subagent '${opts.typeName}' to run on ${opts.requestedModel}${servedPart}${summaryPart} (session ceiling: ${opts.ceilingTier})?`;
   const options = [
     CHOICE_OPTIONS.once,
     CHOICE_OPTIONS.fiveMin,
@@ -178,21 +193,24 @@ export function buildElevationReason(opts: {
   /** The cost gate's sentence (2.3.19), when it found the call: "costs 30 vs the session's 22.5 (...)". */
   costNote?: string;
 }): string {
+  const servedPhrase = servedQuestionPhrase(opts.requestedModel);
   const q = buildElevationQuestion({
     typeName: opts.typeName,
     requestedModel: opts.markerModel ?? opts.requestedModel,
     ceilingTier: opts.sessionCeilingTier,
-    taskSummary: opts.taskSummary
+    taskSummary: opts.taskSummary,
+    servedPhrase
   });
 
   const noAction = opts.isOrchestrator
     ? `if No, re-invoke with '${opts.sessionCeilingTier}' or 'flash_lite'`
     : `if No, re-invoke with '${opts.sessionCeilingTier}' (or inherit)`;
+  const served = servedModelGuidance(opts.requestedModel);
 
   return (
     `[jev] Subagent '${opts.typeName}' requested Model '${opts.requestedModel}', which exceeds session ceiling '${opts.sessionCeilingTier}'${opts.costNote ? ` (it ${opts.costNote})` : ''}, ` +
-    `and no approval covers it (note: Antigravity has so far served 'pro' subagents on flash). Ask the user with ask_question: one question whose text starts with ` +
-    `'${ELEVATE_MARKER_PREFIX}${opts.markerModel ?? opts.requestedModel}]', with four options in this order: ` +
+    `and no approval covers it.${served ? ` ${served}` : ''} Ask the user with ask_question: one question whose text starts with ` +
+    `'${ELEVATE_MARKER_PREFIX}${opts.markerModel ?? opts.requestedModel}]', ${servedPhrase ? `followed by a short question that says plainly "${servedPhrase}", ` : ''}with four options in this order: ` +
     `'${q.options[0]}', '${q.options[1]}', '${q.options[2]}', '${q.options[3]}'. ` +
     `If the user approves, re-invoke with '${opts.requestedModel}'; ${noAction}; ` +
     `do not ask in any other form.`
@@ -880,7 +898,7 @@ export function evaluateAntigravitySubagentCall(
     if (isOrchestrator) {
       return {
         decision: 'deny',
-        reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
+        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON
       };
     }
     effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
@@ -955,7 +973,7 @@ export function evaluateAntigravitySubagentCall(
 
   // Check covering approval
   const markerModel = antigravityMarkerModel(requestedModel, overGate);
-  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, overGate?.callEffort);
+  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, subagentEnumOf(requestedModel) === null ? overGate?.callEffort : undefined);
   if (approval) {
     return {
       decision: 'allow',
@@ -970,7 +988,7 @@ export function evaluateAntigravitySubagentCall(
     // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.
     return {
       decision: 'ask',
-      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'${overGate ? ` (it ${gateNote.costNote})` : ''}. Approve to run on ${requestedModel}, or cancel.`,
+      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'${overGate ? ` (it ${gateNote.costNote})` : ''}. Approve to run on ${requestedModel}, or cancel.${servedModelGuidance(requestedModel) ? ` ${servedModelGuidance(requestedModel)}` : ''}`,
       elevation: 'asked',
       ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
     };

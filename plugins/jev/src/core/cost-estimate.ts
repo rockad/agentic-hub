@@ -14,10 +14,12 @@
  * - `costEstimate`: the call's cost, or null when its model cannot be placed in a tier;
  * - `sessionCost`: the session's own cost (2.3.19), the figure the cost gate compares against;
  * - `costRatio`: the call's cost over the session's, or null when either is unknown or the session's cost is 0;
- * - `costWeightsVersion`: the version of the table above.
+ * - `costWeightsVersion`: the version of the table above;
+ * - `servedModelExpected` (Antigravity rows only, 2.3.19): the model the call is expected to be SERVED on (`served-model.ts`); the call is priced by it.
  */
 
 import { modelTierOf, type ModelTier } from './model-tier.js';
+import { servedModelExpected } from './served-model.js';
 
 /** The version of the weights table below. */
 export const COST_WEIGHTS_VERSION = 1;
@@ -107,15 +109,29 @@ export function costFields(call: CostSide, session: CostSide): CostFields {
   }
 }
 
+/** The cost fields of an Antigravity call, and the model it is expected to be served on (2.3.19). */
+export type AntigravityCostFields = CostFields & {
+  /** The model the call is expected to be served on (`served-model.ts`: `pro` is Hydrogen at xhigh, `inherit` the parent's), or null when nothing is known. */
+  servedModelExpected: string | null;
+};
+
 /**
- * The cost fields of an Antigravity call: the effort of a side is the suffix of its model id (`-low`, `-medium`, `-high`,
- * `-xhigh`) when it has one; else `medium` for the session, and the session's own for the call (2.3.19: the cost gate holds
- * the call to the same figure, so `costRatio > 1` is exactly the calls it holds). A call that names no model runs on the
- * session's (and its effort).
+ * The cost fields of an Antigravity call, priced by the model it is expected to be SERVED on, not by the name of its `Model`
+ * enum value (2.3.19, `served-model.ts`, verified on Antigravity 1.5.14): `Model: "pro"` costs as Hydrogen at xhigh (flash weight
+ * times 2), `flash` as Hydrogen at high, `flash_lite` as flash-lite, and `inherit` or no model as the parent's own model.
+ *
+ * The effort of the session is the suffix of its model id (`-low` ... `-xhigh`), else `medium`. The effort of the call is the
+ * served model's (the table's, else its id's suffix), else the session's own (a model that carries none runs at the session's,
+ * and the cost gate holds the call to the same figure, so `costRatio > 1` is exactly the calls it holds). The requested
+ * `Model` is still what the row's `requestedModel` says; `servedModelExpected` is added beside it. Never throws.
  */
-export function antigravityCostFields(requestedModel: unknown, sessionModel: unknown): CostFields {
+export function antigravityCostFields(requestedModel: unknown, sessionModel: unknown): AntigravityCostFields {
   const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
-  const callModel = isInherit(requestedModel) ? sessionModel : requestedModel;
-  const callEffort = effortFromModelId(callModel) ?? sessionEffort;
-  return costFields({ model: callModel, effort: callEffort }, { model: sessionModel, effort: sessionEffort });
+  const served = servedModelExpected(requestedModel, sessionModel);
+  const callModel = served.servedModel ?? (isInherit(requestedModel) ? sessionModel : requestedModel);
+  const callEffort = served.effort ?? sessionEffort;
+  return {
+    ...costFields({ model: callModel, effort: callEffort }, { model: sessionModel, effort: sessionEffort }),
+    servedModelExpected: served.servedModel
+  };
 }

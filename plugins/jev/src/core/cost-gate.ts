@@ -16,6 +16,7 @@
  * Nothing here reads a file, an environment variable or the clock.
  */
 
+import { servedModelExpected, subagentEnumOf, highestEnumWhere, SERVED_BY_ENUM, type SubagentEnum } from './served-model.js';
 import {
   DEFAULT_COST_EFFORT,
   EFFORT_WEIGHTS,
@@ -122,7 +123,7 @@ function modelWeight(model: unknown): number | null {
  * Pure: the verdict for one delegation. `call.effort` and `session.effort` are literal levels or null (null: unknown, so the
  * verdict is a fallback). A call whose model is absent or `inherit` should be passed with the session's model.
  */
-export function evaluateCostGate(call: GateSide, session: GateSide, allowed: GateAllowance = {}): CostGate {
+export function evaluateCostGate(call: GateSide, session: GateSide, allowed: GateAllowance = {}, floor?: GateSide): CostGate {
   const callWeight = modelWeight(call.model);
   if (callWeight === null) return { kind: 'fallback', why: 'unknown-model' };
   const sessionWeight = modelWeight(session.model);
@@ -132,11 +133,20 @@ export function evaluateCostGate(call: GateSide, session: GateSide, allowed: Gat
 
   // The baseline: the session's model at its effort, each raised to what the user's own words allow.
   const allowedWeight = allowed.model === undefined ? null : modelWeight(allowed.model);
-  const baselineModel = allowedWeight !== null && allowedWeight > sessionWeight ? allowed.model : session.model;
+  let baselineModel = allowedWeight !== null && allowedWeight > sessionWeight ? allowed.model : session.model;
   const allowedEffort = allowed.effort ?? null;
-  const baselineEffort = allowedEffort !== null && effortIndex(allowedEffort) > effortIndex(session.effort) ? allowedEffort : session.effort;
+  let baselineEffort = allowedEffort !== null && effortIndex(allowedEffort) > effortIndex(session.effort) ? allowedEffort : session.effort;
   const sessionCost = (costAt(session.model, session.effort) as number);
-  const limit = costAt(baselineModel, baselineEffort) as number;
+  let limit = costAt(baselineModel, baselineEffort) as number;
+  // A floor (the session's ceiling alias as it is SERVED, Antigravity): a call that costs no more than that is always let through, so the model the guidance sends an agent back to can never be held itself.
+  if (floor && floor.effort !== null) {
+    const floorCost = costAt(floor.model, floor.effort);
+    if (floorCost !== null && floorCost > limit) {
+      limit = floorCost;
+      baselineModel = floor.model;
+      baselineEffort = floor.effort;
+    }
+  }
   if (limit === 0) return { kind: 'fallback', why: 'zero-baseline' };
   const callCost = costAt(call.model, call.effort) as number;
 
@@ -191,28 +201,55 @@ export { DEFAULT_COST_EFFORT, EFFORT_WEIGHTS };
 
 /**
  * The cost gate of an Antigravity `invoke_subagent` call (2.3.19). Antigravity carries the effort in the model id (a
- * `-low`, `-medium`, `-high`, `-xhigh` or `-max` suffix), so each side's effort is its id's suffix, else `medium` for the session and the session's for the call (the same
- * convention as the telemetry `costEstimate`, `antigravityCostFields`, except that a call naming no effort takes the session's). The session side is held at the ceiling tier the
- * hook derived from the session model (the Orchestrator's `flash` ceiling included) at the session id's effort.
+ * `-low`, `-medium`, `-high`, `-xhigh` or `-max` suffix), so each side's effort is its id's suffix, else `medium` for the session.
+ * The session side is held at the ceiling tier the hook derived from the session model (the Orchestrator's `flash` ceiling
+ * included) at the session id's effort.
+ *
+ * The CALL side is priced by the model it is expected to be served on (`served-model.ts`, verified on Antigravity 1.5.14), not by
+ * the name of the `Model` it wrote: `pro` costs as Hydrogen at xhigh (flash weight times 2), `flash` as Hydrogen at high, `flash_lite`
+ * as flash-lite at the session's effort, and any other id as itself at its suffix (else the session's effort). So `pro` no longer
+ * exceeds a session that is itself at xhigh on a flash ceiling, and never needs a pro-class budget. A call that names an enum value is also
+ * always let through when it costs no more than the ceiling alias as it is served (the model "No" sends the agent back to).
  * `allowed` raises the baseline to what the user's own words allow (a named model).
  */
 export function antigravityCostGate(requestedModel: unknown, ceilingTier: string, sessionModel: unknown, allowed: GateAllowance = {}): CostGate {
   const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
-  // A call whose model id names no effort runs at the session's (as a Claude call with no effort does); the telemetry estimate
-  // still counts it at `medium` (see `antigravityCostFields`).
-  const callEffort = effortFromModelId(requestedModel) ?? sessionEffort;
-  return evaluateCostGate({ model: requestedModel, effort: callEffort }, { model: ceilingTier, effort: sessionEffort }, allowed);
+  const served = servedModelExpected(requestedModel, sessionModel);
+  // A call whose served model carries no effort runs at the session's (as a Claude call with no effort does); the telemetry
+  // estimate counts it the same way (see `antigravityCostFields`).
+  const callEffort = served.effort ?? sessionEffort;
+  // For a call that names an enum value, the ceiling alias as it is SERVED is the floor of what the call may cost: it is the model the "No"
+  // option and the guidance send the agent back to, so it must pass (a flash ceiling on a low-effort session would otherwise hold `flash`,
+  // which is served at high). A full id (any effort) is held to the session's own cost as before.
+  const ceiling = served.kind === 'enum' && subagentEnumOf(ceilingTier) !== null ? servedModelExpected(ceilingTier, null) : null;
+  const floor = ceiling && ceiling.servedModel ? { model: ceiling.servedModel, effort: ceiling.effort ?? sessionEffort } : undefined;
+  return evaluateCostGate({ model: served.servedModel ?? requestedModel, effort: callEffort }, { model: ceilingTier, effort: sessionEffort }, allowed, floor);
 }
 
 /** A model id without its effort suffix (`gemini-3-pro-high` gives `gemini-3-pro`). */
 export const stripEffortSuffix = (model: string): string => model.replace(/-(low|medium|high|xhigh|max)$/i, '');
 
+/** The cost of an enum value as the gate prices it, at a session effort. */
+function enumCost(e: SubagentEnum, sessionEffort: CostEffort): number {
+  const row = SERVED_BY_ENUM[e];
+  return (costOf(row.servedModel, row.effort ?? sessionEffort) as number);
+}
+
+/** The most expensive enum value (`flash_lite`, `flash`, `pro`) whose served cost is within `limit`; `flash_lite` when none is (the floor). */
+export function highestEnumWithin(limit: number, sessionEffort: CostEffort): SubagentEnum {
+  return highestEnumWhere((e) => enumCost(e, sessionEffort) <= limit) ?? 'flash_lite';
+}
+
 /**
- * The model string a clamp sets on an Antigravity call (it must be a model `invoke_subagent` accepts): the ceiling tier when the
- * model is what is too much (an alias carries no effort, so the call runs at the effort the session does), else the call's own id
- * with the lowered effort as its suffix (a full id such as `gemini-3.5-pro-xhigh` becomes `gemini-3.5-pro-high`).
+ * The model string a clamp sets on an Antigravity call (it must be a model `invoke_subagent` accepts). For a named `Model` value
+ * (an enum value) it is the most expensive enum value whose served cost fits the session's (`pro` is served as Hydrogen at xhigh and
+ * `flash` as Hydrogen at high: an enum value carries no effort of its own to lower, so the value itself is what is lowered), at
+ * the lowest `flash_lite`. For a full id it is the ceiling tier when the model is what is too much (an alias carries no effort, so the call
+ * runs at the effort the session does), else the call's own id with the lowered effort as its suffix (a full id such as
+ * `gemini-3.5-pro-xhigh` becomes `gemini-3.5-pro-high`).
  */
 export function antigravityClampModel(requestedModel: string, gate: Extract<CostGate, { kind: 'over' }>, ceilingTier: string): string {
+  if (subagentEnumOf(requestedModel) !== null) return highestEnumWithin(gate.limit, gate.sessionEffort);
   return gate.clampModel ? ceilingTier : `${stripEffortSuffix(requestedModel)}-${gate.clampEffort}`;
 }
 
@@ -226,6 +263,8 @@ export function antigravityClampModel(requestedModel: string, gate: Extract<Cost
  */
 export function antigravityMarkerModel(requestedModel: string, gate: Extract<CostGate, { kind: 'over' }> | null): string {
   if (!gate) return requestedModel;
+  // An enum value carries its effort in what it IS (`pro` is Hydrogen at xhigh), so its marker and its approval are the plain value: an approval of `pro` covers `pro`.
+  if (subagentEnumOf(requestedModel) !== null) return requestedModel;
   const named = effortFromModelId(requestedModel) !== null;
   if (!named && effortIndex(gate.callEffort) <= effortIndex(NO_EFFORT_CAP)) return requestedModel;
   const tier = costTierOf(requestedModel);

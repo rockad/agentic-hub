@@ -44,12 +44,16 @@ describe('invoke_subagent: the gate', () => {
     expect(antigravityCostGateState(sub('gemini-3.5-pro-xhigh', PRO_HIGH), held, {})).toBe('denied');
   });
 
-  it('a call whose id names no effort runs at the session\'s: flash on a flash-low session passes, pro on it is the model question', () => {
+  it('an enum value is priced by the model it is served on: flash on a flash-low session passes, pro on it is held with what it really is', () => {
     expect(decide(sub('flash', FLASH_LOW))).toEqual({ decision: 'pass' });
     const held = decide(sub('pro', FLASH_LOW));
     expect(held).toMatchObject({ decision: 'deny' });
     expect(held.reason).toContain("'[jev-elevate:pro]'");
-    expect(held.reason).toContain("it costs 7.5 vs the session's 1.5");
+    // pro is served on Hydrogen at xhigh (6), against the flash ceiling served at high (4.5)
+    expect(held.reason).toContain('it costs 6 vs the allowed 4.5 (gemini-4-hydrogen-tiered-xhigh at xhigh vs gemini-4-hydrogen-tiered-high at high)');
+    expect(held.reason).toContain('Model "pro" runs on Gemini 4 Hydrogen (xhigh), a flash-class model, not on Argon');
+    expect(held.reason).toContain('A subagent on Argon needs the session itself on Gemini 4 Argon, with Model "inherit"');
+    expect(held.reason).toContain('followed by a short question that says plainly "Model "pro" is served on Gemini 4 Hydrogen (xhigh), flash class"');
   });
 
   it('an effort that the call raises on its own model is held too (flash at high on a flash-low session)', () => {
@@ -85,11 +89,11 @@ describe('invoke_subagent: the gate', () => {
     expect(withStore('pro-xhigh')).toMatchObject({ decision: 'deny' });
   });
 
-  it('the inherited effort is what an approval must cover: pro with no suffix on a flash-xhigh session needs pro-xhigh', () => {
-    const session = 'gemini-3.8-flash-xhigh';
-    const held = decide(sub('pro', session));
+  it('pro costs as Hydrogen at xhigh: it passes on a flash-xhigh session (its real cost is the session\'s), is held on a flash-high one', () => {
+    expect(decide(sub('pro', 'gemini-3.8-flash-xhigh'))).toEqual({ decision: 'pass' });
+    const held = decide(sub('pro', 'gemini-3.8-flash-high'));
     expect(held).toMatchObject({ decision: 'deny' });
-    expect(held.reason).toContain("'[jev-elevate:pro-xhigh]'"); // the marker names the effort the call runs at, so the answer can cover it
+    expect(held.reason).toContain("'[jev-elevate:pro]'"); // an enum value carries its effort in what it is: the marker is the plain value
   });
 
   it('clamp: the ceiling model when the model is what is too much; the same model at a lowered effort when only the effort is', () => {

@@ -111,13 +111,17 @@ describe('cost = W_model[tier] * W_effort[level], ratio = cost(call) / cost(sess
   });
 
   it('Antigravity: the effort is the id suffix of each side; no suffix is medium for the session and the session\'s for the call (2.3.19)', () => {
-    // session gemini-3.8-flash-low: 3 * 0.5 = 1.5; a call whose id names no effort runs at the session's, so `pro` is pro at low
-    expect(antigravityCostFields('pro', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 7.5, sessionCost: 1.5, costRatio: 5, costWeightsVersion: 1 });
-    expect(antigravityCostFields(undefined, 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, sessionCost: 1.5, costRatio: 1, costWeightsVersion: 1 });
-    expect(antigravityCostFields('flash', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, sessionCost: 1.5, costRatio: 1, costWeightsVersion: 1 });
-    expect(antigravityCostFields('gemini-3.8-flash-high', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 4.5, sessionCost: 1.5, costRatio: 3, costWeightsVersion: 1 });
-    expect(antigravityCostFields('gemini-3.5-pro-xhigh', 'gemini-3.8-flash-medium')).toEqual({ costEstimate: 30, sessionCost: 3, costRatio: 10, costWeightsVersion: 1 });
-    expect(antigravityCostFields('flash_lite', 'gemini-3.8-flash')).toEqual({ costEstimate: 1, sessionCost: 3, costRatio: 0.333, costWeightsVersion: 1 });
+    // session gemini-3.8-flash-low: 3 * 0.5 = 1.5. An enum value is priced by the model it is SERVED on (2.3.19, served-model.ts):
+    // `pro` is Hydrogen at xhigh (3 * 2 = 6), `flash` Hydrogen at high (3 * 1.5 = 4.5); `servedModelExpected` says which.
+    expect(antigravityCostFields('pro', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 6, sessionCost: 1.5, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
+    expect(antigravityCostFields(undefined, 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, sessionCost: 1.5, costRatio: 1, costWeightsVersion: 1, servedModelExpected: 'gemini-3.8-flash-low' });
+    expect(antigravityCostFields('inherit', 'gemini-4-argon-high')).toEqual({ costEstimate: 22.5, sessionCost: 22.5, costRatio: 1, costWeightsVersion: 1, servedModelExpected: 'gemini-4-argon-high' });
+    expect(antigravityCostFields('flash', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 4.5, sessionCost: 1.5, costRatio: 3, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-high' });
+    // a full id is priced as itself: its own suffix, else the session's effort
+    expect(antigravityCostFields('gemini-3.8-flash-high', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 4.5, sessionCost: 1.5, costRatio: 3, costWeightsVersion: 1, servedModelExpected: 'gemini-3.8-flash-high' });
+    expect(antigravityCostFields('gemini-3.5-pro-xhigh', 'gemini-3.8-flash-medium')).toEqual({ costEstimate: 30, sessionCost: 3, costRatio: 10, costWeightsVersion: 1, servedModelExpected: 'gemini-3.5-pro-xhigh' });
+    // flash_lite carries no effort of its own: it runs at the session's
+    expect(antigravityCostFields('flash_lite', 'gemini-3.8-flash')).toEqual({ costEstimate: 1, sessionCost: 3, costRatio: 0.333, costWeightsVersion: 1, servedModelExpected: 'gemini-3.5-flash-lite' });
   });
 });
 
@@ -206,7 +210,7 @@ describe('Antigravity rows', () => {
 
   it('the telemetry row carries the estimate: pass, deny and ask alike', () => {
     for (const decision of ['pass', 'deny', 'ask']) {
-      expect(build({ decision }, { TypeName: 'x', Model: 'pro' })).toMatchObject({ costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
+      expect(build({ decision }, { TypeName: 'x', Model: 'pro' })).toMatchObject({ costEstimate: 6, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
     }
     expect(build({ decision: 'pass' }, { TypeName: 'x' })).toMatchObject({ costEstimate: 1.5, costRatio: 1, costWeightsVersion: 1 });
   });
@@ -245,16 +249,16 @@ describe('Antigravity rows', () => {
       const res = run('on', 'pro');
 
       expect(JSON.parse(res.out).decision).toBe('deny');
-      expect(res.decision).toMatchObject({ decision: 'deny', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
-      expect(res.telemetry).toMatchObject({ decision: 'deny', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
+      expect(res.decision).toMatchObject({ decision: 'deny', costEstimate: 6, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
+      expect(res.telemetry).toMatchObject({ decision: 'deny', costEstimate: 6, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
     });
 
     it('mode on-demand: the call passes untouched and the rows have the estimate too', () => {
       const res = run('on-demand', 'pro');
 
       expect(res.out).toBe('');
-      expect(res.decision).toMatchObject({ decision: 'pass', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
-      expect(res.telemetry).toMatchObject({ costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
+      expect(res.decision).toMatchObject({ decision: 'pass', costEstimate: 6, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
+      expect(res.telemetry).toMatchObject({ costEstimate: 6, costRatio: 4, costWeightsVersion: 1, servedModelExpected: 'gemini-4-hydrogen-tiered-xhigh' });
     });
   });
 });

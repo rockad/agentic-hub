@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
 import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 import { withDirLock } from '../src/core/dir-lock.js';
+import { DEFAULT_COST_EFFORT, effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
+import { LEGACY_APPROVAL_EFFORT, effortWithin } from '../src/core/cost-gate.js';
 import {
   DOWNGRADE_TTL_MS,
   MAX_ENTRIES,
@@ -65,7 +67,8 @@ export type ApprovalStore = {
     consumedKeys?: string[]
   ) => { stored: boolean; approval: Approval | null };
   deny: (sessionId: string, model: string, nowMs: number) => void;
-  claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
+  /** Find the approval covering `requested` and consume it when it is a `once`. `effort` (2.3.19) is the effort the call runs at when its model id names none (the cost gate's call effort). */
+  claim: (sessionId: string, requested: string, nowMs: number, effort?: CostEffort) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
@@ -143,7 +146,8 @@ export function getRecentDenialTimestamp(state: ApprovalState, model: string, no
   const want = modelTierRank(model);
   let latest: number | null = null;
   for (const [m, t] of Object.entries(state.denied ?? {})) {
-    if (modelTierRank(m) >= want && nowMs - t <= DENIAL_WINDOW_MS) {
+    // The denial must also cover the effort the approval would name (the id's suffix, else medium): an answer cannot approve a higher effort than the question asked about.
+    if (modelTierRank(m) >= want && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT) && nowMs - t <= DENIAL_WINDOW_MS) {
       if (latest === null || t > latest) {
         latest = t;
       }
@@ -194,13 +198,16 @@ export function recordApproval(
 export function claimApproval(
   state: ApprovalState,
   requested: string,
-  nowMs: number
+  nowMs: number,
+  effort?: CostEffort
 ): { state: ApprovalState; approval: Approval | null } {
   const wantRank = modelTierRank(requested);
   const live = state.approvals.filter((a) => approvalValid(a, nowMs));
   const hit =
     live
       .filter((a) => modelTierRank(a.model) >= wantRank)
+      // The approval must cover the call's effort too (2.3.19): the suffix of its model id, else `high` for a record that names none, against the call's suffix, else `medium`.
+      .filter((a) => effortWithin(effortFromModelId(a.model) ?? LEGACY_APPROVAL_EFFORT, effortFromModelId(requested) ?? effort ?? DEFAULT_COST_EFFORT))
       .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
 
   const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
@@ -360,11 +367,11 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         writeState(sessionId, noteDenied(readState(sessionId), model, nowMs));
       });
     },
-    claim: (rawId, requested, nowMs) => {
+    claim: (rawId, requested, nowMs, effort) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
       return withLockIfState(sessionId, () => {
-        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs);
+        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs, effort);
         if (approval?.scope === 'once' || state.approvals.length !== readState(sessionId).approvals.length) {
           writeState(sessionId, state);
         }

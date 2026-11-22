@@ -83,19 +83,19 @@ describe('cost = W_model[tier] * W_effort[level], ratio = cost(call) / cost(sess
   });
 
   it('a missing call effort is the session effort, and a missing session effort is medium', () => {
-    expect(costFields({ model: 'haiku' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 1.5, costRatio: 0.333, costWeightsVersion: 1 });
-    expect(costFields({ model: 'haiku' }, { model: 'sonnet' })).toEqual({ costEstimate: 1, costRatio: 0.333, costWeightsVersion: 1 });
+    expect(costFields({ model: 'haiku' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 1.5, sessionCost: 4.5, costRatio: 0.333, costWeightsVersion: 1 });
+    expect(costFields({ model: 'haiku' }, { model: 'sonnet' })).toEqual({ costEstimate: 1, sessionCost: 3, costRatio: 0.333, costWeightsVersion: 1 });
     expect(costFields({ model: 'haiku', effort: 'higher' }, { model: 'sonnet', effort: 'high' }).costEstimate).toBe(1.5); // relative: not a level
   });
 
   it('no model, or inherit, is the session model', () => {
-    for (const model of [undefined, 'inherit', 'INHERIT', '']) expect(costFields({ model, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 9, costRatio: 2, costWeightsVersion: 1 });
+    for (const model of [undefined, 'inherit', 'INHERIT', '']) expect(costFields({ model, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 9, sessionCost: 4.5, costRatio: 2, costWeightsVersion: 1 });
   });
 
   it('the free pool costs 0 at any effort, whatever spelling names it', () => {
     for (const m of ['openrouter/free', 'free', 'openrouter_free']) {
       expect(costOf(m, 'max')).toBe(0);
-      expect(costFields({ model: m, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 0, costRatio: 0, costWeightsVersion: 1 });
+      expect(costFields({ model: m, effort: 'max' }, { model: 'sonnet', effort: 'high' })).toEqual({ costEstimate: 0, sessionCost: 4.5, costRatio: 0, costWeightsVersion: 1 });
     }
   });
 
@@ -104,19 +104,20 @@ describe('cost = W_model[tier] * W_effort[level], ratio = cost(call) / cost(sess
   });
 
   it('an unknown call model has no estimate and no ratio; an unknown or free session has no ratio; the version is always there', () => {
-    expect(costFields({ model: 'gpt-5' }, { model: 'sonnet' })).toEqual({ costEstimate: null, costRatio: null, costWeightsVersion: 1 });
-    expect(costFields({ model: 'haiku' }, { model: 'gpt-5' })).toEqual({ costEstimate: 1, costRatio: null, costWeightsVersion: 1 });
-    expect(costFields({ model: 'haiku' }, { model: 'openrouter_free' })).toEqual({ costEstimate: 1, costRatio: null, costWeightsVersion: 1 });
+    expect(costFields({ model: 'gpt-5' }, { model: 'sonnet' })).toEqual({ costEstimate: null, sessionCost: 3, costRatio: null, costWeightsVersion: 1 });
+    expect(costFields({ model: 'haiku' }, { model: 'gpt-5' })).toEqual({ costEstimate: 1, sessionCost: null, costRatio: null, costWeightsVersion: 1 });
+    expect(costFields({ model: 'haiku' }, { model: 'openrouter_free' })).toEqual({ costEstimate: 1, sessionCost: 0, costRatio: null, costWeightsVersion: 1 });
     expect(costFields({ model: 'haiku' }, {})).toMatchObject({ costRatio: null, costWeightsVersion: 1 });
   });
 
-  it('Antigravity: the effort is the id suffix of each side, else medium', () => {
-    // session gemini-3.8-flash-low: 3 * 0.5 = 1.5
-    expect(antigravityCostFields('pro', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
-    expect(antigravityCostFields(undefined, 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, costRatio: 1, costWeightsVersion: 1 });
-    expect(antigravityCostFields('flash', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 3, costRatio: 2, costWeightsVersion: 1 });
-    expect(antigravityCostFields('gemini-3.5-pro-xhigh', 'gemini-3.8-flash-medium')).toEqual({ costEstimate: 30, costRatio: 10, costWeightsVersion: 1 });
-    expect(antigravityCostFields('flash_lite', 'gemini-3.8-flash')).toEqual({ costEstimate: 1, costRatio: 0.333, costWeightsVersion: 1 });
+  it('Antigravity: the effort is the id suffix of each side; no suffix is medium for the session and the session\'s for the call (2.3.19)', () => {
+    // session gemini-3.8-flash-low: 3 * 0.5 = 1.5; a call whose id names no effort runs at the session's, so `pro` is pro at low
+    expect(antigravityCostFields('pro', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 7.5, sessionCost: 1.5, costRatio: 5, costWeightsVersion: 1 });
+    expect(antigravityCostFields(undefined, 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, sessionCost: 1.5, costRatio: 1, costWeightsVersion: 1 });
+    expect(antigravityCostFields('flash', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 1.5, sessionCost: 1.5, costRatio: 1, costWeightsVersion: 1 });
+    expect(antigravityCostFields('gemini-3.8-flash-high', 'gemini-3.8-flash-low')).toEqual({ costEstimate: 4.5, sessionCost: 1.5, costRatio: 3, costWeightsVersion: 1 });
+    expect(antigravityCostFields('gemini-3.5-pro-xhigh', 'gemini-3.8-flash-medium')).toEqual({ costEstimate: 30, sessionCost: 3, costRatio: 10, costWeightsVersion: 1 });
+    expect(antigravityCostFields('flash_lite', 'gemini-3.8-flash')).toEqual({ costEstimate: 1, sessionCost: 3, costRatio: 0.333, costWeightsVersion: 1 });
   });
 });
 
@@ -172,13 +173,15 @@ describe('Claude Code rows', () => {
     expect(row()).toMatchObject({ event: 'agent_call', decision: 'pass', costEstimate: 45, costRatio: 10, costWeightsVersion: 1 });
   });
 
-  it('it changes no decision: the same call with and without a session effort gets the same verdict', async () => {
+  it('it is the cost gate\'s figure since 2.3.19: with a session effort the verdict states the cost, without one the pre-2.3.19 rules decide', async () => {
     const a = out(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d));
     const b = out(await onPreToolUse(call({ description: 'd', model: 'opus' }, { effort: undefined }), r.d));
 
     expect(a.permissionDecision).toBe('deny');
     expect(b.permissionDecision).toBe('deny');
-    expect(a.permissionDecisionReason).not.toMatch(/cost/i);
+    expect(a.permissionDecisionReason).toMatch(/costs 22\.5 vs the session's 4\.5 \(opus at high vs sonnet at high\)/);
+    expect(b.permissionDecisionReason).not.toMatch(/cost/i);
+    expect(row()).toMatchObject({ cost_gate: 'fallback' }); // the last row: no session effort, so the gate fell back
   });
 
   it('the telemetry row passes the three fields through, on a deny as well', () => {
@@ -203,7 +206,7 @@ describe('Antigravity rows', () => {
 
   it('the telemetry row carries the estimate: pass, deny and ask alike', () => {
     for (const decision of ['pass', 'deny', 'ask']) {
-      expect(build({ decision }, { TypeName: 'x', Model: 'pro' })).toMatchObject({ costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
+      expect(build({ decision }, { TypeName: 'x', Model: 'pro' })).toMatchObject({ costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
     }
     expect(build({ decision: 'pass' }, { TypeName: 'x' })).toMatchObject({ costEstimate: 1.5, costRatio: 1, costWeightsVersion: 1 });
   });
@@ -242,16 +245,16 @@ describe('Antigravity rows', () => {
       const res = run('on', 'pro');
 
       expect(JSON.parse(res.out).decision).toBe('deny');
-      expect(res.decision).toMatchObject({ decision: 'deny', costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
-      expect(res.telemetry).toMatchObject({ decision: 'deny', costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
+      expect(res.decision).toMatchObject({ decision: 'deny', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
+      expect(res.telemetry).toMatchObject({ decision: 'deny', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
     });
 
     it('mode on-demand: the call passes untouched and the rows have the estimate too', () => {
       const res = run('on-demand', 'pro');
 
       expect(res.out).toBe('');
-      expect(res.decision).toMatchObject({ decision: 'pass', costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
-      expect(res.telemetry).toMatchObject({ costEstimate: 15, costRatio: 10, costWeightsVersion: 1 });
+      expect(res.decision).toMatchObject({ decision: 'pass', costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
+      expect(res.telemetry).toMatchObject({ costEstimate: 7.5, costRatio: 5, costWeightsVersion: 1 });
     });
   });
 });

@@ -1,6 +1,6 @@
 /**
- * The combined cost estimate of a delegation, TELEMETRY ONLY: it is written on every `agent_call` row of both harnesses and
- * never decides anything (no deny, ask, clamp or downgrade reads it). It is an estimate of what the call REQUESTED, so a
+ * The combined cost estimate of a delegation. Since 2.3.19 the same weights decide the cost gate (`cost-gate.ts`); the fields
+ * below are still what is written on every `agent_call` row of both harnesses. It is an estimate of what the call REQUESTED, so a
  * denied call carries it too, and so does a row written in on-demand mode.
  *
  *   cost  = W_model[tier] * W_effort[level]
@@ -12,6 +12,7 @@
  *
  * Fields written on a row (see {@link costFields}):
  * - `costEstimate`: the call's cost, or null when its model cannot be placed in a tier;
+ * - `sessionCost`: the session's own cost (2.3.19), the figure the cost gate compares against;
  * - `costRatio`: the call's cost over the session's, or null when either is unknown or the session's cost is 0;
  * - `costWeightsVersion`: the version of the table above.
  */
@@ -75,6 +76,8 @@ export type CostSide = {
 
 export type CostFields = {
   costEstimate: number | null;
+  /** The session's own cost (its model at its effort), or null when its model has no tier (2.3.19). */
+  sessionCost: number | null;
   costRatio: number | null;
   costWeightsVersion: number;
 };
@@ -95,21 +98,24 @@ export function costFields(call: CostSide, session: CostSide): CostFields {
     const base = costOf(session.model, sessionEffort);
     return {
       costEstimate: cost === null ? null : round(cost),
+      sessionCost: base === null ? null : round(base),
       costRatio: cost === null || base === null || base === 0 ? null : round(cost / base),
       costWeightsVersion: COST_WEIGHTS_VERSION
     };
   } catch {
-    return { costEstimate: null, costRatio: null, costWeightsVersion: COST_WEIGHTS_VERSION };
+    return { costEstimate: null, sessionCost: null, costRatio: null, costWeightsVersion: COST_WEIGHTS_VERSION };
   }
 }
 
 /**
  * The cost fields of an Antigravity call: the effort of a side is the suffix of its model id (`-low`, `-medium`, `-high`,
- * `-xhigh`) when it has one, else `medium`. A call that names no model runs on the session's (and its effort).
+ * `-xhigh`) when it has one; else `medium` for the session, and the session's own for the call (2.3.19: the cost gate holds
+ * the call to the same figure, so `costRatio > 1` is exactly the calls it holds). A call that names no model runs on the
+ * session's (and its effort).
  */
 export function antigravityCostFields(requestedModel: unknown, sessionModel: unknown): CostFields {
   const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
   const callModel = isInherit(requestedModel) ? sessionModel : requestedModel;
-  const callEffort = effortFromModelId(callModel) ?? DEFAULT_COST_EFFORT;
+  const callEffort = effortFromModelId(callModel) ?? sessionEffort;
   return costFields({ model: callModel, effort: callEffort }, { model: sessionModel, effort: sessionEffort });
 }

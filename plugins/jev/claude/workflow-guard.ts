@@ -55,7 +55,10 @@
  *   `[jev-elevate-effort:<level>]` choice question, approvals as for Agent), `low`, `medium` and
  *   `high` pass, and any other literal or a non-literal value (variable, expression, spread) is
  *   unverifiable. The `effort:` of an agentType's definition is checked the same way (the
- *   same `effortReason`). The session's own effort is not read, so it is not compared.
+ *   same `effortReason`). Since 2.3.19 that is the rule only where the cost gate cannot judge the call (the session's
+ *   effort is unknown, or the options hold something it cannot read): with the session's effort known, `gateCall` judges
+ *   each agent() call's model and effort together (src/core/cost-gate.ts) and an `elevation` or `effort` site is a call
+ *   that costs more than the session's, carrying its `gate`.
  * - The environment can set an agent's model: `CLAUDE_CODE_SUBAGENT_MODEL` (when the call and its
  *   definition set none), and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` / `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`
  *   (replacing the call's and the definition's). The hook's own environment is read, and the model
@@ -123,10 +126,14 @@ import {
   instructedEffort,
   modelAlias,
   modelRank,
+  gateCostSentence,
   type Elevation,
+  type OverGate,
   type RankContext,
   type UserIntent
 } from './logic.js';
+import { costEffortOf } from '../src/core/cost-estimate.js';
+import { effortIndex, evaluateCostGate, type CostGate } from '../src/core/cost-gate.js';
 
 /** Largest script (inline or file) the guard will parse (shared with the pin drift check, src/core/workflow-pin.ts). Bigger asks. */
 export { MAX_SCRIPT_BYTES, type ScriptFact };
@@ -146,8 +153,10 @@ export interface CallSite {
   kind: 'elevation' | 'effort' | 'unverifiable';
   /** Set on an `elevation` site: how the model classified (instructed models pass and are not sites). */
   elevation?: Elevation;
-  /** Set on an `effort` site: the level (`xhigh` or `max`). */
+  /** Set on an `effort` site: the level. */
   effort?: EffortLevel;
+  /** Set on an `elevation` or `effort` site the cost gate found (2.3.19): the verdict, with the costs it compared. */
+  gate?: OverGate;
 }
 
 /** The pure result: what the hook turns into a hook response. */
@@ -168,7 +177,9 @@ export interface WorkflowDecision {
   highestEffort?: EffortLevel;
   highestEffortReason?: string;
   /** How many agent() calls (and agent definitions) are held at each level, for the effort question ("3 agents at max"). */
-  effortCounts?: { max: number; xhigh: number };
+  effortCounts?: Partial<Record<EffortLevel, number>>;
+  /** The cost gate (2.3.19): the sites it found (each carries its `gate`), the worst effort-cause and model-cause verdicts, how many agent() calls it judged and how many it could not (the old rules judged those). */
+  gate?: { calls: number; fallbacks: number; effortModel?: string; effortGate?: OverGate; modelGate?: OverGate; elevationEffort?: EffortLevel };
   unverifiable: CallSite[];
   /** Every literal model that was ranked (call, definition, phase hint and environment candidates), in script order, de-duplicated. */
   models: string[];
@@ -186,6 +197,10 @@ export interface GuardContext {
   intent?: UserIntent | null;
   /** The hook's environment (the subagent model variables are read from it); default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** The session's effort (2.3.19), as the hook reports it. Absent: the cost gate does not apply and the old rules judge every call. */
+  sessionEffort?: string | null;
+  /** Counts the agent() calls the cost gate judged and the ones it left to the old rules (filled by `checkScriptText`). */
+  gateCounts?: { calls: number; fallbacks: number };
   /** Collects every literal model that was ranked, and whether a model or an effort passed by instruction (filled by `checkScriptText`). */
   seen?: { models: string[]; instructed: boolean };
 }
@@ -242,7 +257,7 @@ export function fsResolver(cwd: string | undefined): WorkflowResolver {
 
 // ── Parsing ────────────────────────────────────────────────────────────────────────────────────
 
-type Finding =
+type FindingBase =
   | { kind: 'model'; model: string; where: string; line: number; col: number }
   /** `modelSet`: the call also names a model, which wins over the definition's (only its effort is read then). */
   | { kind: 'agentType'; agentType: string; modelSet: boolean; line: number; col: number }
@@ -252,6 +267,8 @@ type Finding =
   | { kind: 'inherit'; line: number; col: number }
   | { kind: 'nested'; ref: { name?: string; scriptPath?: string }; line: number; col: number }
   | { kind: 'unverifiable'; reason: string; line: number; col: number };
+/** A finding of an agent() call carries the call's number (2.3.19), so the cost gate can judge the model and the effort of one call together. */
+type Finding = FindingBase & { callId?: number };
 
 const WATCHED = new Set(['agent', 'workflow']);
 /**
@@ -436,8 +453,11 @@ function analyseAgentCall(call: Node, out: Finding[], ctx: Bindings): void {
   }
   // No model and no agentType: the call runs on the session model (ranked only under a project ceiling).
   if (!mine.some((f) => f.kind === 'model' || f.kind === 'agentType' || f.kind === 'unverifiable')) mine.push({ kind: 'inherit', ...pos(call) });
+  const callId = nextCallId++;
+  for (const f of mine) (f as Finding).callId = callId;
   out.push(...mine);
 }
+let nextCallId = 1;
 
 function analyseWorkflowCall(call: Node, out: Finding[], ctx: Bindings): void {
   const here = pos(call);
@@ -1042,6 +1062,76 @@ function modelSite(
 }
 
 /**
+ * The cost gate's judgement of ONE agent() call (2.3.19), from the findings of its options: model and effort together. Null when
+ * the gate does not apply to the call and the per-finding rules judge it (the session's effort is unknown; the options hold a
+ * shape the analysis could not read; the agentType has no readable definition; a model or an effort that is not a plain
+ * level). Otherwise the call's sites: none when it costs no more than the session's (or than the user's own words allow), one
+ * `elevation` site when its model is what is too much, one `effort` site when only its effort is. The model candidates are the
+ * ones `modelSite` ranks (the call's, the definition's, the environment's); the worst of them is judged.
+ */
+function gateCall(
+  group: readonly Finding[],
+  label: string,
+  sessionModel: string | null,
+  resolver: WorkflowResolver,
+  g: GuardContext
+): CallSite[] | null {
+  const sessionEffort = costEffortOf(g.sessionEffort);
+  if (g.sessionEffort === undefined || sessionEffort === null || !sessionModel || modelAlias(sessionModel) === null) return null;
+  if (group.some((f) => f.kind === 'unverifiable' || f.kind === 'nested')) return null;
+  const modelF = group.find((f): f is Extract<Finding, { kind: 'model' }> => f.kind === 'model' && f.where === 'model');
+  const effortF = group.find((f): f is Extract<Finding, { kind: 'effort' }> => f.kind === 'effort');
+  const typeF = group.find((f): f is Extract<Finding, { kind: 'agentType' }> => f.kind === 'agentType');
+  let def: AgentDefinition | null = null;
+  if (typeF) {
+    def = definitionOrBuiltin(typeF.agentType, resolver.agentDefinition(typeF.agentType));
+    if (!def.found || def.unreadable) return null;
+  }
+  // The effort the call runs at: the highest literal one among the call's and its definition's (the stricter reading), else the session's.
+  const efforts: Array<ReturnType<typeof costEffortOf>> = [];
+  if (effortF) efforts.push(costEffortOf(effortF.effort));
+  if (def && def.effort !== undefined && def.effort !== null) efforts.push(costEffortOf(def.effort));
+  if (efforts.some((e) => e === null)) return null;
+  const literal = efforts as NonNullable<(typeof efforts)[number]>[];
+  const callEffort = literal.length > 0 ? literal.reduce((a, b) => (effortIndex(b) > effortIndex(a) ? b : a)) : sessionEffort;
+  const candidates = subagentModelCandidates({ call: modelF?.model, definition: modelF ? undefined : def ? def.model : undefined }, g.env ?? process.env, { workflow: true });
+  let worst: { gate: Extract<CostGate, { kind: 'pass' | 'over' }>; gate0: CostGate; model: string; e: Elevation | null } | null = null;
+  for (const c of candidates) {
+    const model = c.model ?? sessionModel;
+    if (c.model !== null) g.seen?.models.push(c.model);
+    if (modelAlias(model) === null) return null;
+    const e = classifyElevation({ model }, sessionModel, g.intent ?? null, g.rank ?? null);
+    if (e?.unranked) return null;
+    const call = { model, effort: callEffort };
+    const session = { model: sessionModel, effort: sessionEffort };
+    const gate0 = evaluateCostGate(call, session);
+    if (gate0.kind === 'fallback') return null;
+    const gate = evaluateCostGate(call, session, {
+      model: e?.kind === 'instructed' ? model : undefined,
+      effort: instructedEffort(g.intent ?? null, callEffort) ? callEffort : null
+    });
+    if (gate.kind === 'fallback') return null;
+    if (!worst || gate.ratio > worst.gate.ratio) worst = { gate, gate0, model, e };
+  }
+  if (g.gateCounts) g.gateCounts.calls++;
+  if (!worst) return [];
+  // What only the user's words let through is recorded, as for the old rules.
+  if (worst.gate0.kind === 'over' && worst.gate.kind === 'pass' && g.seen) g.seen.instructed = true;
+  if (worst.gate.kind !== 'over') return [];
+  const first = group[0];
+  const at = { file: label, line: first.line, col: first.col };
+  const reason = `agent() call ${gateCostSentence(worst.gate)}`;
+  if (worst.gate.cause === 'model') {
+    const e: Elevation =
+      worst.e?.kind === 'elevating'
+        ? worst.e
+        : { kind: 'elevating', requested: worst.model, sessionModel, sessionAlias: modelAlias(sessionModel)! };
+    return [{ ...at, reason, kind: 'elevation', elevation: e, gate: worst.gate }];
+  }
+  return [{ ...at, reason, kind: 'effort', effort: worst.gate.callEffort, gate: worst.gate }];
+}
+
+/**
  * Analyse one script text against the session model. Pure given a resolver, so tests can pass a fake one (or
  * none, which finds nothing). `depth` is 0 for the script the tool was called with and 1 for a workflow it
  * references; a workflow() reference inside a depth-1 script asks.
@@ -1061,7 +1151,26 @@ export function checkScriptText(
   }
   facts?.push({ label, sha256: crypto.createHash('sha256').update(script).digest('hex'), bytes });
   const sites: CallSite[] = [];
-  for (const f of parseFindings(script)) {
+  const findings = parseFindings(script);
+  // The cost gate judges each agent() call's model and effort together (2.3.19); a call it cannot judge falls through to the
+  // per-finding rules below, as before.
+  const groups = new Map<number, Finding[]>();
+  for (const f of findings) if (f.callId !== undefined) groups.set(f.callId, [...(groups.get(f.callId) ?? []), f]);
+  const judged = new Map<number, CallSite[]>();
+  for (const [id, group] of groups) {
+    const r = gateCall(group, label, sessionModel, resolver, g);
+    if (r) judged.set(id, r);
+    else if (g.gateCounts && g.sessionEffort !== undefined) g.gateCounts.fallbacks++;
+  }
+  const emitted = new Set<number>();
+  for (const f of findings) {
+    if (f.callId !== undefined && judged.has(f.callId)) {
+      if (!emitted.has(f.callId)) {
+        emitted.add(f.callId);
+        sites.push(...(judged.get(f.callId) as CallSite[]));
+      }
+      continue;
+    }
     switch (f.kind) {
       case 'unverifiable':
         sites.push(unverifiableSite(label, f, f.reason));
@@ -1159,13 +1268,29 @@ export function evaluateWorkflowInput(
 ): WorkflowDecision {
   const scripts: ScriptFact[] = [];
   const seen = { models: [] as string[], instructed: false };
-  const g: GuardContext = { ...ctx, seen };
+  const gateCounts = { calls: 0, fallbacks: 0 };
+  const g: GuardContext = { ...ctx, seen, gateCounts };
   const finish = (sites: CallSite[]): WorkflowDecision => {
     const elevations = sites.filter((s) => s.kind === 'elevation');
     const efforts = sites.filter((s) => s.kind === 'effort');
     const unverifiable = sites.filter((s) => s.kind === 'unverifiable');
     const top = strongest(elevations, g);
-    const topEffort = efforts.find((s) => s.effort === 'max') ?? efforts[0];
+    const topEffort = efforts.reduce<CallSite | undefined>((best, s) => (!best || effortIndex(s.effort as EffortLevel) > effortIndex(best.effort as EffortLevel) ? s : best), undefined);
+    const effortCounts: Partial<Record<EffortLevel, number>> = {};
+    for (const s of efforts) if (s.effort) effortCounts[s.effort] = (effortCounts[s.effort] ?? 0) + 1;
+    // The cost gate's facts for the choice questions: the highest effort a model-cause site asks for, and the strongest model among the effort-cause sites.
+    const gatedElevations = elevations.filter((s) => s.gate);
+    const modelGate = gatedElevations.reduce<OverGate | undefined>((best, s) => (!best || (s.gate as OverGate).ratio > best.ratio ? (s.gate as OverGate) : best), undefined);
+    const elevationEffort = gatedElevations.reduce<EffortLevel | undefined>(
+      (best, s) => (!best || effortIndex((s.gate as OverGate).callEffort) > effortIndex(best) ? (s.gate as OverGate).callEffort : best),
+      undefined
+    );
+    const effortGate = efforts.filter((s) => s.gate).reduce<OverGate | undefined>((best, s) => (!best || (s.gate as OverGate).ratio > best.ratio ? (s.gate as OverGate) : best), undefined);
+    const effortModel = efforts
+      .filter((s) => s.gate)
+      .map((s) => modelAlias(String((s.gate as OverGate).callModel)))
+      .filter((m): m is NonNullable<typeof m> => m !== null)
+      .sort((a, b) => (modelRank(b) ?? 0) - (modelRank(a) ?? 0))[0];
     return {
       decision: sites.length === 0 ? 'allow' : 'ask',
       reasons: sites.map((s) => `${s.file}:${s.line}:${s.col} ${s.reason}`),
@@ -1177,9 +1302,10 @@ export function evaluateWorkflowInput(
         ? {
             highestEffort: topEffort.effort,
             highestEffortReason: topEffort.reason,
-            effortCounts: { max: efforts.filter((s) => s.effort === 'max').length, xhigh: efforts.filter((s) => s.effort === 'xhigh').length }
+            effortCounts
           }
         : {}),
+      gate: { calls: gateCounts.calls, fallbacks: gateCounts.fallbacks, ...(effortModel ? { effortModel } : {}), ...(effortGate ? { effortGate } : {}), ...(modelGate ? { modelGate } : {}), ...(elevationEffort ? { elevationEffort } : {}) },
       unverifiable,
       models: [...new Set(seen.models)],
       instructed: seen.instructed,
@@ -1225,9 +1351,9 @@ export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | '
   return (
     `[jev] This Workflow cannot be cleared against the session model ${sessionModel ? `"${sessionModel}"` : '(unknown)'}: ` +
     `${d.sites.length} site(s) Jev cannot verify (${d.unverifiable.length} unverifiable):\n${shown.join('\n')}\n` +
-    'Change the Workflow so every agent() call names a literal model at or below the session model (or inherits it) and a literal effort of low, medium or high ' +
+    'Change the Workflow so every agent() call names a literal model (or inherits it) and a literal effort whose cost is within the session\'s ' +
     '(no variables, spreads or computed values, a script and agent definitions Jev can read), then call it again. ' +
-    'A literal effort of xhigh or max is not one of these sites: once nothing is unverifiable it is put to the user as a question.'
+    'A call that only costs more than the session\'s (a model above it, or an effort that pushes the cost over) is not one of these sites: once nothing is unverifiable it is put to the user as a question.'
   );
 }
 
@@ -1243,15 +1369,18 @@ export function workflowSignature(scripts: readonly ScriptFact[]): string {
  * workflow by its script hash. A PreToolUse `deny` does not stop the turn: the assistant receives this text and is
  * told to ask the user the one prescribed question. The PostToolUse recorder reads the user's real answer.
  */
-export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[], attempt?: number | null): string {
+export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[], attempt?: number | null, gate?: { gate: OverGate; effort?: EffortLevel }): string {
   const alias = modelAlias(e.requested) ?? e.requested;
   const stop = stopRetryingText(attempt, alias, e.sessionAlias, 'AskUserQuestion');
   const l = CHOICE_LABELS;
   const ids = scripts.slice(0, 3).map((s) => `sha256:${s.sha256.slice(0, 12)}`).join(', ') || 'unhashed';
+  // With the cost gate the marker names the effort when it is above `high` (a bare marker stands for at most `high`), and the reason states the cost.
+  const markerEffort = gate?.effort && effortIndex(gate.effort) > effortIndex('high') ? `:${gate.effort}` : '';
+  const why = gate ? `: its most costly agent ${gateCostSentence(gate.gate)}` : '';
   return (
-    `[jev] This Workflow has agent() calls on "${alias}", stronger than the session model "${e.sessionModel}", and the user has not approved it. ` +
-    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}] followed by a short question ` +
-    `naming the Workflow (${ids}), the strongest requested model, the session model and a 10-word summary of what the workflow does; ` +
+    `[jev] This Workflow has agent() calls on "${alias}", stronger than the session model "${e.sessionModel}", and the user has not approved it${why}. ` +
+    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}${markerEffort}] followed by a short question ` +
+    `naming the Workflow (${ids}), the strongest requested model${gate ? ' and effort' : ''}, the session model and a 10-word summary of what the workflow does; ` +
     `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
     `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() calls to inherit the session model (or ${e.sessionAlias}) and call it again, or do the work directly; ` +
     `If AskUserQuestion is not available, edit the workflow to run on ${e.sessionAlias} and call it again now; ` +
@@ -1261,37 +1390,45 @@ export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[
 }
 
 /**
- * The deny reason of the effort choice flow for a Workflow (a literal `xhigh` or `max` on an agent() call or on an agentType's
- * definition): the same marker and four options as an Agent delegation's effort question, naming the Workflow by its script
- * hash. `interim` is the finding's own wording. A Yes: call the Workflow again unchanged; No: set the efforts to `high`.
+ * The deny reason of the effort choice flow for a Workflow (an agent() call or an agentType's definition whose effort pushes its
+ * cost above the session's, 2.3.19; before it, a literal `xhigh` or `max`): the same marker and four options as an Agent
+ * delegation's effort question, naming the Workflow by its script hash. `interim` is the finding's own wording. A Yes: call the
+ * Workflow again unchanged; No: set the efforts to the highest level that fits (`high` without the cost gate). With the gate the
+ * marker names the strongest model (`[jev-elevate-effort:<level>:<model>]`), so the approval covers that model and weaker ones.
  */
 export function workflowEffortChoiceReason(
   level: EffortLevel,
   interim: string,
   scripts: readonly ScriptFact[],
   attempt?: number | null,
-  counts?: { max: number; xhigh: number }
+  counts?: Partial<Record<EffortLevel, number>>,
+  gate?: { gate: OverGate; model?: string }
 ): string {
   const l = CHOICE_LABELS;
-  const stop = stopRetryingText(attempt, level, EFFORT_FALLBACK, 'AskUserQuestion', 'effort');
+  const fallback = gate ? gate.gate.noEffort : EFFORT_FALLBACK;
+  const no = gate ? `No, run at ${gate.gate.noEffort}` : EFFORT_NO_LABEL;
+  const stop = stopRetryingText(attempt, level, fallback, 'AskUserQuestion', 'effort');
   const ids = scripts.slice(0, 3).map((s) => `sha256:${s.sha256.slice(0, 12)}`).join(', ') || 'unhashed';
+  const head = gate ? `its most costly agent ${gateCostSentence(gate.gate)}, because of its effort.` : interim;
   return (
-    `[jev] This Workflow: ${interim} The user has not approved it. ` +
-    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate-effort:${level}] followed by a short question ` +
+    `[jev] This Workflow: ${head} The user has not approved it. ` +
+    `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate-effort:${level}${gate?.model ? `:${gate.model}` : ''}] followed by a short question ` +
     `naming the Workflow (${ids}), the held agents (${effortCountsText(counts, level)}; one answer covers the whole script), and a 10-word summary of what the workflow does; ` +
-    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${EFFORT_NO_LABEL}'. ` +
-    `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() efforts to "${EFFORT_FALLBACK}" (or leave them out) and call it again, or do the work directly; ` +
-    `If AskUserQuestion is not available, edit the workflow to use effort "${EFFORT_FALLBACK}" and call it again now and do not stop; ` +
+    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${no}'. ` +
+    `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() efforts to "${fallback}" (or leave them out) and call it again, or do the work directly; ` +
+    `If AskUserQuestion is not available, edit the workflow to use effort "${fallback}" and call it again now and do not stop; ` +
     `do not ask in any other form.` +
     (stop ? ` ${stop}` : '')
   );
 }
 
 /** "3 agents at max, 1 agent at xhigh": the number of agent() calls the effort question is about. */
-function effortCountsText(counts: { max: number; xhigh: number } | undefined, level: EffortLevel): string {
+function effortCountsText(counts: Partial<Record<EffortLevel, number>> | undefined, level: EffortLevel): string {
   const part = (n: number, at: string): string => `${n} ${n === 1 ? 'agent' : 'agents'} at ${at}`;
   const parts: string[] = [];
-  if (counts && counts.max > 0) parts.push(part(counts.max, 'max'));
-  if (counts && counts.xhigh > 0) parts.push(part(counts.xhigh, 'xhigh'));
+  for (const at of ['max', 'xhigh', 'high', 'medium', 'low'] as const) {
+    const n = counts?.[at] ?? 0;
+    if (n > 0) parts.push(part(n, at));
+  }
   return parts.join(', ') || `agents at ${level}`;
 }

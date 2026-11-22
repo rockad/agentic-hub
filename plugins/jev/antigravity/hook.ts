@@ -24,6 +24,7 @@ import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-chan
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
+  antigravityCostGateState,
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
@@ -597,7 +598,7 @@ async function main() {
       process.exit(0);
     }
 
-    let decision = evaluateAntigravitySubagentCall(input, {
+    const gateDecision = evaluateAntigravitySubagentCall(input, {
       approvals,
       sessionModelOverride: activeModel,
       sessionOrchestrator,
@@ -605,6 +606,8 @@ async function main() {
       mode,
       config: jevConfig
     });
+    let decision = gateDecision;
+    const costGateState = antigravityCostGateState(input, gateDecision, { sessionModel: activeModel, sessionOrchestrator });
 
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
     // fails open: its log carries the `downgrade*` fields of the row below.
@@ -623,6 +626,7 @@ async function main() {
         rateTask: liveRateTask,
         egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd, ...(input.workspacePaths ?? [])])).allowed
       });
+      // The downgrade answers a call the cost gate passed: its decision keeps the gate's state for the log and the telemetry row.
       decision = downgraded.decision;
       downgradeLog = downgraded.log;
     }
@@ -652,6 +656,9 @@ async function main() {
       approval_scope: decision.approvalScope || null,
       attempt_count: decision.attemptCount || null,
       clamped_to: decision.clampedTo || null,
+      ...(decision.clampedEffort ? { clamped_effort: decision.clampedEffort } : {}),
+      // What the cost gate did (2.3.19); a mode without decisions (on-demand) decides nothing, so it writes none.
+      ...(modeBehaviour(mode).decisions ? { cost_gate: costGateState } : {}),
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
@@ -679,6 +686,7 @@ async function main() {
           turnState,
           decision,
           downgradeLog,
+          ...(modeBehaviour(mode).decisions ? { costGate: costGateState } : {}),
           callKey,
           recommendationPending
         });

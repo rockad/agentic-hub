@@ -155,6 +155,7 @@ import {
   type UserIntent
 } from './logic.js';
 import { asDenyCause, causeFields, type DenyCause } from '../src/core/deny-cause.js';
+import { effortFields, toolUseIdField, type EffortFields } from '../src/core/join-keys.js';
 import { COST_WEIGHTS_VERSION, costEffortOf, costFields, downgradeCostSaving, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
 import {
   DEFAULT_COST_GATE_MODE,
@@ -484,6 +485,28 @@ function agentCostGate(
   );
 }
 
+/**
+ * The effort fields of an Agent/Task `agent_call` row (2.3.20): `effortSource` and, when a literal level was named, `effortRequested`
+ * (see `effortFields`). The literal is the call's own `effort`, else its agent definition's (the same one the cost fields use);
+ * `sessionEffort` is what the hook input reported for the session (not an assumed fallback), so an unreported one is `default`.
+ * `clampedFrom` is the effort the clamp lowered. A Workflow has no effort of its own (the agents its script launches choose theirs),
+ * so its row carries neither field.
+ */
+function agentEffortFields(
+  tool: string,
+  call: AgentCall & Record<string, unknown>,
+  resolved: ResolvedAgentModel | null,
+  sessionEffort: unknown,
+  clampedFrom?: unknown
+): Partial<EffortFields> {
+  if (tool === 'Workflow') return {};
+  return effortFields({
+    named: costEffortOf(call.effort) ?? costEffortOf(resolved?.definitionEffort),
+    sessionKnown: costEffortOf(readEffort(sessionEffort)) !== null,
+    clampedFrom
+  });
+}
+
 /** The `mode` field of a row (2.3.19): the mode the hook acted under, from the same value `modeBehaviour` was computed from; nothing for off. */
 function modeField(mode: string | undefined): { mode?: 'on' | 'on-demand' } {
   const m = telemetryMode(mode);
@@ -530,6 +553,8 @@ function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: 
     sessionModel,
     session_model_source: sessionModelSource,
     ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
+    ...toolUseIdField(input.tool_use_id),
+    ...agentEffortFields(tool, call, resolved, input.effort),
     ...agentCostFields(tool, call, resolved, sessionModel, readEffort(input.effort))
   });
 }
@@ -1089,6 +1114,16 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     ...(effortSession ? { effort_session: effortSession } : {}),
     // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
     ...agentCostFields(tool, call, resolved, sessionModel, effortSession),
+    // The host's tool call id (2.3.20): the join to measured usage. A Workflow's id stands for the workflow as a whole.
+    ...toolUseIdField(input.tool_use_id),
+    // Where the effort came from (2.3.20); `clamped` when the clamp lowered it from what the call asked for.
+    ...agentEffortFields(
+      tool,
+      call,
+      resolved,
+      input.effort,
+      clamp && clampInfo?.effort && overGate && overGate.callEffort !== clampInfo.effort ? overGate.callEffort : undefined
+    ),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
     ...(approvalScope ? { approval_scope: approvalScope } : {}),
     ...(attemptCount !== null ? { elevation_attempt: attemptCount } : {}),
@@ -1903,6 +1938,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
     taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
     tierRecommended: str(entry.tier),
     turn: str(entry.turn),
+    // The host's tool call id (2.3.20): on the PreToolUse `agent_call` rows and the PostToolUse rows of the same tools.
+    ...toolUseIdField(entry.toolUseId),
     ...sessionModelFields(entry),
     ...(isPrompt
       ? // The prompt only advises: nothing is delegated yet, so there is no modelUsed (the old alias is gone).
@@ -1922,6 +1959,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
             : {}),
           modelRecommended: str(entry.recommended_model),
           ...(entry.hook === 'PreToolUse' && str(entry.decision) ? { decision: str(entry.decision) } : {}),
+          // The host's tool call id and where the effort came from (2.3.20).
+          ...(entry.hook === 'PreToolUse' && entry.event === 'agent_call' ? effortTelemetry(entry) : {}),
           // Why a deny or a dialog ask held the call (2.3.20).
           ...(entry.hook === 'PreToolUse' && asDenyCause(entry.denyCause) ? { denyCause: asDenyCause(entry.denyCause) } : {}),
           ...(entry.hook === 'PreToolUse' && asDenyCause(entry.askCause) ? { askCause: asDenyCause(entry.askCause) } : {}),
@@ -1945,6 +1984,14 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
         }),
     quotaStrategy: str(entry.quota)
   };
+}
+
+/** `effortRequested` / `effortSource` of an `agent_call` entry, only when they are well formed. */
+function effortTelemetry(entry: Record<string, unknown>): { effortRequested?: string; effortSource?: string } {
+  const source = entry.effortSource;
+  if (source !== 'requested' && source !== 'default' && source !== 'inherited' && source !== 'clamped') return {};
+  const requested = costEffortOf(entry.effortRequested);
+  return { ...(requested ? { effortRequested: requested } : {}), effortSource: source };
 }
 
 /** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */

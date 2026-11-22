@@ -39,6 +39,8 @@ import {
   readAntigravityTurn,
   buildAntigravityTelemetryEvent,
   antigravityCallKey,
+  antigravityCallId,
+  antigravityEffortFor,
   quotaPoolField,
   subagentQuotaPool,
   claimTurnRecommendation,
@@ -56,6 +58,7 @@ import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-g
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
 import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
 import { queueServedNotice } from './served-notice.js';
+import { callKeyField } from '../src/core/join-keys.js';
 import { causeFields } from '../src/core/deny-cause.js';
 
 function getJevDir(): string {
@@ -241,6 +244,7 @@ async function main() {
                 conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
                 ...stickyTurn(input.conversationId, input.modelName),
                 childConversationId: String(entry.child_conversation_id),
+                callKey: typeof entry.callKey === 'string' ? entry.callKey : undefined,
                 requestedModel: typeof entry.requested_model === 'string' ? entry.requested_model : null,
                 servedModel: String(entry.served_model),
                 backfilled: entry.backfilled === true
@@ -485,6 +489,8 @@ async function main() {
             event: 'subagent_served',
             harness: 'antigravity',
             session_id: conversationId,
+            // The host's tool call id (2.3.20): the same in this PostToolUse as in the call's PreToolUse `agent_call` row.
+            ...callKeyField(input.toolCall?.id),
             child_conversation_id: childConvId || null,
             requested_model: requestedModel || null,
             served_model: servedModel || null,
@@ -502,6 +508,7 @@ async function main() {
                   conversationId,
                   ...stickyTurn(input.conversationId, input.modelName),
                   childConversationId: childConvId,
+                  callKey: input.toolCall?.id,
                   requestedModel: requestedModel || null,
                   servedModel,
                   backfilled: false
@@ -588,6 +595,8 @@ async function main() {
         harness: 'antigravity',
         session_id: input.conversationId || null,
         call_key: antigravityCallKey(input),
+        // The host's tool call id (2.3.20), the join to the call's other rows; omitted when the call has none (`call_key` keeps its fallbacks).
+        ...callKeyField(input.toolCall?.id),
         tool_name: RUN_WORKFLOW_TOOL,
         session_model: activeModel || null,
         ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
@@ -671,6 +680,8 @@ async function main() {
       harness: 'antigravity',
       session_id: input.conversationId || null,
       call_key: callKey,
+      // The host's tool call id (2.3.20), the join to the call's PostToolUse `subagent_served` row; omitted when the call has none.
+      ...callKeyField(input.toolCall?.id),
       tool_name: 'invoke_subagent',
       requested_model: requestedModel,
       // The quota pool the call is expected to draw (2.3.20): by the model it is served on.
@@ -698,7 +709,9 @@ async function main() {
         ? { costSaving: antigravityDowngradeSaving(requestedModel, downgradeLog.downgrade_to, activeModel) }
         : {}),
       // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
-      ...antigravityCostFields(requestedModel, activeModel)
+      ...antigravityCostFields(requestedModel, activeModel),
+      // Where the effort came from (2.3.20).
+      ...antigravityEffortFor(requestedModel, activeModel, decision.clampedEffort)
     });
 
     if (isSubagentCall && modeBehaviour(mode).telemetry) {
@@ -720,7 +733,7 @@ async function main() {
           decision,
           downgradeLog,
           ...costGateFields('costGate'),
-          callKey,
+          callKey: antigravityCallId(input),
           recommendationPending
         });
       // A mode without routing advice (on-demand) makes no recommendation, so no turn state speaks for this call.

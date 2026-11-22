@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { checkWorkflowDrift, pruneWorkflowPins, type DriftCheckResult, type DriftDeps } from '../src/core/workflow-pin.js';
 import { RUN_WORKFLOW_TOOL } from './workflow-guard.js';
 import type { AntigravityHookInput } from './logic.js';
+import { callKeyField } from '../src/core/join-keys.js';
 
 export { pruneWorkflowPins };
 
@@ -31,7 +32,7 @@ export function antigravityWorkflowPinDir(jevDir: string): string {
 export async function recordRunWorkflowPostToolUse(input: AntigravityHookInput, deps: DriftDeps): Promise<DriftCheckResult> {
   try {
     if (input?.toolCall?.name !== RUN_WORKFLOW_TOOL) return { status: 'no-pin' };
-    return await checkWorkflowDrift(input.toolCall.id, RUN_WORKFLOW_TOOL, deps, { harness: 'antigravity' });
+    return await checkWorkflowDrift(input.toolCall.id, RUN_WORKFLOW_TOOL, deps, { harness: 'antigravity', ...callKeyField(input.toolCall.id) });
   } catch {
     return { status: 'error' };
   }

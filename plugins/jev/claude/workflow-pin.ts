@@ -7,6 +7,7 @@
  * not observable here.
  */
 import { checkWorkflowDrift } from '../src/core/workflow-pin.js';
+import { toolUseIdField } from '../src/core/join-keys.js';
 
 export { PIN_MAX_AGE_MS, pruneWorkflowPins, writeWorkflowPin, type WorkflowPin } from '../src/core/workflow-pin.js';
 
@@ -35,7 +36,7 @@ export async function recordWorkflowPostToolUse(input: unknown, deps: PinDeps): 
   try {
     const i = input as { tool_name?: unknown; tool_use_id?: unknown } | null;
     if (i?.tool_name !== 'Workflow') return { status: 'ignored' };
-    const r = await checkWorkflowDrift(i.tool_use_id, 'Workflow', deps);
+    const r = await checkWorkflowDrift(i.tool_use_id, 'Workflow', deps, { ...toolUseIdField(i.tool_use_id) });
     if (r.status !== 'changed' || !r.pin || !r.drift) return { status: r.status };
     const lines = r.drift.map((d) => `- ${d.file}: analysed sha256:${d.analysed.slice(0, 16)}, now ${d.current ? `sha256:${d.current.slice(0, 16)}` : 'missing or unreadable'}`);
     const message =

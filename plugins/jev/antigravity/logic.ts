@@ -22,7 +22,8 @@ import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
-import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
+import { DEFAULT_COST_EFFORT, antigravityCostFields, antigravityDowngradeSaving, costEffortOf, effortFromModelId } from '../src/core/cost-estimate.js';
+import { antigravityEffortFields, callKeyField, joinToken, type EffortFields } from '../src/core/join-keys.js';
 import {
   DEFAULT_COST_GATE_MODE,
   antigravityClampModel,
@@ -35,7 +36,7 @@ import {
   type CostGateShadowState,
   type CostGateState
 } from '../src/core/cost-gate.js';
-import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelExpected, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -1334,6 +1335,7 @@ export function flushPendingServed(
               event: 'subagent_served',
               harness: 'antigravity',
               session_id: sessionId,
+              ...callKeyField(item.toolCallId),
               child_conversation_id: childConvId,
               requested_model: item.requestedModel ?? null,
               served_model: servedModel,
@@ -1352,6 +1354,7 @@ export function flushPendingServed(
               event: 'subagent_served',
               harness: 'antigravity',
               session_id: sessionId,
+              ...callKeyField(item.toolCallId),
               child_conversation_id: childConvId,
               requested_model: item.requestedModel ?? null,
               served_model: null,
@@ -1555,8 +1558,10 @@ export const PENDING_RECOMMENDATION_TTL_MS = 10 * 60_000;
  * `agent_call_recommendation` row needs to stand alone (the decision and the models), never prompt text.
  */
 export type PendingRecommendationCall = {
-  /** The same key the `agent_call` row carries as `callKey`. */
+  /** The key this call is tracked under here (see {@link antigravityCallKey}): the tool call id, else a step or one-off key. */
   callKey: string;
+  /** The host's tool call id, when it is a short token (2.3.20): what the late row writes as `callKey`. Absent when the call had none, or a malformed one. */
+  callId?: string;
   /** Epoch ms the call was recorded. */
   at: number;
   decision: string;
@@ -1731,7 +1736,7 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
       /** What the cost gate would have done, in shadow mode (2.3.19); absent in enforce and in a mode without decisions. */
       costGateShadow?: CostGateShadowState;
       quotaStrategy?: string;
-      /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
+      /** The host's tool call id (2.3.20; the caller passes the validated one, see {@link antigravityCallId}): written as `callKey`, and repeated by a late `agent_call_recommendation` row. Omitted when the call had none. */
       callKey?: string;
       /** Jev is on and the turn's recommendation was not known yet: the row says so, and a late row may follow. */
       recommendationPending?: boolean;
@@ -1753,6 +1758,8 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
       turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
       childConversationId?: string | null;
+      /** The host's tool call id of the `invoke_subagent` call (2.3.20), written as `callKey`: the join to its `agent_call` row. */
+      callKey?: string | null;
       requestedModel?: string | null;
       servedModel?: string | null;
       backfilled?: boolean;
@@ -1830,7 +1837,7 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       event: 'agent_call_recommendation',
       sessionId: params.conversationId ?? null,
       turn: params.turn,
-      callKey: c.callKey,
+      ...callKeyField(c.callId),
       toolName: c.toolName,
       ...(c.taskSummary ? { taskSummary: c.taskSummary } : {}),
       sessionModel: c.sessionModel,
@@ -1855,6 +1862,8 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       sessionModel,
       sessionModelSource,
       ...turnModelField(sessionModel, params.turnModel),
+      ...callKeyField(params.callKey),
+      // Child conversations write their own usage rows with `session_id` equal to this: the join to measured usage.
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,
@@ -1915,7 +1924,8 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       : {}),
     ...(modelUsed ? { modelUsed } : {}),
     ...(modelUsedSource ? { modelUsedSource } : {}),
-    ...(params.callKey ? { callKey: params.callKey } : {}),
+    // The host's tool call id (2.3.20), the join to the call's other rows and to measured usage; omitted when the call carried none.
+    ...callKeyField(params.callKey),
     ...(!matchedRecommendedTier && params.recommendationPending ? { recommendationPending: true } : {}),
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
@@ -1927,6 +1937,8 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
     ...(downgrade ? { downgrade } : {}),
     // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
     ...antigravityCostFields(requestedModel, sessionModel),
+    // Where the effort came from (2.3.20), see `antigravityEffortFor`.
+    ...antigravityEffortFor(requestedModel, sessionModel, params.decision.clampedEffort),
     // What a suggested or applied downgrade saves (2.3.19), priced by the served models; absent on a row without one.
     ...(downgrade === 'asked' || downgrade === 'applied'
       ? { costSaving: antigravityDowngradeSaving(requestedModel, params.downgradeLog?.downgrade_to, sessionModel) }
@@ -1938,9 +1950,36 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
 }
 
 /**
- * The key an `agent_call` row carries as `callKey`: the tool call id, else `step:<stepIdx>` (real transcripts often carry
- * no tool call ids), else a one-off `call:<time>-<random>`. A late `agent_call_recommendation` row repeats it, so the two
- * rows of one call are matched on this key and the `turn`.
+ * The effort fields of an `agent_call` row (2.3.20): `effortSource` and, when a literal level was named, `effortRequested`. The
+ * effort of an Antigravity call is the suffix of the model id it is served on (the enum values have a fixed served effort, see
+ * {@link antigravityEffortFields} for the mapping). `clampedEffort` is the effort the cost-gate clamp lowered the call to: when it
+ * differs from the call's own the source is `clamped`, and `effortRequested` the level it asked for.
+ */
+export function antigravityEffortFor(requestedModel: unknown, sessionModel: unknown, clampedEffort?: unknown): EffortFields {
+  const served = servedModelExpected(requestedModel, sessionModel);
+  const clamped = costEffortOf(clampedEffort);
+  const callEffort = served.effort ?? effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
+  return antigravityEffortFields({
+    // `inherit` or an omitted `Model` is served on the parent's model: its suffix is the session's effort, inherited, not named by the call.
+    servedEffort: served.kind === 'parent' ? null : served.effort,
+    sessionModel,
+    clampedFrom: clamped !== null && clamped !== callEffort ? callEffort : undefined
+  });
+}
+
+/**
+ * The host's tool call id as a join token (2.3.20): the `callKey` the rows of this call carry. Undefined when the input has no id
+ * or a malformed one (the rows then carry no `callKey`).
+ */
+export function antigravityCallId(input: Pick<AntigravityHookInput, 'toolCall'>): string | undefined {
+  return joinToken(input.toolCall?.id);
+}
+
+/**
+ * The key a call is tracked under inside the hook (the pending-recommendation list and the `step:` fallbacks): the tool call
+ * id, else `step:<stepIdx>` (real transcripts often carry no tool call ids), else a one-off `call:<time>-<random>`. The rows carry
+ * `callKey` only when it is the host's id (see {@link antigravityCallId}); this key matches a late `agent_call_recommendation`
+ * to the call it belongs to.
  */
 export function antigravityCallKey(input: Pick<AntigravityHookInput, 'toolCall' | 'stepIdx'>): string {
   const id = input.toolCall?.id;
@@ -1954,6 +1993,7 @@ export function pendingCallFromEvent(ev: JevTelemetryEvent, callKey: string, at:
   const s = (v: unknown, max = 200): string | undefined => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : undefined);
   return {
     callKey,
+    ...(joinToken(ev.callKey) ? { callId: joinToken(ev.callKey) } : {}),
     at,
     decision: s(ev.decision as unknown, 20) ?? 'pass',
     requestedModel: s(ev.requestedModel as unknown) ?? null,

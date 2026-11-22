@@ -20,7 +20,7 @@ import { safeSessionId } from '../../claude/logic.js';
 export { safeSessionId };
 import { readRegularFile } from '../../claude/safe-read.js';
 import { modelFamilyOf, modelRankOf, type ModelFamily } from './model-tier.js';
-import { servedQuotaPool, type QuotaPoolName } from './served-model.js';
+import { quotaPoolOfModel, servedQuotaPool, type QuotaPoolName } from './served-model.js';
 import {
   hasOrchestratorMarker,
   readOrchestratorMarker,
@@ -694,7 +694,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
 
   const isOrchestrator = recordOrchestrator || isOrchestratorModel(activeModel);
   // Neon and Argon both draw the Argon weekly bucket (Neon is pro-class and uses the argon variant pool).
-  const isArgonActive = Boolean(activeModel && /argon|neon/i.test(activeModel));
+  const isArgonActive = sessionDrawsArgonBuckets(activeModel);
   const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
@@ -832,7 +832,10 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   }
 
   // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
-  const isGeminiActive = !activeModel || /gemini|argon|neon|carbon|hydrogen/i.test(activeModel) || p3Min === null;
+  // The pool the SERVED model draws (2.3.20, `quotaPoolOfModel`, verified on Antigravity 1.5.14): Gemini and the Argon-pool families
+  // (Argon, Neon, Carbon, Opus) are read from the Gemini-side buckets, Sonnet and any other Claude or non-Gemini id from the 3p buckets.
+  // An Opus session used to be read as 3p; measured, an Opus turn draws `gemini-argon-wtu-weekly`, like Argon and Neon.
+  const isGeminiActive = !activeModel || quotaPoolOfModel(activeModel) !== '3p' || p3Min === null;
   const active = isGeminiActive
     ? { pool: 'gemini' as const, five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining, strategy: geminiStrategy }
     : { pool: '3p' as const, five_hour: p3Five, weekly: p3Weekly, min_remaining: p3Min, strategy: p3Strategy };
@@ -985,12 +988,21 @@ function bucketPoolView(view: QuotaView, name: QuotaPoolName): QuotaPoolView | n
 }
 
 /**
- * The pool a view's own session draws, by name (what `view.active` is): `3p` for a non-Gemini active pool, `argon` for an Argon or Neon
- * session (the quota view reads the Argon buckets for it), else `gemini`.
+ * True when a session on this model reads the Argon buckets (`gemini-argon-wtu-weekly`) for its own pool: the Argon, Neon and Opus
+ * families (`quotaPoolOfModel` says `argon`). Carbon is in the same pool by name but its frontier bucket is `gemini-weekly` (see
+ * the Orchestrator variant above), so a Carbon session reads the Gemini buckets.
+ */
+export function sessionDrawsArgonBuckets(model: string | null | undefined): boolean {
+  return Boolean(model && quotaPoolOfModel(model) === 'argon' && !/carbon/i.test(model));
+}
+
+/**
+ * The pool a view's own session draws, by name (what `view.active` is): `3p` for a non-Gemini active pool, `argon` for an Argon, Neon or
+ * Opus session (the quota view reads the Argon buckets for it), else `gemini`.
  */
 function sessionPoolName(view: QuotaView): QuotaPoolName {
   if (view.active.pool === '3p') return '3p';
-  return view.active_model && /argon|neon/i.test(view.active_model) ? 'argon' : 'gemini';
+  return sessionDrawsArgonBuckets(view.active_model) ? 'argon' : 'gemini';
 }
 
 /**

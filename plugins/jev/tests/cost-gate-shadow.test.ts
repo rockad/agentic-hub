@@ -393,6 +393,74 @@ describe('Antigravity: the tier check and shadow mode', () => {
     expect(antigravityCostGateShadowState(sub(undefined, FLASH_LOW), { sessionModel: FLASH_LOW })).toBe('pass');
   });
 
+  describe('shadow approval coverage is the 2.3.19 one (stricter than before the gate, documented in the README)', () => {
+    const FLASH_HIGH = 'gemini-3.8-flash-high';
+    const approve = (model: string) => approvals.record('c1', { model, scope: 'session', created_at: 1_000 });
+
+    it('approving a low-effort full id under an Orchestrator planner covers neither higher efforts, nor the enum, nor another vendor\'s id', () => {
+      expect(decide(sub('gemini-4-argon-low', ARGON_MAX), 'shadow', { sessionOrchestrator: true })).toMatchObject({ decision: 'deny' });
+      approve('gemini-4-argon-low');
+      expect(decide(sub('gemini-4-argon-low', ARGON_MAX), 'shadow', { sessionOrchestrator: true })).toMatchObject({ decision: 'allow', elevation: 'approved' });
+      for (const model of ['gemini-4-argon-high', 'gemini-4-argon-max', 'pro', 'claude-opus-5-5']) {
+        expect(decide(sub(model, ARGON_MAX), 'shadow', { sessionOrchestrator: true })).toMatchObject({ decision: 'deny' });
+      }
+    });
+
+    it('approving the enum pro on a flash session does not cover a full pro-class id', () => {
+      expect(decide(sub('pro', FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'deny' });
+      approve('pro');
+      expect(decide(sub('pro', FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'allow', elevation: 'approved' });
+      for (const model of ['gemini-4-argon-low', 'gemini-4-argon-xhigh']) {
+        expect(decide(sub(model, FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'deny' });
+      }
+    });
+
+    it('an xhigh approval does not cover max', () => {
+      expect(decide(sub('gemini-3.5-pro-xhigh', FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'deny' });
+      approve('gemini-3.5-pro-xhigh');
+      expect(decide(sub('gemini-3.5-pro-xhigh', FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'allow', elevation: 'approved' });
+      expect(decide(sub('gemini-3.5-pro-max', FLASH_HIGH), 'shadow')).toMatchObject({ decision: 'deny' });
+    });
+  });
+
+  describe('run_workflow: a full id names the effort it runs at, in shadow and on the enforce rank path', () => {
+    const FLASH_HIGH = 'gemini-3.8-flash-high';
+    const wf = (script: string, mode: 'shadow' | 'enforce') =>
+      evaluateAntigravityWorkflowCall(
+        { conversationId: 'cwe', modelName: FLASH_HIGH, lastUserInput: 'run it', toolCall: { id: 'w1', name: 'run_workflow', args: { Script: script } } },
+        { mode: 'on', sessionModel: FLASH_HIGH, approvals, elevationMode: 'choice', costGateMode: mode, now: () => 1_000, pinDir: path.join(dir, 'pins'), definitions: { definition: () => ({ found: false, model: null }) } }
+      );
+    const markerOf = (r: { decision: { reason?: string } }) => /\[jev-elevate:([a-z0-9_-]+)\]/.exec(r.decision.reason ?? '')?.[1];
+    const ARGON = 'await agent("p", model="gemini-4-argon-max")';
+
+    it('shadow: the marker names the script\'s effort (pro-max), not high', () => {
+      const r = wf(ARGON, 'shadow');
+      expect(r.decision.decision).toBe('deny');
+      expect(markerOf(r)).toBe('pro-max');
+      expect(markerOf(wf('await agent("p", model="gemini-4-argon-xhigh")', 'shadow'))).toBe('pro-xhigh');
+      expect(markerOf(wf('await agent("p", model="gemini-4-argon-low")', 'shadow'))).toBe('pro-low');
+      // a full id that names no effort (the model's default) still stands for high at most
+      expect(markerOf(wf('await agent("p", model="claude-opus-5-5")', 'shadow'))).toBe('pro-high');
+    });
+
+    it('shadow: a pro-high approval does not cover argon-max or opus-xhigh; a pro-max approval covers both', () => {
+      approvals.record('cwe', { model: 'pro-high', scope: 'session', created_at: 1_000 });
+      expect(wf(ARGON, 'shadow').decision.decision).toBe('deny');
+      expect(wf('await agent("p", model="claude-opus-5-5-xhigh")', 'shadow').decision.decision).toBe('deny');
+      approvals.record('cwe', { model: 'pro-max', scope: 'session', created_at: 1_000 });
+      expect(wf(ARGON, 'shadow').decision.decision).toBe('allow');
+      expect(wf('await agent("p", model="claude-opus-5-5-xhigh")', 'shadow').decision.decision).toBe('allow');
+    });
+
+    it('an enum value gets no effort suffix in shadow: the plain tier covers it', () => {
+      expect(markerOf(wf('await agent("p", model="pro")', 'shadow'))).toBe('pro');
+    });
+
+    it('enforce asks the same marker for the same script (shadow and enforce agree)', () => {
+      expect(markerOf(wf(ARGON, 'enforce'))).toBe('pro-max');
+    });
+  });
+
   it('on-demand is unchanged: nothing is decided in either mode', () => {
     for (const mode of ['shadow', 'enforce'] as const) {
       expect(decide(sub('gemini-4-argon-low', ARGON_MAX), mode, { sessionOrchestrator: true, mode: 'on-demand' })).toEqual({ decision: 'pass' });

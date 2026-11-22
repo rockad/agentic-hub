@@ -80,7 +80,7 @@ import {
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import { DEFAULT_COST_GATE_MODE, antigravityCostGate, costComparison, effortIndex, parseCostGateMode, type CostGateMode, type CostGateState, type CostGate } from '../src/core/cost-gate.js';
-import type { CostEffort } from '../src/core/cost-estimate.js';
+import { effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
 import { servedModelGuidance, subagentEnumOf } from '../src/core/served-model.js';
 import { jevHomeDir } from '../src/core/private-fs.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
@@ -678,7 +678,10 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
       kind: 'elevation',
       requested: m,
       tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
-      rank
+      rank,
+      // The rank path (every call in shadow, and a gate fallback in enforce) names the effort a full id runs at, so the marker and the
+      // approval claim `<tier>-<effort>` and not a `high` the script does not run at. An enum value carries its effort in what it is: none.
+      effort: subagentEnumOf(m) === null ? (effortFromModelId(m) ?? undefined) : undefined
     });
   };
   const inheritOrchestrator = (at: Tok, source: string): void => {

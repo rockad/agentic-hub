@@ -382,6 +382,7 @@ export async function applyAntigravityDowngrade(
     return {
       decision: {
         decision: 'deny',
+        cause: 'downgrade',
         reason: downgradeReason({
           typeName: args.TypeName ?? args.typeName,
           inherited: !explicitFlash,

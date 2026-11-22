@@ -13,6 +13,7 @@ import {
   type QuotaView
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
+import { causeFields, type DenyCause } from '../src/core/deny-cause.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour, telemetryMode } from '../src/core/mode-policy.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
@@ -34,7 +35,7 @@ import {
   type CostGateShadowState,
   type CostGateState
 } from '../src/core/cost-gate.js';
-import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -64,6 +65,8 @@ export type AntigravityHookDecision = {
    */
   decision: 'pass' | 'allow' | 'deny' | 'ask' | 'force_ask';
   reason?: string;
+  /** Why a `deny` or `ask` held the call (2.3.20); written to the rows as `denyCause` / `askCause`. Chosen by the code path, never by the reason text. */
+  cause?: DenyCause;
   permissionOverrides?: string[];
   overwrite?: Record<string, unknown>;
   elevation?: 'approved' | 'instructed' | 'denied' | 'asked' | 'clamped';
@@ -752,6 +755,8 @@ type ChoiceElevationContext = {
   reasonOverride?: (attempt: number) => string;
   /** The cost gate's sentence (2.3.19): what the call costs against the session's, written into the deny reason. */
   costNote?: string;
+  /** Why the call is held (2.3.20): `tier` (default), `cost` or `orchestrator`, `unverifiable` for a script. */
+  cause?: DenyCause;
   /** The model the call was written with, when `requestedModel` (the marker's and the approval's key) is its tier-and-effort form: the deny reason re-invokes with this one. */
   displayModel?: string;
 };
@@ -853,6 +858,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
   return {
     decision: 'deny',
     reason,
+    cause: ctx.cause ?? 'tier',
     elevation: 'denied',
     attemptCount: count,
     ...(pullFallback ? { pullFallback } : {})
@@ -892,13 +898,15 @@ export function evaluateAntigravitySubagentCall(
     if (reqLower.includes('free') || reqLower.includes('openrouter')) {
       return {
         decision: 'deny',
-        reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.'
+        reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.',
+        cause: 'unranked'
       };
     }
     if (!isRecognisedSubagentModel(reqLower)) {
       return {
         decision: 'deny',
-        reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`
+        reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`,
+        cause: 'unranked'
       };
     }
   }
@@ -911,7 +919,8 @@ export function evaluateAntigravitySubagentCall(
     if (isOrchestrator) {
       return {
         decision: 'deny',
-        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON
+        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON,
+        cause: 'orchestrator'
       };
     }
     effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
@@ -921,7 +930,9 @@ export function evaluateAntigravitySubagentCall(
 
   // 3. Quota check (BEFORE any approval or override!)
   if (deps.quotaView) {
-    const pool = poolForTier(deps.quotaView, effectiveTier);
+    // The pool the call draws is the pool of the model it is SERVED on (2.3.20): an enum value by its served model (`pro` is served on
+    // Gemini 4 Hydrogen, so it draws the Gemini pool), a full id by its family, an omitted or `inherit` Model the parent's pool.
+    const pool = poolForTier(deps.quotaView, !isExplicit || !requestedModel ? 'inherit' : requestedModel, sessionModel);
     let poolLabel = 'Gemini';
     if (deps.quotaView.pools) {
       if (pool === deps.quotaView.pools.frontier) {
@@ -939,13 +950,15 @@ export function evaluateAntigravitySubagentCall(
     if (pool.strategy === 'free_only') {
       return {
         decision: 'deny',
-        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
+        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`,
+        cause: 'quota'
       };
     }
     if (pool.strategy === 'conserve' && modelTierRank(effectiveTier) > 1) {
       return {
         decision: 'deny',
-        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
+        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`,
+        cause: 'quota'
       };
     }
   }
@@ -986,6 +999,9 @@ export function evaluateAntigravitySubagentCall(
   // What the marker and the approval carry: the tier and effort form when the gate is over, and for a tier ask the gate let through.
   const markerGate = overGate ?? (tierAbove && gate.kind === 'pass' ? gate : null);
   const gateNote = overGate ? { costNote: costComparison(overGate, (m) => String(m ?? 'the session model')) } : {};
+  // Why the call is held (2.3.20), from the path that held it: the enforced cost gate (and not the tier check, which stands before it
+  // for a full id) is `cost`; otherwise the rank ceiling, which under an Orchestrator conversation is the Orchestrator's flash ceiling.
+  const heldBy: DenyCause = overGate && !tierAbove ? 'cost' : isOrchestrator ? 'orchestrator' : 'tier';
 
   // Check explicit override in user prompt
   if (named && !overGate) {
@@ -1010,6 +1026,7 @@ export function evaluateAntigravitySubagentCall(
     return {
       decision: 'ask',
       reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'${overGate ? ` (it ${gateNote.costNote})` : ''}. Approve to run on ${requestedModel}, or cancel.${servedModelGuidance(requestedModel) ? ` ${servedModelGuidance(requestedModel)}` : ''}`,
+      cause: heldBy,
       elevation: 'asked',
       ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
     };
@@ -1051,6 +1068,7 @@ export function evaluateAntigravitySubagentCall(
     promptHash,
     signature,
     config: deps.config,
+    cause: heldBy,
     ...(overGate ? { costNote: gateNote.costNote } : {})
   });
 }
@@ -1319,6 +1337,7 @@ export function flushPendingServed(
               child_conversation_id: childConvId,
               requested_model: item.requestedModel ?? null,
               served_model: servedModel,
+              ...quotaPoolField(item.requestedModel, servedModel, null),
               backfilled: true
             });
             changed = true;
@@ -1743,6 +1762,25 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
 /** The `mode` every Antigravity telemetry row carries (2.3.19): the mode the hook acted under (`on` or `on-demand`; off writes nothing). */
 type AntigravityTelemetryMode = { mode?: string | null };
 
+/**
+ * The `quotaPool` of an `agent_call` / `subagent_served` row (2.3.20): `gemini`, `argon` or `3p`. The model the call was actually served on
+ * when it is known (a `subagent_served` row), else the one it is expected to be served on (`servedQuotaPool`: an enum value by its
+ * served model, a full id by its family, `inherit` or nothing the parent's).
+ */
+export function subagentQuotaPool(requested: unknown, served: unknown, parentModel: unknown): QuotaPoolName {
+  return quotaPoolOfModel(served) ?? servedQuotaPool(requested, parentModel);
+}
+
+/**
+ * `{ quotaPool }` for a decisions-log row, or nothing when the pool cannot be told: no served model, and the call named no model of
+ * its own (it runs on the parent's) while the parent is not known either.
+ */
+export function quotaPoolField(requested: unknown, served: unknown, parentModel: unknown): { quotaPool?: QuotaPoolName } {
+  const named = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '' && v.trim().toLowerCase() !== 'inherit';
+  if (!named(served) && !named(requested) && !named(parentModel)) return {};
+  return { quotaPool: subagentQuotaPool(requested, served, parentModel) };
+}
+
 /** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
 function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
   const t = typeof turnModel === 'string' ? turnModel.trim() : '';
@@ -1820,6 +1858,7 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,
+      quotaPool: subagentQuotaPool(params.requestedModel, params.servedModel, sessionModel),
       backfilled: Boolean(params.backfilled)
     };
   }
@@ -1880,7 +1919,11 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
     ...(!matchedRecommendedTier && params.recommendationPending ? { recommendationPending: true } : {}),
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
+    // Why a deny or a dialog ask held the call (2.3.20): `denyCause` / `askCause`.
+    ...causeFields(params.decision.decision, params.decision.cause),
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
+    // The quota pool the call is expected to draw (2.3.20): by the model it is served on, not by the enum value's name.
+    quotaPool: subagentQuotaPool(requestedModel, null, sessionModel),
     ...(downgrade ? { downgrade } : {}),
     // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
     ...antigravityCostFields(requestedModel, sessionModel),

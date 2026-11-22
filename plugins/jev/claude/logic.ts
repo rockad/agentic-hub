@@ -15,6 +15,7 @@ import {
   type ThinkingEffort
 } from '../src/shared.js';
 import { STOP_RETRYING_FROM_ATTEMPT, stopRetryingText } from '../src/core/elevation-text.js';
+import type { DenyCause } from '../src/core/deny-cause.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOverrides } from '../src/core/catalogue.js';
 import { EFFORT_LEVELS, effortCovers, type EffortLevel } from './agent-definitions.js';
@@ -687,7 +688,8 @@ export type AgentCall = {
   model?: string;
 };
 
-export type AgentDecision = { decision: 'ask' | 'deny'; reason: string } | null;
+/** The decision of a gate on an Agent / Task / Workflow call. `cause` (2.3.20) is why it was held, chosen by the path that produced it (never from the text); it is written to the rows as `denyCause` / `askCause`. */
+export type AgentDecision = { decision: 'ask' | 'deny'; reason: string; cause?: DenyCause } | null;
 
 /** The Claude alias for a model id or alias (`claude-sonnet-5` gives `sonnet`); null when unknown or "inherit". */
 export function modelAlias(model: string | undefined | null): ClaudeModelAlias | null {
@@ -1521,7 +1523,7 @@ export function clampOverGate(
 export function decideAgentCall(call: AgentCall, sessionModel: string | null, intent?: UserIntent | null): AgentDecision {
   const e = classifyElevation(call, sessionModel, intent);
   if (!e || e.kind !== 'elevating') return null;
-  return { decision: 'ask', reason: elevationAskReason(e) };
+  return { decision: 'ask', reason: elevationAskReason(e), cause: e.unranked ? 'unranked' : 'tier' };
 }
 
 /**

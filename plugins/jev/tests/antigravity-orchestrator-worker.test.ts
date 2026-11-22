@@ -129,7 +129,9 @@ describe('sticky Orchestrator session model', () => {
       expect(view.pools?.frontier.strategy).not.toBe('normal');
       expect(poolForTier(view, 'flash')).toBe(view.pools!.execution);
       expect(poolForTier(view, 'flash_lite')).toBe(view.pools!.execution);
-      expect(poolForTier(view, 'pro')).toBe(view.pools!.frontier);
+      // Model pro is served on Gemini 4 Hydrogen (2.3.20): the Gemini pool. A call served on Argon draws the frontier pool.
+      expect(poolForTier(view, 'pro')).toBe(view.pools!.execution);
+      expect(poolForTier(view, 'gemini-4-argon-high')).toBe(view.pools!.frontier);
     } finally {
       if (orig === undefined) delete process.env.JEV_QUOTA_STATE_FILE;
       else process.env.JEV_QUOTA_STATE_FILE = orig;

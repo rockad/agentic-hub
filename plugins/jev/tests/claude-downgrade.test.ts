@@ -295,7 +295,7 @@ describe('a call with no model runs on the session model', () => {
     expect(o.permissionDecision).toBe('deny');
     expect(o.permissionDecisionReason).toContain("'Yes, haiku', 'No, keep sonnet', 'No, and don't ask again this session'");
     expect(o.permissionDecisionReason).toContain('haiku $0.1/$0.5 vs sonnet $2/$10 per 1M, list price');
-    expect(logs[0]).toMatchObject({ downgrade: 'asked', downgrade_from: 'claude-sonnet-5-5', requested_model: null });
+    expect(logs[0]).toMatchObject({ downgrade: 'asked', denyCause: 'downgrade', downgrade_from: 'claude-sonnet-5-5', requested_model: null });
     expect(rated).toHaveLength(1);
     // the answer, then the relaunch with the model set explicitly
     await answer(d, 'No, keep sonnet');

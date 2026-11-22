@@ -130,11 +130,12 @@ describe('Item 3: Orchestrator pools and ceiling', () => {
     expect(poolForTier(orchView, 'flash')).toEqual(orchView.pools!.execution);
     expect(poolForTier(orchView, 'flash_lite')).toEqual(orchView.pools!.execution);
     expect(poolForTier(orchView, 'openrouter_free')).toEqual(orchView.pools!.execution);
-    expect(poolForTier(orchView, 'pro')).toEqual(orchView.pools!.execution); // both normal, exec min 0.7 <= front min 0.9
+    expect(poolForTier(orchView, 'pro')).toEqual(orchView.pools!.execution); // pro is served on Hydrogen: the Gemini pool (2.3.20)
+    expect(poolForTier(orchView, 'gemini-4-argon-high')).toEqual(orchView.pools!.execution); // both normal, exec min 0.7 <= front min 0.9
   });
 
   it('poolForTier compares pool severity (free_only < conserve < normal < unknown, breaking ties by min_remaining)', () => {
-    // 1. frontier is conserve while execution is normal -> pro selects frontier (worse)
+    // 1. frontier is conserve while execution is normal -> a call served on Argon selects frontier (worse); Model pro (Hydrogen) does not
     const view1: QuotaView = {
       source: 'test',
       schema: 2,
@@ -153,11 +154,14 @@ describe('Item 3: Orchestrator pools and ceiling', () => {
         frontier: { pool: 'frontier', five_hour: null, weekly: 0.15, min_remaining: 0.15, strategy: 'conserve' }
       }
     };
-    expect(poolForTier(view1, 'pro')).toEqual(view1.pools!.frontier);
+    expect(poolForTier(view1, 'pro')).toEqual(view1.pools!.execution);
+    expect(poolForTier(view1, 'gemini-4-argon-high')).toEqual(view1.pools!.frontier);
+    expect(poolForTier(view1, 'claude-opus-5-5-high')).toEqual(view1.pools!.frontier);
+    expect(poolForTier(view1, 'inherit')).toEqual(view1.pools!.frontier); // the Argon planner's own pool
     expect(poolForTier(view1, 'judgement')).toEqual(view1.pools!.frontier);
     expect(poolForTier(view1, 'flash')).toEqual(view1.pools!.execution);
 
-    // 2. execution is free_only while frontier is normal -> pro selects execution (worse)
+    // 2. execution is free_only while frontier is normal -> an Argon call selects execution (worse)
     const view2: QuotaView = {
       ...view1,
       pools: {
@@ -165,7 +169,7 @@ describe('Item 3: Orchestrator pools and ceiling', () => {
         frontier: { pool: 'frontier', five_hour: null, weekly: 0.9, min_remaining: 0.9, strategy: 'normal' }
       }
     };
-    expect(poolForTier(view2, 'pro')).toEqual(view2.pools!.execution);
+    expect(poolForTier(view2, 'gemini-4-argon-high')).toEqual(view2.pools!.execution);
 
     // 3. Both conserve -> tie-break by lower min_remaining
     const view3: QuotaView = {
@@ -175,7 +179,7 @@ describe('Item 3: Orchestrator pools and ceiling', () => {
         frontier: { pool: 'frontier', five_hour: null, weekly: 0.12, min_remaining: 0.12, strategy: 'conserve' }
       }
     };
-    expect(poolForTier(view3, 'pro')).toEqual(view3.pools!.frontier); // 0.12 < 0.25
+    expect(poolForTier(view3, 'gemini-4-neon-xhigh')).toEqual(view3.pools!.frontier); // 0.12 < 0.25
   });
 });
 

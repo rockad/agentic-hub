@@ -39,6 +39,8 @@ import {
   readAntigravityTurn,
   buildAntigravityTelemetryEvent,
   antigravityCallKey,
+  quotaPoolField,
+  subagentQuotaPool,
   claimTurnRecommendation,
   pendingCallFromEvent,
   cleanUserInput,
@@ -54,6 +56,7 @@ import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-g
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
 import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
 import { queueServedNotice } from './served-notice.js';
+import { causeFields } from '../src/core/deny-cause.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -484,7 +487,8 @@ async function main() {
             session_id: conversationId,
             child_conversation_id: childConvId || null,
             requested_model: requestedModel || null,
-            served_model: servedModel || null
+            served_model: servedModel || null,
+            ...quotaPoolField(requestedModel, servedModel, input.modelName)
           });
           // Telemetry only for a served model that was found, as the backfill paths do; the decisions-log row above
           // stays as the audit trail for a call where nothing could be read.
@@ -588,6 +592,7 @@ async function main() {
         session_model: activeModel || null,
         ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
         decision: wf.decision,
+        ...causeFields(wf.decision, wf.cause),
         elevation: wf.elevation || null,
         approval_scope: wf.approvalScope || null,
         attempt_count: wf.attemptCount || null,
@@ -668,9 +673,13 @@ async function main() {
       call_key: callKey,
       tool_name: 'invoke_subagent',
       requested_model: requestedModel,
+      // The quota pool the call is expected to draw (2.3.20): by the model it is served on.
+      quotaPool: subagentQuotaPool(requestedModel, null, activeModel),
       session_model: activeModel || null,
       ...(trimmedModel && trimmedModel !== activeModel ? { turn_model: trimmedModel } : {}),
       decision: decision.decision,
+      // Why a deny or a dialog ask held the call (2.3.20): `denyCause` / `askCause`.
+      ...causeFields(decision.decision, decision.cause),
       elevation: decision.elevation || null,
       approval_scope: decision.approvalScope || null,
       attempt_count: decision.attemptCount || null,

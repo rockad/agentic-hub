@@ -98,6 +98,7 @@ import {
 } from './logic.js';
 import type { ApprovalStore } from './approvals.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
+import type { DenyCause } from '../src/core/deny-cause.js';
 import { safeSessionId } from '../src/core/governance.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 
@@ -1083,6 +1084,12 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     }
 
     const elevationMode = deps.elevationMode ?? antigravityElevationMode();
+    // Why a held script is held (2.3.20), from the path that held it: a script the analysis cannot verify is `unverifiable`; otherwise
+    // the elevations are `cost` when the enforced cost gate held every one of them, else the rank ceiling (`orchestrator` for the
+    // Orchestrator's flash ceiling, `tier` otherwise).
+    const unverifiable = d.unverifiable.length > 0 || !d.highest || !d.highest.tier;
+    const elevationCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate) ? 'cost' : sessionOrchestrator ? 'orchestrator' : 'tier';
+    const heldBy: DenyCause = unverifiable ? 'unverifiable' : elevationCause;
     // Dialog mode keeps its dialog for everything the guard found. Choice and clamp never ask (a harness that auto-approves
     // would approve it unseen): a script cannot be clamped, so an elevation takes the choice flow in both, and anything the
     // analysis cannot prove is denied with what to fix.
@@ -1093,6 +1100,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
         {
           decision: 'ask',
           reason: workflowDialogReason(d, ceilingTier, d.scripts),
+          cause: heldBy,
           elevation: 'asked',
           ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
         },
@@ -1102,7 +1110,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
 
     const top = d.highest;
     if (d.unverifiable.length > 0 || !top || !top.tier) {
-      return finish('denied-unverifiable', { decision: 'deny', reason: workflowUnverifiableReason(d, sessionModel, d.scripts), elevation: 'denied' }, { workflow_reasons: d.sites.length });
+      return finish('denied-unverifiable', { decision: 'deny', reason: workflowUnverifiableReason(d, sessionModel, d.scripts), cause: 'unverifiable', elevation: 'denied' }, { workflow_reasons: d.sites.length });
     }
 
     // The tier name stands for the model in the marker and in the approval store: the marker regex takes [a-z0-9_-] only,
@@ -1139,6 +1147,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
       promptHash,
       signature: workflowSignature(d.scripts),
       config: deps.config,
+      cause: elevationCause,
       reasonOverride: (attempt) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt, { model: markerModel, ...(worstGate ? { costNote: costComparison(worstGate) } : {}) })
     });
     if (choice.decision === 'allow') pin('allow');

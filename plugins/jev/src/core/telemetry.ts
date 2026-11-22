@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { fetchWithTimeout } from './client.js';
 import { PRIVATE_FILE_MODE, privateDir, privateFile, jevHomeDir } from './private-fs.js';
 import { telemetryMode, type TelemetryMode } from './mode-policy.js';
+import { readJevModeSync, type JevHarness } from './config.js';
 
 /** Directory of the Antigravity telemetry files, resolved from HOME at call time. */
 export function telemetryDir(): string {
@@ -127,17 +128,42 @@ export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
   }
 }
 
+/** The Jev harness a row's `harness` label names (`claude` and `claude-code` are Claude Code); an absent or unknown label is Antigravity, the label `logTelemetry` gives a row. */
+function harnessOfRow(label: unknown): JevHarness {
+  const h = typeof label === 'string' ? label.trim().toLowerCase() : '';
+  if (h === 'claude' || h === 'claude-code') return 'claude-code';
+  if (h === 'opencode' || h === 'cli') return h;
+  return 'antigravity';
+}
+
 /**
- * Non-blocking append to local telemetry log (used by MCP tools)
+ * The `mode` of a row written by an MCP tool (2.3.20): `on` or `on-demand`, read through mode-policy for the harness the row names.
+ * A row that already says the mode in effect (`jev_set_mode`: the mode after the change; `jev_get_mode`) is normalised the same way.
+ * `off` is never written (the MCP tools are unavailable then; a row that is still written carries no `mode`).
+ */
+function toolRowMode(entry: Record<string, unknown>): TelemetryMode | undefined {
+  try {
+    return telemetryMode('mode' in entry ? (entry.mode as string) : readJevModeSync(harnessOfRow(entry.harness)));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Non-blocking append to local telemetry log (used by MCP tools). Every row carries `mode` (2.3.20), `on` or `on-demand`, as the
+ * hook rows do; a `jev_set_mode` row says the mode in effect after the change in `mode` and the one before it in `previousMode`.
  */
 export async function logTelemetry(entry: Record<string, unknown>): Promise<void> {
   try {
+    const mode = toolRowMode(entry);
+    const { mode: _entryMode, ...rest } = entry;
     const payload = {
       timestamp: new Date().toISOString(),
       // Integer Unix seconds beside the ISO string, so a `jq` filter can compare times without GNU `date -d`.
       epoch: Math.floor(Date.now() / 1000),
       harness: 'antigravity',
-      ...entry
+      ...rest,
+      ...(mode ? { mode } : {})
     };
     await appendPrivate(telemetryFile(), JSON.stringify(payload) + '\n');
   } catch {

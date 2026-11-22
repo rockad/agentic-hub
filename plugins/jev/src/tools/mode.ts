@@ -111,6 +111,8 @@ export async function handleSetModeTool(args: unknown): Promise<{ content: Array
     throw new Error(`Invalid mode "${mode}". Supported modes: "off", "on-demand", "on"`);
   }
 
+  // The mode before the change, for the telemetry row (`previousMode`).
+  const previousMode = readJevModeSync(detectActiveHarness());
   const updatedAt = await coreWriteModeState(targetMode);
   const details = getModeDetails(targetMode);
 
@@ -126,7 +128,9 @@ export async function handleSetModeTool(args: unknown): Promise<{ content: Array
 
   await logTelemetry({
     tool: 'jev_set_mode',
+    // The mode in effect after the change (`off` is omitted from the row by logTelemetry) and the one before it.
     mode: targetMode,
+    previousMode,
     status: 'success'
   });
 

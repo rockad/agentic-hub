@@ -235,9 +235,9 @@ export function escalationNote(harness: JevHarness, isPro: boolean, sessionModel
   if (!sessionModel) {
     return ` Opus is above the assumed session model (${ASSUMED_CLAUDE_SESSION_MODEL}; the session model is not known yet): the Jev guard will ask the user once per call before it runs.`;
   }
-  // A model name Jev cannot place gives the guard nothing to compare against, so the promise to ask would be untrue.
+  // A model name Jev cannot place (2.3.19): the guard treats it as unknown and holds the session as sonnet, so it does ask.
   if (claudeModelTier(sessionModel) === null) {
-    return ' Opus may be above the session model, but the session model is unknown, so the Jev guard may not ask the user before it runs.';
+    return ` Opus may be above the session model, which Jev does not know, so the Jev guard assumes ${ASSUMED_CLAUDE_SESSION_MODEL} and will ask the user once per call before it runs.`;
   }
   return ` Opus is above the session model (${sessionModel}): the Jev guard will ask the user once per call before it runs.`;
 }

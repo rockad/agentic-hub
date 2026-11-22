@@ -40,6 +40,8 @@ export interface JevTelemetryEvent {
   sessionModelSource?: string | null;
   /** True (2.3.19, Claude Code `agent_call` only) when the session model was not known and Jev held the session as `sonnet` (`sessionModelSource` is then `assumed`); absent otherwise. */
   sessionModelAssumed?: boolean;
+  /** The session model id Jev could not place (no rank, no alias, not in the catalogue) when `sessionModelAssumed` is set for that reason (`sessionModel` is then `sonnet`); absent otherwise. */
+  sessionModelReported?: string;
   /** The model the turn itself ran on, written only when it differs from `sessionModel` (an executor turn of an Antigravity Orchestrator conversation, whose `sessionModel` is the sticky planner). */
   turnModel?: string;
   /**

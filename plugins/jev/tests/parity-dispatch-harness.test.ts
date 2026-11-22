@@ -371,10 +371,11 @@ describe('escalationNote when the session model is unknown (review fix)', () => 
     expect(note).not.toContain('may not ask');
   });
 
-  it('a model name Jev cannot place still says the guard may not ask (nothing to compare against)', () => {
+  // 2.3.19: a model name Jev cannot place used to say the guard "may not ask"; the guard now assumes sonnet for it and asks.
+  it('a model name Jev cannot place says the guard assumes sonnet and will ask', () => {
     const note = escalationNote('claude-code', true, 'some-other-model');
-    expect(note).toContain('may not ask');
-    expect(note).not.toContain('will ask the user once');
+    expect(note).toContain('assumes sonnet and will ask the user once per call');
+    expect(note).not.toContain('may not ask');
   });
 
   it('keeps the known-session wording unchanged', () => {

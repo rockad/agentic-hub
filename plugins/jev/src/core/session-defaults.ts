@@ -25,3 +25,10 @@ export const ASSUMED_SESSION_MODEL_SOURCE = 'assumed';
 
 /** The sentence a deny (or dialog ask) reason carries when the session model is the assumed one. */
 export const ASSUMED_SESSION_MODEL_NOTE = `The session model is not known yet, so Jev assumes ${ASSUMED_CLAUDE_SESSION_MODEL}.`;
+
+/**
+ * The sentence of a reason when the session model the hook was told is one Jev cannot place (no rank, no alias, not in the
+ * catalogue) and the session is held as the assumed model instead. `reported` must already be safe text (a clipped model id).
+ */
+export const unplaceableSessionModelNote = (reported: string): string =>
+  `The session model ${reported} is not one Jev knows, so Jev assumes ${ASSUMED_CLAUDE_SESSION_MODEL}.`;

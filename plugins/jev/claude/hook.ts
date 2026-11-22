@@ -98,6 +98,9 @@ import {
   gateMarkerEffort,
   gateModelLabel,
   modelAlias,
+  modelRank,
+  catalogueKnows,
+  safeModelText,
   dispatchQuestions,
   elevationAskReason,
   elevationChoiceReason,
@@ -157,7 +160,8 @@ import {
   ASSUMED_CLAUDE_SESSION_EFFORT,
   ASSUMED_CLAUDE_SESSION_MODEL,
   ASSUMED_SESSION_MODEL_NOTE,
-  ASSUMED_SESSION_MODEL_SOURCE
+  ASSUMED_SESSION_MODEL_SOURCE,
+  unplaceableSessionModelNote
 } from '../src/core/session-defaults.js';
 import { agentEffortFinding, resolveAgentModel, type EffortLevel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
@@ -632,9 +636,15 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // written, no SessionStart record) is held as `sonnet`, and as `high` effort when its effort is not reported either, so an
   // opus subagent (or an xhigh / max effort) takes the normal approval flow instead of running unchecked. Decided per call: the
   // moment a model is known the real one is used (nothing remembers the assumption).
-  const sessionModelAssumed = learnedSession.model === null;
-  const sessionModel: string | null = learnedSession.model ?? ASSUMED_CLAUDE_SESSION_MODEL;
-  const sessionModelSource: string | null = sessionModelAssumed ? ASSUMED_SESSION_MODEL_SOURCE : learnedSession.source;
+  // A model id Jev cannot place (no rank, no alias, not in the catalogue: `some-other-model`) is treated the same way: nothing can
+  // be compared with it. It keeps its real source on the row and is named in `sessionModelReported`; a catalogue-known id is placeable.
+  const rankCtx = safely(() => deps.rankContext?.()) ?? null;
+  const reportedModel = learnedSession.model;
+  const unplaceable = reportedModel !== null && modelAlias(reportedModel) === null && modelRank(reportedModel) === null && !catalogueKnows(rankCtx, reportedModel);
+  const sessionModelAssumed = reportedModel === null || unplaceable;
+  const sessionModel: string | null = sessionModelAssumed ? ASSUMED_CLAUDE_SESSION_MODEL : reportedModel;
+  const sessionModelSource: string | null = reportedModel === null ? ASSUMED_SESSION_MODEL_SOURCE : learnedSession.source;
+  const assumedNote = unplaceable ? unplaceableSessionModelNote(safeModelText(reportedModel)) : ASSUMED_SESSION_MODEL_NOTE;
   // A turn stored under another mode is stale: its advice and intent are not this turn's. In the live hook a
   // turn that ran with Jev off is already dropped by forgetTurn, so this check is a second line of defence
   // for a state written under another mode (and for injected stores); a state with no `mode` is accepted.
@@ -652,7 +662,6 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // reached the assistant at UserPromptSubmit, and it is logged below next to the model the call used.
   // A Workflow carries no model of its own, so classifyElevation never sees it; the agents a Workflow launches never
   // pass through this hook, so its script is analysed instead (see the Workflow block below).
-  const rankCtx = safely(() => deps.rankContext?.()) ?? null;
   // The model an Agent/Task call will actually run on: the call's own, else its definition's, a ladder pin or the
   // subagent-model environment (resolveAgentModel). An internal failure falls back to the call's own model alone.
   const resolved: ResolvedAgentModel | null =
@@ -982,8 +991,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   if (verdict?.decision === 'deny') dropAllowOutputs();
 
   // An assumed session model says so in the question the user is shown (the deny, or the dialog's text), once.
-  if (sessionModelAssumed && verdict && !verdict.reason.includes(ASSUMED_SESSION_MODEL_NOTE)) {
-    verdict = { decision: verdict.decision, reason: `${verdict.reason} ${ASSUMED_SESSION_MODEL_NOTE}` };
+  if (sessionModelAssumed && verdict && !verdict.reason.includes(assumedNote)) {
+    verdict = { decision: verdict.decision, reason: `${verdict.reason} ${assumedNote}` };
   }
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
@@ -1025,6 +1034,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     sessionModel,
     session_model_source: sessionModelSource,
     ...(sessionModelAssumed ? { sessionModelAssumed: true } : {}),
+    ...(unplaceable ? { sessionModelReported: safeModelText(reportedModel) } : {}),
     ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
     ...(effortAsk ? { effort_ask: true } : {}),
     ...effortLog,
@@ -1871,14 +1881,16 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
 }
 
 /** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */
-function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource' | 'sessionModelAssumed'> {
+function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource' | 'sessionModelAssumed' | 'sessionModelReported'> {
   if (!('sessionModel' in entry)) return {};
   const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
   return {
     sessionModel: str(entry.sessionModel),
     sessionModelSource: str(entry.session_model_source),
     // 2.3.19: the session model was not known and Jev held the session as sonnet; only a row that did so carries the flag.
-    ...(entry.sessionModelAssumed === true ? { sessionModelAssumed: true } : {})
+    ...(entry.sessionModelAssumed === true ? { sessionModelAssumed: true } : {}),
+    // The id Jev could not place (the session model on the row is then the assumed one).
+    ...(str(entry.sessionModelReported) ? { sessionModelReported: str(entry.sessionModelReported) as string } : {})
   };
 }
 

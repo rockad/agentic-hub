@@ -833,7 +833,7 @@ export function effortAskReason(gate: OverGate): string {
 }
 
 /** Model-supplied text that reaches a deny reason: only characters a model id can carry, clipped. */
-function safeModelText(model: unknown): string {
+export function safeModelText(model: unknown): string {
   const clean = typeof model === 'string' ? model.replace(/[^A-Za-z0-9._:/@[\]-]/g, '').slice(0, 60) : '';
   return clean || 'unknown';
 }

@@ -199,11 +199,22 @@ describe('default mode: explicit instruction and untouched calls', () => {
     expect(logs.at(-1)).not.toHaveProperty('elevation');
   });
 
-  it('a Workflow and an unknown session model are untouched', async () => {
+  it('a Workflow with no model is untouched', async () => {
     const wf = await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), setup().d);
-    const unknown = await onPreToolUse(call(), setup({ readSessionModel: () => null }).d);
 
-    expect([wf, unknown]).toEqual([null, null]);
+    expect(wf).toBeNull();
+  });
+
+  // 2.3.19: this used to be "an unknown session model is untouched" (fail open). An unknown model is now assumed sonnet (fail closed).
+  it('an unknown session model is assumed sonnet: an opus call asks, and the question says so', async () => {
+    const { d, logs } = setup({ readSessionModel: () => null });
+
+    const o = out(await onPreToolUse(call(), d));
+
+    expect(o.permissionDecision).toBe('ask');
+    expect(o.permissionDecisionReason).toContain('stronger than the session model "sonnet"');
+    expect(o.permissionDecisionReason).toContain('The session model is not known yet, so Jev assumes sonnet.');
+    expect(logs.at(-1)).toMatchObject({ sessionModel: 'sonnet', session_model_source: 'assumed', sessionModelAssumed: true, decision: 'ask' });
   });
 });
 

@@ -363,14 +363,15 @@ describe('jev_dispatch on Claude Code (5.11)', () => {
 });
 
 describe('escalationNote when the session model is unknown (review fix)', () => {
-  it('says the guard may not ask instead of promising a question', () => {
+  // 2.3.19: no session model at all used to say the guard "may not ask" (fail open). The guard now holds the session as sonnet and asks.
+  it('says the guard assumes sonnet and will ask, when no session model is known', () => {
     const note = escalationNote('claude-code', true, null);
-    expect(note).toContain('session model is unknown');
-    expect(note).toContain('may not ask');
-    expect(note).not.toContain('will ask the user once');
+    expect(note).toContain('assumed session model (sonnet; the session model is not known yet)');
+    expect(note).toContain('will ask the user once per call');
+    expect(note).not.toContain('may not ask');
   });
 
-  it('treats a model name Jev cannot place as unknown too', () => {
+  it('a model name Jev cannot place still says the guard may not ask (nothing to compare against)', () => {
     const note = escalationNote('claude-code', true, 'some-other-model');
     expect(note).toContain('may not ask');
     expect(note).not.toContain('will ask the user once');

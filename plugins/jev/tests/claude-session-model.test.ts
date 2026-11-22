@@ -503,23 +503,25 @@ describe('through the hook (no session file, a transcript whose last assistant m
     expect(logs[0]).toMatchObject({ sessionModel: 'claude-sonnet-5-5', session_model_source: 'transcript', elevation: 'denied' });
   });
 
-  it('without transcript_path, or when the transcript is corrupt, nothing changes: no guard, no file', async () => {
+  // 2.3.19: the rows used to carry sessionModel null (fail open); an unknown session model is now assumed sonnet and the row says so.
+  it('without transcript_path, or when the transcript is corrupt, nothing is learned: no file, the model is assumed sonnet', async () => {
     const { d, logs } = setup();
     const call = { description: "Get today's date from the shell", prompt: 'Run date.' };
     expect(await onPreToolUse(agent(call), d)).toBeNull();
     expect(await onPreToolUse(agent(call, { transcript_path: transcript(['garbage', '{']) }), d)).toBeNull();
     expect(await onPreToolUse(agent(call, { transcript_path: '/etc/passwd' }), d)).toBeNull();
     expect(fs.existsSync(path.join(sessions, 's1.json'))).toBe(false);
-    expect(logs.every((l) => l.sessionModel === null && l.session_model_source === null)).toBe(true);
+    expect(logs.every((l) => l.sessionModel === 'sonnet' && l.session_model_source === 'assumed' && l.sessionModelAssumed === true)).toBe(true);
   });
 
-  it('a deps without the learner behaves as before', async () => {
+  it('a deps without the learner assumes sonnet (fail closed)', async () => {
     const f = transcript([assistant('claude-sonnet-5-5')]);
     const { d, logs } = setup({ withLearner: false });
     const o = out(await onPreToolUse(agent({ description: 'x', prompt: 'y', model: 'opus' }, { transcript_path: f }), d));
-    // no session model: no elevation guard (today's behaviour); the transcript is not consulted and nothing is written
-    expect(o.permissionDecisionReason ?? '').not.toContain('[jev-elevate');
-    expect(logs[0]).toMatchObject({ sessionModel: null, session_model_source: null });
+    // no session model: the assumed sonnet holds an opus call; the transcript is not consulted and nothing is written
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(o.permissionDecisionReason).toContain('The session model is not known yet, so Jev assumes sonnet.');
+    expect(logs[0]).toMatchObject({ sessionModel: 'sonnet', session_model_source: 'assumed', sessionModelAssumed: true });
     expect(fs.existsSync(path.join(sessions, 's1.json'))).toBe(false);
   });
 

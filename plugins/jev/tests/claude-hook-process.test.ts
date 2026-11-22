@@ -246,20 +246,27 @@ describe('session model learned from the transcript (no SessionStart ran)', () =
     expect(log[0]).toMatchObject({ sessionModel: 'claude-sonnet-5-5', session_model_source: 'transcript', elevation: 'denied' });
   });
 
-  it('a transcript outside ~/.claude/projects is not read: no guard, no file', () => {
+  // 2.3.19: these two used to expect no guard (fail open). The unreadable transcript teaches nothing, so the model is assumed sonnet.
+  it('a transcript outside ~/.claude/projects is not read: no file, the model is assumed sonnet and the opus call is denied', () => {
     const outside = path.join(home, 'outside.jsonl');
     fs.writeFileSync(outside, assistant('claude-sonnet-5-5') + '\n');
     const proc = run('pre-tool-use', agentCall(outside));
 
     expect(proc.exitCode).toBe(0);
-    expect(proc.stdout.toString()).not.toContain('jev-elevate');
+    const reason = JSON.parse(proc.stdout.toString()).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain('[jev-elevate:opus]');
+    expect(reason).toContain('The session model is not known yet, so Jev assumes sonnet.');
     expect(fs.existsSync(path.join(jevDir(), 'claude-sessions', 's-tr.json'))).toBe(false);
   });
 
-  it('a corrupt transcript fails open', () => {
+  it('a corrupt transcript fails closed: the model is assumed sonnet and the opus call is denied', () => {
     const proc = run('pre-tool-use', agentCall(transcriptAt(['{"type":"assistant"', 'garbage'])));
 
     expect(proc.exitCode).toBe(0);
-    expect(proc.stdout.toString()).not.toContain('jev-elevate');
+    const out = JSON.parse(proc.stdout.toString());
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    const log = fs.readFileSync(path.join(jevDir(), 'claude_decisions.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(log[0]).toMatchObject({ sessionModel: 'sonnet', session_model_source: 'assumed', sessionModelAssumed: true });
   });
 });

@@ -568,6 +568,7 @@ Rows go to `jev_telemetry.jsonl`; the agent-usage collector snake-cases the keys
 
 - **`agent_call`** (`PreToolUse`): `turn`, `sessionModel`, `sessionModelSource`, `decision`, `requestedModel`, `modelUsed`, `modelUsedSource`, `modelRecommended`, `recommendedTier`.
   - **`modelUsed` and `modelUsedSource` only when the call goes ahead** (`pass`, `allow`, and the native `ask`, where the run may or may not happen). A `decision: "deny"` row leaves both unset; `requestedModel` stays. On Claude Code the row also carries `decision` (`deny`, `ask`, `allow` for a clamp or an applied downgrade, else `pass`) and `requestedModel`; its recommendation fields are `modelRecommended` and `tierRecommended`.
+  - **`sessionModelAssumed`** (2.3.19, Claude Code only): `true` on an `agent_call` row whose session model was not known and was held as `sonnet` (`sessionModelSource` is then `assumed`); absent otherwise.
   - **`mode`** (every row, 2.3.19): `on` or `on-demand`, the mode the hook acted under. `off` writes no row, so it never appears; rows written before 2.3.19 have none.
   - **`costSaving`** (2.3.19): only on an `agent_call` row whose `downgrade` is `asked` or `applied`. The requested (model, effort) cost minus the downgrade target's at the same effort, `null` when either is unknown; the downgrade flow itself stays model-only.
   - **`modelRecommended` / `recommendedTier`** are attached whenever the turn's recommendation is known when the call arrives, whatever the decision.
@@ -653,9 +654,10 @@ The transcript path is read only when it is a regular file that ends in `.jsonl`
 `~/.claude/projects` (a hostile `transcript_path` cannot make the hook read another file, and a FIFO named like a
 transcript is never opened; symlinks are resolved first). The session id must be `[A-Za-z0-9_-]+` to name a file in
 `claude-sessions/`, otherwise nothing is stored. A missing,
-empty, corrupt or oversized-line transcript, or any read or write failure, means no session model, exactly as before.
+empty, corrupt or oversized-line transcript, or any read or write failure, means no session model. Since 2.3.19 the
+`PreToolUse` guard does not fail open on that: it holds the session as `sonnet` (see "An unknown session model fails closed" in the 2.3.19 release notes).
 No transcript content is stored or logged: only the model id. The decision log entries of `PreToolUse` and
-`UserPromptSubmit` carry `session_model_source` (`"stored"`, `"transcript"`, or `null` when there is none).
+`UserPromptSubmit` carry `session_model_source` (`"stored"`, `"transcript"`, `null` when there is none; on an `agent_call` of a mode that decides, `"assumed"` with `sessionModelAssumed: true`).
 
 **Precedence.** One order decides the model of a delegation: (1) an explicit instruction in the current
 prompt, either a model named in an imperative (`use opus`, `run an opus subagent`) or a cost intent (`minimal
@@ -744,8 +746,8 @@ the modes that approve without asking. `default` and `plan` show the dialog, `ac
 never ask in either harness; dialog is the only mode that asks, and it warns when the harness auto-approves (Claude Code
 `permission_mode`; Antigravity: permission preset TURBO or tool permission `always-proceed`).
 
-Unchanged: a call at or below the session model, with no model, an unknown or missing session
-model (a `Workflow` is read by the Workflow guard, see "Workflow guard" below); a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
+Unchanged: a call at or below the session model, with no model (an unknown session model is held as `sonnet` since 2.3.19, not let through);
+(a `Workflow` is read by the Workflow guard, see "Workflow guard" below); a model the user named in the prompt (`elevation: "instructed"`); the remapped-alias ask under `clamp`; the
 apostrophe and stale-intent fixes.
 
 **State.** `<session_id>.approvals.json` in `~/.config/jev/claude-sessions/` (directory 0700, file 0600), written
@@ -1007,7 +1009,8 @@ happens depends on what the user said in the current prompt, and on one opt-in s
 
 | Situation | What happens |
 | :--- | :--- |
-| Model at or below the session model, no model, `inherit`, unknown session model | Untouched. (A `Workflow` is read by the Workflow guard.) |
+| Model at or below the session model, no model, `inherit` | Untouched. (A `Workflow` is read by the Workflow guard.) |
+| Unknown session model (nothing stored, no transcript to learn it from) | Held as `sonnet` (and as `high` effort when the effort is not reported either): an `opus` call takes the same question as on a sonnet session, with `The session model is not known yet, so Jev assumes sonnet.` at the end of the reason; `sonnet`, `haiku`, no model and `inherit` pass. Fails closed since 2.3.19. |
 | The prompt names that model or a stronger one (`use opus`, `run an opus subagent`) | Passes unchanged, no dialog (the instruction is the approval). Logged as `elevation: "instructed"`. |
 | **`JEV_ELEVATION=dialog`:** a stronger model, no such instruction | **Ask, on every such call** (a permission dialog, as in 2.3.3). Yes runs it on the requested model; No cancels the call and stops the turn; a comment typed with No lets the assistant continue, for example "continue on sonnet" (per the Claude Code documentation). Logged as `elevation: "asked"`. |
 | The session model's alias is remapped (`ANTHROPIC_DEFAULT_SONNET_MODEL`, `_HAIKU_` or `_OPUS_MODEL` set for it) | Ask, in dialog and clamp modes: the clamp would set an alias that does not run on the session model. Under the opt-in it is logged with `clamp_skipped: "alias-remapped"`. The choice flow is not affected. |
@@ -1158,9 +1161,10 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
 ### Release notes
 
 - **2.3.19** (Claude Code `Agent`/`Task`/`Workflow` and Antigravity `invoke_subagent`/`run_workflow` PreToolUse guards; Jev mode `on`, and the telemetry rows of `on` and `on-demand`; version 2.3.19):
+  - **An unknown session model fails closed (Claude Code).** The guard used to fail open when the session model was not known (a brand-new or headless session before its transcript is written, no `SessionStart` record): an opus subagent ran with no question (18 of 268 `Agent` calls in one decisions log had no session model). The session is now held as `sonnet`, and as `high` effort when its effort is not reported either, so an `opus` subagent (or an `xhigh`/`max` effort) gets the normal question: choice denies with `[jev-elevate:opus]` (or the effort marker), clamp runs it on `sonnet`, dialog asks, approvals work as usual. It applies to `Agent`/`Task` calls and to the `agent()` literals of a `Workflow`. The deny (or dialog) reason ends with `The session model is not known yet, so Jev assumes sonnet.`; the decisions row carries `session_model_source: "assumed"` and `sessionModelAssumed: true`, and so does the telemetry row (`sessionModelSource: "assumed"`, `sessionModelAssumed: true`). The assumption is made per call: when the model is known later in the session (a stored record, the transcript) the real one is used. No downgrade is offered against an assumed model. `on-demand` still decides nothing (its row keeps `sessionModel: null`) and `off` writes nothing. `sonnet`, `haiku`, a call with no model and `inherit` pass. A model name Jev cannot place at all is a different case and still falls back to the older rules. Antigravity is unchanged: `modelName` is always on the hook input, and an unknown session already defaults to the flash tier (`gemini-3.8-flash-low`, `src/core/session-defaults.ts`).
   - **One cost gate for model and effort.** The separate model ceiling (`[jev-elevate:<model>]`) and the interim effort rule (`xhigh`/`max`, `[jev-elevate-effort:<level>]`) are replaced, wherever the cost of the call can be computed, by one rule: a delegation needs approval only when its `costRatio` is above 1, that is when it costs more than the session's own model at the session's effort (`cost = MODEL_WEIGHTS[tier] * EFFORT_WEIGHTS[effort]`, weights version 1, unchanged). Session opus at high (22.5): sonnet at max (9) passes, opus at xhigh (30) needs approval, opus at high passes. The helper is `src/core/cost-gate.ts`, shared by both harnesses, so they cannot diverge; the Orchestrator rules (flash ceiling, explicit Model) stay and apply on top.
   - **Rank is no longer the test where the cost can be computed.** Claude Code: a model of the same cost weight (fable on an opus session, `pro` tier both) at the same effort passes; it used to be an elevation by rank.
-  - **Fallback to the old rules, never to allow.** When the cost cannot be computed (a model with no tier, no known session model, an effort that is not a literal level such as `"higher"`, no session effort on the hook input, a free session whose own cost is 0) the call keeps the rule it had before 2.3.19: the model ceiling by rank, the interim effort rule. Unranked models and remapped aliases are still denied with guidance, an unreadable agent definition is still denied (`re-invoke with an explicit model on the call`), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` still passes as the user's instruction. The row says `cost_gate: "fallback"`.
+  - **Fallback to the old rules, never to allow.** When the cost cannot be computed (a model with no tier, a session model Jev cannot place, an effort that is not a literal level such as `"higher"`, no session effort on the hook input, a free session whose own cost is 0) the call keeps the rule it had before 2.3.19: the model ceiling by rank, the interim effort rule. Unranked models and remapped aliases are still denied with guidance, an unreadable agent definition is still denied (`re-invoke with an explicit model on the call`), `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` still passes as the user's instruction. The row says `cost_gate: "fallback"`.
   - **One question per held call, the existing markers.** A model above the session's (by cost weight) takes `[jev-elevate:<model>]` (`[jev-elevate:<model>:<effort>]` when its effort is above `high`; the reason names the effort), a call that only its effort pushes over takes `[jev-elevate-effort:<level>]` (`[jev-elevate-effort:<level>:<model>]`). The No option is `No, proceed on <session model>` for the model and `No, run at <highest effort that keeps costRatio <= 1, at most high>` for the effort. Deny reasons state the cost: `costs 30 vs the session's 22.5 (opus at xhigh vs opus at high)`. Any level can now be asked about (an effort of `high` on a session at `medium` is held).
   - **An approval covers the approved model at the approved effort or lower.** Model approvals store their effort (`approvals[].effort`); effort approvals may name their model (`effortApprovals[].model`). Approving opus at xhigh covers opus at high and medium, not opus at max, and not a stronger model; a model approval also covers weaker models at or below its effort, as before. A record from before 2.3.19 (no effort) stands for that model at `high` or lower; an effort record with no model covers any model. An answer can never approve a higher effort than the question Jev prescribed (`deniedEffort`). Same scopes, same lock, peek-then-consume.
   - **A prompt that names a model or an effort raises the baseline the call is held to** (`use opus`, `use max effort`), instead of waiving a separate rule: a named model is allowed at the session's effort, a named effort on the session's model.
@@ -1409,8 +1413,9 @@ clamp note, and the FORCE semantics on Claude Code versions other than 2.1.321.
     `agent({ agentType, model })`; `self` maps to `general-purpose`; the free-tier text says it cannot edit
     files; the router is told the free tier has no Claude quota. Both tools report `activeSessionModel` from the
     session model the hook stores (`unknown` without it), and an opus recommendation on a session below opus
-    says the Jev guard will ask before it runs (when the session model is unknown the guard fails open, so the
-    note says the guard may not ask instead); the tier is never lowered. `jev_dispatch` also reports
+    says the Jev guard will ask before it runs (when no session model is known the guard holds the session as
+    `sonnet` since 2.3.19, so it does ask and the note says the model is assumed; for a model name Jev cannot place the guard
+    has nothing to compare against, and the note says it may not ask); the tier is never lowered. `jev_dispatch` also reports
     `sessionCeilingTier` from the Claude session instead of the Antigravity quota file.
   - Not changed: Antigravity, OpenCode and the CLI keep the `invoke_subagent` wording and the quota-file
     ceiling.

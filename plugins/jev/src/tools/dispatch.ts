@@ -42,6 +42,7 @@ import {
 } from '../core/index.js';
 import { STAGE_RUBRIC, TIER_CRITERIA, isStageKind } from '../stage-rubric.js';
 import { CLAUDE_SUBAGENT_CRITERIA, resolveClaudeSubagentCriteria, safeSessionId } from '../../claude/logic.js';
+import { ASSUMED_CLAUDE_SESSION_MODEL } from '../core/session-defaults.js';
 
 /** The one source of truth for each tool's input: the advertised JSON schema and the call-time check both derive from it. */
 export const dispatchInputSchema = strictObject({
@@ -230,7 +231,11 @@ export function buildExecutionGuidance(
  */
 export function escalationNote(harness: JevHarness, isPro: boolean, sessionModel: string | null): string {
   if (harness !== 'claude-code' || !isPro || !sessionBelowOpus(sessionModel)) return '';
-  // An unknown session model fails the guard open (nothing to compare against), so the promise to ask would be untrue.
+  // No session model at all (2.3.19): the guard fails closed and holds the session as sonnet, so it does ask.
+  if (!sessionModel) {
+    return ` Opus is above the assumed session model (${ASSUMED_CLAUDE_SESSION_MODEL}; the session model is not known yet): the Jev guard will ask the user once per call before it runs.`;
+  }
+  // A model name Jev cannot place gives the guard nothing to compare against, so the promise to ask would be untrue.
   if (claudeModelTier(sessionModel) === null) {
     return ' Opus may be above the session model, but the session model is unknown, so the Jev guard may not ask the user before it runs.';
   }

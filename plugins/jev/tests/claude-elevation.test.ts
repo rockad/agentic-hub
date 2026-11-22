@@ -428,12 +428,15 @@ describe('4. everything else is untouched', () => {
     expect(o).toBeNull();
   });
 
-  it('an unknown session model leaves the call alone', async () => {
-    const { d } = setup({ readSessionModel: () => null });
+  // 2.3.19: this used to expect null for an unknown session model (fail open). It is now assumed sonnet, so the opus call is clamped.
+  it('an unknown session model is assumed sonnet: the opus call is clamped to sonnet', async () => {
+    const { d, logs } = setup({ readSessionModel: () => null });
 
-    const o = await onPreToolUse(call(), d);
+    const o = (await onPreToolUse(call(), d))?.hookSpecificOutput as Record<string, any>;
 
-    expect(o).toBeNull();
+    expect(o.permissionDecision).toBe('allow');
+    expect(o.updatedInput).toMatchObject({ model: 'sonnet' });
+    expect(logs.at(-1)).toMatchObject({ elevation: 'clamped', sessionModel: 'sonnet', session_model_source: 'assumed', sessionModelAssumed: true });
   });
 
   it('an unrecognised session model leaves the call alone', async () => {

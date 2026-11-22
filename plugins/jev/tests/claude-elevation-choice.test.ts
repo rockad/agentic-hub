@@ -169,9 +169,17 @@ describe('PreToolUse in choice mode: deny', () => {
     expect(await onPreToolUse(call(input as Record<string, unknown>), d)).toBeNull();
   });
 
-  it('a Workflow and an unknown session model are untouched', async () => {
+  it('a Workflow with no model is untouched', async () => {
     expect(await onPreToolUse(call({ script: "await agent('p')" }, { tool_name: 'Workflow' }), setup().d)).toBeNull();
-    expect(await onPreToolUse(call(), setup({ readSessionModel: () => null }).d)).toBeNull();
+  });
+
+  // 2.3.19: this used to expect null for an unknown session model (fail open). It is now assumed sonnet (fail closed).
+  it('an unknown session model is assumed sonnet: an opus call is denied with the question', async () => {
+    const o = (await onPreToolUse(call(), setup({ readSessionModel: () => null }).d))?.hookSpecificOutput as Record<string, any>;
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(o.permissionDecisionReason).toContain('The session model is not known yet, so Jev assumes sonnet.');
   });
 
   it('an explicit user instruction naming the model still passes, logged "instructed"', async () => {

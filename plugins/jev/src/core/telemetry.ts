@@ -38,6 +38,8 @@ export interface JevTelemetryEvent {
   sessionModel?: string | null;
   /** Where `sessionModel` was read from (hook input, stored file, transcript, quota state); null when not known. */
   sessionModelSource?: string | null;
+  /** True (2.3.19, Claude Code `agent_call` only) when the session model was not known and Jev held the session as `sonnet` (`sessionModelSource` is then `assumed`); absent otherwise. */
+  sessionModelAssumed?: boolean;
   /** The model the turn itself ran on, written only when it differs from `sessionModel` (an executor turn of an Antigravity Orchestrator conversation, whose `sessionModel` is the sticky planner). */
   turnModel?: string;
   /**

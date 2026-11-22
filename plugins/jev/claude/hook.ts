@@ -153,6 +153,12 @@ import {
 } from './logic.js';
 import { COST_WEIGHTS_VERSION, costEffortOf, costFields, downgradeCostSaving, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
 import { effortOfCall, evaluateCostGate, type CostGate, type CostGateState } from '../src/core/cost-gate.js';
+import {
+  ASSUMED_CLAUDE_SESSION_EFFORT,
+  ASSUMED_CLAUDE_SESSION_MODEL,
+  ASSUMED_SESSION_MODEL_NOTE,
+  ASSUMED_SESSION_MODEL_SOURCE
+} from '../src/core/session-defaults.js';
 import { agentEffortFinding, resolveAgentModel, type EffortLevel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
 import {
@@ -621,7 +627,14 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   }
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
-  const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
+  const learnedSession = sessionModelOf(input, sessionId, deps);
+  // Fail CLOSED (2.3.19): a session whose model is not known yet (a brand-new or headless session before its transcript is
+  // written, no SessionStart record) is held as `sonnet`, and as `high` effort when its effort is not reported either, so an
+  // opus subagent (or an xhigh / max effort) takes the normal approval flow instead of running unchecked. Decided per call: the
+  // moment a model is known the real one is used (nothing remembers the assumption).
+  const sessionModelAssumed = learnedSession.model === null;
+  const sessionModel: string | null = learnedSession.model ?? ASSUMED_CLAUDE_SESSION_MODEL;
+  const sessionModelSource: string | null = sessionModelAssumed ? ASSUMED_SESSION_MODEL_SOURCE : learnedSession.source;
   // A turn stored under another mode is stale: its advice and intent are not this turn's. In the live hook a
   // turn that ran with Jev off is already dropped by forgetTurn, so this check is a second line of defence
   // for a state written under another mode (and for injected stores); a state with no `mode` is accepted.
@@ -653,7 +666,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
         ? null
         : classifyElevation(resolved ? { ...call, model: resolved.model ?? 'inherit' } : call, sessionModel, intent, rankCtx);
   const elevMode: ElevationMode = elevationMode(deps.env ?? process.env);
-  const effortSession = readEffort(input.effort);
+  const effortSession = readEffort(input.effort) ?? (sessionModelAssumed ? ASSUMED_CLAUDE_SESSION_EFFORT : null);
   // The ONE cost gate (2.3.19): where the cost of the call can be computed, it replaces the model ceiling and the interim effort
   // rule. A call needs approval only when it costs more than the session's own model at the session's effort. The user's own
   // words raise what the call is held to: a model they named (or the forced subagent model of their environment, outside the
@@ -904,7 +917,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // through the same choice flow as an Agent call; anything the analysis cannot prove opens the permission dialog.
   let workflowLog: Record<string, unknown> = {};
   if (tool === 'Workflow') {
-    const w = evaluateWorkflowCall({ input, call, sessionId, sessionModel, intent, rankCtx, deps, elevMode, promptKeyOf, attemptWindowMs });
+    const w = evaluateWorkflowCall({ input, call, sessionId, sessionModel, sessionEffort: effortSession, intent, rankCtx, deps, elevMode, promptKeyOf, attemptWindowMs });
     workflowLog = w.log;
     if (w.verdict) verdict = w.verdict;
     if (w.elevationState) elevationState = w.elevationState;
@@ -921,7 +934,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // only consumed at the commit below, when the call's verdict is allow.
   const effortSuggested = state?.recEffort ?? null;
   const downgradeModeNow = downgradeMode(deps.env ?? {}, safely(() => deps.downgradeConfig?.()));
-  if (tool !== 'Workflow' && elevationState === null && downgradeModeNow !== 'off' && deps.downgrades) {
+  // No downgrade is offered relative to an assumed session model: it is a guess, not what the user's session runs on.
+  if (tool !== 'Workflow' && elevationState === null && !sessionModelAssumed && downgradeModeNow !== 'off' && deps.downgrades) {
     const evaluated = await evaluateDowngrade({
       input,
       call,
@@ -967,6 +981,11 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // Whatever denied the call, no allow-shaped output survives it (nothing above should leave one, this makes it an invariant).
   if (verdict?.decision === 'deny') dropAllowOutputs();
 
+  // An assumed session model says so in the question the user is shown (the deny, or the dialog's text), once.
+  if (sessionModelAssumed && verdict && !verdict.reason.includes(ASSUMED_SESSION_MODEL_NOTE)) {
+    verdict = { decision: verdict.decision, reason: `${verdict.reason} ${ASSUMED_SESSION_MODEL_NOTE}` };
+  }
+
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
   // agent call in the window, or a turn whose prompt named a workflow), at most once, never blocks.
   const now = (deps.now ?? Date.now)();
@@ -1005,6 +1024,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     user_intent: state?.intent ?? null,
     sessionModel,
     session_model_source: sessionModelSource,
+    ...(sessionModelAssumed ? { sessionModelAssumed: true } : {}),
     ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
     ...(effortAsk ? { effort_ask: true } : {}),
     ...effortLog,
@@ -1125,6 +1145,8 @@ function evaluateWorkflowCall(a: {
   call: Record<string, unknown>;
   sessionId: string | null;
   sessionModel: string | null;
+  /** The session effort (the assumed one when the session model is assumed), else null. */
+  sessionEffort: string | null;
   intent: UserIntent;
   rankCtx: RankContext | null;
   deps: HookDeps;
@@ -1141,7 +1163,7 @@ function evaluateWorkflowCall(a: {
       rank: a.rankCtx,
       intent: a.intent,
       env: deps.env ?? process.env,
-      sessionEffort: readEffort(a.input.effort)
+      sessionEffort: a.sessionEffort
     });
     // The `cost_gate` value of the row: what the cost gate did with the agent() calls it could judge (`fallback` when the old rules judged any).
     const hasGateSites = d.sites.some((s) => s.gate);
@@ -1849,10 +1871,15 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
 }
 
 /** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */
-function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource'> {
+function sessionModelFields(entry: Record<string, unknown>): Pick<JevTelemetryEvent, 'sessionModel' | 'sessionModelSource' | 'sessionModelAssumed'> {
   if (!('sessionModel' in entry)) return {};
   const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
-  return { sessionModel: str(entry.sessionModel), sessionModelSource: str(entry.session_model_source) };
+  return {
+    sessionModel: str(entry.sessionModel),
+    sessionModelSource: str(entry.session_model_source),
+    // 2.3.19: the session model was not known and Jev held the session as sonnet; only a row that did so carries the flag.
+    ...(entry.sessionModelAssumed === true ? { sessionModelAssumed: true } : {})
+  };
 }
 
 /** Telemetry appends in flight: the process must wait for them before it exits, or the lines are lost. */

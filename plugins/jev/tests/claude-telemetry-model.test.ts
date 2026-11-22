@@ -179,14 +179,14 @@ describe('through the real handlers', () => {
     }
   });
 
-  it('an Agent call with no model and no known session model: modelUsed absent, source inherited', async () => {
+  // 2.3.19: an unknown session model used to give modelUsed absent, sessionModel null (fail open). It is now assumed sonnet.
+  it('an Agent call with no model and no known session model: the assumed sonnet, flagged, source inherited', async () => {
     const { d, logs } = setup({ readSessionModel: () => null });
 
     await onPreToolUse({ session_id: 's1', tool_name: 'Agent', tool_input: { description: 'x', prompt: 'y', subagent_type: 'Explore' } }, d);
 
     const event = telemetryEvent(logs[0]);
-    expect('modelUsed' in event).toBe(false);
-    expect(event).toMatchObject({ modelUsedSource: 'inherited', sessionModel: null, sessionModelSource: null });
+    expect(event).toMatchObject({ modelUsed: 'sonnet', modelUsedSource: 'inherited', sessionModel: 'sonnet', sessionModelSource: 'assumed', sessionModelAssumed: true });
   });
 });
 

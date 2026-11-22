@@ -135,3 +135,37 @@ export function antigravityCostFields(requestedModel: unknown, sessionModel: unk
     servedModelExpected: served.servedModel
   };
 }
+
+/**
+ * The cost a downgrade saves (2.3.19): the cost of the requested model at `effort` minus the cost of the downgrade target at the
+ * same effort (the downgrade is model-only, so the effort does not change). Positive for a cheaper target. Null when either
+ * model has no tier, so a figure is never guessed. `effort` is the call's literal effort, else `medium`. Never throws.
+ */
+export function downgradeCostSaving(requestedModel: unknown, targetModel: unknown, effort?: unknown): number | null {
+  try {
+    const level = costEffortOf(effort) ?? DEFAULT_COST_EFFORT;
+    const from = costOf(requestedModel, level);
+    const to = costOf(targetModel, level);
+    return from === null || to === null ? null : round(from - to);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The saving of an Antigravity downgrade (2.3.19), priced like the rest of its row: the requested `Model` and the downgrade target
+ * are each priced by the model they are expected to be SERVED on (`served-model.ts`; `inherit` or no model is the parent's own),
+ * both at the requested call's effort, because the downgrade changes the model only. Null when either side has no tier.
+ */
+export function antigravityDowngradeSaving(requestedModel: unknown, targetModel: unknown, sessionModel: unknown): number | null {
+  try {
+    const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
+    const from = servedModelExpected(requestedModel, sessionModel);
+    const callModel = from.servedModel ?? (isInherit(requestedModel) ? sessionModel : requestedModel);
+    const effort = from.effort ?? effortFromModelId(callModel) ?? sessionEffort;
+    const to = servedModelExpected(targetModel, sessionModel).servedModel ?? targetModel;
+    return downgradeCostSaving(callModel, to, effort);
+  } catch {
+    return null;
+  }
+}

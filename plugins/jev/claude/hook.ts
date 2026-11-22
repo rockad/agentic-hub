@@ -60,6 +60,7 @@ import {
   logJevTelemetry,
   resolveModelUsed,
   modeBehaviour,
+  telemetryMode,
   lowQuotaNotice,
   quotaPoolLabel,
   type LowQuotaPool,
@@ -150,7 +151,7 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
-import { COST_WEIGHTS_VERSION, costEffortOf, costFields, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
+import { COST_WEIGHTS_VERSION, costEffortOf, costFields, downgradeCostSaving, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
 import { effortOfCall, evaluateCostGate, type CostGate, type CostGateState } from '../src/core/cost-gate.js';
 import { agentEffortFinding, resolveAgentModel, type EffortLevel, type ResolvedAgentModel } from './agent-definitions.js';
 import { maybeStartCatalogueRefresh } from './refresh-trigger.js';
@@ -371,7 +372,7 @@ export { withTimeout };
  * writes the prompt telemetry row (session model, quota strategy, no recommendation fields) and, only when the quota
  * pool is low or exhausted, injects the shared one-line informational notice. A healthy pool injects nothing.
  */
-async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId: string | null): Promise<HookOutput> {
+async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId: string | null, mode: string | undefined): Promise<HookOutput> {
   const task = (input.prompt || '').trim();
   // The same prompts the advised mode would act on: a host-injected turn, a short prompt or a pasted blob is not a task.
   if (isHostInjectedPrompt(task) || task.length < 8 || isNonTaskPrompt(task)) return null;
@@ -388,6 +389,7 @@ async function onPromptWithoutAdvice(input: HookInput, deps: HookDeps, sessionId
     session: sessionId,
     session_id: sessionId,
     turn: turnId(task),
+    ...modeField(mode),
     quota: pool.strategy ?? 'unknown',
     sessionModel,
     session_model_source: sessionModelSource
@@ -457,7 +459,30 @@ function agentCostGate(
   );
 }
 
-function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: string): void {
+/** The `mode` field of a row (2.3.19): the mode the hook acted under, from the same value `modeBehaviour` was computed from; nothing for off. */
+function modeField(mode: string | undefined): { mode?: 'on' | 'on-demand' } {
+  const m = telemetryMode(mode);
+  return m ? { mode: m } : {};
+}
+
+/**
+ * The `costSaving` field of an `agent_call` row that carries a downgrade suggestion (`asked`) or application (`applied`)
+ * (2.3.19): the cost of the requested model at the call's effort minus the target's at the same effort (the downgrade is
+ * model-only), or null when either cost is unknown. The effort is the call's literal one, else its definition's, else the
+ * session's, else `medium`. A row with no downgrade suggestion or application carries no field.
+ */
+export function downgradeSavingField(
+  log: Record<string, unknown>,
+  call: AgentCall & Record<string, unknown>,
+  resolved: ResolvedAgentModel | null,
+  sessionEffort: string | null
+): { costSaving?: number | null } {
+  if (log.downgrade !== 'asked' && log.downgrade !== 'applied') return {};
+  const effort = costEffortOf(call.effort) ?? costEffortOf(resolved?.definitionEffort) ?? costEffortOf(sessionEffort);
+  return { costSaving: downgradeCostSaving(log.downgrade_from, log.downgrade_to, effort) };
+}
+
+function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: string, mode: string | undefined): void {
   const call = input.tool_input || {};
   const sessionId = safeSessionId(input.session_id);
   const { model: sessionModel, source: sessionModelSource } = sessionModelOf(input, sessionId, deps);
@@ -471,6 +496,7 @@ function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: 
     event: 'agent_call',
     session: sessionId,
     session_id: sessionId,
+    ...modeField(mode),
     tool_name: tool,
     decision: 'pass',
     subagent_type: typeof call.subagent_type === 'string' ? call.subagent_type : null,
@@ -485,11 +511,12 @@ function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: 
 
 export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Promise<HookOutput> {
   const sessionId = safeSessionId(input.session_id);
-  const behaviour = modeBehaviour(await deps.readMode());
+  const mode = await deps.readMode();
+  const behaviour = modeBehaviour(mode);
   if (!behaviour.routingAdvice) {
     // This turn runs without the advisor: nothing stored for an earlier turn may speak for it.
     safely(() => deps.forgetTurn?.(sessionId));
-    return behaviour.telemetry ? onPromptWithoutAdvice(input, deps, sessionId) : null;
+    return behaviour.telemetry ? onPromptWithoutAdvice(input, deps, sessionId, mode) : null;
   }
   const task = (input.prompt || '').trim();
   // A host-injected turn (a task notification, a local command) is not a new user turn: it keeps the
@@ -508,7 +535,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
   // A pasted blob carries no task: no advice and no Jev call.
   if (isNonTaskPrompt(task)) return null;
   if (deps.egressAllowed && !deps.egressAllowed(input.cwd)) {
-    deps.log({ hook: 'UserPromptSubmit', session: sessionId, session_id: sessionId, egress: 'blocked' });
+    deps.log({ hook: 'UserPromptSubmit', session: sessionId, session_id: sessionId, ...modeField(mode), egress: 'blocked' });
     return null;
   }
   const quotaStrategy = await deps.readQuotaStrategy();
@@ -539,6 +566,7 @@ export async function onUserPromptSubmit(input: HookInput, deps: HookDeps): Prom
     // and the other Jev harnesses use. Both hold the same value.
     session: sessionId,
     session_id: sessionId,
+    ...modeField(mode),
     turn,
     subagent: advised.subagent,
     tier: advised.tier,
@@ -588,7 +616,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const behaviour = modeBehaviour(mode);
   if (!behaviour.decisions) {
     // No decisions (on-demand): the call is left as it is; only the telemetry row is written. Off writes nothing.
-    if (behaviour.telemetry) recordAgentCallWithoutDecision(input, deps, tool);
+    if (behaviour.telemetry) recordAgentCallWithoutDecision(input, deps, tool, mode);
     return null;
   }
   const call = input.tool_input || {};
@@ -964,6 +992,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     event: 'agent_call',
     session: sessionId,
     session_id: sessionId,
+    ...modeField(mode),
     tool_name: tool,
     // What the hook did with the call: the verdict (ask or deny), allow for a clamp or an applied downgrade, else pass.
     decision: verdict ? verdict.decision : clamp || downgradeOut ? 'allow' : 'pass',
@@ -988,6 +1017,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     // A dialog-mode `ask` while the permission mode approves without showing it: informational only, the decision is unchanged.
     ...(verdict?.decision === 'ask' && isAutoApprovePermissionMode(input.permission_mode) ? { auto_approve_warning: true } : {}),
     ...downgradeLog,
+    // What the suggested or applied downgrade saves (2.3.19): the requested model at its effort minus the target's at the same effort.
+    ...downgradeSavingField(downgradeLog, call, resolved, effortSession),
     ...clampDiscarded,
     ...workflowLog,
     ...(effortSuggested ? { effort_suggested: effortSuggested } : {}),
@@ -1219,7 +1250,13 @@ function evaluateWorkflowCall(a: {
  */
 export async function onWorkflowPostToolUse(input: HookInput, deps: Pick<HookDeps, 'readMode' | 'log' | 'workflowPinDir'>): Promise<PostToolUseResult> {
   if (!deps.workflowPinDir) return { status: 'no-pin' };
-  return recordWorkflowPostToolUse(input, { dir: deps.workflowPinDir, readMode: () => deps.readMode(), log: deps.log });
+  // The row carries the mode the recorder itself read (the one it decided on), so the value is captured from its own read.
+  let seen: string | undefined;
+  return recordWorkflowPostToolUse(input, {
+    dir: deps.workflowPinDir,
+    readMode: async () => (seen = await deps.readMode()),
+    log: (entry) => deps.log({ ...modeField(seen), ...entry })
+  });
 }
 
 type DowngradeEvaluation = { verdict: AgentDecision; out: ReturnType<typeof applyDowngrade>; log: Record<string, unknown> };
@@ -1764,6 +1801,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
   const isPrompt = entry.hook === 'UserPromptSubmit';
   return {
     harness: 'claude',
+    // The mode the hook acted under (2.3.19): only on or on-demand, off writes nothing.
+    ...(entry.mode === 'on' || entry.mode === 'on-demand' ? { mode: entry.mode } : {}),
     toolOrHook: String(entry.hook || 'hook'),
     sessionId: str(entry.session_id) ?? str(entry.session) ?? null,
     taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
@@ -1799,6 +1838,10 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
                 costWeightsVersion: entry.costWeightsVersion,
                 ...(str(entry.cost_gate) ? { cost_gate: str(entry.cost_gate) } : {})
               }
+            : {}),
+          // What a suggested or applied downgrade saves (2.3.19); null when either cost is unknown, absent on any other row.
+          ...(entry.hook === 'PreToolUse' && 'costSaving' in entry
+            ? { costSaving: typeof entry.costSaving === 'number' ? entry.costSaving : null }
             : {})
         }),
     quotaStrategy: str(entry.quota)

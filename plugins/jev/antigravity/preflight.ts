@@ -361,6 +361,7 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
                 pendingTelemetry.push(
                   logJevTelemetry(
                     buildAntigravityTelemetryEvent({
+                      mode,
                       kind: 'subagent_served',
                       conversationId: typeof entry.session_id === 'string' ? entry.session_id : (safeId ?? null),
                       // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.
@@ -545,6 +546,7 @@ ${sessionHint}
                   (async () => {
                     await logJevTelemetry(
                       buildAntigravityTelemetryEvent({
+                        mode,
                         kind: 'pre_invocation',
                         conversationId: safeId ?? null,
                         // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.
@@ -563,6 +565,7 @@ ${sessionHint}
                     for (const call of lateCalls) {
                       await logJevTelemetry(
                         buildAntigravityTelemetryEvent({
+                          mode,
                           kind: 'agent_call_recommendation',
                           conversationId: safeId ?? null,
                           turn: currentTurn,
@@ -597,6 +600,7 @@ ${sessionHint}
             pendingTelemetry.push(
               logJevTelemetry(
                 buildAntigravityTelemetryEvent({
+                  mode,
                   kind: 'pre_invocation',
                   conversationId: safeId ?? null,
                   // The sticky session model (the planner, for an executor turn of an Orchestrator conversation) and the id the turn ran on.

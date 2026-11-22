@@ -102,7 +102,7 @@ When invoked via `/jev` or `/jev <mode>`:
 ## Underlying State & Files
 
 - **Config File**: `~/.config/jev/config.json` (canonical configuration store, defaults to `mode: "off"`)
-- **Telemetry Log**: `~/.gemini/antigravity-cli/jev_telemetry.jsonl`
+- **Telemetry Log**: `~/.gemini/antigravity-cli/jev_telemetry.jsonl`. Every row carries `mode` (`on` or `on-demand`, the mode the hook acted under; `off` writes nothing). An `agent_call` row with a suggested or applied downgrade also carries `costSaving` (the cost difference to the downgrade target at the same effort, `null` when unknown).
 
 ---
 

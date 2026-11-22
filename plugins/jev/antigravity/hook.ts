@@ -51,7 +51,7 @@ import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type A
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
-import { antigravityCostFields } from '../src/core/cost-estimate.js';
+import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
 import { queueServedNotice } from './served-notice.js';
 
 function getJevDir(): string {
@@ -232,6 +232,7 @@ async function main() {
           trackTelemetry(
             logJevTelemetry(
               buildAntigravityTelemetryEvent({
+                mode,
                 kind: 'subagent_served',
                 conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
                 ...stickyTurn(input.conversationId, input.modelName),
@@ -491,6 +492,7 @@ async function main() {
             trackTelemetry(
               logJevTelemetry(
                 buildAntigravityTelemetryEvent({
+                  mode,
                   kind: 'subagent_served',
                   conversationId,
                   ...stickyTurn(input.conversationId, input.modelName),
@@ -669,6 +671,10 @@ async function main() {
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
       ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
       ...downgradeLog,
+      // What a suggested or applied downgrade saves (2.3.19), priced by the served models.
+      ...(downgradeLog.downgrade === 'asked' || downgradeLog.downgrade === 'applied'
+        ? { costSaving: antigravityDowngradeSaving(requestedModel, downgradeLog.downgrade_to, activeModel) }
+        : {}),
       // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
       ...antigravityCostFields(requestedModel, activeModel)
     });
@@ -678,6 +684,7 @@ async function main() {
       const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
       const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>
         buildAntigravityTelemetryEvent({
+          mode,
           kind: 'agent_call',
           conversationId: input.conversationId,
           // The sticky session model (the planner, for an executor turn of an Orchestrator conversation), and the id the turn ran on.

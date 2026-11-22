@@ -14,14 +14,14 @@ import {
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import type { JevMode } from '../src/core/config.js';
-import { modeBehaviour } from '../src/core/mode-policy.js';
+import { modeBehaviour, telemetryMode } from '../src/core/mode-policy.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
-import { antigravityCostFields } from '../src/core/cost-estimate.js';
+import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
 import { antigravityClampModel, antigravityCostGate, antigravityMarkerModel, costComparison, type CostGateState } from '../src/core/cost-gate.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
@@ -1655,7 +1655,8 @@ export function commitAntigravityTurn(
 
 export type AntigravityModelUsedSource = ModelUsedSource;
 
-export type AntigravityTelemetryInput =
+export type AntigravityTelemetryInput = AntigravityTelemetryMode &
+  (
   | {
       kind: 'pre_invocation';
       conversationId?: string | null;
@@ -1713,7 +1714,11 @@ export type AntigravityTelemetryInput =
       requestedModel?: string | null;
       servedModel?: string | null;
       backfilled?: boolean;
-    };
+    }
+  );
+
+/** The `mode` every Antigravity telemetry row carries (2.3.19): the mode the hook acted under (`on` or `on-demand`; off writes nothing). */
+type AntigravityTelemetryMode = { mode?: string | null };
 
 /** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
 function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
@@ -1721,7 +1726,17 @@ function turnModelField(sessionModel: string | null, turnModel: string | null | 
   return t.length > 0 && t !== sessionModel ? { turnModel: t } : {};
 }
 
+/**
+ * The telemetry row of an Antigravity hook event. Every row carries `mode` (2.3.19): `on` or `on-demand`, the mode the hook acted
+ * under (`params.mode`, through `telemetryMode`); a row for any other value (off writes nothing) carries none.
+ */
 export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
+  const mode = telemetryMode(params.mode);
+  const event = buildAntigravityEventBody(params);
+  return mode ? { ...event, mode } : event;
+}
+
+function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
 
   if (params.kind === 'pre_invocation') {
@@ -1846,6 +1861,10 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     ...(downgrade ? { downgrade } : {}),
     // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
     ...antigravityCostFields(requestedModel, sessionModel),
+    // What a suggested or applied downgrade saves (2.3.19), priced by the served models; absent on a row without one.
+    ...(downgrade === 'asked' || downgrade === 'applied'
+      ? { costSaving: antigravityDowngradeSaving(requestedModel, params.downgradeLog?.downgrade_to, sessionModel) }
+      : {}),
     ...(params.costGate ? { cost_gate: params.costGate } : {}),
     ...(quotaStrategy ? { quotaStrategy } : {})
   };

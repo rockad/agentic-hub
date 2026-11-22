@@ -5,6 +5,7 @@ import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 import { withDirLock } from '../src/core/dir-lock.js';
 import { DEFAULT_COST_EFFORT, effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
 import { LEGACY_APPROVAL_EFFORT, effortWithin } from '../src/core/cost-gate.js';
+import { subagentEnumOf } from '../src/core/served-model.js';
 import {
   DOWNGRADE_TTL_MS,
   MAX_ENTRIES,
@@ -83,6 +84,15 @@ export type ApprovalStore = {
 
 export const CONSUMED_ANSWERS_CAP = 100;
 
+/**
+ * An approval (or a denial, which stands for one) is keyed as one of two kinds: an ENUM value of `invoke_subagent`'s `Model` (`pro`,
+ * `flash`, `flash_lite`: served on Hydrogen, never on a pro-class model) or a FULL id (`gemini-4-argon-high`, `claude-opus-5-5`, or the
+ * `pro-high` form of its marker). An enum approval covers enum values only: `pro` (Hydrogen at xhigh) must never cover a real
+ * pro-class id, whose cost is several times higher. A full-id approval covers the full ids at or below its tier and effort, and the
+ * enum values at or below its tier (an enum is always the cheaper model).
+ */
+export const approvalKindCovers = (approved: string, requested: string): boolean => subagentEnumOf(requested) !== null || subagentEnumOf(approved) === null;
+
 export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
 export const ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 export const ATTEMPT_TOTAL_CAP = 20;
@@ -147,7 +157,7 @@ export function getRecentDenialTimestamp(state: ApprovalState, model: string, no
   let latest: number | null = null;
   for (const [m, t] of Object.entries(state.denied ?? {})) {
     // The denial must also cover the effort the approval would name (the id's suffix, else medium): an answer cannot approve a higher effort than the question asked about.
-    if (modelTierRank(m) >= want && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT) && nowMs - t <= DENIAL_WINDOW_MS) {
+    if (modelTierRank(m) >= want && approvalKindCovers(m, model) && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT) && nowMs - t <= DENIAL_WINDOW_MS) {
       if (latest === null || t > latest) {
         latest = t;
       }
@@ -206,6 +216,8 @@ export function claimApproval(
   const hit =
     live
       .filter((a) => modelTierRank(a.model) >= wantRank)
+      // An enum approval never covers a full id (see `approvalKindCovers`).
+      .filter((a) => approvalKindCovers(a.model, requested))
       // The approval must cover the call's effort too (2.3.19): the suffix of its model id, else `high` for a record that names none, against the call's suffix, else `medium`.
       .filter((a) => effortWithin(effortFromModelId(a.model) ?? LEGACY_APPROVAL_EFFORT, effortFromModelId(requested) ?? effort ?? DEFAULT_COST_EFFORT))
       .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;

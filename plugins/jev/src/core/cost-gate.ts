@@ -16,7 +16,7 @@
  * Nothing here reads a file, an environment variable or the clock.
  */
 
-import { servedModelExpected, subagentEnumOf, highestEnumWhere, SERVED_BY_ENUM, type SubagentEnum } from './served-model.js';
+import { servedModelExpected, subagentEnumOf, highestEnumWhere, SERVED_BY_ENUM, SUBAGENT_ENUM_ORDER, type SubagentEnum } from './served-model.js';
 import {
   DEFAULT_COST_EFFORT,
   EFFORT_WEIGHTS,
@@ -246,11 +246,21 @@ export function highestEnumWithin(limit: number, sessionEffort: CostEffort): Sub
  * `flash` as Hydrogen at high: an enum value carries no effort of its own to lower, so the value itself is what is lowered), at
  * the lowest `flash_lite`. For a full id it is the ceiling tier when the model is what is too much (an alias carries no effort, so the call
  * runs at the effort the session does), else the call's own id with the lowered effort as its suffix (a full id such as
- * `gemini-3.5-pro-xhigh` becomes `gemini-3.5-pro-high`).
+ * `gemini-3.5-pro-xhigh` becomes `gemini-3.5-pro-high`). The ceiling alias is itself served as a model with a cost, so for a full id the
+ * clamp is the most expensive enum value at or below the ceiling that fits the limit (`flash_lite` when `flash` does not), else the
+ * ceiling alias (what the gate always lets through).
  */
 export function antigravityClampModel(requestedModel: string, gate: Extract<CostGate, { kind: 'over' }>, ceilingTier: string): string {
   if (subagentEnumOf(requestedModel) !== null) return highestEnumWithin(gate.limit, gate.sessionEffort);
-  return gate.clampModel ? ceilingTier : `${stripEffortSuffix(requestedModel)}-${gate.clampEffort}`;
+  if (!gate.clampModel) return `${stripEffortSuffix(requestedModel)}-${gate.clampEffort}`;
+  // The ceiling alias is SERVED as a model of its own (`flash` is Hydrogen at high), which can cost more than the limit (a flash ceiling
+  // on a low-effort session): so the clamp is the most expensive served option, at or below the ceiling, that fits the limit
+  // (`flash_lite` when `flash` does not). When nothing fits the ceiling alias is the answer: it is what the gate lets through
+  // whatever it costs (the floor of an enum call) and what the "No" option sends the agent back to.
+  const ceiling = subagentEnumOf(ceilingTier);
+  const ceilingAt = ceiling === null ? -1 : SUBAGENT_ENUM_ORDER.indexOf(ceiling);
+  const fits = highestEnumWhere((e) => (ceilingAt < 0 || SUBAGENT_ENUM_ORDER.indexOf(e) <= ceilingAt) && enumCost(e, gate.sessionEffort) <= gate.limit);
+  return fits ?? ceilingTier;
 }
 
 /**

@@ -949,7 +949,8 @@ export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts
   const tier = marker?.model ?? top.tier ?? 'pro';
   const ids = scriptIds(scripts);
   const o = CHOICE_OPTIONS;
-  const served = servedModelGuidance(top.requested ?? top.tier);
+  // What the call is served on is said for an enum value only: a full id (the `pro-high` form of the marker) is served as written, never on Hydrogen.
+  const served = servedModelGuidance(marker?.model ?? top.requested ?? top.tier);
   const stop = stopRetryingText(attempt, tier, ceilingTier, 'ask_question', 'model');
   return (
     `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}'${marker?.costNote ? ` (its most costly agent ${marker.costNote})` : ''}, and no approval covers it.${served ? ` ${served}` : ''} ` +
@@ -1073,7 +1074,12 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const gated = d.elevations.filter((s) => s.gate);
     const maxEffort = gated.reduce<CostEffort | undefined>((best, s) => (s.effort && (!best || effortIndex(s.effort) > effortIndex(best)) ? s.effort : best), undefined);
     const worstGate = gated.reduce<NonNullable<CallSite['gate']> | undefined>((best, s) => (!best || (s.gate as NonNullable<CallSite['gate']>).ratio > best.ratio ? (s.gate as NonNullable<CallSite['gate']>) : best), undefined);
-    const markerModel = maxEffort && effortIndex(maxEffort) > effortIndex('high') ? `${top.tier}-${maxEffort}` : top.tier;
+    // An enum value (`pro`: served on Hydrogen) and a full id (`gemini-4-argon-high`) are keyed apart (see `approvalKindCovers`): a script
+    // with any full-id site is asked, and approved, under the full-id form `<tier>-<effort>` (the effort is `high` at most unless a
+    // site is above it), which also covers the script's enum values at or below that tier; a script of enum values only keeps the plain
+    // tier (`pro`), which covers enum values only.
+    const hasFullId = d.elevations.some((s) => s.requested !== undefined && subagentEnumOf(s.requested) === null);
+    const markerModel = hasFullId ? `${top.tier}-${maxEffort ?? 'high'}` : maxEffort && effortIndex(maxEffort) > effortIndex('high') ? `${top.tier}-${maxEffort}` : top.tier;
     // `cost_gate` of the row: what the cost gate did with the calls it could judge (`fallback` when the model ceiling by rank judged any).
     const gateIdle: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
     const costGate = (state: CostGateState): { cost_gate: CostGateState } => ({ cost_gate: gated.length > 0 ? state : gateIdle });

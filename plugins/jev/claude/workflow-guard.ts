@@ -1079,22 +1079,33 @@ function gateCall(
   const sessionEffort = costEffortOf(g.sessionEffort);
   if (g.sessionEffort === undefined || sessionEffort === null || !sessionModel || modelAlias(sessionModel) === null) return null;
   if (group.some((f) => f.kind === 'unverifiable' || f.kind === 'nested')) return null;
-  const modelF = group.find((f): f is Extract<Finding, { kind: 'model' }> => f.kind === 'model' && f.where === 'model');
-  const effortF = group.find((f): f is Extract<Finding, { kind: 'effort' }> => f.kind === 'effort');
-  const typeF = group.find((f): f is Extract<Finding, { kind: 'agentType' }> => f.kind === 'agentType');
-  let def: AgentDefinition | null = null;
-  if (typeF) {
-    def = definitionOrBuiltin(typeF.agentType, resolver.agentDefinition(typeF.agentType));
-    if (!def.found || def.unreadable) return null;
+  // A call can carry more than one of each finding: JS keeps the LAST of a duplicated key (`{model:'haiku', model:'opus'}`) and
+  // two options objects can both name one, so no single finding says what runs. Every one is read and the worst case is judged
+  // (every model the call can name, at the highest effort it can name); no finding is dropped.
+  const modelFs = group.filter((f): f is Extract<Finding, { kind: 'model' }> => f.kind === 'model' && f.where === 'model');
+  const effortFs = group.filter((f): f is Extract<Finding, { kind: 'effort' }> => f.kind === 'effort');
+  const typeFs = group.filter((f): f is Extract<Finding, { kind: 'agentType' }> => f.kind === 'agentType');
+  const defs: AgentDefinition[] = [];
+  for (const typeF of typeFs) {
+    const d = definitionOrBuiltin(typeF.agentType, resolver.agentDefinition(typeF.agentType));
+    if (!d.found || d.unreadable) return null;
+    defs.push(d);
   }
-  // The effort the call runs at: the highest literal one among the call's and its definition's (the stricter reading), else the session's.
+  // The effort the call runs at: the highest literal one among the call's and its definitions' (the stricter reading), else the session's.
   const efforts: Array<ReturnType<typeof costEffortOf>> = [];
-  if (effortF) efforts.push(costEffortOf(effortF.effort));
-  if (def && def.effort !== undefined && def.effort !== null) efforts.push(costEffortOf(def.effort));
+  for (const effortF of effortFs) efforts.push(costEffortOf(effortF.effort));
+  for (const d of defs) if (d.effort !== undefined && d.effort !== null) efforts.push(costEffortOf(d.effort));
   if (efforts.some((e) => e === null)) return null;
   const literal = efforts as NonNullable<(typeof efforts)[number]>[];
   const callEffort = literal.length > 0 ? literal.reduce((a, b) => (effortIndex(b) > effortIndex(a) ? b : a)) : sessionEffort;
-  const candidates = subagentModelCandidates({ call: modelF?.model, definition: modelF ? undefined : def ? def.model : undefined }, g.env ?? process.env, { workflow: true });
+  const candidateInputs: Array<{ call?: string; definition?: string | null }> =
+    modelFs.length > 0 ? modelFs.map((f) => ({ call: f.model })) : defs.length > 0 ? defs.map((d) => ({ definition: d.model })) : [{}];
+  const candidates: ReturnType<typeof subagentModelCandidates> = [];
+  for (const input of candidateInputs) {
+    for (const c of subagentModelCandidates(input, g.env ?? process.env, { workflow: true })) {
+      if (!candidates.some((x) => x.model === c.model && x.source === c.source)) candidates.push(c);
+    }
+  }
   let worst: { gate: Extract<CostGate, { kind: 'pass' | 'over' }>; gate0: CostGate; model: string; e: Elevation | null } | null = null;
   for (const c of candidates) {
     const model = c.model ?? sessionModel;

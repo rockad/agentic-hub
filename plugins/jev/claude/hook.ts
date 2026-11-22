@@ -272,7 +272,8 @@ export type ApprovalStore = {
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
   /** The effort question (`[jev-elevate-effort:<level>]`, any level; since 2.3.19 the marker may name the model: `[jev-elevate-effort:<level>:<model>]`), in the same state file and under the same lock. Absent: no effort approval is ever found, so the delegation is denied every time. */
   recordEffort?: (sessionId: string, approval: EffortApproval, config?: ModeChangeConfigLike | null) => void;
-  denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number) => void;
+  /** `model`: the model the question's marker named (when it did), so a bare answer is recorded for that model and never for any. */
+  denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number, model?: string) => void;
   /** When the choice question was last prescribed for `model` or a stronger one (epoch ms), or null when there is no note of one. Absent: unknown. */
   deniedAt?: (sessionId: string, model: string) => number | null;
   claimEffort?: (sessionId: string, level: EffortLevel, nowMs: number, model?: string) => EffortApproval | null;
@@ -780,7 +781,9 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     effortLog = { effort_level: found.level, effort_decision: 'denied' };
     dropAllowOutputs(); // a deny cannot share an output with an allow (the clamp's, the auto downgrade's)
     // The question is now prescribed for this level: only an answer after this can record an approval.
-    if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs));
+    // The marker names the model only with the cost gate (see effortChoiceReason): the denial is noted with the very model it shows.
+    const markerModel = effortGate ? (modelAlias(String(effortGate.callModel)) ?? undefined) : undefined;
+    if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs, markerModel));
   };
   if (gateOn && envForced && rawElevation?.kind === 'elevating') {
     // CLAUDE_CODE_SUBAGENT_MODEL_FORCE with the cost gate: the forced model is the user's own instruction, so the model is
@@ -908,7 +911,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
         effortLog = { effort_level: level, effort_decision: 'instructed' };
       } else {
         const nowMs = (deps.now ?? Date.now)();
-        const effortModel = effortGate ? (modelAlias(String(effortGate.callModel)) ?? undefined) : undefined;
+        // The call's own model alias, with or without the cost gate: an approval that names a model covers only that model and weaker ones.
+        const effortModel = effortGate
+          ? (modelAlias(String(effortGate.callModel)) ?? undefined)
+          : (modelAlias(resolved.model ?? sessionModel ?? '') ?? undefined);
         const hit = sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, level, nowMs, effortModel)) ?? null) : null;
         effortFound = finding;
         if (hit) {
@@ -1205,9 +1211,21 @@ function evaluateWorkflowCall(a: {
     const top = d.highestElevation;
     const topEffort = d.highestEffort;
     const modelGateInfo = d.gate?.modelGate ? { gate: d.gate.modelGate, ...(d.gate.elevationEffort ? { effort: d.gate.elevationEffort } : {}) } : undefined;
-    const markerEffort = modelGateInfo ? gateMarkerEffort(modelGateInfo.gate) : null;
     const needEffort = modelGateInfo?.effort;
-    const effortGateInfo = d.gate?.effortGate ? { gate: d.gate.effortGate, ...(d.gate.effortModel ? { model: d.gate.effortModel } : {}) } : undefined;
+    // The effort the question's marker names (the highest among the model-cause sites, `elevationEffort`), so the denial is noted
+    // with the very effort the marker shows and an approval of that marker covers the retry.
+    const markerEffort = needEffort ? gateMarkerEffort({ callEffort: needEffort }) : null;
+    // The model an effort approval must cover: the strongest among the effort-cause sites; when an effort site is judged by the old
+    // rules (no model known for it), the strongest model the script or the session can run on. One value for the question's marker,
+    // the denial note, the peek and the spend, so an approval of the marker always covers the retry. None when a model cannot be
+    // ranked: the marker is bare then (an approval for any model, as a model-less question always was).
+    const ungatedEffort = d.efforts.some((s) => !s.gate);
+    const scriptAliases = [...d.models, a.sessionModel].map((m) => modelAlias(m));
+    const strongestAlias = scriptAliases.some((m) => m === null)
+      ? undefined
+      : (scriptAliases as NonNullable<(typeof scriptAliases)[number]>[]).sort((x, y) => (modelRank(y) ?? 0) - (modelRank(x) ?? 0))[0];
+    const effortModel = ungatedEffort ? strongestAlias : d.gate?.effortModel;
+    const effortGateInfo = d.gate?.effortGate ? { gate: d.gate.effortGate, ...(effortModel ? { model: effortModel } : {}) } : undefined;
     if (d.unverifiable.length > 0 || (!top && !topEffort)) {
       return finish(
         'denied-unverifiable',
@@ -1238,7 +1256,8 @@ function evaluateWorkflowCall(a: {
     const denyEffort = (level: EffortLevel): WorkflowEvaluation => {
       const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, a.promptKeyOf(), `${signature}:effort`, nowMs, a.attemptWindowMs)) : undefined;
       const attemptCount = typeof count === 'number' ? count : null;
-      if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs));
+      // Noted with the model the marker shows (none when the question is bare, i.e. has no cost gate).
+      if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs, effortGateInfo?.model));
       return finish(
         'denied',
         {
@@ -1252,11 +1271,11 @@ function evaluateWorkflowCall(a: {
     const peekModel = (): Approval | null =>
       top && sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, top.requested, nowMs, a.rankCtx, needEffort)) ?? null) : null;
     if (top && !peekModel()) return denyModel(top);
-    const effortHit = topEffort && sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs, effortGateInfo?.model)) ?? null) : null;
+    const effortHit = topEffort && sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs, effortModel)) ?? null) : null;
     if (topEffort && !effortHit) return denyEffort(topEffort);
     const wants = {
       ...(top ? { model: { requested: top.requested, ctx: a.rankCtx, ...(needEffort ? { effort: needEffort } : {}) } } : {}),
-      ...(topEffort ? { effort: topEffort, ...(effortGateInfo?.model ? { effortModel: effortGateInfo.model } : {}) } : {})
+      ...(topEffort ? { effort: topEffort, ...(effortModel ? { effortModel } : {}) } : {})
     };
     const spent = sessionId ? (safely(() => deps.approvals?.consume?.(sessionId, wants, nowMs)) ?? null) : null;
     if (!spent) {
@@ -1675,8 +1694,8 @@ const approvalStore: ApprovalStore = {
       const next = recordEffortApproval(readApprovalState(sessionId), approval, approval.created_at, config);
       if (next) writeApprovalState(sessionId, next);
     }),
-  denyEffort: (sessionId, level, nowMs) =>
-    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteEffortDenied(readApprovalState(sessionId), level, nowMs))),
+  denyEffort: (sessionId, level, nowMs, model) =>
+    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteEffortDenied(readApprovalState(sessionId), level, nowMs, model))),
   claimEffort: (sessionId, level, nowMs, model) =>
     withApprovalsLock(sessionId, () => {
       const before = readApprovalState(sessionId);

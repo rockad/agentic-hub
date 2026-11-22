@@ -284,12 +284,43 @@ describe('Antigravity: the effort is the suffix of the model id', () => {
     expect(antigravityClampModel('gemini-3.5-pro-xhigh', effort, 'pro')).toBe('gemini-3.5-pro-high');
   });
 
+  it('enum approvals and full-id approvals are keyed apart; a full-id approval also covers the enum values at or below its tier', () => {
+    const state = (models: string[]) => ({ approvals: models.map((model) => ({ model, scope: 'session' as const, created_at: 0 })) });
+    for (const full of ['pro-high', 'gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-argon']) expect(agyClaim(state(['pro']), full, 1).approval).toBeNull();
+    expect(agyClaim(state(['pro-high']), 'pro-high', 1).approval).not.toBeNull();
+    expect(agyClaim(state(['pro-high']), 'pro', 1).approval).not.toBeNull();
+    expect(agyClaim(state(['pro-high']), 'flash', 1).approval).not.toBeNull();
+    expect(agyClaim(state(['flash-high']), 'pro', 1).approval).toBeNull();
+    expect(agyClaim(state(['pro']), 'flash', 1).approval).not.toBeNull();
+    // a denial stands for the answer the same way: an answer for a full id is not recorded against the enum value's question
+    const askedEnum = agyNoteDenied({ approvals: [] }, 'pro', 1);
+    expect(agyRecord(askedEnum, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)).toBeNull();
+    expect(agyRecord(askedEnum, { model: 'pro', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
+    const askedFull = agyNoteDenied({ approvals: [] }, 'pro-high', 1);
+    expect(agyRecord(askedFull, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
+  });
+
+  it('the clamp of a full id is the most expensive served option within the limit: flash_lite when flash costs more, else the ceiling alias', () => {
+    const g = over(antigravityCostGate('gemini-4-argon-low', 'flash', FLASH_LOW));
+    expect(g.limit).toBe(1.5); // flash is served at Hydrogen high (4.5): it does not fit
+    expect(antigravityClampModel('gemini-4-argon-low', g, 'flash')).toBe('flash_lite');
+    // flash fits a higher-effort session: it is the ceiling alias and the most expensive that fits
+    const high = over(antigravityCostGate('gemini-3.5-pro-xhigh', 'flash', 'gemini-3.8-flash-high'));
+    expect(antigravityClampModel('gemini-3.5-pro-xhigh', high, 'flash')).toBe('flash');
+    // nothing fits: the ceiling alias (what the gate always lets through)
+    expect(antigravityClampModel('gemini-4-argon-low', { ...g, limit: 0.01 }, 'flash')).toBe('flash');
+    // never above the ceiling: a flash_lite ceiling stays flash_lite even when flash would fit
+    expect(antigravityClampModel('gemini-4-argon-low', { ...g, limit: 100 }, 'flash_lite')).toBe('flash_lite');
+  });
+
   it('an approval covers its effort and lower; a record that names none stands for high; a denial caps what an answer can approve', () => {
     const state = (models: string[]) => ({ approvals: models.map((model) => ({ model, scope: 'session' as const, created_at: 0 })) });
     expect(agyClaim(state(['pro-xhigh']), 'pro-high', 1).approval).not.toBeNull();
     expect(agyClaim(state(['pro-xhigh']), 'pro-max', 1).approval).toBeNull();
     expect(agyClaim(state(['pro']), 'pro', 1).approval).not.toBeNull();
-    expect(agyClaim(state(['pro']), 'pro-high', 1).approval).not.toBeNull();
+    // an enum value (served on Hydrogen) never covers a full id, whatever its effort (2.3.19 review)
+    expect(agyClaim(state(['pro']), 'pro-high', 1).approval).toBeNull();
+    expect(agyClaim(state(['pro']), 'gemini-4-argon', 1).approval).toBeNull();
     expect(agyClaim(state(['pro']), 'pro-xhigh', 1).approval).toBeNull();
     // the call named no effort in its id: the effort the gate computed is what must be covered
     expect(agyClaim(state(['pro']), 'pro', 1, 'xhigh').approval).toBeNull();

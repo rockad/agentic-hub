@@ -181,6 +181,33 @@ describe('the decision, the reason and the cost_gate state', () => {
     expect(decide(sub('pro', HYDROGEN_MEDIUM))).toMatchObject({ decision: 'allow', elevation: 'approved', approvalScope: 'session' });
   });
 
+  it('an approval of the enum pro does not cover a real pro-class full id; a full-id approval does, and the question never says Hydrogen for it (2.3.19 review)', () => {
+    const FLASH_LOW_SESSION = 'gemini-3.8-flash-low';
+    approvals.deny('c1', 'pro', 500);
+    approvals.record('c1', { model: 'pro', scope: 'session', created_at: 600 });
+    // the enum approval is real: it covers the enum value
+    expect(decide(sub('pro', FLASH_LOW_SESSION))).toMatchObject({ decision: 'allow', elevation: 'approved' });
+    for (const id of ['gemini-4-argon-high', 'claude-opus-5-5-high', 'gemini-4-argon']) {
+      const held = decide(sub(id, FLASH_LOW_SESSION));
+      expect(held).toMatchObject({ decision: 'deny', elevation: 'denied' });
+      expect(held.reason).not.toContain('Hydrogen');
+      expect(held.reason).not.toContain('[jev-elevate:pro]');
+    }
+    // the full id is asked under its own marker, and an approval of that marker covers it
+    const asked = decide(sub('gemini-4-argon-high', FLASH_LOW_SESSION));
+    expect(asked.reason).toContain("'[jev-elevate:pro-high]'");
+    approvals.deny('c1', 'pro-high', 700);
+    approvals.record('c1', { model: 'pro-high', scope: 'session', created_at: 800 });
+    expect(decide(sub('gemini-4-argon-high', FLASH_LOW_SESSION))).toMatchObject({ decision: 'allow', elevation: 'approved' });
+    expect(decide(sub('claude-opus-5-5-high', FLASH_LOW_SESSION))).toMatchObject({ decision: 'allow', elevation: 'approved' });
+  });
+
+  it('the clamp of a full id lands within the limit: flash_lite when the ceiling alias (Hydrogen at high) costs more than the session', () => {
+    // flash ceiling on a low-effort session: limit 1.5, `flash` is served at 4.5
+    const clamped = decide(sub('gemini-4-argon-low', 'gemini-3.8-flash-low'), 'clamp');
+    expect(clamped).toMatchObject({ decision: 'allow', elevation: 'clamped', overwrite: { Model: 'flash_lite' }, clampedTo: 'flash_lite' });
+  });
+
   it('flash is never held on a flash ceiling, so "No, proceed on flash" cannot loop', () => {
     for (const session of ['gemini-4-hydrogen-low', HYDROGEN_MEDIUM, 'gemini-4-hydrogen-high']) expect(decide(sub('flash', session))).toEqual({ decision: 'pass' });
   });

@@ -989,6 +989,8 @@ export type ApprovalState = {
   effortApprovals?: EffortApproval[];
   /** An effort level to the epoch ms Jev last prescribed the effort question for it. */
   effortDenied?: Record<string, number>;
+  /** The model the effort question named, per effort level (the marker's `:<model>`): a bare answer is recorded for that model, never for any model. Absent: the question named none. */
+  effortDeniedModel?: Record<string, ClaudeModelAlias>;
   denied?: Record<string, number>;
   /** The effort the model question was prescribed with, per model alias (2.3.19): an answer cannot approve a higher effort than the question named. */
   deniedEffort?: Record<string, EffortLevel>;
@@ -1127,6 +1129,11 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     rawEffortDenied && typeof rawEffortDenied === 'object' && !Array.isArray(rawEffortDenied)
       ? Object.fromEntries(Object.entries(rawEffortDenied).filter(([l, t]) => EFFORT_LEVELS.includes(l as EffortLevel) && typeof t === 'number' && Number.isFinite(t)))
       : undefined;
+  const rawEffortDeniedModel = (r as { effortDeniedModel?: unknown } | null)?.effortDeniedModel;
+  const effortDeniedModel =
+    rawEffortDeniedModel && typeof rawEffortDeniedModel === 'object' && !Array.isArray(rawEffortDeniedModel)
+      ? Object.fromEntries(Object.entries(rawEffortDeniedModel).filter(([l, m]) => EFFORT_LEVELS.includes(l as EffortLevel) && typeof m === 'string' && modelRank(m) !== null))
+      : undefined;
   const rawDeniedEffort = (r as { deniedEffort?: unknown } | null)?.deniedEffort;
   const deniedEffort =
     rawDeniedEffort && typeof rawDeniedEffort === 'object' && !Array.isArray(rawDeniedEffort)
@@ -1137,6 +1144,7 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     ...(deniedEffort && Object.keys(deniedEffort).length ? { deniedEffort: deniedEffort as Record<string, EffortLevel> } : {}),
     ...(effortApprovals.length ? { effortApprovals } : {}),
     ...(effortDenied && Object.keys(effortDenied).length ? { effortDenied: effortDenied as Record<string, number> } : {}),
+    ...(effortDeniedModel && Object.keys(effortDeniedModel).length ? { effortDeniedModel: effortDeniedModel as Record<string, ClaudeModelAlias> } : {}),
     ...(attempts ? { attempts } : {}),
     ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {})
   };
@@ -1199,11 +1207,9 @@ export function recordApproval(state: ApprovalState, approval: Approval, nowMs: 
   // model (an old denial, or a question that named none) it keeps no effort, which stands for at most `high`.
   let stored = approval;
   if (approval.effort) {
-    const want = modelRank(approval.model) ?? 0;
-    const prescribed = Object.entries(state.deniedEffort ?? {})
-      .filter(([m]) => (modelRank(m) ?? -1) >= want)
-      .map(([, l]) => l)
-      .sort((a, b) => effortIndex(b) - effortIndex(a))[0];
+    // Only the denial of the SAME model counts: a stronger model's question (prescribed at a higher effort) must not raise what an
+    // answer for this one can approve.
+    const prescribed = state.deniedEffort?.[modelAlias(approval.model) ?? approval.model];
     const { effort: _drop, ...rest } = approval;
     stored = prescribed ? { ...rest, effort: effortIndex(approval.effort) <= effortIndex(prescribed) ? approval.effort : prescribed } : rest;
   }
@@ -1278,9 +1284,15 @@ export function parseEffortAnswer(input: unknown, nowMs: number): EffortApproval
 }
 
 /** Pure: note that the effort question was prescribed for `level` now, and drop the notes older than the window. */
-export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number): ApprovalState {
+export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string): ApprovalState {
   const kept = Object.entries(state.effortDenied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
-  return { ...state, effortDenied: { ...Object.fromEntries(kept), [level]: nowMs } };
+  const keptLevels = new Set(kept.map(([l]) => l));
+  const alias = model !== undefined ? modelAlias(model) : null;
+  // The model the question named, per level: kept for the levels still on record, replaced for this one (none when the question named none).
+  const models = Object.fromEntries(Object.entries(state.effortDeniedModel ?? {}).filter(([l]) => keptLevels.has(l) && l !== level));
+  const { effortDeniedModel: _drop, ...rest } = state;
+  const effortDeniedModel = { ...models, ...(alias ? { [level]: alias } : {}) };
+  return { ...rest, effortDenied: { ...Object.fromEntries(kept), [level]: nowMs }, ...(Object.keys(effortDeniedModel).length ? { effortDeniedModel } : {}) };
 }
 
 /** Pure: was the effort question prescribed for `level`, or a higher one, within the window? A denial older than the last mode change does not count. */
@@ -1294,20 +1306,34 @@ export function wasEffortDeniedRecently(state: ApprovalState, level: EffortLevel
 export function recordEffortApproval(state: ApprovalState, approval: EffortApproval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
   if (!wasEffortDeniedRecently(state, approval.level, nowMs, config)) return null;
   const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
-  return { ...state, effortApprovals: [...live, approval] };
+  // When the question that was prescribed named a model, an answer is recorded for THAT model: a bare marker never becomes an
+  // approval for any model, and a marker naming a stronger one is held to the prescribed one. A denial that named none (a record
+  // from before 2.3.19, or the interim rule) leaves the answer as it is.
+  const latest = Object.entries(state.effortDenied ?? {})
+    .filter(([l, t]) => effortCovers(l, approval.level) && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code'))
+    .sort((a, b) => b[1] - a[1])[0];
+  const prescribed = latest ? state.effortDeniedModel?.[latest[0]] : undefined;
+  let stored = approval;
+  if (prescribed) {
+    const { model: _m, ...rest } = approval;
+    stored = { ...rest, model: approval.model && (modelRank(approval.model) ?? Infinity) <= (modelRank(prescribed) ?? -1) ? approval.model : prescribed };
+  }
+  return { ...state, effortApprovals: [...live, stored] };
 }
 
 /**
  * Pure: the effort approval that covers `level` (a higher approved level covers a lower one), a standing one before a `once`,
  * which is consumed. Expired ones are dropped. With `model` (2.3.19) an approval that names a model must be for that model or
- * a stronger one; an approval that names none (a record from before 2.3.19) covers any model.
+ * a stronger one; an approval that names none (a record from before 2.3.19) covers any model. The caller always passes the call's
+ * model alias: without one (or one that cannot be ranked) an approval that names a model does not cover the call.
  */
 export function claimEffortApproval(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string): { state: ApprovalState; approval: EffortApproval | null } {
   const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
   const wantRank = model === undefined ? null : modelRank(model);
+  // A model-scoped approval covers only a model it can be compared with: a call whose model is not known (or not passed) is not covered by one.
   const hit = live
     .filter((a) => effortCovers(a.level, level))
-    .filter((a) => !a.model || wantRank === null || (modelRank(a.model) ?? -1) >= wantRank).sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+    .filter((a) => !a.model || (wantRank !== null && (modelRank(a.model) ?? -1) >= wantRank)).sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
   const effortApprovals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
   const { effortApprovals: _drop, ...rest } = state;
   return { state: { ...rest, ...(effortApprovals.length ? { effortApprovals } : {}) }, approval: hit };

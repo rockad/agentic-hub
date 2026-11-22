@@ -30,7 +30,7 @@ const stored = (intent: Record<string, unknown>) =>
 
 describe('the gate: session opus at high (22.5)', () => {
   it('sonnet at max passes, opus at high passes, opus at xhigh is held', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
 
     expect(await onPreToolUse(call({ description: 'd', model: 'sonnet', effort: 'max' }), r.d)).toBeNull();
     expect(row()).toMatchObject({ decision: 'pass', cost_gate: 'pass', costEstimate: 9, sessionCost: 22.5, costRatio: 0.4 });
@@ -46,16 +46,19 @@ describe('the gate: session opus at high (22.5)', () => {
     expect(row()).toMatchObject({ decision: 'deny', cost_gate: 'denied', effort_level: 'xhigh', effort_decision: 'denied', costEstimate: 30, sessionCost: 22.5 });
   });
 
-  it('a stronger model at a low effort that costs less than the session passes (session sonnet at max, opus at low)', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+  it('a stronger model at a low effort that costs less than the session still asks (the tier check: session sonnet at max, opus at low)', async () => {
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
-    expect(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'low' }, { effort: 'max' }), r.d)).toBeNull();
+    const o = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'low' }, { effort: 'max' }), r.d));
 
-    expect(row()).toMatchObject({ decision: 'pass', cost_gate: 'pass', costEstimate: 7.5, sessionCost: 9 });
+    // The gate would let the cost through (7.5 against 9); the model is above the session's, so the question is asked all the same.
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(row()).toMatchObject({ decision: 'deny', elevation: 'denied', cost_gate: 'pass', costEstimate: 7.5, sessionCost: 9 });
   });
 
   it('an effort above the session\'s on the same model is held even at high (session sonnet at medium, sonnet at high costs 4.5 vs 3)', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'sonnet', effort: 'high' }, { effort: 'medium' }), r.d));
 
@@ -67,7 +70,7 @@ describe('the gate: session opus at high (22.5)', () => {
 
 describe('choice (default): one question per held call, the existing markers', () => {
   it('a model above the session\'s is the model question; it names the effort in the marker only above high', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const a = out(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d));
     expect(a.permissionDecisionReason).toContain('STARTS with the marker [jev-elevate:opus]');
@@ -82,7 +85,7 @@ describe('choice (default): one question per held call, the existing markers', (
   });
 
   it('an approval of opus at xhigh covers opus at xhigh, high and medium, not opus at max, and is spent only by a call that runs', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     approve({ approvals: [{ model: 'opus', scope: 'once', created_at: 0, expires_at: 9e15, effort: 'xhigh' }] });
 
     const max = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
@@ -95,7 +98,7 @@ describe('choice (default): one question per held call, the existing markers', (
   });
 
   it('a record from before 2.3.19 (no effort) stands for that model at high or lower', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     approve({ approvals: [{ model: 'opus', scope: 'session', created_at: 0 }] });
 
     expect(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d)).toBeNull();
@@ -105,7 +108,7 @@ describe('choice (default): one question per held call, the existing markers', (
   });
 
   it('an effort approval that names a model covers that model and weaker ones, at its level and lower', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'xhigh', scope: 'session', created_at: 0, model: 'opus' }] });
 
     expect(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'xhigh' }), r.d)).toBeNull();
@@ -115,7 +118,7 @@ describe('choice (default): one question per held call, the existing markers', (
   });
 
   it('the answer to the effort question is recorded with its model and used on the retry', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     const held = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'xhigh' }), r.d));
     expect(held.permissionDecision).toBe('deny');
 
@@ -130,7 +133,7 @@ describe('choice (default): one question per held call, the existing markers', (
   });
 
   it('what the user named in the prompt raises the baseline: a named model passes, a named effort passes', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     stored({ models: ['opus'] });
     expect(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d)).toBeNull();
     expect(row()).toMatchObject({ decision: 'pass', elevation: 'instructed', cost_gate: 'pass' });
@@ -148,7 +151,7 @@ describe('choice (default): one question per held call, the existing markers', (
 
 describe('fallback: where the cost cannot be computed the pre-2.3.19 rules decide (never an allow)', () => {
   it('no session effort: the model ceiling by rank, no cost sentence', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'opus' }, { effort: undefined }), r.d));
 
@@ -159,7 +162,7 @@ describe('fallback: where the cost cannot be computed the pre-2.3.19 rules decid
   });
 
   it('a relative effort ("higher") is not a level: the interim effort rule, with its own marker and "No, run at high"', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const o = out(await onPreToolUse(call({ description: 'd', effort: 'higher' }, { effort: 'high' }), r.d));
 
@@ -170,7 +173,7 @@ describe('fallback: where the cost cannot be computed the pre-2.3.19 rules decid
   });
 
   it('a model with no alias and an unreadable definition keep their own verdicts', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     fs.mkdirSync(path.join(r.project, '.claude', 'agents'), { recursive: true });
     fs.writeFileSync(path.join(r.project, '.claude', 'agents', 'broken.md'), '---\nname: broken\nmodel: [oops\n---\nbody\n');
 
@@ -184,7 +187,7 @@ describe('fallback: where the cost cannot be computed the pre-2.3.19 rules decid
 
 describe('clamp: the most expensive (model, effort) within the session\'s cost', () => {
   it('a model too much and an effort too high: the session model, the effort lowered to fit; both are logged', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     setEnv({ JEV_ELEVATION: 'clamp' });
 
     const o = out(await onPreToolUse(call({ description: 'd', prompt: 'p', model: 'opus', effort: 'max' }), r.d));
@@ -195,7 +198,7 @@ describe('clamp: the most expensive (model, effort) within the session\'s cost',
   });
 
   it('only the effort too high: the same model, the effort lowered; never a deny', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     setEnv({ JEV_ELEVATION: 'clamp' });
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'xhigh' }), r.d));
@@ -206,7 +209,7 @@ describe('clamp: the most expensive (model, effort) within the session\'s cost',
   });
 
   it('a call at a lower effort than the session keeps it; a call within the cost is left alone', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     setEnv({ JEV_ELEVATION: 'clamp' });
 
     const low = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'low' }, { effort: 'low' }), r.d));
@@ -218,7 +221,7 @@ describe('clamp: the most expensive (model, effort) within the session\'s cost',
   });
 
   it('a remapped session alias cannot be clamped to: denied with guidance, never asked', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     setEnv({ JEV_ELEVATION: 'clamp', ANTHROPIC_DEFAULT_SONNET_MODEL: 'some-model' });
 
     const o = out(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d));
@@ -230,7 +233,7 @@ describe('clamp: the most expensive (model, effort) within the session\'s cost',
 
 describe('dialog: unchanged semantics (ask, auto_approve_warning)', () => {
   it('a model too much asks with the cost; an effort too high asks with the cost; auto-approve is a warning only', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     setEnv({ JEV_ELEVATION: 'dialog' });
 
     const m = out(await onPreToolUse(call({ description: 'd', model: 'opus' }), r.d));
@@ -248,7 +251,7 @@ describe('dialog: unchanged semantics (ask, auto_approve_warning)', () => {
   });
 
   it('a call within the cost does not ask', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     setEnv({ JEV_ELEVATION: 'dialog' });
 
     expect(await onPreToolUse(call({ description: 'd', model: 'sonnet', effort: 'max' }), r.d)).toBeNull();
@@ -257,7 +260,7 @@ describe('dialog: unchanged semantics (ask, auto_approve_warning)', () => {
 
 describe('on-demand and off', () => {
   it('on-demand writes the row (with the costs) and decides nothing', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     r.mode.value = 'on-demand';
 
     expect(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d)).toBeNull();
@@ -267,7 +270,7 @@ describe('on-demand and off', () => {
   });
 
   it('off writes nothing and decides nothing', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     r.mode.value = 'off';
 
     expect(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d)).toBeNull();
@@ -290,7 +293,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('session opus at high: sonnet at max passes; opus at xhigh is the effort question; opus at high passes', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
 
     expect(out(await onPreToolUse(wfCall(script("{ model: 'sonnet', effort: 'max' }")), r.d)).permissionDecision).toBeUndefined();
     expect(row()).toMatchObject({ workflow_guard: 'allow', cost_gate: 'pass' });
@@ -304,7 +307,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('a model above the session\'s is the model question, with the effort in the marker above high', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const a = out(await onPreToolUse(wfCall(script("{ model: 'opus' }")), r.d));
     expect(a.permissionDecisionReason).toContain('STARTS with the marker [jev-elevate:opus]');
@@ -315,7 +318,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('one answer covers the whole script at the approved effort or lower, not above it', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'xhigh', scope: 'session', created_at: 0, model: 'opus' }] });
 
     expect(out(await onPreToolUse(wfCall(script("{ model: 'opus', effort: 'xhigh' }")), r.d)).permissionDecision).toBeUndefined();
@@ -324,7 +327,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('what the user named in the prompt lets the call through, as before', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     stored({ models: ['opus'] });
 
     expect(out(await onPreToolUse(wfCall(script("{ model: 'opus' }")), r.d)).permissionDecision).toBeUndefined();
@@ -332,7 +335,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('clamp is the choice flow for a script (it cannot be clamped), never an ask; dialog asks', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     setEnv({ JEV_ELEVATION: 'clamp' });
     expect(out(await onPreToolUse(wfCall(script("{ model: 'opus' }")), r.d)).permissionDecision).toBe('deny');
 
@@ -341,7 +344,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('where the cost cannot be computed (no session effort, a variable effort) the per-finding rules decide', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
 
     const a = out(await onPreToolUse(wfCall(script("{ model: 'sonnet', effort: 'xhigh' }"), { effort: undefined }), r.d));
     expect(a.permissionDecision).toBe('deny');
@@ -354,7 +357,7 @@ describe('Workflow scripts: the same rule, per agent() call', () => {
   });
 
   it('on-demand passes the script untouched', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     r.mode.value = 'on-demand';
 
     expect(await onPreToolUse(wfCall(script("{ model: 'opus', effort: 'max' }")), r.d)).toBeNull();

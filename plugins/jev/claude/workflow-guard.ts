@@ -133,7 +133,7 @@ import {
   type UserIntent
 } from './logic.js';
 import { costEffortOf } from '../src/core/cost-estimate.js';
-import { effortIndex, evaluateCostGate, type CostGate } from '../src/core/cost-gate.js';
+import { DEFAULT_COST_GATE_MODE, effortIndex, evaluateCostGate, type CostGate, type CostGateMode } from '../src/core/cost-gate.js';
 
 /** Largest script (inline or file) the guard will parse (shared with the pin drift check, src/core/workflow-pin.ts). Bigger asks. */
 export { MAX_SCRIPT_BYTES, type ScriptFact };
@@ -179,7 +179,7 @@ export interface WorkflowDecision {
   /** How many agent() calls (and agent definitions) are held at each level, for the effort question ("3 agents at max"). */
   effortCounts?: Partial<Record<EffortLevel, number>>;
   /** The cost gate (2.3.19): the sites it found (each carries its `gate`), the worst effort-cause and model-cause verdicts, how many agent() calls it judged and how many it could not (the old rules judged those). */
-  gate?: { calls: number; fallbacks: number; effortModel?: string; effortGate?: OverGate; modelGate?: OverGate; elevationEffort?: EffortLevel };
+  gate?: { calls: number; fallbacks: number; shadowOver?: number; effortModel?: string; effortGate?: OverGate; modelGate?: OverGate; elevationEffort?: EffortLevel };
   unverifiable: CallSite[];
   /** Every literal model that was ranked (call, definition, phase hint and environment candidates), in script order, de-duplicated. */
   models: string[];
@@ -200,7 +200,9 @@ export interface GuardContext {
   /** The session's effort (2.3.19), as the hook reports it. Absent: the cost gate does not apply and the old rules judge every call. */
   sessionEffort?: string | null;
   /** Counts the agent() calls the cost gate judged and the ones it left to the old rules (filled by `checkScriptText`). */
-  gateCounts?: { calls: number; fallbacks: number };
+  gateCounts?: { calls: number; fallbacks: number; shadowOver: number };
+  /** How the cost gate decides (2.3.19): `shadow` (default) judges every agent() call by the rules of before it and only counts what the gate would hold (`gate.shadowOver`); `enforce` lets the gate judge. The tier check holds in both. */
+  costGate?: CostGateMode;
   /** Collects every literal model that was ranked, and whether a model or an effort passed by instruction (filled by `checkScriptText`). */
   seen?: { models: string[]; instructed: boolean };
 }
@@ -1107,12 +1109,15 @@ function gateCall(
     }
   }
   let worst: { gate: Extract<CostGate, { kind: 'pass' | 'over' }>; gate0: CostGate; model: string; e: Elevation | null } | null = null;
+  // The tier check: a candidate model above the session's always asks, whatever the effort (the rank ceiling stands before the gate).
+  let tier: { model: string; source: (typeof candidates)[number]['source']; e: Elevation } | null = null;
   for (const c of candidates) {
     const model = c.model ?? sessionModel;
     if (c.model !== null) g.seen?.models.push(c.model);
     if (modelAlias(model) === null) return null;
     const e = classifyElevation({ model }, sessionModel, g.intent ?? null, g.rank ?? null);
     if (e?.unranked) return null;
+    if (e?.kind === 'elevating' && (!tier || (compareFamilyFirst(model, tier.model, g.rank ?? null) ?? 0) > 0)) tier = { model, source: c.source, e };
     const call = { model, effort: callEffort };
     const session = { model: sessionModel, effort: sessionEffort };
     const gate0 = evaluateCostGate(call, session);
@@ -1128,10 +1133,16 @@ function gateCall(
   if (!worst) return [];
   // What only the user's words let through is recorded, as for the old rules.
   if (worst.gate0.kind === 'over' && worst.gate.kind === 'pass' && g.seen) g.seen.instructed = true;
-  if (worst.gate.kind !== 'over') return [];
   const first = group[0];
   const at = { file: label, line: first.line, col: first.col };
+  // The tier site: the call asks because of its model alone, and the question is the plain model question (no gate of its own).
+  const tierSites = (): CallSite[] =>
+    tier
+      ? [{ ...at, reason: `agent() call: model "${clip(tier.model)}" is stronger than the session model "${sessionModel}"${modelSourceNote(tier.source)}`, kind: 'elevation' as const, elevation: tier.e }]
+      : [];
+  if (worst.gate.kind !== 'over') return tierSites();
   const reason = `agent() call ${gateCostSentence(worst.gate)}`;
+  if (worst.gate.cause !== 'model' && tier) return [...tierSites(), { ...at, reason, kind: 'effort', effort: worst.gate.callEffort, gate: worst.gate }];
   if (worst.gate.cause === 'model') {
     const e: Elevation =
       worst.e?.kind === 'elevating'
@@ -1170,6 +1181,12 @@ export function checkScriptText(
   const judged = new Map<number, CallSite[]>();
   for (const [id, group] of groups) {
     const r = gateCall(group, label, sessionModel, resolver, g);
+    if ((g.costGate ?? DEFAULT_COST_GATE_MODE) === 'shadow') {
+      // Shadow: the gate only reports. What it would have held is counted; the rules of before it judge the call below.
+      if (r && g.gateCounts && r.some((s) => s.gate)) g.gateCounts.shadowOver++;
+      if (!r && g.gateCounts && g.sessionEffort !== undefined) g.gateCounts.fallbacks++;
+      continue;
+    }
     if (r) judged.set(id, r);
     else if (g.gateCounts && g.sessionEffort !== undefined) g.gateCounts.fallbacks++;
   }
@@ -1279,7 +1296,7 @@ export function evaluateWorkflowInput(
 ): WorkflowDecision {
   const scripts: ScriptFact[] = [];
   const seen = { models: [] as string[], instructed: false };
-  const gateCounts = { calls: 0, fallbacks: 0 };
+  const gateCounts = { calls: 0, fallbacks: 0, shadowOver: 0 };
   const g: GuardContext = { ...ctx, seen, gateCounts };
   const finish = (sites: CallSite[]): WorkflowDecision => {
     const elevations = sites.filter((s) => s.kind === 'elevation');
@@ -1316,7 +1333,7 @@ export function evaluateWorkflowInput(
             effortCounts
           }
         : {}),
-      gate: { calls: gateCounts.calls, fallbacks: gateCounts.fallbacks, ...(effortModel ? { effortModel } : {}), ...(effortGate ? { effortGate } : {}), ...(modelGate ? { modelGate } : {}), ...(elevationEffort ? { elevationEffort } : {}) },
+      gate: { calls: gateCounts.calls, fallbacks: gateCounts.fallbacks, shadowOver: gateCounts.shadowOver, ...(effortModel ? { effortModel } : {}), ...(effortGate ? { effortGate } : {}), ...(modelGate ? { modelGate } : {}), ...(elevationEffort ? { elevationEffort } : {}) },
       unverifiable,
       models: [...new Set(seen.models)],
       instructed: seen.instructed,

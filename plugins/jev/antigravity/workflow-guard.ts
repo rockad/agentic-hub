@@ -79,7 +79,7 @@ import {
   subagentCeilingRank
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
-import { antigravityCostGate, costComparison, effortIndex, type CostGateState, type CostGate } from '../src/core/cost-gate.js';
+import { DEFAULT_COST_GATE_MODE, antigravityCostGate, costComparison, effortIndex, parseCostGateMode, type CostGateMode, type CostGateState, type CostGate } from '../src/core/cost-gate.js';
 import type { CostEffort } from '../src/core/cost-estimate.js';
 import { servedModelGuidance, subagentEnumOf } from '../src/core/served-model.js';
 import { jevHomeDir } from '../src/core/private-fs.js';
@@ -141,7 +141,7 @@ export interface WorkflowDecision {
   /** True when a model above the ceiling passed because the user named it in the prompt. */
   instructed: boolean;
   /** How many agent(...) calls the cost gate judged, and how many it left to the model ceiling by rank (2.3.19). */
-  gate?: { judged: number; fallbacks: number };
+  gate?: { judged: number; fallbacks: number; shadowOver?: number };
   /** The strongest elevation (by tier rank), absent when there is none. */
   highest?: CallSite;
   /** The sha256 of every script text that was analysed, for allow and ask alike. */
@@ -357,7 +357,9 @@ export interface AnalysisContext {
   /** Where `type_name` definitions are looked up. */
   definitions?: DefinitionResolver;
   /** Collects every literal model that was ranked, and whether one passed by instruction. */
-  seen: { models: string[]; instructed: boolean; gateJudged?: number; gateFallbacks?: number };
+  seen: { models: string[]; instructed: boolean; gateJudged?: number; gateFallbacks?: number; shadowOver?: number };
+  /** How the cost gate decides (2.3.19): `shadow` (default) judges by the model ceiling and only counts what the gate would hold (`seen.shadowOver`); `enforce` lets the gate judge. The tier check holds in both. */
+  costGate?: CostGateMode;
   /** The directories a local import is looked for in: the script's own directory (a `ScriptPath`) and its `Cwd`. Empty or absent: no import is local. */
   localModuleDirs?: readonly string[];
 }
@@ -614,12 +616,37 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
     // The cost gate (2.3.19) judges the call by what it costs against the session's (the effort is the id's suffix); a model it
     // cannot place in a tier falls through to the model ceiling by rank below.
     const gate0 = antigravityCostGate(m, ceilingTier, ctx.sessionModel);
-    if (gate0.kind !== 'fallback') {
+    const shadow = (ctx.costGate ?? DEFAULT_COST_GATE_MODE) === 'shadow';
+    if (gate0.kind !== 'fallback' && shadow) {
+      // Shadow: the gate only reports (counted for the row); the model ceiling by rank below judges the call.
       ctx.seen.gateJudged = (ctx.seen.gateJudged ?? 0) + 1;
       const named = isExplicitProOverride(ctx.lastUserInput, m);
       const gate = named ? antigravityCostGate(m, ceilingTier, ctx.sessionModel, { model: m }) : gate0;
+      if (gate.kind === 'over') ctx.seen.shadowOver = (ctx.seen.shadowOver ?? 0) + 1;
+    } else if (gate0.kind !== 'fallback') {
+      ctx.seen.gateJudged = (ctx.seen.gateJudged ?? 0) + 1;
+      const named = isExplicitProOverride(ctx.lastUserInput, m);
+      const gate = named ? antigravityCostGate(m, ceilingTier, ctx.sessionModel, { model: m }) : gate0;
+      // The tier check: a full id above the session's ceiling always asks, whatever its effort (an enum value is priced by the model it is served on).
+      const tierAbove = subagentEnumOf(m) === null && rank > sessionRank;
       if (gate.kind !== 'over') {
         if (named && gate0.kind === 'over') ctx.seen.instructed = true;
+        if (!tierAbove) return;
+        if (named) {
+          ctx.seen.instructed = true;
+          return;
+        }
+        sites.push({
+          file: label,
+          line: at.line,
+          col: at.col,
+          reason: `${source} model '${clip(model)}' is above the session ceiling '${ceilingTier}'`,
+          kind: 'elevation',
+          requested: m,
+          tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
+          rank,
+          effort: gate.kind === 'fallback' ? undefined : gate.callEffort
+        });
         return;
       }
       sites.push({
@@ -637,7 +664,7 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
       });
       return;
     }
-    ctx.seen.gateFallbacks = (ctx.seen.gateFallbacks ?? 0) + 1;
+    if (gate0.kind === 'fallback') ctx.seen.gateFallbacks = (ctx.seen.gateFallbacks ?? 0) + 1;
     if (rank <= sessionRank) return;
     if (isExplicitProOverride(ctx.lastUserInput, m)) {
       ctx.seen.instructed = true;
@@ -862,7 +889,7 @@ export interface WorkflowInputContext {
  */
 export function evaluateWorkflowInput(args: unknown, where: WorkflowInputContext, ctx: Omit<AnalysisContext, 'seen'>): WorkflowDecision {
   const scripts: ScriptFact[] = [];
-  const seen = { models: [] as string[], instructed: false, gateJudged: 0, gateFallbacks: 0 };
+  const seen = { models: [] as string[], instructed: false, gateJudged: 0, gateFallbacks: 0, shadowOver: 0 };
   const g: AnalysisContext = { ...ctx, seen };
   const finish = (sites: CallSite[]): WorkflowDecision => {
     const elevations = sites.filter((s) => s.kind === 'elevation');
@@ -875,7 +902,7 @@ export function evaluateWorkflowInput(args: unknown, where: WorkflowInputContext
       unverifiable,
       models: [...new Set(seen.models)],
       instructed: seen.instructed,
-      gate: { judged: seen.gateJudged ?? 0, fallbacks: seen.gateFallbacks ?? 0 },
+      gate: { judged: seen.gateJudged ?? 0, fallbacks: seen.gateFallbacks ?? 0, shadowOver: seen.shadowOver ?? 0 },
       ...(highest ? { highest } : {}),
       scripts
     };
@@ -984,6 +1011,8 @@ export interface WorkflowCallDeps {
   pinDir?: string;
   /** `JEV_ELEVATION`: `dialog` asks, anything else (`choice`, `clamp`, unset) never asks. */
   elevationMode?: 'choice' | 'dialog' | 'clamp';
+  /** How the cost gate decides (2.3.19); `JEV_COST_GATE` wins, absent is `shadow`. */
+  costGateMode?: CostGateMode;
   definitions?: DefinitionResolver;
 }
 
@@ -1016,6 +1045,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
     const sessionOrchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
     const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, sessionOrchestrator));
+    const costGateMode: CostGateMode = parseCostGateMode(process.env.JEV_COST_GATE) ?? deps.costGateMode ?? DEFAULT_COST_GATE_MODE;
     const d = evaluateWorkflowInput(
       input.toolCall?.args,
       { cwd: input.cwd, workspacePaths: input.workspacePaths },
@@ -1023,6 +1053,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
         sessionModel,
         sessionOrchestrator,
         lastUserInput: input.lastUserInput,
+        costGate: costGateMode,
         definitions: deps.definitions ?? fsDefinitionResolver([input.cwd, ...(input.workspacePaths ?? [])].filter((x): x is string => typeof x === 'string' && x.length > 0))
       }
     );
@@ -1034,9 +1065,13 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const pin = (decision: 'allow' | 'ask'): void => {
       if (deps.pinDir && toolCallId) writeWorkflowPin(deps.pinDir, toolCallId, input.conversationId, decision, d.scripts);
     };
+    // `cost_gate` of the row (enforce): what the cost gate did. In shadow the row says `cost_gate_shadow` instead: what it would have done.
+    const idleState: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
+    const gateField = (state: CostGateState): Record<string, unknown> =>
+      costGateMode === 'enforce' ? { cost_gate: state } : { cost_gate_shadow: (d.gate?.shadowOver ?? 0) > 0 ? 'denied' : idleState };
     const finish = (guard: string, decision: AntigravityHookDecision, extra: Record<string, unknown> = {}): WorkflowCallResult => ({
       decision,
-      log: { workflow_guard: guard, ...base, cost_gate: d.sites.some((s) => s.gate) ? 'denied' : d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback', ...extra }
+      log: { workflow_guard: guard, ...base, ...gateField(d.sites.some((s) => s.gate) ? 'denied' : idleState), ...extra }
     });
 
     if (d.decision === 'allow') {
@@ -1072,7 +1107,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     // highest effort among the gated sites as a suffix (`pro-xhigh`) when it is above `high` (a bare model stands for at most `high`):
     // the approval then covers that effort and lower, for the whole script.
     const gated = d.elevations.filter((s) => s.gate);
-    const maxEffort = gated.reduce<CostEffort | undefined>((best, s) => (s.effort && (!best || effortIndex(s.effort) > effortIndex(best)) ? s.effort : best), undefined);
+    const maxEffort = d.elevations.reduce<CostEffort | undefined>((best, s) => (s.effort && (!best || effortIndex(s.effort) > effortIndex(best)) ? s.effort : best), undefined);
     const worstGate = gated.reduce<NonNullable<CallSite['gate']> | undefined>((best, s) => (!best || (s.gate as NonNullable<CallSite['gate']>).ratio > best.ratio ? (s.gate as NonNullable<CallSite['gate']>) : best), undefined);
     // An enum value (`pro`: served on Hydrogen) and a full id (`gemini-4-argon-high`) are keyed apart (see `approvalKindCovers`): a script
     // with any full-id site is asked, and approved, under the full-id form `<tier>-<effort>` (the effort is `high` at most unless a
@@ -1082,7 +1117,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const markerModel = hasFullId ? `${top.tier}-${maxEffort ?? 'high'}` : maxEffort && effortIndex(maxEffort) > effortIndex('high') ? `${top.tier}-${maxEffort}` : top.tier;
     // `cost_gate` of the row: what the cost gate did with the calls it could judge (`fallback` when the model ceiling by rank judged any).
     const gateIdle: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
-    const costGate = (state: CostGateState): { cost_gate: CostGateState } => ({ cost_gate: gated.length > 0 ? state : gateIdle });
+    const costGate = (state: CostGateState): Record<string, unknown> => gateField(gated.length > 0 ? state : gateIdle);
     const claimed = approvals?.claim(sessionId, markerModel, nowMs, maxEffort) ?? null;
     if (claimed) {
       pin('allow');

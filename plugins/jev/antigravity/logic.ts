@@ -22,7 +22,18 @@ import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/c
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
 import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
-import { antigravityClampModel, antigravityCostGate, antigravityMarkerModel, costComparison, type CostGateState } from '../src/core/cost-gate.js';
+import {
+  DEFAULT_COST_GATE_MODE,
+  antigravityClampModel,
+  antigravityCostGate,
+  antigravityMarkerModel,
+  costComparison,
+  parseCostGateMode,
+  shadowStateOf,
+  type CostGateMode,
+  type CostGateShadowState,
+  type CostGateState
+} from '../src/core/cost-gate.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
@@ -73,6 +84,8 @@ export type AntigravityLogicDeps = {
   /** The session record says this is an Orchestrator conversation (the 1.5.14 marker). A legacy Orchestrator id is an Orchestrator session on its own. */
   sessionOrchestrator?: boolean;
   elevationMode?: 'choice' | 'dialog' | 'clamp';
+  /** How the cost gate decides (2.3.19): `shadow` (the default; the model rank ceiling decides and the row records what the gate would have done) or `enforce`. JEV_COST_GATE wins. */
+  costGateMode?: CostGateMode;
   quotaView?: QuotaView;
   mode?: JevMode;
   /**
@@ -954,16 +967,24 @@ export function evaluateAntigravitySubagentCall(
   // whether it was them that let the call through.
   const named = isExplicitProOverride(input.lastUserInput, requestedModel);
   const gate0 = antigravityCostGate(requestedModel, sessionCeilingTier, sessionModel);
-  const gateOn = gate0.kind !== 'fallback';
+  // Shadow (the default): the rank ceiling decides, the gate is only computed for the row. Enforce: the gate decides.
+  const gateMode = costGateModeOf(deps);
+  const gateOn = gateMode === 'enforce' && gate0.kind !== 'fallback';
+  // The tier check: a stronger model always asks (2.3.19). A full id whose tier is above the session's ceiling is an elevation
+  // whatever its effort and whatever the gate says, so `gemini-4-argon-low` under the Orchestrator's flash ceiling asks even when
+  // the planner runs at max. An enum value (`pro`, `flash`) is priced by the model it is served on and stays with the gate.
+  const tierAbove = gateOn && subagentEnumOf(requestedModel) === null && requestedRank > sessionCeilingRank;
 
-  if (gateOn ? gate0.kind === 'pass' : requestedRank <= sessionCeilingRank) {
+  if (gateOn ? gate0.kind === 'pass' && !tierAbove : requestedRank <= sessionCeilingRank) {
     return { decision: 'pass' };
   }
 
   // Requested model exceeds what the session is held to: ELEVATION. With the user's own words the baseline is raised to the
   // model they named: the call is let through as instructed unless its effort still pushes it over.
   const gate = gateOn && named ? antigravityCostGate(requestedModel, sessionCeilingTier, sessionModel, { model: requestedModel }) : gate0;
-  const overGate = gate.kind === 'over' ? gate : null;
+  const overGate = gateOn && gate.kind === 'over' ? gate : null;
+  // What the marker and the approval carry: the tier and effort form when the gate is over, and for a tier ask the gate let through.
+  const markerGate = overGate ?? (tierAbove && gate.kind === 'pass' ? gate : null);
   const gateNote = overGate ? { costNote: costComparison(overGate, (m) => String(m ?? 'the session model')) } : {};
 
   // Check explicit override in user prompt
@@ -972,8 +993,8 @@ export function evaluateAntigravitySubagentCall(
   }
 
   // Check covering approval
-  const markerModel = antigravityMarkerModel(requestedModel, overGate);
-  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, subagentEnumOf(requestedModel) === null ? overGate?.callEffort : undefined);
+  const markerModel = antigravityMarkerModel(requestedModel, markerGate);
+  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, subagentEnumOf(requestedModel) === null ? markerGate?.callEffort : undefined);
   if (approval) {
     return {
       decision: 'allow',
@@ -1688,6 +1709,8 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
       downgradeLog?: Record<string, unknown>;
       /** What the cost gate did (2.3.19), see `antigravityCostGateState`; absent in a mode without decisions. */
       costGate?: CostGateState;
+      /** What the cost gate would have done, in shadow mode (2.3.19); absent in enforce and in a mode without decisions. */
+      costGateShadow?: CostGateShadowState;
       quotaStrategy?: string;
       /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
       callKey?: string;
@@ -1866,6 +1889,7 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       ? { costSaving: antigravityDowngradeSaving(requestedModel, params.downgradeLog?.downgrade_to, sessionModel) }
       : {}),
     ...(params.costGate ? { cost_gate: params.costGate } : {}),
+    ...(params.costGateShadow ? { cost_gate_shadow: params.costGateShadow } : {}),
     ...(quotaStrategy ? { quotaStrategy } : {})
   };
 }
@@ -1924,4 +1948,29 @@ export function antigravityCostGateState(
   if (decision.elevation === 'clamped') return 'clamped';
   if (decision.elevation === 'instructed') return 'pass';
   return decision.decision === 'pass' || decision.decision === 'allow' ? 'pass' : 'denied';
+}
+
+/**
+ * The `cost_gate_shadow` value of an `invoke_subagent` row in shadow mode (2.3.19): what the cost gate would have done with the
+ * call, whatever the rank ceiling decided. `pass` (it costs no more than the session's, or the user's own words let it through),
+ * `denied`, `clamped` (under `JEV_ELEVATION=clamp`) or `fallback` (the cost could not be computed). Pure.
+ */
+export function antigravityCostGateShadowState(
+  input: AntigravityHookInput,
+  deps: { sessionModel?: string; sessionOrchestrator?: boolean; elevationMode?: 'choice' | 'dialog' | 'clamp' }
+): CostGateShadowState {
+  const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
+  const orchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
+  const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, orchestrator));
+  const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
+  if (!isExplicit || !requestedModel) return 'pass';
+  const named = isExplicitProOverride(input.lastUserInput, requestedModel);
+  const gate = antigravityCostGate(requestedModel, ceilingTier, sessionModel, named ? { model: requestedModel } : {});
+  const elevation = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
+  return shadowStateOf(gate, elevation);
+}
+
+/** How the cost gate decides for this call: `JEV_COST_GATE`, else the configured mode, else `shadow`. */
+export function costGateModeOf(deps: { costGateMode?: CostGateMode }): CostGateMode {
+  return parseCostGateMode(process.env.JEV_COST_GATE) ?? deps.costGateMode ?? DEFAULT_COST_GATE_MODE;
 }

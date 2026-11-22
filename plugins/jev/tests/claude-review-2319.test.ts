@@ -49,7 +49,7 @@ describe('a Workflow agent() call with duplicate model or effort findings is jud
   ] as const;
   for (const [name, script, marker] of HELD) {
     it(`${name}: held in choice mode with the session effort known`, async () => {
-      r = rig({}, 'claude-sonnet-5-5');
+      r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
       const o = out(await onPreToolUse(wfCall(script), r.d));
       expect(o.permissionDecision).toBe('deny');
       expect(o.permissionDecisionReason).toContain(`STARTS with the marker ${marker}`);
@@ -57,14 +57,14 @@ describe('a Workflow agent() call with duplicate model or effort findings is jud
   }
 
   it('every candidate fits: a duplicate between models within the session\'s cost passes', async () => {
-    r = rig({}, 'claude-sonnet-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
     expect(await onPreToolUse(wfCall("await agent('x', { model: 'haiku', model: 'sonnet' })"), r.d)).toBeNull();
     expect(await onPreToolUse(wfCall("await agent('x', { model: 'sonnet', effort: 'high', effort: 'low' })"), r.d)).toBeNull();
   });
 
   it('the decision keeps both findings: the worst of the models, at the highest of the efforts', () => {
     const none = { agentDefinition: () => null, workflowScript: () => null } as any;
-    const d = evaluateWorkflowInput({ script: "await agent('x', { model: 'sonnet', model: 'opus', effort: 'low', effort: 'xhigh' })" }, '/tmp', 'claude-sonnet-5-5', none, { sessionEffort: 'high', env: {} });
+    const d = evaluateWorkflowInput({ script: "await agent('x', { model: 'sonnet', model: 'opus', effort: 'low', effort: 'xhigh' })" }, '/tmp', 'claude-sonnet-5-5', none, { sessionEffort: 'high', env: {}, costGate: 'enforce' });
     expect(d.decision).toBe('ask');
     expect(d.gate?.modelGate).toMatchObject({ callModel: 'opus', callEffort: 'xhigh' });
     expect(d.highestElevation?.requested).toBe('opus');
@@ -73,7 +73,7 @@ describe('a Workflow agent() call with duplicate model or effort findings is jud
 
 describe('the Workflow model question: the denial is noted with the effort the marker shows', () => {
   it('session haiku at high, script opus at high and sonnet at max: "Yes, for this session" covers the retry', async () => {
-    r = rig({}, 'claude-haiku-4-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-haiku-4-5');
     const script = "await agent('a', { model: 'opus', effort: 'high' })\nawait agent('b', { model: 'sonnet', effort: 'max' })";
 
     const held = out(await onPreToolUse(wfCall(script), r.d));
@@ -89,7 +89,7 @@ describe('the Workflow model question: the denial is noted with the effort the m
 
 describe('an effort approval that names a model never covers another model, also where the cost cannot be computed', () => {
   it('Agent call: [jev-elevate-effort:max:haiku] does not cover opus at max with no session effort on the input', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'max', scope: 'session', created_at: 0, model: 'haiku' }] });
 
     const o = out(await onPreToolUse(agentCall({ description: 'd', model: 'opus', effort: 'max' }, { effort: undefined }), r.d));
@@ -99,25 +99,25 @@ describe('an effort approval that names a model never covers another model, also
   });
 
   it('Agent call: the same approval for opus, or one that names no model (a legacy record), covers it', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'max', scope: 'session', created_at: 0, model: 'opus' }] });
     expect(await onPreToolUse(agentCall({ description: 'd', model: 'opus', effort: 'max' }, { effort: undefined }), r.d)).toBeNull();
 
     r.cleanup();
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'max', scope: 'session', created_at: 0 }] });
     expect(await onPreToolUse(agentCall({ description: 'd', model: 'opus', effort: 'max' }, { effort: undefined }), r.d)).toBeNull();
   });
 
   it('Agent call that inherits: the session model is the call\'s model', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     approve({ effortApprovals: [{ level: 'max', scope: 'session', created_at: 0, model: 'haiku' }] });
     const o = out(await onPreToolUse(agentCall({ description: 'd', effort: 'max' }, { effort: undefined }), r.d));
     expect(o.permissionDecision).toBe('deny');
   });
 
   it('Workflow: the strongest model the script runs on is the one an effort approval must cover', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     const script = "await agent('a', { model: 'opus', effort: 'max' })";
     approve({ effortApprovals: [{ level: 'max', scope: 'session', created_at: 0, model: 'haiku' }] });
     expect(out(await onPreToolUse(wfCall(script, { effort: undefined }), r.d)).permissionDecision).toBe('deny');
@@ -140,7 +140,7 @@ describe('an effort approval that names a model never covers another model, also
 
 describe('a bare effort answer is recorded for the model the prescribed question named', () => {
   it('through the hook: a bare [jev-elevate-effort:xhigh] answered after a question that named opus covers opus, not a stronger model', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
     const held = out(await onPreToolUse(agentCall({ description: 'd', model: 'opus', effort: 'xhigh' }), r.d));
     expect(markerOf(held.permissionDecisionReason)).toBe('[jev-elevate-effort:xhigh:opus]');
 

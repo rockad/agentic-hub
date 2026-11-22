@@ -149,7 +149,7 @@ describe('the decision, the reason and the cost_gate state', () => {
     toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'worker', ...(model ? { Model: model } : {}) } }
   });
   const decide = (input: AntigravityHookInput, elevationMode: 'choice' | 'dialog' | 'clamp' = 'choice') =>
-    evaluateAntigravitySubagentCall(input, { approvals, sessionModelOverride: input.modelName, elevationMode, now: () => 1_000 });
+    evaluateAntigravitySubagentCall(input, { approvals, sessionModelOverride: input.modelName, elevationMode, costGateMode: 'enforce', now: () => 1_000 });
 
   it('pro that is held says plainly what it runs on, and how to reach Argon', () => {
     const held = decide(sub('pro', HYDROGEN_MEDIUM));
@@ -298,7 +298,8 @@ describe('the hook and the pre-flight, as processes', () => {
     JEV_CONFIG_FILE: path.join(home, '.config', 'jev', 'config.json'),
     JEV_TELEMETRY_FILE: path.join(home, 'telemetry.jsonl'),
     JEV_QUOTA_STATE_FILE: path.join(home, '.gemini', 'antigravity-cli', 'quota-state.json'),
-    JEV_DOWNGRADE: 'off'
+    JEV_DOWNGRADE: 'off',
+    JEV_COST_GATE: 'enforce'
   });
   const hook = (event: string, input: object) => Bun.spawnSync(['bun', HOOK, event], { stdin: new TextEncoder().encode(JSON.stringify(input)), env: env() });
   const preflight = () =>
@@ -411,7 +412,7 @@ describe('run_workflow: the same served model rule for agent(model=...) literals
   const wf = (session: string, script: string) =>
     evaluateAntigravityWorkflowCall(
       { conversationId: 'conv-wf', modelName: session, lastUserInput: 'run the workflow', toolCall: { id: 'call_wf', name: 'run_workflow', args: { Script: script } } },
-      { mode: 'on', sessionModel: session, approvals, pinDir: path.join(tmp, 'pins'), now: () => 1_000_000, definitions: { definition: () => ({ found: false, model: null }) } }
+      { mode: 'on', sessionModel: session, approvals, costGateMode: 'enforce', pinDir: path.join(tmp, 'pins'), now: () => 1_000_000, definitions: { definition: () => ({ found: false, model: null }) } }
     );
   const PRO = 'await agent("p", model="pro")';
 

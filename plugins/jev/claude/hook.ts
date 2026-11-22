@@ -155,7 +155,18 @@ import {
   type UserIntent
 } from './logic.js';
 import { COST_WEIGHTS_VERSION, costEffortOf, costFields, downgradeCostSaving, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
-import { effortOfCall, evaluateCostGate, type CostGate, type CostGateState } from '../src/core/cost-gate.js';
+import {
+  DEFAULT_COST_GATE_MODE,
+  effortOfCall,
+  evaluateCostGate,
+  parseCostGateMode,
+  shadowStateOf,
+  type CostGate,
+  type CostGateMode,
+  type CostGateShadowState,
+  type CostGateState
+} from '../src/core/cost-gate.js';
+import { getCostGateMode } from '../src/core/config.js';
 import {
   ASSUMED_CLAUDE_SESSION_EFFORT,
   ASSUMED_CLAUDE_SESSION_MODEL,
@@ -341,6 +352,8 @@ export type HookDeps = {
   downgrades?: DowngradeStore;
   /** The configured `models.downgrade.mode` (the environment's JEV_DOWNGRADE wins); absent means the default, `ask`. */
   downgradeConfig?: () => string | undefined;
+  /** The configured `costGate` (`shadow` | `enforce`; JEV_COST_GATE in `env` wins). Absent: `shadow`, the default. */
+  costGateMode?: () => CostGateMode | undefined;
   /** The configured `models.downgrade.minProbability` (JEV_DOWNGRADE_MIN_PROBABILITY wins); absent means 0.6. */
   downgradeMinProbability?: () => number | undefined;
   /**
@@ -683,10 +696,14 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // dialog mode) and an effort they named. Where the cost cannot be computed the gate is `fallback` (or absent) and the old rules
   // below decide, as before.
   const envForced = resolved?.source === 'env-force' && elevMode !== 'dialog';
-  const costGate: CostGate | null = agentCostGate(tool, call, resolved, sessionModel, effortSession, rawElevation, {
+  // The gate ships in `shadow` mode (the default): it is computed and its verdict is logged (`cost_gate_shadow`), but the rules of
+  // before it decide. `enforce` lets it decide (`cost_gate` on the row). The tier check below is the rank ceiling and holds in both.
+  const gateMode: CostGateMode = parseCostGateMode((deps.env ?? {}).JEV_COST_GATE) ?? safely(() => deps.costGateMode?.()) ?? DEFAULT_COST_GATE_MODE;
+  const computedGate: CostGate | null = agentCostGate(tool, call, resolved, sessionModel, effortSession, rawElevation, {
     model: rawElevation?.kind === 'instructed' || (envForced && rawElevation?.kind === 'elevating'),
     effort: (level) => instructedEffort(intent, level)
   });
+  const costGate: CostGate | null = gateMode === 'enforce' ? computedGate : null;
   const gateOn = costGate !== null && costGate.kind !== 'fallback';
   const overGate: OverGate | null = costGate?.kind === 'over' ? costGate : null;
   const modelGate = overGate?.cause === 'model' ? overGate : null;
@@ -695,14 +712,17 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // instructed model stays `instructed`. Without it, the rank-based classification decides as before.
   let elevation: Elevation | null = rawElevation;
   if (gateOn) {
+    // A stronger model always asks (the tier check): the rank ceiling stands before the gate, whatever the call's effort, so a
+    // call whose model is above the session's is an elevation even when the gate would let its cost through (opus at low
+    // under sonnet at max). The question is then the gate's own when it is over, else the plain model question.
     elevation =
-      modelGate && sessionModel && modelAlias(sessionModel)
-        ? rawElevation?.kind === 'elevating'
-          ? rawElevation
-          : { kind: 'elevating', requested: String(modelGate.callModel), sessionModel, sessionAlias: modelAlias(sessionModel)! }
-        : rawElevation?.kind === 'instructed'
-          ? rawElevation
-          : null;
+      rawElevation?.kind === 'elevating'
+        ? rawElevation
+        : modelGate && sessionModel && modelAlias(sessionModel)
+          ? { kind: 'elevating', requested: String(modelGate.callModel), sessionModel, sessionAlias: modelAlias(sessionModel)! }
+          : rawElevation?.kind === 'instructed'
+            ? rawElevation
+            : null;
   }
   if (elevation && resolved && resolved.source !== 'call' && resolved.source !== 'inherit') {
     elevation.sourceNote = agentModelNote(resolved.source, call.subagent_type);
@@ -932,7 +952,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // through the same choice flow as an Agent call; anything the analysis cannot prove opens the permission dialog.
   let workflowLog: Record<string, unknown> = {};
   if (tool === 'Workflow') {
-    const w = evaluateWorkflowCall({ input, call, sessionId, sessionModel, sessionEffort: effortSession, intent, rankCtx, deps, elevMode, promptKeyOf, attemptWindowMs });
+    const w = evaluateWorkflowCall({ input, call, sessionId, sessionModel, sessionEffort: effortSession, intent, rankCtx, deps, elevMode, gateMode, promptKeyOf, attemptWindowMs });
     workflowLog = w.log;
     if (w.verdict) verdict = w.verdict;
     if (w.elevationState) elevationState = w.elevationState;
@@ -1068,7 +1088,10 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     ...(clamp && clampInfo
       ? { clamped_from: clampInfo.from, clamped_to: clampInfo.to, ...(clampInfo.effort ? { clamped_effort: clampInfo.effort } : {}) }
       : {}),
-    ...costGateLog(tool, costGate, { verdict, clamp: !!clamp, approved: approvalScope !== null || effortLog.effort_decision === 'approved' }, workflowLog),
+    // enforce: what the gate did (`cost_gate`). shadow: what it would have done (`cost_gate_shadow`); the rules of before it decided.
+    ...(gateMode === 'enforce'
+      ? costGateLog(tool, costGate, { verdict, clamp: !!clamp, approved: approvalScope !== null || effortLog.effort_decision === 'approved' }, workflowLog)
+      : costGateShadowLog(tool, computedGate, elevMode, workflowLog)),
     preflight_reminder: reminder !== null
   });
   // A deny is answered first: no later output (a clamp, an applied downgrade) can turn it into an allow.
@@ -1167,6 +1190,8 @@ function evaluateWorkflowCall(a: {
   rankCtx: RankContext | null;
   deps: HookDeps;
   elevMode: ElevationMode;
+  /** How the cost gate decides (shadow: the old rules decide and the row says what the gate would have done). */
+  gateMode: CostGateMode;
   promptKeyOf: () => string;
   attemptWindowMs: number | undefined;
 }): WorkflowEvaluation {
@@ -1179,11 +1204,15 @@ function evaluateWorkflowCall(a: {
       rank: a.rankCtx,
       intent: a.intent,
       env: deps.env ?? process.env,
-      sessionEffort: a.sessionEffort
+      sessionEffort: a.sessionEffort,
+      costGate: a.gateMode
     });
     // The `cost_gate` value of the row: what the cost gate did with the agent() calls it could judge (`fallback` when the old rules judged any).
+    // In shadow the row says `cost_gate_shadow` instead: `denied` when the gate would have held any call, else the same pass / fallback.
     const hasGateSites = d.sites.some((s) => s.gate);
     const gateIdle: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
+    const gateField = (state: CostGateState): Record<string, unknown> =>
+      a.gateMode === 'enforce' ? { cost_gate: state } : { cost_gate_shadow: (d.gate?.shadowOver ?? 0) > 0 ? 'denied' : gateIdle };
     const base = {
       workflow_models: d.models.map((m) => clip(m)),
       workflow_scripts: d.scripts.map((s) => ({ label: s.label, sha256: s.sha256, bytes: s.bytes }))
@@ -1194,7 +1223,7 @@ function evaluateWorkflowCall(a: {
     const finish = (guard: string, rest: Partial<WorkflowEvaluation> = {}, extra: Record<string, unknown> = {}): WorkflowEvaluation => ({
       ...none,
       ...rest,
-      log: { workflow_guard: guard, ...base, cost_gate: hasGateSites ? 'denied' : gateIdle, ...extra }
+      log: { workflow_guard: guard, ...base, ...gateField(hasGateSites ? 'denied' : gateIdle), ...extra }
     });
     if (d.decision === 'allow') {
       pin('allow');
@@ -1288,7 +1317,7 @@ function evaluateWorkflowCall(a: {
     return finish(
       'allow',
       { elevationState: 'approved', approvalScope: spent.model?.scope ?? spent.effort?.scope ?? null },
-      { ...highest, ...effortLog('approved', spent.effort?.scope), cost_gate: hasGateSites ? 'approved' : gateIdle }
+      { ...highest, ...effortLog('approved', spent.effort?.scope), ...gateField(hasGateSites ? 'approved' : gateIdle) }
     );
   } catch {
     return { ...none, log: { workflow_guard: 'error' } };
@@ -1887,7 +1916,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
                 sessionCost: entry.sessionCost ?? null,
                 costRatio: entry.costRatio ?? null,
                 costWeightsVersion: entry.costWeightsVersion,
-                ...(str(entry.cost_gate) ? { cost_gate: str(entry.cost_gate) } : {})
+                ...(str(entry.cost_gate) ? { cost_gate: str(entry.cost_gate) } : {}),
+                ...(str(entry.cost_gate_shadow) ? { cost_gate_shadow: str(entry.cost_gate_shadow) } : {})
               }
             : {}),
           // What a suggested or applied downgrade saves (2.3.19); null when either cost is unknown, absent on any other row.
@@ -2013,6 +2043,7 @@ const liveDeps: HookDeps = {
   approvals: approvalStore,
   downgrades: downgradeStore,
   downgradeConfig: loadDowngradeMode,
+  costGateMode: () => getCostGateMode('claude-code'),
   downgradeMinProbability: loadDowngradeMinProbability,
   rateTask: liveRateTask,
   rankContext: liveRankContext,
@@ -2065,6 +2096,15 @@ if (import.meta.main) {
   // process.exit would drop the async telemetry appends still in flight.
   await flushPendingLogs();
   process.exit(0);
+}
+
+/**
+ * The `cost_gate_shadow` field of an `agent_call` row in shadow mode (2.3.19): what the cost gate would have done, `pass`, `denied`,
+ * `clamped` or `fallback`. A Workflow row carries the value its own analysis wrote (`workflowLog.cost_gate_shadow`).
+ */
+function costGateShadowLog(tool: string, gate: CostGate | null, elevMode: ElevationMode, workflowLog: Record<string, unknown>): { cost_gate_shadow?: CostGateShadowState } {
+  if (tool === 'Workflow') return typeof workflowLog.cost_gate_shadow === 'string' ? { cost_gate_shadow: workflowLog.cost_gate_shadow as CostGateShadowState } : {};
+  return { cost_gate_shadow: shadowStateOf(gate, elevMode) };
 }
 
 /**

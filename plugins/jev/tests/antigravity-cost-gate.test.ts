@@ -30,7 +30,7 @@ const sub = (model: string | undefined, session: string, prompt = 'run it'): Ant
   toolCall: { id: 't1', name: 'invoke_subagent', args: { TypeName: 'worker', Prompt: 'work', ...(model ? { Model: model } : {}) } }
 });
 const decide = (input: AntigravityHookInput, elevationMode: 'choice' | 'dialog' | 'clamp' = 'choice') =>
-  evaluateAntigravitySubagentCall(input, { approvals, sessionModelOverride: input.modelName, elevationMode, now: () => 1_000 });
+  evaluateAntigravitySubagentCall(input, { approvals, sessionModelOverride: input.modelName, elevationMode, costGateMode: 'enforce', now: () => 1_000 });
 
 describe('invoke_subagent: the gate', () => {
   it('session pro at high (22.5): flash at max passes, pro at xhigh is held (the effort question), pro at high passes', () => {
@@ -127,7 +127,7 @@ describe('run_workflow: the same rule per agent(...) call', () => {
     toolCall: { id: 'w1', name: 'run_workflow', args: { Script: script } }
   });
   const run = (script: string, session = PRO_HIGH, elevationMode: 'choice' | 'dialog' | 'clamp' = 'choice') =>
-    evaluateAntigravityWorkflowCall(wf(script, session), { mode: 'on', sessionModel: session, approvals, elevationMode, now: () => 1_000 });
+    evaluateAntigravityWorkflowCall(wf(script, session), { mode: 'on', sessionModel: session, approvals, elevationMode, costGateMode: 'enforce', now: () => 1_000 });
 
   it('flash at max passes on a pro-high session; pro at xhigh is the question with the effort in the marker', () => {
     const ok = run('await agent("p", model="gemini-3.8-flash-max")');
@@ -182,7 +182,7 @@ describe('through the hook process', () => {
   afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
   const runHook = (input: object, extraEnv: Record<string, string> = {}) => {
-    const env: Record<string, string | undefined> = { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(jev(), 'config.json'), JEV_DOWNGRADE: 'off', ...extraEnv };
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, JEV_CONFIG_FILE: path.join(jev(), 'config.json'), JEV_DOWNGRADE: 'off', JEV_COST_GATE: 'enforce', ...extraEnv };
     if (!('JEV_ELEVATION' in extraEnv)) delete env.JEV_ELEVATION;
     const p = Bun.spawnSync(['bun', HOOK, 'pre-tool-use'], { stdin: new TextEncoder().encode(JSON.stringify(input)), env: env as Record<string, string> });
     return p.stdout.toString().trim();

@@ -446,7 +446,7 @@ describe('evaluateAntigravityWorkflowCall', () => {
   });
 
   describe('dialog', () => {
-    const d = () => deps('on', { elevationMode: 'dialog' });
+    const d = () => deps('on', { elevationMode: 'dialog', costGateMode: 'enforce' });
     it('asks for an elevation and for an unverifiable script, listing the sites, and pins the ask', () => {
       const a = evaluateAntigravityWorkflowCall(call(PRO), d());
       expect(a.decision.decision).toBe('ask');

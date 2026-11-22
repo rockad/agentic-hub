@@ -271,7 +271,7 @@ export function antigravityClampModel(requestedModel: string, gate: Extract<Cost
  * effort: `pro-xhigh`. That form is only the marker's and the approval's key: the call itself is re-invoked with the model it
  * was written with.
  */
-export function antigravityMarkerModel(requestedModel: string, gate: Extract<CostGate, { kind: 'over' }> | null): string {
+export function antigravityMarkerModel(requestedModel: string, gate: { callEffort: CostEffort } | null): string {
   if (!gate) return requestedModel;
   // An enum value carries its effort in what it IS (`pro` is Hydrogen at xhigh), so its marker and its approval are the plain value: an approval of `pro` covers `pro`.
   if (subagentEnumOf(requestedModel) !== null) return requestedModel;
@@ -279,4 +279,35 @@ export function antigravityMarkerModel(requestedModel: string, gate: Extract<Cos
   if (!named && effortIndex(gate.callEffort) <= effortIndex(NO_EFFORT_CAP)) return requestedModel;
   const tier = costTierOf(requestedModel);
   return tier === 'pro' || tier === 'flash' || tier === 'flash_lite' ? `${tier}-${gate.callEffort}` : requestedModel;
+}
+
+/**
+ * How the cost gate decides (2.3.19). `shadow` (the default when nothing is configured): decisions use the rules of before the
+ * gate (the model rank ceiling and the interim `xhigh` / `max` effort rule), and the row records `cost_gate_shadow`, what the gate
+ * would have done. `enforce`: the gate decides and the row records `cost_gate`. The tier check (a stronger model always asks) is the
+ * rank ceiling itself and holds in both.
+ */
+export type CostGateMode = 'shadow' | 'enforce';
+
+export const DEFAULT_COST_GATE_MODE: CostGateMode = 'shadow';
+
+/** `shadow` or `enforce` (any case, trimmed), else null. Anything else is not a mode and is ignored by the readers. */
+export function parseCostGateMode(value: unknown): CostGateMode | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase();
+  return v === 'shadow' || v === 'enforce' ? v : null;
+}
+
+/** The `cost_gate_shadow` value of a row: what the gate would have done. */
+export type CostGateShadowState = 'pass' | 'denied' | 'clamped' | 'fallback';
+
+/**
+ * Pure: the shadow value for one call from the gate's verdict. `fallback` when the gate could not judge it (or does not apply),
+ * `pass` when it costs no more than the session's (or than the user's own words allow), else `denied`, or `clamped` under
+ * `JEV_ELEVATION=clamp` (choice and dialog hold the call; shadow never says `approved`, an approval is a decision of the real rules).
+ */
+export function shadowStateOf(gate: CostGate | null, elevation: 'choice' | 'dialog' | 'clamp'): CostGateShadowState {
+  if (gate === null || gate.kind === 'fallback') return 'fallback';
+  if (gate.kind === 'pass') return 'pass';
+  return elevation === 'clamp' ? 'clamped' : 'denied';
 }

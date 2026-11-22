@@ -22,6 +22,7 @@ function run(event: string, input: object, extraEnv: Record<string, string> = {}
     JEV_OPENROUTER_API_KEY: '',
     JEV_MODEL_REFRESH: 'off',
     JEV_DOWNGRADE: 'off',
+    JEV_COST_GATE: 'enforce',
     ...extraEnv
   };
   for (const v of ['CLAUDE_PROJECT_DIR', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL', 'JEV_ELEVATION']) {

@@ -19,12 +19,13 @@ import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { isModeOff, modeBehaviour } from '../src/core/mode-policy.js';
-import { loadJevConfigSync } from '../src/core/config.js';
+import { getCostGateMode, loadJevConfigSync } from '../src/core/config.js';
 import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
   antigravityCostGateState,
+  antigravityCostGateShadowState,
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
@@ -560,6 +561,8 @@ async function main() {
       activeModel = ceilingModelForHarness('antigravity', sessionModel);
     }
 
+    // The cost gate ships in shadow mode: the rank ceiling decides and the rows say what the gate would have done. JEV_COST_GATE wins.
+    const costGateMode = getCostGateMode('antigravity');
     // run_workflow: the agents a script launches never reach this hook, so the script itself is analysed (workflow-guard.ts).
     // A mode without decisions (on-demand) passes it untouched: no analysis, no pin, one decisions-log row.
     if (input.toolCall?.name === RUN_WORKFLOW_TOOL) {
@@ -570,6 +573,7 @@ async function main() {
         sessionOrchestrator,
         approvals,
         config: jevConfig,
+        costGateMode,
         pinDir
       });
       const wf = w.decision;
@@ -605,6 +609,7 @@ async function main() {
     }
 
     const gateDecision = evaluateAntigravitySubagentCall(input, {
+      costGateMode,
       approvals,
       sessionModelOverride: activeModel,
       sessionOrchestrator,
@@ -614,6 +619,14 @@ async function main() {
     });
     let decision = gateDecision;
     const costGateState = antigravityCostGateState(input, gateDecision, { sessionModel: activeModel, sessionOrchestrator });
+    const costGateShadow = antigravityCostGateShadowState(input, { sessionModel: activeModel, sessionOrchestrator });
+    // enforce: `cost_gate` (what the gate did); shadow: `cost_gate_shadow` (what it would have done). A mode without decisions writes neither.
+    const costGateFields = (key: 'cost_gate' | 'costGate'): Record<string, unknown> =>
+      !modeBehaviour(mode).decisions
+        ? {}
+        : costGateMode === 'enforce'
+          ? { [key]: costGateState }
+          : { [key === 'costGate' ? 'costGateShadow' : 'cost_gate_shadow']: costGateShadow };
 
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
     // fails open: its log carries the `downgrade*` fields of the row below.
@@ -664,7 +677,7 @@ async function main() {
       clamped_to: decision.clampedTo || null,
       ...(decision.clampedEffort ? { clamped_effort: decision.clampedEffort } : {}),
       // What the cost gate did (2.3.19); a mode without decisions (on-demand) decides nothing, so it writes none.
-      ...(modeBehaviour(mode).decisions ? { cost_gate: costGateState } : {}),
+      ...costGateFields('cost_gate'),
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
@@ -697,7 +710,7 @@ async function main() {
           turnState,
           decision,
           downgradeLog,
-          ...(modeBehaviour(mode).decisions ? { costGate: costGateState } : {}),
+          ...costGateFields('costGate'),
           callKey,
           recommendationPending
         });

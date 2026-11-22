@@ -127,7 +127,7 @@ describe('cost = W_model[tier] * W_effort[level], ratio = cost(call) / cost(sess
 
 describe('Claude Code rows', () => {
   let r: Rig;
-  beforeEach(() => void (r = rig()));
+  beforeEach(() => void (r = rig({ costGateMode: () => 'enforce' })));
   afterEach(() => r.cleanup());
   const call = (toolInput: Record<string, unknown>, extra: Partial<HookInput> = {}): HookInput => ({
     session_id: 's1',

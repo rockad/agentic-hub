@@ -17,7 +17,7 @@ let r: Rig;
 afterEach(() => r?.cleanup());
 
 const NOTE = 'The session model is not known yet, so Jev assumes sonnet.';
-const unknownRig = (overrides: Parameters<typeof rig>[0] = {}): Rig => (r = rig({ readSessionModel: () => null, ...overrides }));
+const unknownRig = (overrides: Parameters<typeof rig>[0] = {}): Rig => (r = rig({ costGateMode: () => 'enforce', readSessionModel: () => null, ...overrides }));
 const setEnv = (env: Record<string, string>) => void ((r.d as any).env = env);
 
 const call = (toolInput: Record<string, unknown>, extra: Partial<HookInput> = {}): HookInput => ({
@@ -188,7 +188,7 @@ describe('the model becomes known later in the session', () => {
   });
 
   it('a known model with an unknown effort is as before (no assumed effort): opus on opus passes', async () => {
-    r = rig({}, 'claude-opus-5-5');
+    r = rig({ costGateMode: () => 'enforce' }, 'claude-opus-5-5');
 
     expect(await onPreToolUse(call(OPUS), r.d)).toBeNull();
     expect(row()).not.toHaveProperty('sessionModelAssumed');
@@ -376,7 +376,7 @@ describe('through the hook process (no SessionStart, no transcript)', () => {
 
 describe('a session model id Jev cannot place is assumed sonnet too', () => {
   const NOTE_ID = (id: string) => `The session model ${id} is not one Jev knows, so Jev assumes sonnet.`;
-  const unplaceableRig = (id = 'some-other-model', overrides: Parameters<typeof rig>[0] = {}): Rig => (r = rig({ readSessionModel: () => id, ...overrides }));
+  const unplaceableRig = (id = 'some-other-model', overrides: Parameters<typeof rig>[0] = {}): Rig => (r = rig({ costGateMode: () => 'enforce', readSessionModel: () => id, ...overrides }));
 
   it('choice: an opus call is denied with the question and the id sentence; the row keeps its real source and names the id', async () => {
     unplaceableRig();

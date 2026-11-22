@@ -10,6 +10,7 @@ export type JevHarness = 'antigravity' | 'claude-code' | 'opencode' | 'cli';
 
 import type { ZdrPolicy } from './egress.js';
 import { modelTierOf, type ModelTier } from './model-tier.js';
+import { DEFAULT_COST_GATE_MODE, parseCostGateMode, type CostGateMode } from './cost-gate.js';
 
 export type CognitiveTier = 'free' | 'cheap' | 'standard' | 'deep';
 
@@ -49,6 +50,8 @@ export interface HarnessConfig {
   availableSubagents?: string[];
   agentPaths?: string[];
   writeGuard?: WriteGuardConfig;
+  /** `shadow` | `enforce`: how the cost gate decides for this harness (2.3.19); overrides `defaults.costGate`. */
+  costGate?: CostGateMode;
 }
 
 export interface JevTimeoutsConfig {
@@ -72,6 +75,8 @@ export interface JevConfigDefaults {
   swap?: boolean;
   availableSubagents?: string[];
   agentPaths?: string[];
+  /** `shadow` (the default when unset) | `enforce`: how the cost gate decides in every harness (2.3.19). */
+  costGate?: CostGateMode;
 }
 
 export interface JevRoutingConfig {
@@ -473,6 +478,23 @@ export function getHarnessConfig(harness?: JevHarness, startDir?: string): Harne
     availableSubagents,
     agentPaths
   };
+}
+
+/**
+ * How the cost gate decides (2.3.19): `JEV_COST_GATE` (tests and one-off runs), else `harnesses.<harness>.costGate`, else
+ * `defaults.costGate`, else `shadow`. A value that is not `shadow` or `enforce` is ignored at each level (so a typo never enforces).
+ * Only the user config sets it: a project config is stripped to its allowlist.
+ */
+export function getCostGateMode(harness?: JevHarness, startDir?: string, env: Record<string, string | undefined> = process.env): CostGateMode {
+  const fromEnv = parseCostGateMode(env.JEV_COST_GATE);
+  if (fromEnv) return fromEnv;
+  try {
+    const targetHarness = harness || detectActiveHarness();
+    const cfg = loadJevConfigSync(startDir);
+    return parseCostGateMode(cfg.harnesses?.[targetHarness]?.costGate) ?? parseCostGateMode(cfg.defaults?.costGate) ?? DEFAULT_COST_GATE_MODE;
+  } catch {
+    return DEFAULT_COST_GATE_MODE;
+  }
 }
 
 export function getHarnessModels(harness?: JevHarness, startDir?: string): HarnessModelMap {

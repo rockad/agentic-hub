@@ -25,10 +25,10 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       const next = recordApproval(get(s), approval, approval.created_at, config);
       if (next) states.set(s, next);
     },
-    deny: (s, model, nowMs) => void states.set(s, noteDenied(get(s), model, nowMs)),
+    deny: (s, model, nowMs, effort) => void states.set(s, noteDenied(get(s), model, nowMs, effort)),
     deniedAt: (s, model) => lastDeniedAtMs(get(s), model),
-    claim: (s, requested, nowMs, ctx) => {
-      const { state, approval } = claimApproval(get(s), requested, nowMs, ctx);
+    claim: (s, requested, nowMs, ctx, effort) => {
+      const { state, approval } = claimApproval(get(s), requested, nowMs, ctx, effort);
       states.set(s, state);
       return approval;
     },
@@ -41,14 +41,14 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       const next = recordEffortApproval(get(s), approval, approval.created_at, config);
       if (next) states.set(s, next);
     },
-    denyEffort: (s, level, nowMs) => void states.set(s, noteEffortDenied(get(s), level, nowMs)),
-    claimEffort: (s, level, nowMs) => {
-      const { state, approval } = claimEffortApproval(get(s), level, nowMs);
+    denyEffort: (s, level, nowMs, model) => void states.set(s, noteEffortDenied(get(s), level, nowMs, model)),
+    claimEffort: (s, level, nowMs, model) => {
+      const { state, approval } = claimEffortApproval(get(s), level, nowMs, model);
       states.set(s, state);
       return approval;
     },
-    peek: (s, requested, nowMs, ctx) => claimApproval(get(s), requested, nowMs, ctx).approval,
-    peekEffort: (s, level, nowMs) => claimEffortApproval(get(s), level, nowMs).approval,
+    peek: (s, requested, nowMs, ctx, effort) => claimApproval(get(s), requested, nowMs, ctx, effort).approval,
+    peekEffort: (s, level, nowMs, model) => claimEffortApproval(get(s), level, nowMs, model).approval,
     consume: (s, wants, nowMs) => {
       const done = consumeApprovals(get(s), wants, nowMs);
       if (!done) return null;

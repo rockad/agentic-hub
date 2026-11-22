@@ -336,10 +336,54 @@ describe('evaluateAntigravityWorkflowCall', () => {
       expect(again.decision.decision).toBe('deny');
     });
 
-    it('a session approval covers a different script too', () => {
+    it('a session approval covers a different script of enum values too', () => {
       evaluateAntigravityWorkflowCall(call(PRO), deps());
       approvals.record('conv-wf', { model: 'pro', scope: 'session', created_at: 1_000_000 });
-      expect(evaluateAntigravityWorkflowCall(call('await agent("q", model="gemini-3.1-pro")'), deps()).decision.decision).toBe('allow');
+      expect(evaluateAntigravityWorkflowCall(call('await agent("q", model="pro")\nawait agent("r", model="flash")'), deps()).decision.decision).toBe('allow');
+    });
+
+    describe('an enum value and a full id are keyed apart (2.3.19 review)', () => {
+      const ARGON = 'await agent("q", model="gemini-4-argon-high")';
+      const OPUS = 'await agent("q", model="claude-opus-5-5-high")';
+      const MIXED = 'await agent("p", model="pro")\nawait agent("q", model="gemini-4-argon-high")';
+
+      it('an enum pro approval does not cover a real pro-class id, and the question says nothing of Hydrogen', () => {
+        evaluateAntigravityWorkflowCall(call(PRO), deps());
+        approvals.record('conv-wf', { model: 'pro', scope: 'session', created_at: 1_000_000 });
+        for (const script of [ARGON, OPUS, 'await agent("q", model="gemini-4-argon")']) {
+          const r = evaluateAntigravityWorkflowCall(call(script), deps());
+          expect(r.decision.decision).toBe('deny');
+          expect(r.decision.reason).toMatch(/\[jev-elevate:pro-(low|medium|high|xhigh|max)\]/);
+          expect(r.decision.reason).not.toContain('[jev-elevate:pro]');
+          expect(r.decision.reason).not.toContain('Hydrogen');
+        }
+      });
+
+      it('a full-id approval of the marker the question showed covers the script, and a lower tier of full ids and the enum values', () => {
+        const first = evaluateAntigravityWorkflowCall(call(ARGON), deps());
+        expect(first.decision.reason).toContain('[jev-elevate:pro-high]');
+        approvals.record('conv-wf', { model: 'pro-high', scope: 'session', created_at: 1_000_000 });
+        expect(evaluateAntigravityWorkflowCall(call(ARGON), deps()).decision.decision).toBe('allow');
+        expect(evaluateAntigravityWorkflowCall(call(OPUS), deps()).decision.decision).toBe('allow');
+        expect(evaluateAntigravityWorkflowCall(call(PRO), deps()).decision.decision).toBe('allow');
+      });
+
+      it('mixed sites (an enum value and a full id): the marker is the full-id form, the enum approval does not clear it, the full-id one does', () => {
+        const first = evaluateAntigravityWorkflowCall(call(MIXED), deps());
+        expect(first.decision.decision).toBe('deny');
+        expect(first.decision.reason).toContain('[jev-elevate:pro-high]');
+        expect(first.decision.reason).not.toContain('Hydrogen');
+        approvals.record('conv-wf', { model: 'pro', scope: 'session', created_at: 1_000_000 });
+        expect(evaluateAntigravityWorkflowCall(call(MIXED), deps()).decision.decision).toBe('deny');
+        approvals.record('conv-wf', { model: 'pro-high', scope: 'session', created_at: 1_000_000 });
+        expect(evaluateAntigravityWorkflowCall(call(MIXED), deps()).decision.decision).toBe('allow');
+      });
+
+      it('a script of enum values only keeps the plain [jev-elevate:pro] marker, with what pro is served on', () => {
+        const r = evaluateAntigravityWorkflowCall(call(PRO), deps());
+        expect(r.decision.reason).toContain('[jev-elevate:pro]');
+        expect(r.decision.reason).toContain('Hydrogen');
+      });
     });
 
     it('never asks, attempt after attempt, and from the third attempt says to stop retrying', () => {
@@ -402,12 +446,12 @@ describe('evaluateAntigravityWorkflowCall', () => {
   });
 
   describe('dialog', () => {
-    const d = () => deps('on', { elevationMode: 'dialog' });
+    const d = () => deps('on', { elevationMode: 'dialog', costGateMode: 'enforce' });
     it('asks for an elevation and for an unverifiable script, listing the sites, and pins the ask', () => {
       const a = evaluateAntigravityWorkflowCall(call(PRO), d());
       expect(a.decision.decision).toBe('ask');
       expect(a.decision.elevation).toBe('asked');
-      expect(a.decision.reason).toContain('above the session ceiling');
+      expect(a.decision.reason).toContain('above the session cost');
       expect(a.log.workflow_guard).toBe('asked');
       const b = evaluateAntigravityWorkflowCall(call(DYN), d());
       expect(b.decision.decision).toBe('ask');

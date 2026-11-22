@@ -205,10 +205,16 @@ describe('what passes', () => {
     expect(r.logs[0]).toMatchObject({ event: 'agent_call', tool_name: 'Workflow', decision: 'pass' });
   });
 
-  it('an unknown session model leaves the call alone', async () => {
+  // 2.3.19: this used to expect null for an unknown session model (fail open). It is now assumed sonnet (fail closed).
+  it('an unknown session model is assumed sonnet: a literal opus is denied, and the reason says so', async () => {
     setup({ readSessionModel: () => null });
 
-    expect(await onPreToolUse(wf({ script: OPUS }, r), r.d)).toBeNull();
+    const o = (await onPreToolUse(wf({ script: OPUS }, r), r.d))?.hookSpecificOutput as Record<string, any>;
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('[jev-elevate:opus]');
+    expect(o.permissionDecisionReason).toContain('The session model is not known yet, so Jev assumes sonnet.');
+    expect(r.logs.at(-1)).toMatchObject({ workflow_guard: 'denied', sessionModel: 'sonnet', session_model_source: 'assumed', sessionModelAssumed: true });
   });
 
   it('a Workflow is not rated for a downgrade', async () => {

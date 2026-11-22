@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fetchWithTimeout } from './client.js';
 import { PRIVATE_FILE_MODE, privateDir, privateFile, jevHomeDir } from './private-fs.js';
+import { telemetryMode, type TelemetryMode } from './mode-policy.js';
 
 /** Directory of the Antigravity telemetry files, resolved from HOME at call time. */
 export function telemetryDir(): string {
@@ -25,6 +26,11 @@ export interface JevTelemetryEvent {
   timestamp?: string;
   harness: 'antigravity' | 'claude' | 'cli';
   toolOrHook: string;
+  /**
+   * The Jev mode the hook acted under (2.3.19): `on` or `on-demand`, the value its `modeBehaviour` was computed from, so a
+   * dashboard can split by mode. `off` writes nothing, so it never appears; a row written before 2.3.19 has no field.
+   */
+  mode?: TelemetryMode;
   sessionId?: string | null;
   taskSummary?: string;
   tierRecommended?: string;
@@ -32,6 +38,10 @@ export interface JevTelemetryEvent {
   sessionModel?: string | null;
   /** Where `sessionModel` was read from (hook input, stored file, transcript, quota state); null when not known. */
   sessionModelSource?: string | null;
+  /** True (2.3.19, Claude Code `agent_call` only) when the session model was not known and Jev held the session as `sonnet` (`sessionModelSource` is then `assumed`); absent otherwise. */
+  sessionModelAssumed?: boolean;
+  /** The session model id Jev could not place (no rank, no alias, not in the catalogue) when `sessionModelAssumed` is set for that reason (`sessionModel` is then `sonnet`); absent otherwise. */
+  sessionModelReported?: string;
   /** The model the turn itself ran on, written only when it differs from `sessionModel` (an executor turn of an Antigravity Orchestrator conversation, whose `sessionModel` is the sticky planner). */
   turnModel?: string;
   /**
@@ -46,6 +56,11 @@ export interface JevTelemetryEvent {
   /** Short id of the user turn, shared by the prompt and the Agent calls it caused. */
   turn?: string;
   latencyMs?: number;
+  /**
+   * A row that carries a downgrade suggestion or application (`downgrade` is `asked` or `applied`): the cost the downgrade saves,
+   * the requested (model, effort) minus the target at the same effort (`downgradeCostSaving`); null when either cost is unknown.
+   */
+  costSaving?: number | null;
   costUsd?: number;
   tokensSaved?: number;
   quotaStrategy?: string;
@@ -99,9 +114,12 @@ async function appendPrivate(file: string, line: string): Promise<void> {
 
 export async function logJevTelemetry(entry: JevTelemetryEvent): Promise<void> {
   try {
+    // `mode` is only ever `on` or `on-demand`: any other value (off writes nothing) is dropped, not written.
+    const mode = telemetryMode(entry.mode);
     const payload = {
       timestamp: entry.timestamp || new Date().toISOString(),
-      ...entry
+      ...entry,
+      mode
     };
     await appendPrivate(jevTelemetryFile(), JSON.stringify(payload) + '\n');
   } catch {

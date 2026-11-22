@@ -19,11 +19,13 @@ import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
 import { isModeOff, modeBehaviour } from '../src/core/mode-policy.js';
-import { loadJevConfigSync } from '../src/core/config.js';
+import { getCostGateMode, loadJevConfigSync } from '../src/core/config.js';
 import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
 import {
   evaluateAntigravitySubagentCall,
+  antigravityCostGateState,
+  antigravityCostGateShadowState,
   extractSubagentModel,
   parseElevationAnswer,
   pollForAskAnswer,
@@ -50,7 +52,8 @@ import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type A
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
-import { antigravityCostFields } from '../src/core/cost-estimate.js';
+import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
+import { queueServedNotice } from './served-notice.js';
 
 function getJevDir(): string {
   return process.env.JEV_CONFIG_FILE
@@ -224,10 +227,13 @@ async function main() {
       input.conversationId,
       (entry) => {
         appendDecisionLog(entry);
+        // A late backfill of a served model: queue the "served below requested" notice (mode on only).
+        if (entry.event === 'subagent_served' && entry.served_model) queueServedNotice(sessionsDir, input.conversationId, entry.requested_model, entry.served_model, mode);
         if (entry.event === 'subagent_served' && entry.child_conversation_id && entry.served_model) {
           trackTelemetry(
             logJevTelemetry(
               buildAntigravityTelemetryEvent({
+                mode,
                 kind: 'subagent_served',
                 conversationId: typeof entry.session_id === 'string' ? entry.session_id : input.conversationId,
                 ...stickyTurn(input.conversationId, input.modelName),
@@ -483,9 +489,11 @@ async function main() {
           // Telemetry only for a served model that was found, as the backfill paths do; the decisions-log row above
           // stays as the audit trail for a call where nothing could be read.
           if (childConvId && servedModel) {
+            queueServedNotice(sessionsDir, conversationId, requestedModel, servedModel, mode);
             trackTelemetry(
               logJevTelemetry(
                 buildAntigravityTelemetryEvent({
+                  mode,
                   kind: 'subagent_served',
                   conversationId,
                   ...stickyTurn(input.conversationId, input.modelName),
@@ -553,6 +561,8 @@ async function main() {
       activeModel = ceilingModelForHarness('antigravity', sessionModel);
     }
 
+    // The cost gate ships in shadow mode: the rank ceiling decides and the rows say what the gate would have done. JEV_COST_GATE wins.
+    const costGateMode = getCostGateMode('antigravity');
     // run_workflow: the agents a script launches never reach this hook, so the script itself is analysed (workflow-guard.ts).
     // A mode without decisions (on-demand) passes it untouched: no analysis, no pin, one decisions-log row.
     if (input.toolCall?.name === RUN_WORKFLOW_TOOL) {
@@ -563,6 +573,7 @@ async function main() {
         sessionOrchestrator,
         approvals,
         config: jevConfig,
+        costGateMode,
         pinDir
       });
       const wf = w.decision;
@@ -597,7 +608,8 @@ async function main() {
       process.exit(0);
     }
 
-    let decision = evaluateAntigravitySubagentCall(input, {
+    const gateDecision = evaluateAntigravitySubagentCall(input, {
+      costGateMode,
       approvals,
       sessionModelOverride: activeModel,
       sessionOrchestrator,
@@ -605,6 +617,16 @@ async function main() {
       mode,
       config: jevConfig
     });
+    let decision = gateDecision;
+    const costGateState = antigravityCostGateState(input, gateDecision, { sessionModel: activeModel, sessionOrchestrator });
+    const costGateShadow = antigravityCostGateShadowState(input, { sessionModel: activeModel, sessionOrchestrator });
+    // enforce: `cost_gate` (what the gate did); shadow: `cost_gate_shadow` (what it would have done). A mode without decisions writes neither.
+    const costGateFields = (key: 'cost_gate' | 'costGate'): Record<string, unknown> =>
+      !modeBehaviour(mode).decisions
+        ? {}
+        : costGateMode === 'enforce'
+          ? { [key]: costGateState }
+          : { [key === 'costGate' ? 'costGateShadow' : 'cost_gate_shadow']: costGateShadow };
 
     // The downgrade choice runs only on a call the checks above passed (never on a deny, an ask or an elevation), and
     // fails open: its log carries the `downgrade*` fields of the row below.
@@ -623,6 +645,7 @@ async function main() {
         rateTask: liveRateTask,
         egressAllowed: (cwd) => checkEgress(egressContextDirs([cwd, ...(input.workspacePaths ?? [])])).allowed
       });
+      // The downgrade answers a call the cost gate passed: its decision keeps the gate's state for the log and the telemetry row.
       decision = downgraded.decision;
       downgradeLog = downgraded.log;
     }
@@ -652,12 +675,19 @@ async function main() {
       approval_scope: decision.approvalScope || null,
       attempt_count: decision.attemptCount || null,
       clamped_to: decision.clampedTo || null,
+      ...(decision.clampedEffort ? { clamped_effort: decision.clampedEffort } : {}),
+      // What the cost gate did (2.3.19); a mode without decisions (on-demand) decides nothing, so it writes none.
+      ...costGateFields('cost_gate'),
       reason: decision.reason || null,
       prompt_length: promptLength,
       prompt_hash: promptHash,
       ...(decision.pullFallback ? { pull_fallback: decision.pullFallback } : {}),
       ...(decision.autoApproveWarning ? { auto_approve_warning: true } : {}),
       ...downgradeLog,
+      // What a suggested or applied downgrade saves (2.3.19), priced by the served models.
+      ...(downgradeLog.downgrade === 'asked' || downgradeLog.downgrade === 'applied'
+        ? { costSaving: antigravityDowngradeSaving(requestedModel, downgradeLog.downgrade_to, activeModel) }
+        : {}),
       // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
       ...antigravityCostFields(requestedModel, activeModel)
     });
@@ -667,6 +697,7 @@ async function main() {
       const turn = cleaned.length > 0 ? turnId(cleaned) : undefined;
       const build = (turnState: ReturnType<typeof readAntigravityTurn>, recommendationPending: boolean) =>
         buildAntigravityTelemetryEvent({
+          mode,
           kind: 'agent_call',
           conversationId: input.conversationId,
           // The sticky session model (the planner, for an executor turn of an Orchestrator conversation), and the id the turn ran on.
@@ -679,6 +710,7 @@ async function main() {
           turnState,
           decision,
           downgradeLog,
+          ...costGateFields('costGate'),
           callKey,
           recommendationPending
         });

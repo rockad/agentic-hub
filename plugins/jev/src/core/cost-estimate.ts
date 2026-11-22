@@ -1,6 +1,6 @@
 /**
- * The combined cost estimate of a delegation, TELEMETRY ONLY: it is written on every `agent_call` row of both harnesses and
- * never decides anything (no deny, ask, clamp or downgrade reads it). It is an estimate of what the call REQUESTED, so a
+ * The combined cost estimate of a delegation. Since 2.3.19 the same weights decide the cost gate (`cost-gate.ts`); the fields
+ * below are still what is written on every `agent_call` row of both harnesses. It is an estimate of what the call REQUESTED, so a
  * denied call carries it too, and so does a row written in on-demand mode.
  *
  *   cost  = W_model[tier] * W_effort[level]
@@ -12,11 +12,14 @@
  *
  * Fields written on a row (see {@link costFields}):
  * - `costEstimate`: the call's cost, or null when its model cannot be placed in a tier;
+ * - `sessionCost`: the session's own cost (2.3.19), the figure the cost gate compares against;
  * - `costRatio`: the call's cost over the session's, or null when either is unknown or the session's cost is 0;
- * - `costWeightsVersion`: the version of the table above.
+ * - `costWeightsVersion`: the version of the table above;
+ * - `servedModelExpected` (Antigravity rows only, 2.3.19): the model the call is expected to be SERVED on (`served-model.ts`); the call is priced by it.
  */
 
 import { modelTierOf, type ModelTier } from './model-tier.js';
+import { servedModelExpected } from './served-model.js';
 
 /** The version of the weights table below. */
 export const COST_WEIGHTS_VERSION = 1;
@@ -75,6 +78,8 @@ export type CostSide = {
 
 export type CostFields = {
   costEstimate: number | null;
+  /** The session's own cost (its model at its effort), or null when its model has no tier (2.3.19). */
+  sessionCost: number | null;
   costRatio: number | null;
   costWeightsVersion: number;
 };
@@ -95,21 +100,72 @@ export function costFields(call: CostSide, session: CostSide): CostFields {
     const base = costOf(session.model, sessionEffort);
     return {
       costEstimate: cost === null ? null : round(cost),
+      sessionCost: base === null ? null : round(base),
       costRatio: cost === null || base === null || base === 0 ? null : round(cost / base),
       costWeightsVersion: COST_WEIGHTS_VERSION
     };
   } catch {
-    return { costEstimate: null, costRatio: null, costWeightsVersion: COST_WEIGHTS_VERSION };
+    return { costEstimate: null, sessionCost: null, costRatio: null, costWeightsVersion: COST_WEIGHTS_VERSION };
+  }
+}
+
+/** The cost fields of an Antigravity call, and the model it is expected to be served on (2.3.19). */
+export type AntigravityCostFields = CostFields & {
+  /** The model the call is expected to be served on (`served-model.ts`: `pro` is Hydrogen at xhigh, `inherit` the parent's), or null when nothing is known. */
+  servedModelExpected: string | null;
+};
+
+/**
+ * The cost fields of an Antigravity call, priced by the model it is expected to be SERVED on, not by the name of its `Model`
+ * enum value (2.3.19, `served-model.ts`, verified on Antigravity 1.5.14): `Model: "pro"` costs as Hydrogen at xhigh (flash weight
+ * times 2), `flash` as Hydrogen at high, `flash_lite` as flash-lite, and `inherit` or no model as the parent's own model.
+ *
+ * The effort of the session is the suffix of its model id (`-low` ... `-xhigh`), else `medium`. The effort of the call is the
+ * served model's (the table's, else its id's suffix), else the session's own (a model that carries none runs at the session's,
+ * and the cost gate holds the call to the same figure, so `costRatio > 1` is exactly the calls it holds). The requested
+ * `Model` is still what the row's `requestedModel` says; `servedModelExpected` is added beside it. Never throws.
+ */
+export function antigravityCostFields(requestedModel: unknown, sessionModel: unknown): AntigravityCostFields {
+  const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
+  const served = servedModelExpected(requestedModel, sessionModel);
+  const callModel = served.servedModel ?? (isInherit(requestedModel) ? sessionModel : requestedModel);
+  const callEffort = served.effort ?? sessionEffort;
+  return {
+    ...costFields({ model: callModel, effort: callEffort }, { model: sessionModel, effort: sessionEffort }),
+    servedModelExpected: served.servedModel
+  };
+}
+
+/**
+ * The cost a downgrade saves (2.3.19): the cost of the requested model at `effort` minus the cost of the downgrade target at the
+ * same effort (the downgrade is model-only, so the effort does not change). Positive for a cheaper target. Null when either
+ * model has no tier, so a figure is never guessed. `effort` is the call's literal effort, else `medium`. Never throws.
+ */
+export function downgradeCostSaving(requestedModel: unknown, targetModel: unknown, effort?: unknown): number | null {
+  try {
+    const level = costEffortOf(effort) ?? DEFAULT_COST_EFFORT;
+    const from = costOf(requestedModel, level);
+    const to = costOf(targetModel, level);
+    return from === null || to === null ? null : round(from - to);
+  } catch {
+    return null;
   }
 }
 
 /**
- * The cost fields of an Antigravity call: the effort of a side is the suffix of its model id (`-low`, `-medium`, `-high`,
- * `-xhigh`) when it has one, else `medium`. A call that names no model runs on the session's (and its effort).
+ * The saving of an Antigravity downgrade (2.3.19), priced like the rest of its row: the requested `Model` and the downgrade target
+ * are each priced by the model they are expected to be SERVED on (`served-model.ts`; `inherit` or no model is the parent's own),
+ * both at the requested call's effort, because the downgrade changes the model only. Null when either side has no tier.
  */
-export function antigravityCostFields(requestedModel: unknown, sessionModel: unknown): CostFields {
-  const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
-  const callModel = isInherit(requestedModel) ? sessionModel : requestedModel;
-  const callEffort = effortFromModelId(callModel) ?? DEFAULT_COST_EFFORT;
-  return costFields({ model: callModel, effort: callEffort }, { model: sessionModel, effort: sessionEffort });
+export function antigravityDowngradeSaving(requestedModel: unknown, targetModel: unknown, sessionModel: unknown): number | null {
+  try {
+    const sessionEffort = effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
+    const from = servedModelExpected(requestedModel, sessionModel);
+    const callModel = from.servedModel ?? (isInherit(requestedModel) ? sessionModel : requestedModel);
+    const effort = from.effort ?? effortFromModelId(callModel) ?? sessionEffort;
+    const to = servedModelExpected(targetModel, sessionModel).servedModel ?? targetModel;
+    return downgradeCostSaving(callModel, to, effort);
+  } catch {
+    return null;
+  }
 }

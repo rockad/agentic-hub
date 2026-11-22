@@ -13,7 +13,7 @@ import {
 } from './cache.js';
 import { JEV_CONFIG_FILE, type JevMode } from './config.js';
 import { isFormattingTask } from './heuristics.js';
-import { isModeOff, modeBehaviour } from './mode-policy.js';
+import { isModeOff, modeBehaviour, telemetryMode } from './mode-policy.js';
 import { getTracer } from '../tracing.js';
 import { privateDir, privateFile, PRIVATE_FILE_MODE, jevHomeDir } from './private-fs.js';
 import { safeSessionId } from '../../claude/logic.js';
@@ -442,6 +442,7 @@ export function logOrchestratorMarkerUnavailable(
     return logJevTelemetry({
       harness: 'antigravity',
       toolOrHook: 'orchestrator-marker',
+      mode: telemetryMode(mode),
       event: 'orchestrator_marker_unavailable',
       reason,
       model,

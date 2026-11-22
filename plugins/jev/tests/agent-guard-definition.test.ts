@@ -368,11 +368,16 @@ describe('the ladder pin and the choice flow stay as they were', () => {
     expect(r.logs).toHaveLength(0);
   });
 
-  it('an unknown session model passes (nothing to compare with)', async () => {
+  // 2.3.19: this used to expect null for an unknown session model (fail open). It is now assumed sonnet (fail closed).
+  it('an unknown session model is assumed sonnet: an unreadable definition is denied with guidance, saying so', async () => {
     setup({ readSessionModel: () => null });
     writeAgent('deep.md', def('[opus]'));
 
-    expect(await onPreToolUse(call(DELEGATION), r.d)).toBeNull();
+    const o = (await onPreToolUse(call(DELEGATION), r.d))?.hookSpecificOutput as Record<string, any>;
+
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('unreadable or ambiguous');
+    expect(o.permissionDecisionReason).toContain('The session model is not known yet, so Jev assumes sonnet.');
   });
 
   it('a cwd that is not a directory path never throws; the call model alone decides', async () => {

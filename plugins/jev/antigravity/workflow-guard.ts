@@ -79,6 +79,9 @@ import {
   subagentCeilingRank
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
+import { DEFAULT_COST_GATE_MODE, antigravityCostGate, costComparison, effortIndex, parseCostGateMode, type CostGateMode, type CostGateState, type CostGate } from '../src/core/cost-gate.js';
+import { effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
+import { servedModelGuidance, subagentEnumOf } from '../src/core/served-model.js';
 import { jevHomeDir } from '../src/core/private-fs.js';
 import { modeBehaviour } from '../src/core/mode-policy.js';
 import type { JevMode } from '../src/core/config.js';
@@ -122,6 +125,9 @@ export interface CallSite {
   requested?: string;
   tier?: 'flash_lite' | 'flash' | 'pro';
   rank?: number;
+  /** On an `elevation` site the cost gate found (2.3.19): the verdict with the costs it compared, and the call's effort. */
+  gate?: Extract<CostGate, { kind: 'over' }>;
+  effort?: CostEffort;
 }
 
 export interface WorkflowDecision {
@@ -134,6 +140,8 @@ export interface WorkflowDecision {
   models: string[];
   /** True when a model above the ceiling passed because the user named it in the prompt. */
   instructed: boolean;
+  /** How many agent(...) calls the cost gate judged, and how many it left to the model ceiling by rank (2.3.19). */
+  gate?: { judged: number; fallbacks: number; shadowOver?: number };
   /** The strongest elevation (by tier rank), absent when there is none. */
   highest?: CallSite;
   /** The sha256 of every script text that was analysed, for allow and ask alike. */
@@ -349,7 +357,9 @@ export interface AnalysisContext {
   /** Where `type_name` definitions are looked up. */
   definitions?: DefinitionResolver;
   /** Collects every literal model that was ranked, and whether one passed by instruction. */
-  seen: { models: string[]; instructed: boolean };
+  seen: { models: string[]; instructed: boolean; gateJudged?: number; gateFallbacks?: number; shadowOver?: number };
+  /** How the cost gate decides (2.3.19): `shadow` (default) judges by the model ceiling and only counts what the gate would hold (`seen.shadowOver`); `enforce` lets the gate judge. The tier check holds in both. */
+  costGate?: CostGateMode;
   /** The directories a local import is looked for in: the script's own directory (a `ScriptPath`) and its `Cwd`. Empty or absent: no import is local. */
   localModuleDirs?: readonly string[];
 }
@@ -603,6 +613,58 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
     }
     ctx.seen.models.push(clip(m));
     const rank = modelTierRank(m);
+    // The cost gate (2.3.19) judges the call by what it costs against the session's (the effort is the id's suffix); a model it
+    // cannot place in a tier falls through to the model ceiling by rank below.
+    const gate0 = antigravityCostGate(m, ceilingTier, ctx.sessionModel);
+    const shadow = (ctx.costGate ?? DEFAULT_COST_GATE_MODE) === 'shadow';
+    if (gate0.kind !== 'fallback' && shadow) {
+      // Shadow: the gate only reports (counted for the row); the model ceiling by rank below judges the call.
+      ctx.seen.gateJudged = (ctx.seen.gateJudged ?? 0) + 1;
+      const named = isExplicitProOverride(ctx.lastUserInput, m);
+      const gate = named ? antigravityCostGate(m, ceilingTier, ctx.sessionModel, { model: m }) : gate0;
+      if (gate.kind === 'over') ctx.seen.shadowOver = (ctx.seen.shadowOver ?? 0) + 1;
+    } else if (gate0.kind !== 'fallback') {
+      ctx.seen.gateJudged = (ctx.seen.gateJudged ?? 0) + 1;
+      const named = isExplicitProOverride(ctx.lastUserInput, m);
+      const gate = named ? antigravityCostGate(m, ceilingTier, ctx.sessionModel, { model: m }) : gate0;
+      // The tier check: a full id above the session's ceiling always asks, whatever its effort (an enum value is priced by the model it is served on).
+      const tierAbove = subagentEnumOf(m) === null && rank > sessionRank;
+      if (gate.kind !== 'over') {
+        if (named && gate0.kind === 'over') ctx.seen.instructed = true;
+        if (!tierAbove) return;
+        if (named) {
+          ctx.seen.instructed = true;
+          return;
+        }
+        sites.push({
+          file: label,
+          line: at.line,
+          col: at.col,
+          reason: `${source} model '${clip(model)}' is above the session ceiling '${ceilingTier}'`,
+          kind: 'elevation',
+          requested: m,
+          tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
+          rank,
+          effort: gate.kind === 'fallback' ? undefined : gate.callEffort
+        });
+        return;
+      }
+      sites.push({
+        file: label,
+        line: at.line,
+        col: at.col,
+        reason: `${source} model '${clip(model)}' ${gate.cause === 'model' ? `is above the session ceiling '${ceilingTier}'` : 'is above the session cost through its effort'} (it ${costComparison(gate)})`,
+        kind: 'elevation',
+        requested: m,
+        tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
+        rank,
+        gate,
+        // An enum value carries its effort in what it is (see antigravityMarkerModel): no effort suffix on its marker or its approval.
+        effort: subagentEnumOf(m) === null ? gate.callEffort : undefined
+      });
+      return;
+    }
+    if (gate0.kind === 'fallback') ctx.seen.gateFallbacks = (ctx.seen.gateFallbacks ?? 0) + 1;
     if (rank <= sessionRank) return;
     if (isExplicitProOverride(ctx.lastUserInput, m)) {
       ctx.seen.instructed = true;
@@ -616,7 +678,10 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
       kind: 'elevation',
       requested: m,
       tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
-      rank
+      rank,
+      // The rank path (every call in shadow, and a gate fallback in enforce) names the effort a full id runs at, so the marker and the
+      // approval claim `<tier>-<effort>` and not a `high` the script does not run at. An enum value carries its effort in what it is: none.
+      effort: subagentEnumOf(m) === null ? (effortFromModelId(m) ?? undefined) : undefined
     });
   };
   const inheritOrchestrator = (at: Tok, source: string): void => {
@@ -827,7 +892,7 @@ export interface WorkflowInputContext {
  */
 export function evaluateWorkflowInput(args: unknown, where: WorkflowInputContext, ctx: Omit<AnalysisContext, 'seen'>): WorkflowDecision {
   const scripts: ScriptFact[] = [];
-  const seen = { models: [] as string[], instructed: false };
+  const seen = { models: [] as string[], instructed: false, gateJudged: 0, gateFallbacks: 0, shadowOver: 0 };
   const g: AnalysisContext = { ...ctx, seen };
   const finish = (sites: CallSite[]): WorkflowDecision => {
     const elevations = sites.filter((s) => s.kind === 'elevation');
@@ -840,6 +905,7 @@ export function evaluateWorkflowInput(args: unknown, where: WorkflowInputContext
       unverifiable,
       models: [...new Set(seen.models)],
       instructed: seen.instructed,
+      gate: { judged: seen.gateJudged ?? 0, fallbacks: seen.gateFallbacks ?? 0, shadowOver: seen.shadowOver ?? 0 },
       ...(highest ? { highest } : {}),
       scripts
     };
@@ -909,15 +975,17 @@ export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | '
 }
 
 /** The deny reason of the choice flow for a script: the same marker and four options as an invoke_subagent elevation, naming the script by its hash. */
-export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts: readonly ScriptFact[], attempt: number): string {
-  const tier = top.tier ?? 'pro';
+export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts: readonly ScriptFact[], attempt: number, marker?: { model: string; costNote?: string }): string {
+  const tier = marker?.model ?? top.tier ?? 'pro';
   const ids = scriptIds(scripts);
   const o = CHOICE_OPTIONS;
+  // What the call is served on is said for an enum value only: a full id (the `pro-high` form of the marker) is served as written, never on Hydrogen.
+  const served = servedModelGuidance(marker?.model ?? top.requested ?? top.tier);
   const stop = stopRetryingText(attempt, tier, ceilingTier, 'ask_question', 'model');
   return (
-    `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}', and no approval covers it. ` +
+    `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}'${marker?.costNote ? ` (its most costly agent ${marker.costNote})` : ''}, and no approval covers it.${served ? ` ${served}` : ''} ` +
     `Ask the user with ask_question: one question whose text starts with '${ELEVATE_MARKER_PREFIX}${tier}]' followed by a short question naming the script (${ids}), ` +
-    `the strongest requested model and the session ceiling, with four options in this order: '${o.once}', '${o.fiveMin}', '${o.session}', '${o.no(ceilingTier)}'. ` +
+    `the strongest requested model${served ? ' (and what it is served on, as said above)' : ''} and the session ceiling, with four options in this order: '${o.once}', '${o.fiveMin}', '${o.session}', '${o.no(ceilingTier)}'. ` +
     `If the user approves, call run_workflow again unchanged; if No, change the agent(...) calls to '${ceilingTier}' (or 'flash_lite') and call it again, or do the work directly; ` +
     'do not ask in any other form.' +
     (stop ? ` ${stop}` : '')
@@ -946,6 +1014,8 @@ export interface WorkflowCallDeps {
   pinDir?: string;
   /** `JEV_ELEVATION`: `dialog` asks, anything else (`choice`, `clamp`, unset) never asks. */
   elevationMode?: 'choice' | 'dialog' | 'clamp';
+  /** How the cost gate decides (2.3.19); `JEV_COST_GATE` wins, absent is `shadow`. */
+  costGateMode?: CostGateMode;
   definitions?: DefinitionResolver;
 }
 
@@ -978,6 +1048,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
     const sessionOrchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
     const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, sessionOrchestrator));
+    const costGateMode: CostGateMode = parseCostGateMode(process.env.JEV_COST_GATE) ?? deps.costGateMode ?? DEFAULT_COST_GATE_MODE;
     const d = evaluateWorkflowInput(
       input.toolCall?.args,
       { cwd: input.cwd, workspacePaths: input.workspacePaths },
@@ -985,6 +1056,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
         sessionModel,
         sessionOrchestrator,
         lastUserInput: input.lastUserInput,
+        costGate: costGateMode,
         definitions: deps.definitions ?? fsDefinitionResolver([input.cwd, ...(input.workspacePaths ?? [])].filter((x): x is string => typeof x === 'string' && x.length > 0))
       }
     );
@@ -996,9 +1068,13 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const pin = (decision: 'allow' | 'ask'): void => {
       if (deps.pinDir && toolCallId) writeWorkflowPin(deps.pinDir, toolCallId, input.conversationId, decision, d.scripts);
     };
+    // `cost_gate` of the row (enforce): what the cost gate did. In shadow the row says `cost_gate_shadow` instead: what it would have done.
+    const idleState: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
+    const gateField = (state: CostGateState): Record<string, unknown> =>
+      costGateMode === 'enforce' ? { cost_gate: state } : { cost_gate_shadow: (d.gate?.shadowOver ?? 0) > 0 ? 'denied' : idleState };
     const finish = (guard: string, decision: AntigravityHookDecision, extra: Record<string, unknown> = {}): WorkflowCallResult => ({
       decision,
-      log: { workflow_guard: guard, ...base, ...extra }
+      log: { workflow_guard: guard, ...base, ...gateField(d.sites.some((s) => s.gate) ? 'denied' : idleState), ...extra }
     });
 
     if (d.decision === 'allow') {
@@ -1030,17 +1106,31 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     }
 
     // The tier name stands for the model in the marker and in the approval store: the marker regex takes [a-z0-9_-] only,
-    // and an approval of a tier covers every model of that tier or below.
-    const claimed = approvals?.claim(sessionId, top.tier, nowMs) ?? null;
+    // and an approval of a tier covers every model of that tier or below. With the cost gate (2.3.19) the model also names the
+    // highest effort among the gated sites as a suffix (`pro-xhigh`) when it is above `high` (a bare model stands for at most `high`):
+    // the approval then covers that effort and lower, for the whole script.
+    const gated = d.elevations.filter((s) => s.gate);
+    const maxEffort = d.elevations.reduce<CostEffort | undefined>((best, s) => (s.effort && (!best || effortIndex(s.effort) > effortIndex(best)) ? s.effort : best), undefined);
+    const worstGate = gated.reduce<NonNullable<CallSite['gate']> | undefined>((best, s) => (!best || (s.gate as NonNullable<CallSite['gate']>).ratio > best.ratio ? (s.gate as NonNullable<CallSite['gate']>) : best), undefined);
+    // An enum value (`pro`: served on Hydrogen) and a full id (`gemini-4-argon-high`) are keyed apart (see `approvalKindCovers`): a script
+    // with any full-id site is asked, and approved, under the full-id form `<tier>-<effort>` (the effort is `high` at most unless a
+    // site is above it), which also covers the script's enum values at or below that tier; a script of enum values only keeps the plain
+    // tier (`pro`), which covers enum values only.
+    const hasFullId = d.elevations.some((s) => s.requested !== undefined && subagentEnumOf(s.requested) === null);
+    const markerModel = hasFullId ? `${top.tier}-${maxEffort ?? 'high'}` : maxEffort && effortIndex(maxEffort) > effortIndex('high') ? `${top.tier}-${maxEffort}` : top.tier;
+    // `cost_gate` of the row: what the cost gate did with the calls it could judge (`fallback` when the model ceiling by rank judged any).
+    const gateIdle: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
+    const costGate = (state: CostGateState): Record<string, unknown> => gateField(gated.length > 0 ? state : gateIdle);
+    const claimed = approvals?.claim(sessionId, markerModel, nowMs, maxEffort) ?? null;
     if (claimed) {
       pin('allow');
-      return finish('allow', { decision: 'allow', elevation: 'approved', approvalScope: claimed.scope }, { workflow_highest: top.tier });
+      return finish('allow', { decision: 'allow', elevation: 'approved', approvalScope: claimed.scope }, { workflow_highest: top.tier, ...costGate('approved') });
     }
     const promptHash = input.lastUserInput ? digest16(input.lastUserInput, 'sha256') : 'no-prompt';
     const choice = resolveChoiceElevation({
       approvalStore: approvals,
       sessionId,
-      requestedModel: top.tier,
+      requestedModel: markerModel,
       typeName: 'run_workflow',
       sessionCeilingTier: ceilingTier,
       isOrchestrator: sessionOrchestrator,
@@ -1049,10 +1139,10 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
       promptHash,
       signature: workflowSignature(d.scripts),
       config: deps.config,
-      reasonOverride: (attempt) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt)
+      reasonOverride: (attempt) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt, { model: markerModel, ...(worstGate ? { costNote: costComparison(worstGate) } : {}) })
     });
     if (choice.decision === 'allow') pin('allow');
-    return finish(choice.decision === 'allow' ? 'allow' : 'denied', choice, { workflow_highest: top.tier });
+    return finish(choice.decision === 'allow' ? 'allow' : 'denied', choice, { workflow_highest: top.tier, ...costGate(choice.decision === 'allow' ? 'approved' : 'denied') });
   } catch {
     return { decision: { decision: 'pass' }, log: { workflow_guard: 'error' } };
   }

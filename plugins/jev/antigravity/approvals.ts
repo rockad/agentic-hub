@@ -3,6 +3,9 @@ import * as path from 'node:path';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
 import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 import { withDirLock } from '../src/core/dir-lock.js';
+import { DEFAULT_COST_EFFORT, effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
+import { LEGACY_APPROVAL_EFFORT, effortWithin } from '../src/core/cost-gate.js';
+import { subagentEnumOf } from '../src/core/served-model.js';
 import {
   DOWNGRADE_TTL_MS,
   MAX_ENTRIES,
@@ -65,7 +68,8 @@ export type ApprovalStore = {
     consumedKeys?: string[]
   ) => { stored: boolean; approval: Approval | null };
   deny: (sessionId: string, model: string, nowMs: number) => void;
-  claim: (sessionId: string, requested: string, nowMs: number) => Approval | null;
+  /** Find the approval covering `requested` and consume it when it is a `once`. `effort` (2.3.19) is the effort the call runs at when its model id names none (the cost gate's call effort). */
+  claim: (sessionId: string, requested: string, nowMs: number, effort?: CostEffort) => Approval | null;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
@@ -79,6 +83,15 @@ export type ApprovalStore = {
 };
 
 export const CONSUMED_ANSWERS_CAP = 100;
+
+/**
+ * An approval (or a denial, which stands for one) is keyed as one of two kinds: an ENUM value of `invoke_subagent`'s `Model` (`pro`,
+ * `flash`, `flash_lite`: served on Hydrogen, never on a pro-class model) or a FULL id (`gemini-4-argon-high`, `claude-opus-5-5`, or the
+ * `pro-high` form of its marker). An enum approval covers enum values only: `pro` (Hydrogen at xhigh) must never cover a real
+ * pro-class id, whose cost is several times higher. A full-id approval covers the full ids at or below its tier and effort, and the
+ * enum values at or below its tier (an enum is always the cheaper model).
+ */
+export const approvalKindCovers = (approved: string, requested: string): boolean => subagentEnumOf(requested) !== null || subagentEnumOf(approved) === null;
 
 export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
 export const ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
@@ -143,7 +156,8 @@ export function getRecentDenialTimestamp(state: ApprovalState, model: string, no
   const want = modelTierRank(model);
   let latest: number | null = null;
   for (const [m, t] of Object.entries(state.denied ?? {})) {
-    if (modelTierRank(m) >= want && nowMs - t <= DENIAL_WINDOW_MS) {
+    // The denial must also cover the effort the approval would name (the id's suffix, else medium): an answer cannot approve a higher effort than the question asked about.
+    if (modelTierRank(m) >= want && approvalKindCovers(m, model) && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT) && nowMs - t <= DENIAL_WINDOW_MS) {
       if (latest === null || t > latest) {
         latest = t;
       }
@@ -194,13 +208,18 @@ export function recordApproval(
 export function claimApproval(
   state: ApprovalState,
   requested: string,
-  nowMs: number
+  nowMs: number,
+  effort?: CostEffort
 ): { state: ApprovalState; approval: Approval | null } {
   const wantRank = modelTierRank(requested);
   const live = state.approvals.filter((a) => approvalValid(a, nowMs));
   const hit =
     live
       .filter((a) => modelTierRank(a.model) >= wantRank)
+      // An enum approval never covers a full id (see `approvalKindCovers`).
+      .filter((a) => approvalKindCovers(a.model, requested))
+      // The approval must cover the call's effort too (2.3.19): the suffix of its model id, else `high` for a record that names none, against the call's suffix, else `medium`.
+      .filter((a) => effortWithin(effortFromModelId(a.model) ?? LEGACY_APPROVAL_EFFORT, effortFromModelId(requested) ?? effort ?? DEFAULT_COST_EFFORT))
       .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
 
   const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
@@ -360,11 +379,11 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         writeState(sessionId, noteDenied(readState(sessionId), model, nowMs));
       });
     },
-    claim: (rawId, requested, nowMs) => {
+    claim: (rawId, requested, nowMs, effort) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
       return withLockIfState(sessionId, () => {
-        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs);
+        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs, effort);
         if (approval?.scope === 'once' || state.approvals.length !== readState(sessionId).approvals.length) {
           writeState(sessionId, state);
         }

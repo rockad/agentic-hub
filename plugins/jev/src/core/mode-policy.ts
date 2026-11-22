@@ -82,3 +82,17 @@ export function lowQuotaNotice(pool: LowQuotaPool): string | null {
   const pct = typeof pool.minRemaining === 'number' ? ` (${Math.round(pool.minRemaining * 100)}% remaining)` : '';
   return `[JEV] quota notice: ${pool.label} is ${state}${pct}. Informational only.`;
 }
+
+/** The mode a telemetry row records: only a mode that writes telemetry can appear on a row, so `off` never does. */
+export type TelemetryMode = 'on' | 'on-demand';
+
+/**
+ * The `mode` field of a telemetry row (2.3.19): the mode the hook acted under, derived from {@link modeBehaviour} like every
+ * other mode question (`decisions` tells `on` from `on-demand`). Undefined for `off` and for an unknown value, because those
+ * write no row, so a caller can spread it without a check.
+ */
+export function telemetryMode(mode: JevMode | string | null | undefined): TelemetryMode | undefined {
+  const behaviour = modeBehaviour(mode);
+  if (!behaviour.telemetry) return undefined;
+  return behaviour.decisions ? 'on' : 'on-demand';
+}

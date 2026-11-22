@@ -161,7 +161,9 @@ describe('a delegation is rated on its own text and asked about', () => {
       downgrade_probability: 0.86,
       downgrade_rated: 'flash_lite',
       effort_suggested: 'low',
-      effort_session: 'high'
+      effort_session: 'high',
+      // opus 15 x 1.5 minus haiku 1 x 1.5, both at the session's high effort
+      costSaving: 21
     });
   });
 
@@ -376,7 +378,8 @@ describe('auto mode', () => {
     expect(o.permissionDecision).toBe('allow');
     expect(o.updatedInput).toEqual({ ...input, model: 'haiku' });
     expect(o.additionalContext).toContain('haiku instead of opus');
-    expect(logs[0]).toMatchObject({ downgrade: 'applied', downgrade_from: 'opus', downgrade_to: 'haiku', downgrade_needed: 'flash_lite' });
+    expect(logs[0]).toMatchObject({ downgrade: 'applied', downgrade_from: 'opus', downgrade_to: 'haiku', downgrade_needed: 'flash_lite', costSaving: 21 });
+    expect(telemetryEvent(logs[0]).costSaving).toBe(21);
   });
 
   it('telemetry names the applied downgrade as the model used, whether or not the call named one', async () => {

@@ -34,7 +34,7 @@ describe('UserPromptSubmit record', () => {
 
     const event = telemetryEvent(log);
 
-    expect(keys(event)).toEqual(['harness', 'modelRecommended', 'quotaStrategy', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(keys(event)).toEqual(['harness', 'mode', 'modelRecommended', 'quotaStrategy', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
     expect(event.modelRecommended).toBe('sonnet');
     expect('modelUsed' in event).toBe(false);
   });
@@ -76,7 +76,7 @@ describe('PreToolUse record', () => {
 
     const event = telemetryEvent(log[0]);
 
-    expect(keys(event)).toEqual(['costEstimate', 'costRatio', 'costWeightsVersion', 'decision', 'harness', 'modelRecommended', 'modelUsed', 'modelUsedSource', 'requestedModel', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
+    expect(keys(event)).toEqual(['costEstimate', 'costRatio', 'costWeightsVersion', 'cost_gate_shadow', 'decision', 'harness', 'mode', 'modelRecommended', 'modelUsed', 'modelUsedSource', 'requestedModel', 'sessionCost', 'sessionId', 'sessionModel', 'sessionModelSource', 'taskSummary', 'tierRecommended', 'toolOrHook', 'turn']);
     expect(event.modelUsedSource).toBe('requested');
     expect([event.modelUsed, event.modelRecommended, event.turn, event.tierRecommended]).toEqual(['sonnet', 'sonnet', advice.turn, 'flash']);
   });

@@ -14,14 +14,27 @@ import {
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
 import type { JevMode } from '../src/core/config.js';
-import { modeBehaviour } from '../src/core/mode-policy.js';
+import { modeBehaviour, telemetryMode } from '../src/core/mode-policy.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
-import { antigravityCostFields } from '../src/core/cost-estimate.js';
+import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
+import {
+  DEFAULT_COST_GATE_MODE,
+  antigravityClampModel,
+  antigravityCostGate,
+  antigravityMarkerModel,
+  costComparison,
+  parseCostGateMode,
+  shadowStateOf,
+  type CostGateMode,
+  type CostGateShadowState,
+  type CostGateState
+} from '../src/core/cost-gate.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -57,6 +70,8 @@ export type AntigravityHookDecision = {
   approvalScope?: ApprovalScope;
   attemptCount?: number;
   clampedTo?: string;
+  /** The effort the cost gate's clamp runs the call at (2.3.19). */
+  clampedEffort?: string;
   /** `true` on a dialog-mode `ask` while Antigravity auto-approve is detected: the dialog is approved without being shown. Informational only. */
   autoApproveWarning?: true;
   /** `true`: allowed from an answer read out of the transcript. `'record_failed'`: the answer was there but could not be stored, so nothing was allowed. `'claim_lost'`: it was stored but a parallel pro call claimed it first, so this call was denied. `'mode_changed'`: the pending denial is older than the last mode change, so no answer was read and the call was denied again with a fresh question. */
@@ -69,6 +84,8 @@ export type AntigravityLogicDeps = {
   /** The session record says this is an Orchestrator conversation (the 1.5.14 marker). A legacy Orchestrator id is an Orchestrator session on its own. */
   sessionOrchestrator?: boolean;
   elevationMode?: 'choice' | 'dialog' | 'clamp';
+  /** How the cost gate decides (2.3.19): `shadow` (the default; the model rank ceiling decides and the row records what the gate would have done) or `enforce`. JEV_COST_GATE wins. */
+  costGateMode?: CostGateMode;
   quotaView?: QuotaView;
   mode?: JevMode;
   /**
@@ -87,6 +104,17 @@ export const CHOICE_OPTIONS = {
   session: 'Yes, for this session',
   no: (ceiling: string) => `No, proceed on ${ceiling}`
 };
+
+/**
+ * The deny reason of an `invoke_subagent` call with no explicit `Model` (or `inherit`) under an Orchestrator session (2.3.19: it says
+ * what `pro` really is, and how a subagent reaches Argon). An omitted or `inherit` Model is served on the planner, so it is not
+ * accepted here; `pro` is Hydrogen at xhigh, so requesting it is no way to a pro-class model.
+ */
+export const ORCHESTRATOR_EXPLICIT_MODEL_REASON =
+  '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (an omitted or inherit Model runs the subagent on the planner). ' +
+  `${PRO_SERVED_SENTENCE} Do not request "pro" to get a pro-class model: it passes when it costs no more than the session, else it needs the [jev-elevate:...] question. ` +
+  ARGON_HOW_SENTENCE;
+
 
 // Moved to src/core/governance.ts (the dispatch ceiling clamp shares it); re-exported so existing imports keep working.
 export { isExplicitProOverride };
@@ -152,9 +180,12 @@ export function buildElevationQuestion(opts: {
   requestedModel: string;
   ceilingTier: string;
   taskSummary?: string;
+  /** What the call really is (`servedQuestionPhrase`): the question says it, so the user decides on the model that runs. */
+  servedPhrase?: string;
 }): { question: string; options: string[] } {
   const summaryPart = opts.taskSummary ? ` for ${opts.taskSummary}` : '';
-  const question = `${ELEVATE_MARKER_PREFIX}${opts.requestedModel}] Allow subagent '${opts.typeName}' to run on ${opts.requestedModel}${summaryPart} (session ceiling: ${opts.ceilingTier})?`;
+  const servedPart = opts.servedPhrase ? ` (${opts.servedPhrase})` : '';
+  const question = `${ELEVATE_MARKER_PREFIX}${opts.requestedModel}] Allow subagent '${opts.typeName}' to run on ${opts.requestedModel}${servedPart}${summaryPart} (session ceiling: ${opts.ceilingTier})?`;
   const options = [
     CHOICE_OPTIONS.once,
     CHOICE_OPTIONS.fiveMin,
@@ -170,22 +201,29 @@ export function buildElevationReason(opts: {
   sessionCeilingTier: string;
   taskSummary?: string;
   isOrchestrator?: boolean;
+  /** The model the marker names, when it is not the one the call is re-invoked with (the tier-and-effort form of an id, 2.3.19). */
+  markerModel?: string;
+  /** The cost gate's sentence (2.3.19), when it found the call: "costs 30 vs the session's 22.5 (...)". */
+  costNote?: string;
 }): string {
+  const servedPhrase = servedQuestionPhrase(opts.requestedModel);
   const q = buildElevationQuestion({
     typeName: opts.typeName,
-    requestedModel: opts.requestedModel,
+    requestedModel: opts.markerModel ?? opts.requestedModel,
     ceilingTier: opts.sessionCeilingTier,
-    taskSummary: opts.taskSummary
+    taskSummary: opts.taskSummary,
+    servedPhrase
   });
 
   const noAction = opts.isOrchestrator
     ? `if No, re-invoke with '${opts.sessionCeilingTier}' or 'flash_lite'`
     : `if No, re-invoke with '${opts.sessionCeilingTier}' (or inherit)`;
+  const served = servedModelGuidance(opts.requestedModel);
 
   return (
-    `[jev] Subagent '${opts.typeName}' requested Model '${opts.requestedModel}', which exceeds session ceiling '${opts.sessionCeilingTier}', ` +
-    `and no approval covers it (note: Antigravity has so far served 'pro' subagents on flash). Ask the user with ask_question: one question whose text starts with ` +
-    `'${ELEVATE_MARKER_PREFIX}${opts.requestedModel}]', with four options in this order: ` +
+    `[jev] Subagent '${opts.typeName}' requested Model '${opts.requestedModel}', which exceeds session ceiling '${opts.sessionCeilingTier}'${opts.costNote ? ` (it ${opts.costNote})` : ''}, ` +
+    `and no approval covers it.${served ? ` ${served}` : ''} Ask the user with ask_question: one question whose text starts with ` +
+    `'${ELEVATE_MARKER_PREFIX}${opts.markerModel ?? opts.requestedModel}]', ${servedPhrase ? `followed by a short question that says plainly "${servedPhrase}", ` : ''}with four options in this order: ` +
     `'${q.options[0]}', '${q.options[1]}', '${q.options[2]}', '${q.options[3]}'. ` +
     `If the user approves, re-invoke with '${opts.requestedModel}'; ${noAction}; ` +
     `do not ask in any other form.`
@@ -712,6 +750,10 @@ type ChoiceElevationContext = {
   config?: ModeChangeConfigLike;
   /** Builds the whole deny reason from the attempt count (the run_workflow guard words the question for a script, not a subagent). */
   reasonOverride?: (attempt: number) => string;
+  /** The cost gate's sentence (2.3.19): what the call costs against the session's, written into the deny reason. */
+  costNote?: string;
+  /** The model the call was written with, when `requestedModel` (the marker's and the approval's key) is its tier-and-effort form: the deny reason re-invokes with this one. */
+  displayModel?: string;
 };
 
 /**
@@ -799,9 +841,11 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
   } else {
     const baseReason = buildElevationReason({
       typeName,
-      requestedModel,
+      requestedModel: ctx.displayModel ?? requestedModel,
+      markerModel: requestedModel,
       sessionCeilingTier,
-      isOrchestrator
+      isOrchestrator,
+      costNote: ctx.costNote
     });
     const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
     reason = stop ? `${baseReason} ${stop}` : baseReason;
@@ -867,7 +911,7 @@ export function evaluateAntigravitySubagentCall(
     if (isOrchestrator) {
       return {
         decision: 'deny',
-        reason: '[jev] Under Orchestrator, set Model explicitly on invoke_subagent: "flash" or "flash_lite" (or "pro" with [jev-elevate:pro]).'
+        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON
       };
     }
     effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
@@ -911,26 +955,46 @@ export function evaluateAntigravitySubagentCall(
     return { decision: 'pass' };
   }
 
-  // 4. Ceiling / Elevation
+  // 4. Cost gate / Elevation (2.3.19). Where the cost of the call can be computed it decides: the call needs approval only
+  // when it costs more than the session's own model at the session's effort (the effort is the suffix of each model id). Where
+  // it cannot (a model with no tier) the model ceiling by rank decides, as before.
   const sessionCeilingRank = subagentCeilingRank(sessionModel, isOrchestrator);
   const sessionCeilingTier = rankToTierName(sessionCeilingRank);
   const requestedRank = modelTierRank(requestedModel);
+  const args = input.toolCall?.args || {};
+  const typeName = String(args.TypeName || args.Role || 'subagent');
+  // The user's own words (a model they named) raise what the call is held to; the gate is also computed without them to see
+  // whether it was them that let the call through.
+  const named = isExplicitProOverride(input.lastUserInput, requestedModel);
+  const gate0 = antigravityCostGate(requestedModel, sessionCeilingTier, sessionModel);
+  // Shadow (the default): the rank ceiling decides, the gate is only computed for the row. Enforce: the gate decides.
+  const gateMode = costGateModeOf(deps);
+  const gateOn = gateMode === 'enforce' && gate0.kind !== 'fallback';
+  // The tier check: a stronger model always asks (2.3.19). A full id whose tier is above the session's ceiling is an elevation
+  // whatever its effort and whatever the gate says, so `gemini-4-argon-low` under the Orchestrator's flash ceiling asks even when
+  // the planner runs at max. An enum value (`pro`, `flash`) is priced by the model it is served on and stays with the gate.
+  const tierAbove = gateOn && subagentEnumOf(requestedModel) === null && requestedRank > sessionCeilingRank;
 
-  if (requestedRank <= sessionCeilingRank) {
+  if (gateOn ? gate0.kind === 'pass' && !tierAbove : requestedRank <= sessionCeilingRank) {
     return { decision: 'pass' };
   }
 
-  // Requested model exceeds session ceiling: ELEVATION
-  const args = input.toolCall?.args || {};
-  const typeName = String(args.TypeName || args.Role || 'subagent');
+  // Requested model exceeds what the session is held to: ELEVATION. With the user's own words the baseline is raised to the
+  // model they named: the call is let through as instructed unless its effort still pushes it over.
+  const gate = gateOn && named ? antigravityCostGate(requestedModel, sessionCeilingTier, sessionModel, { model: requestedModel }) : gate0;
+  const overGate = gateOn && gate.kind === 'over' ? gate : null;
+  // What the marker and the approval carry: the tier and effort form when the gate is over, and for a tier ask the gate let through.
+  const markerGate = overGate ?? (tierAbove && gate.kind === 'pass' ? gate : null);
+  const gateNote = overGate ? { costNote: costComparison(overGate, (m) => String(m ?? 'the session model')) } : {};
 
   // Check explicit override in user prompt
-  if (isExplicitProOverride(input.lastUserInput, requestedModel)) {
+  if (named && !overGate) {
     return { decision: 'allow', elevation: 'instructed' };
   }
 
   // Check covering approval
-  const approval = approvalStore?.claim(sessionId, requestedModel, nowMs);
+  const markerModel = antigravityMarkerModel(requestedModel, markerGate);
+  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, subagentEnumOf(requestedModel) === null ? markerGate?.callEffort : undefined);
   if (approval) {
     return {
       decision: 'allow',
@@ -945,7 +1009,7 @@ export function evaluateAntigravitySubagentCall(
     // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.
     return {
       decision: 'ask',
-      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'. Approve to run on ${requestedModel}, or cancel.`,
+      reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'${overGate ? ` (it ${gateNote.costNote})` : ''}. Approve to run on ${requestedModel}, or cancel.${servedModelGuidance(requestedModel) ? ` ${servedModelGuidance(requestedModel)}` : ''}`,
       elevation: 'asked',
       ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
     };
@@ -957,13 +1021,17 @@ export function evaluateAntigravitySubagentCall(
   const signature = `${typeName}:${requestedModel}`;
 
   if (elevationMode === 'clamp') {
-    // Every attempt is clamped, never asked: under auto-approve an `ask` is approved without a dialog.
+    // Every attempt is clamped, never asked: under auto-approve an `ask` is approved without a dialog. With the cost gate the clamp
+    // is the most expensive (model, effort) that keeps the call within the session's cost: the ceiling model when the model is what
+    // is too much, and the effort lowered to the highest level that fits.
     const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
+    const clampModel = overGate ? antigravityClampModel(requestedModel, overGate, sessionCeilingTier) : sessionCeilingTier;
     return {
       decision: 'allow',
-      overwrite: { Model: sessionCeilingTier },
+      overwrite: { Model: clampModel },
       elevation: 'clamped',
-      clampedTo: sessionCeilingTier,
+      clampedTo: clampModel,
+      ...(overGate ? { clampedEffort: overGate.clampEffort } : {}),
       attemptCount: count
     };
   }
@@ -972,7 +1040,9 @@ export function evaluateAntigravitySubagentCall(
   return resolveChoiceElevation({
     approvalStore,
     sessionId,
-    requestedModel,
+    requestedModel: markerModel,
+    // The call is re-invoked with the model it was written with; the marker and the approval carry the tier and effort form.
+    displayModel: requestedModel,
     typeName,
     sessionCeilingTier,
     isOrchestrator,
@@ -980,7 +1050,8 @@ export function evaluateAntigravitySubagentCall(
     transcriptPath: input.transcriptPath,
     promptHash,
     signature,
-    config: deps.config
+    config: deps.config,
+    ...(overGate ? { costNote: gateNote.costNote } : {})
   });
 }
 
@@ -1605,7 +1676,8 @@ export function commitAntigravityTurn(
 
 export type AntigravityModelUsedSource = ModelUsedSource;
 
-export type AntigravityTelemetryInput =
+export type AntigravityTelemetryInput = AntigravityTelemetryMode &
+  (
   | {
       kind: 'pre_invocation';
       conversationId?: string | null;
@@ -1635,6 +1707,10 @@ export type AntigravityTelemetryInput =
       turnState?: AntigravityTurnState | null;
       decision: AntigravityHookDecision;
       downgradeLog?: Record<string, unknown>;
+      /** What the cost gate did (2.3.19), see `antigravityCostGateState`; absent in a mode without decisions. */
+      costGate?: CostGateState;
+      /** What the cost gate would have done, in shadow mode (2.3.19); absent in enforce and in a mode without decisions. */
+      costGateShadow?: CostGateShadowState;
       quotaStrategy?: string;
       /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
       callKey?: string;
@@ -1661,7 +1737,11 @@ export type AntigravityTelemetryInput =
       requestedModel?: string | null;
       servedModel?: string | null;
       backfilled?: boolean;
-    };
+    }
+  );
+
+/** The `mode` every Antigravity telemetry row carries (2.3.19): the mode the hook acted under (`on` or `on-demand`; off writes nothing). */
+type AntigravityTelemetryMode = { mode?: string | null };
 
 /** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
 function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
@@ -1669,7 +1749,17 @@ function turnModelField(sessionModel: string | null, turnModel: string | null | 
   return t.length > 0 && t !== sessionModel ? { turnModel: t } : {};
 }
 
+/**
+ * The telemetry row of an Antigravity hook event. Every row carries `mode` (2.3.19): `on` or `on-demand`, the mode the hook acted
+ * under (`params.mode`, through `telemetryMode`); a row for any other value (off writes nothing) carries none.
+ */
 export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput): JevTelemetryEvent {
+  const mode = telemetryMode(params.mode);
+  const event = buildAntigravityEventBody(params);
+  return mode ? { ...event, mode } : event;
+}
+
+function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
 
   if (params.kind === 'pre_invocation') {
@@ -1794,6 +1884,12 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
     ...(downgrade ? { downgrade } : {}),
     // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
     ...antigravityCostFields(requestedModel, sessionModel),
+    // What a suggested or applied downgrade saves (2.3.19), priced by the served models; absent on a row without one.
+    ...(downgrade === 'asked' || downgrade === 'applied'
+      ? { costSaving: antigravityDowngradeSaving(requestedModel, params.downgradeLog?.downgrade_to, sessionModel) }
+      : {}),
+    ...(params.costGate ? { cost_gate: params.costGate } : {}),
+    ...(params.costGateShadow ? { cost_gate_shadow: params.costGateShadow } : {}),
     ...(quotaStrategy ? { quotaStrategy } : {})
   };
 }
@@ -1825,4 +1921,56 @@ export function pendingCallFromEvent(ev: JevTelemetryEvent, callKey: string, at:
     sessionModel: s(ev.sessionModel) ?? null,
     sessionModelSource: s(ev.sessionModelSource) ?? null
   };
+}
+
+/**
+ * The `cost_gate` value of an `invoke_subagent` row (2.3.19), from the decision the guard reached: `pass` (the call costs no more
+ * than the session's, or the user's own words let it through), `denied` (held: a deny or the dialog's ask), `approved` (it went
+ * ahead on a covering approval), `clamped` (the call was lowered to fit) or `fallback` (the cost could not be computed, so the
+ * model ceiling by rank decided). Pure and recomputed from the same inputs the guard used, so the decision object itself stays
+ * what it was.
+ */
+export function antigravityCostGateState(
+  input: AntigravityHookInput,
+  decision: Pick<AntigravityHookDecision, 'decision' | 'elevation'>,
+  deps: { sessionModel?: string; sessionOrchestrator?: boolean }
+): CostGateState {
+  const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
+  const orchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
+  const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, orchestrator));
+  const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
+  // No model of its own: the call runs on the session's, which is exactly what it is held to.
+  if (!isExplicit || !requestedModel) return 'pass';
+  const gate = antigravityCostGate(requestedModel, ceilingTier, sessionModel);
+  if (gate.kind === 'fallback') return 'fallback';
+  if (gate.kind === 'pass') return 'pass';
+  if (decision.elevation === 'approved') return 'approved';
+  if (decision.elevation === 'clamped') return 'clamped';
+  if (decision.elevation === 'instructed') return 'pass';
+  return decision.decision === 'pass' || decision.decision === 'allow' ? 'pass' : 'denied';
+}
+
+/**
+ * The `cost_gate_shadow` value of an `invoke_subagent` row in shadow mode (2.3.19): what the cost gate would have done with the
+ * call, whatever the rank ceiling decided. `pass` (it costs no more than the session's, or the user's own words let it through),
+ * `denied`, `clamped` (under `JEV_ELEVATION=clamp`) or `fallback` (the cost could not be computed). Pure.
+ */
+export function antigravityCostGateShadowState(
+  input: AntigravityHookInput,
+  deps: { sessionModel?: string; sessionOrchestrator?: boolean; elevationMode?: 'choice' | 'dialog' | 'clamp' }
+): CostGateShadowState {
+  const sessionModel = deps.sessionModel || input.modelName || DEFAULT_ANTIGRAVITY_SESSION_MODEL;
+  const orchestrator = deps.sessionOrchestrator === true || isOrchestratorModel(sessionModel);
+  const ceilingTier = rankToTierName(subagentCeilingRank(sessionModel, orchestrator));
+  const { requestedModel, isExplicit } = extractSubagentModel(input.toolCall?.args);
+  if (!isExplicit || !requestedModel) return 'pass';
+  const named = isExplicitProOverride(input.lastUserInput, requestedModel);
+  const gate = antigravityCostGate(requestedModel, ceilingTier, sessionModel, named ? { model: requestedModel } : {});
+  const elevation = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
+  return shadowStateOf(gate, elevation);
+}
+
+/** How the cost gate decides for this call: `JEV_COST_GATE`, else the configured mode, else `shadow`. */
+export function costGateModeOf(deps: { costGateMode?: CostGateMode }): CostGateMode {
+  return parseCostGateMode(process.env.JEV_COST_GATE) ?? deps.costGateMode ?? DEFAULT_COST_GATE_MODE;
 }

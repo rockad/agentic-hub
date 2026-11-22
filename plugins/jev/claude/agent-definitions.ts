@@ -25,6 +25,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readRegularFile } from './safe-read.js';
+import type { CostEffort } from '../src/core/cost-estimate.js';
+import { EFFORT_ORDER } from '../src/core/cost-gate.js';
 
 /** Settings and plugin registry files are small JSON; anything bigger is not read. */
 const MAX_CONFIG_FILE_BYTES = 4 * 1024 * 1024;
@@ -126,9 +128,9 @@ export function relativeEffortLevel(effort: unknown, base: string | null | undef
   return EFFORT_ASK.has(next) ? (next as EffortLevel) : null;
 }
 
-/** The two effort levels above the interim threshold, lowest first: an approval of `max` covers `xhigh`, never the other way round. */
-export type EffortLevel = 'xhigh' | 'max';
-export const EFFORT_LEVELS: readonly EffortLevel[] = ['xhigh', 'max'];
+/** The effort levels, lowest first (2.3.19: all five, the cost gate can ask about any of them): an approval of `max` covers `xhigh`, never the other way round. */
+export type EffortLevel = CostEffort;
+export const EFFORT_LEVELS: readonly EffortLevel[] = EFFORT_ORDER;
 
 /** Does an approval (or an instruction) for `approved` cover a request at `requested`? */
 export function effortCovers(approved: unknown, requested: EffortLevel): boolean {

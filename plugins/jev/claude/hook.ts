@@ -1261,9 +1261,9 @@ function evaluateWorkflowCall(a: {
       workflow_scripts: d.scripts.map((s) => ({ label: s.label, sha256: s.sha256, bytes: s.bytes }))
     };
     // Why a held script is held (2.3.20), from the path that held it. A model: `cost` when the enforced cost gate held every elevation
-    // site, else the rank ceiling (`tier`). An effort: `cost` when the gate held every effort site, else the interim rule. What the analysis
+    // site and the rank ceiling holds none of them (`tierHeld`: a stronger model than the session's, as on the Agent path), else `tier`. An effort: `cost` when the gate held every effort site, else the interim rule. What the analysis
     // could not establish is `unverifiable`; the dialog reports the first of unverifiable, model, effort.
-    const modelCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate) ? 'cost' : 'tier';
+    const modelCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate && !s.tierHeld) ? 'cost' : 'tier';
     const effortCause: DenyCause = d.efforts.length > 0 && d.efforts.every((s) => s.gate) ? 'cost' : 'effort-interim';
     const dialogCause: DenyCause =
       d.unverifiable.length > 0 ? 'unverifiable' : d.elevations.length > 0 ? modelCause : d.efforts.length > 0 ? effortCause : 'unverifiable';

@@ -129,6 +129,8 @@ export interface CallSite {
   /** On an `elevation` site the cost gate found (2.3.19): the verdict with the costs it compared, and the call's effort. */
   gate?: Extract<CostGate, { kind: 'over' }>;
   effort?: CostEffort;
+  /** On a gated `elevation` site (2.3.20): the model ceiling by rank holds the call too (a full id above the session's ceiling), so the cost gate did not hold it alone and the telemetry cause is `tier` / `orchestrator`, not `cost`. */
+  tierHeld?: boolean;
 }
 
 export interface WorkflowDecision {
@@ -660,6 +662,7 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
         tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
         rank,
         gate,
+        ...(tierAbove ? { tierHeld: true } : {}),
         // An enum value carries its effort in what it is (see antigravityMarkerModel): no effort suffix on its marker or its approval.
         effort: subagentEnumOf(m) === null ? gate.callEffort : undefined
       });
@@ -1085,10 +1088,10 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
 
     const elevationMode = deps.elevationMode ?? antigravityElevationMode();
     // Why a held script is held (2.3.20), from the path that held it: a script the analysis cannot verify is `unverifiable`; otherwise
-    // the elevations are `cost` when the enforced cost gate held every one of them, else the rank ceiling (`orchestrator` for the
-    // Orchestrator's flash ceiling, `tier` otherwise).
+    // the elevations are `cost` when the enforced cost gate held every one of them and the model ceiling by rank holds none (`tierHeld`,
+    // as `heldBy` of a single call), else the rank ceiling (`orchestrator` for the Orchestrator's flash ceiling, `tier` otherwise).
     const unverifiable = d.unverifiable.length > 0 || !d.highest || !d.highest.tier;
-    const elevationCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate) ? 'cost' : sessionOrchestrator ? 'orchestrator' : 'tier';
+    const elevationCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate && !s.tierHeld) ? 'cost' : sessionOrchestrator ? 'orchestrator' : 'tier';
     const heldBy: DenyCause = unverifiable ? 'unverifiable' : elevationCause;
     // Dialog mode keeps its dialog for everything the guard found. Choice and clamp never ask (a harness that auto-approves
     // would approve it unseen): a script cannot be clamped, so an elevation takes the choice flow in both, and anything the

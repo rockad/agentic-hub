@@ -47,7 +47,7 @@ export function callKeyField(v: unknown): { callKey?: string } {
  *
  * - `requested`: the call, or its agent definition, named a literal effort (Antigravity: the model it asked for fixes one, see below).
  * - `inherited`: it named none and the session's effort is known, so the session's applies.
- * - `default`: it named none and the session's effort is not known either, so a default (`medium`) was used for the cost fields.
+ * - `default`: it named none and the session's effort is not known either, so a default was used for the cost fields: `medium`, except on Claude Code under an assumed session model (none known), which is assumed to run at `high` (ASSUMED_CLAUDE_SESSION_EFFORT) and whose cost fields are computed at that level.
  * - `clamped`: the cost-gate clamp lowered the effort the call asked for (`clamped_effort` says the level it runs at).
  */
 export type EffortSource = 'requested' | 'default' | 'inherited' | 'clamped';

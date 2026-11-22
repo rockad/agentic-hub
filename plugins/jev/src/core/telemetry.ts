@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { fetchWithTimeout } from './client.js';
 import { PRIVATE_FILE_MODE, privateDir, privateFile, jevHomeDir } from './private-fs.js';
 import { telemetryMode, type TelemetryMode } from './mode-policy.js';
-import { readJevModeSync, type JevHarness } from './config.js';
+import { detectActiveHarness, readJevModeSync, type JevHarness } from './config.js';
 
 /** Directory of the Antigravity telemetry files, resolved from HOME at call time. */
 export function telemetryDir(): string {
@@ -137,13 +137,17 @@ function harnessOfRow(label: unknown): JevHarness {
 }
 
 /**
- * The `mode` of a row written by an MCP tool (2.3.20): `on` or `on-demand`, read through mode-policy for the harness the row names.
+ * The `mode` of a row written by an MCP tool (2.3.20): `on` or `on-demand`, read through mode-policy for the harness the row names
+ * (`harness: 'claude-code'`, as `jev_dispatch` writes it) or, when the row names none, for the harness the MCP server runs under
+ * (`detectActiveHarness`, as `jev_set_mode` / `jev_get_mode` do): most tool rows carry no `harness`, and reading them as
+ * Antigravity would give a Claude Code call the Antigravity mode.
  * A row that already says the mode in effect (`jev_set_mode`: the mode after the change; `jev_get_mode`) is normalised the same way.
  * `off` is never written (the MCP tools are unavailable then; a row that is still written carries no `mode`).
  */
 function toolRowMode(entry: Record<string, unknown>): TelemetryMode | undefined {
   try {
-    return telemetryMode('mode' in entry ? (entry.mode as string) : readJevModeSync(harnessOfRow(entry.harness)));
+    const named = typeof entry.harness === 'string' && entry.harness.trim() !== '';
+    return telemetryMode('mode' in entry ? (entry.mode as string) : readJevModeSync(named ? harnessOfRow(entry.harness) : detectActiveHarness()));
   } catch {
     return undefined;
   }

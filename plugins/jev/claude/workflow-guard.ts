@@ -157,6 +157,8 @@ export interface CallSite {
   effort?: EffortLevel;
   /** Set on an `elevation` or `effort` site the cost gate found (2.3.19): the verdict, with the costs it compared. */
   gate?: OverGate;
+  /** Set on a gated `elevation` site (2.3.20): the rank ceiling holds the call too (a candidate model is stronger than the session's), so the cost gate did not hold it alone and the telemetry cause is `tier`, not `cost`. */
+  tierHeld?: boolean;
 }
 
 /** The pure result: what the hook turns into a hook response. */
@@ -1148,7 +1150,7 @@ function gateCall(
       worst.e?.kind === 'elevating'
         ? worst.e
         : { kind: 'elevating', requested: worst.model, sessionModel, sessionAlias: modelAlias(sessionModel)! };
-    return [{ ...at, reason, kind: 'elevation', elevation: e, gate: worst.gate }];
+    return [{ ...at, reason, kind: 'elevation', elevation: e, gate: worst.gate, ...(tier ? { tierHeld: true } : {}) }];
   }
   return [{ ...at, reason, kind: 'effort', effort: worst.gate.callEffort, gate: worst.gate }];
 }

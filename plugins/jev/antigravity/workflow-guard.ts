@@ -98,6 +98,7 @@ import {
 } from './logic.js';
 import type { ApprovalStore } from './approvals.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
+import type { DenyCause } from '../src/core/deny-cause.js';
 import { safeSessionId } from '../src/core/governance.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 
@@ -128,6 +129,8 @@ export interface CallSite {
   /** On an `elevation` site the cost gate found (2.3.19): the verdict with the costs it compared, and the call's effort. */
   gate?: Extract<CostGate, { kind: 'over' }>;
   effort?: CostEffort;
+  /** On a gated `elevation` site (2.3.20): the model ceiling by rank holds the call too (a full id above the session's ceiling), so the cost gate did not hold it alone and the telemetry cause is `tier` / `orchestrator`, not `cost`. */
+  tierHeld?: boolean;
 }
 
 export interface WorkflowDecision {
@@ -659,6 +662,7 @@ export function analyzePythonScript(script: string, label: string, ctx: Analysis
         tier: rankToTierName(rank) as 'flash_lite' | 'flash' | 'pro',
         rank,
         gate,
+        ...(tierAbove ? { tierHeld: true } : {}),
         // An enum value carries its effort in what it is (see antigravityMarkerModel): no effort suffix on its marker or its approval.
         effort: subagentEnumOf(m) === null ? gate.callEffort : undefined
       });
@@ -1083,6 +1087,12 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     }
 
     const elevationMode = deps.elevationMode ?? antigravityElevationMode();
+    // Why a held script is held (2.3.20), from the path that held it: a script the analysis cannot verify is `unverifiable`; otherwise
+    // the elevations are `cost` when the enforced cost gate held every one of them and the model ceiling by rank holds none (`tierHeld`,
+    // as `heldBy` of a single call), else the rank ceiling (`orchestrator` for the Orchestrator's flash ceiling, `tier` otherwise).
+    const unverifiable = d.unverifiable.length > 0 || !d.highest || !d.highest.tier;
+    const elevationCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate && !s.tierHeld) ? 'cost' : sessionOrchestrator ? 'orchestrator' : 'tier';
+    const heldBy: DenyCause = unverifiable ? 'unverifiable' : elevationCause;
     // Dialog mode keeps its dialog for everything the guard found. Choice and clamp never ask (a harness that auto-approves
     // would approve it unseen): a script cannot be clamped, so an elevation takes the choice flow in both, and anything the
     // analysis cannot prove is denied with what to fix.
@@ -1093,6 +1103,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
         {
           decision: 'ask',
           reason: workflowDialogReason(d, ceilingTier, d.scripts),
+          cause: heldBy,
           elevation: 'asked',
           ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
         },
@@ -1102,7 +1113,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
 
     const top = d.highest;
     if (d.unverifiable.length > 0 || !top || !top.tier) {
-      return finish('denied-unverifiable', { decision: 'deny', reason: workflowUnverifiableReason(d, sessionModel, d.scripts), elevation: 'denied' }, { workflow_reasons: d.sites.length });
+      return finish('denied-unverifiable', { decision: 'deny', reason: workflowUnverifiableReason(d, sessionModel, d.scripts), cause: 'unverifiable', elevation: 'denied' }, { workflow_reasons: d.sites.length });
     }
 
     // The tier name stands for the model in the marker and in the approval store: the marker regex takes [a-z0-9_-] only,
@@ -1139,6 +1150,7 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
       promptHash,
       signature: workflowSignature(d.scripts),
       config: deps.config,
+      cause: elevationCause,
       reasonOverride: (attempt) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt, { model: markerModel, ...(worstGate ? { costNote: costComparison(worstGate) } : {}) })
     });
     if (choice.decision === 'allow') pin('allow');

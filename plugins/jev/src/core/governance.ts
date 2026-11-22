@@ -20,6 +20,7 @@ import { safeSessionId } from '../../claude/logic.js';
 export { safeSessionId };
 import { readRegularFile } from '../../claude/safe-read.js';
 import { modelFamilyOf, modelRankOf, type ModelFamily } from './model-tier.js';
+import { quotaPoolOfModel, servedQuotaPool, type QuotaPoolName } from './served-model.js';
 import {
   hasOrchestratorMarker,
   readOrchestratorMarker,
@@ -693,7 +694,7 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
 
   const isOrchestrator = recordOrchestrator || isOrchestratorModel(activeModel);
   // Neon and Argon both draw the Argon weekly bucket (Neon is pro-class and uses the argon variant pool).
-  const isArgonActive = Boolean(activeModel && /argon|neon/i.test(activeModel));
+  const isArgonActive = sessionDrawsArgonBuckets(activeModel);
   const isHydrogenActive = Boolean(activeModel && /hydrogen/i.test(activeModel));
   const argonWeeklyKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /week|7d/i.test(k)) ?? 'gemini-argon-wtu-weekly';
   const argonFiveKey = Object.keys(buckets).find((k) => /argon/i.test(k) && /5h/i.test(k));
@@ -831,7 +832,10 @@ export async function readQuotaView(opts?: { conversationId?: string; overrideSe
   }
 
   // The selected model decides which pool is spent: non-Gemini models draw on the 3p buckets.
-  const isGeminiActive = !activeModel || /gemini|argon|neon|carbon|hydrogen/i.test(activeModel) || p3Min === null;
+  // The pool the SERVED model draws (2.3.20, `quotaPoolOfModel`, verified on Antigravity 1.5.14): Gemini and the Argon-pool families
+  // (Argon, Neon, Carbon, Opus) are read from the Gemini-side buckets, Sonnet and any other Claude or non-Gemini id from the 3p buckets.
+  // An Opus session used to be read as 3p; measured, an Opus turn draws `gemini-argon-wtu-weekly`, like Argon and Neon.
+  const isGeminiActive = !activeModel || quotaPoolOfModel(activeModel) !== '3p' || p3Min === null;
   const active = isGeminiActive
     ? { pool: 'gemini' as const, five_hour: geminiFive, weekly: geminiWeekly, min_remaining: geminiMin ?? minRemaining, strategy: geminiStrategy }
     : { pool: '3p' as const, five_hour: p3Five, weekly: p3Weekly, min_remaining: p3Min, strategy: p3Strategy };
@@ -955,15 +959,86 @@ export function comparePoolSeverity(a: QuotaPoolView, b: QuotaPoolView): QuotaPo
   return remA <= remB ? a : b;
 }
 
-export function poolForTier(view: QuotaView, tier: string): QuotaPoolView {
+/** A pool of the quota view built from the raw buckets: the Gemini pool, the Argon frontier pool, or the 3p pool. Null when it has no bucket at all. */
+function bucketPoolView(view: QuotaView, name: QuotaPoolName): QuotaPoolView | null {
+  const b = view.buckets;
+  const key = (re: RegExp, window: RegExp): string | undefined => Object.keys(b).find((k) => re.test(k) && window.test(k));
+  const frac = (k: string | undefined): number | null => (k !== undefined ? (b[k]?.effective_remaining_fraction ?? null) : null);
+  let five: number | null;
+  let weekly: number | null;
+  if (name === 'argon') {
+    five = frac(key(/argon/i, /5h/i));
+    weekly = frac(b['gemini-argon-wtu-weekly'] ? 'gemini-argon-wtu-weekly' : key(/argon/i, /week|7d/i));
+  } else if (name === '3p') {
+    five = frac('3p-5h' in b ? '3p-5h' : undefined);
+    weekly = frac('3p-weekly' in b ? '3p-weekly' : undefined);
+  } else {
+    five = frac('gemini-5h' in b ? 'gemini-5h' : undefined);
+    weekly = frac('gemini-weekly' in b ? 'gemini-weekly' : undefined);
+  }
+  if (five === null && weekly === null) return null;
+  const cands = [five, weekly].filter((x): x is number => typeof x === 'number');
+  return {
+    pool: name === 'argon' ? 'frontier' : name,
+    five_hour: five,
+    weekly,
+    min_remaining: cands.length ? Math.min(...cands) : null,
+    strategy: evaluatePoolStrategy(five, weekly, view.thresholds)
+  };
+}
+
+/**
+ * True when a session on this model reads the Argon buckets (`gemini-argon-wtu-weekly`) for its own pool: the Argon, Neon and Opus
+ * families (`quotaPoolOfModel` says `argon`). Carbon is in the same pool by name but its frontier bucket is `gemini-weekly` (see
+ * the Orchestrator variant above), so a Carbon session reads the Gemini buckets.
+ */
+export function sessionDrawsArgonBuckets(model: string | null | undefined): boolean {
+  return Boolean(model && quotaPoolOfModel(model) === 'argon' && !/carbon/i.test(model));
+}
+
+/**
+ * The pool a view's own session draws, by name (what `view.active` is): `3p` for a non-Gemini active pool, `argon` for an Argon, Neon or
+ * Opus session (the quota view reads the Argon buckets for it), else `gemini`.
+ */
+function sessionPoolName(view: QuotaView): QuotaPoolName {
+  if (view.active.pool === '3p') return '3p';
+  return sessionDrawsArgonBuckets(view.active_model) ? 'argon' : 'gemini';
+}
+
+/**
+ * The quota pool an `invoke_subagent` call is expected to draw (2.3.20): the pool of the model it is SERVED on, not of the name of the
+ * enum value (`pro` is served on Gemini 4 Hydrogen, so it draws Gemini, not Argon). See `servedQuotaPool`. `parentModel` is the
+ * session model an `inherit` call is served on (default: the view's active model).
+ */
+export function quotaPoolOfCall(view: QuotaView | undefined, requested: unknown, parentModel?: unknown): QuotaPoolName {
+  return servedQuotaPool(requested, parentModel ?? view?.active_model);
+}
+
+/**
+ * The pool view a call is judged against.
+ *
+ * - Orchestrator view (`view.pools`): Gemini draws the execution pool; Argon (planner families, Opus) draws the more constrained of the
+ *   execution and frontier pools (both are spent); 3p draws the 3p buckets (the execution pool when there are none).
+ * - Any other view: the session's own pool when the call draws the same one, else the named pool built from the buckets (the session's
+ *   pool when the buckets hold none).
+ *
+ * `tier` is a tier name (`flash`, `pro`, `judgement`, from `jev_dispatch`), a `Model` enum value, a full model id or `inherit`.
+ */
+export function poolForTier(view: QuotaView, tier: string, parentModel?: unknown): QuotaPoolView {
+  const name = quotaPoolOfCall(view, (tier || '').trim(), parentModel);
   if (view.pools) {
-    const t = (tier || '').toLowerCase().trim();
-    if (t === 'pro' || t === 'judgement' || modelTierRank(t) >= 3) {
-      return comparePoolSeverity(view.pools.execution, view.pools.frontier);
-    }
+    if (name === 'argon') return comparePoolSeverity(view.pools.execution, view.pools.frontier);
+    if (name === '3p') return bucketPoolView(view, '3p') ?? view.pools.execution;
     return view.pools.execution;
   }
-  return view.active;
+  if (name === sessionPoolName(view)) return view.active;
+  if (name === 'argon') {
+    const argon = bucketPoolView(view, 'argon');
+    const gemini = bucketPoolView(view, 'gemini');
+    if (argon && gemini) return comparePoolSeverity(gemini, argon);
+    return argon ?? gemini ?? view.active;
+  }
+  return bucketPoolView(view, name) ?? view.active;
 }
 
 /** The rank (0 free, 1 flash_lite, 2 flash, 3 pro) of a tier name, alias or model id: `modelTierOf` (src/core/model-tier.ts), the one tier table. An id nothing places ranks 2. */

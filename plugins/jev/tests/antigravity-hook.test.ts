@@ -1692,6 +1692,7 @@ describe('Antigravity telemetry helpers (logic)', () => {
         childConversationId: 'child-2',
         requestedModel: 'flash',
         servedModel: 'gemini-3.8-flash-low',
+        quotaPool: 'gemini',
         sessionModel: null,
         sessionModelSource: null,
         backfilled: true

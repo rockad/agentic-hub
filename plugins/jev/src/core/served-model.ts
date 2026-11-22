@@ -174,3 +174,44 @@ export function servedQuestionPhrase(requested: unknown): string {
   const row = SERVED_BY_ENUM[e];
   return `Model "${e}" is served on ${servedModelLabel(row.servedModel)}, ${classOf(modelTierOf(row.servedModel))}`;
 }
+
+/**
+ * The Antigravity quota pool a call draws (2.3.20), as the telemetry says it (`quotaPool`):
+ *
+ * - `gemini`: the Gemini buckets (`gemini-5h`, `gemini-weekly`). Every `invoke_subagent` enum value is served on a Gemini model
+ *   (`flash_lite` on Flash-Lite, `flash` and `pro` on Gemini 4 Hydrogen), so all three draw the Gemini pool, `pro` included.
+ * - `argon`: the frontier pool. The Gemini 4 planner families (Argon, Neon, Carbon) draw the frontier bucket and the Gemini pool; so does
+ *   an Opus planner: measured on Antigravity 1.5.14, an Opus planner turn moved `gemini-argon-wtu-weekly`, so `claude-opus-*` is
+ *   held to the Argon pool. The Carbon variant's frontier bucket is `gemini-weekly` (see `readQuotaView`); the name stays `argon`.
+ * - `3p`: the third-party buckets (`3p-5h`, `3p-weekly`): every other Claude model (`claude-sonnet-*`, `claude-haiku-*`) and any other
+ *   non-Gemini id, as `readQuotaView` already treats a non-Gemini session model. No measurement contradicts it.
+ */
+export type QuotaPoolName = 'gemini' | 'argon' | '3p';
+
+/**
+ * The pool a model id draws. Pure. Null for something that is not a model id (empty, `inherit`). An enum value is placed by the model it
+ * is served on. A bare tier word that is not an enum value (`opus`, `argon`, `neon`, `carbon`, `fable`, `judgement`) is a frontier
+ * model and draws the Argon pool; `sonnet` and `haiku` draw 3p.
+ */
+export function quotaPoolOfModel(model: unknown): QuotaPoolName | null {
+  const m = typeof model === 'string' ? model.trim().toLowerCase() : '';
+  if (m === '' || m === 'inherit') return null;
+  const e = subagentEnumOf(m);
+  if (e !== null) return quotaPoolOfModel(SERVED_BY_ENUM[e].servedModel);
+  if (m === 'judgement') return 'argon';
+  if (/(?:^|[^a-z])(?:argon|neon|carbon)(?![a-z])/.test(m)) return 'argon';
+  if (/opus/.test(m)) return 'argon';
+  if (/fable/.test(m)) return 'argon';
+  if (/gemini|hydrogen|flash|free|openrouter/.test(m)) return 'gemini';
+  return '3p';
+}
+
+/**
+ * Pure: the pool an `invoke_subagent` call is expected to draw, from the model it names and the parent's: an enum value by the model it
+ * is served on, a full id by its family, `inherit` (or nothing) the parent's pool. A parent whose model is not known is a Gemini
+ * parent (Antigravity's own default).
+ */
+export function servedQuotaPool(requested: unknown, parentModel: unknown): QuotaPoolName {
+  if (isInherit(requested)) return quotaPoolOfModel(parentModel) ?? 'gemini';
+  return quotaPoolOfModel(requested) ?? 'gemini';
+}

@@ -154,6 +154,8 @@ import {
   type TurnState,
   type UserIntent
 } from './logic.js';
+import { asDenyCause, causeFields, type DenyCause } from '../src/core/deny-cause.js';
+import { effortFields, toolUseIdField, type EffortFields } from '../src/core/join-keys.js';
 import { COST_WEIGHTS_VERSION, costEffortOf, costFields, downgradeCostSaving, type CostEffort, type CostFields } from '../src/core/cost-estimate.js';
 import {
   DEFAULT_COST_GATE_MODE,
@@ -483,6 +485,28 @@ function agentCostGate(
   );
 }
 
+/**
+ * The effort fields of an Agent/Task `agent_call` row (2.3.20): `effortSource` and, when a literal level was named, `effortRequested`
+ * (see `effortFields`). The literal is the call's own `effort`, else its agent definition's (the same one the cost fields use);
+ * `sessionEffort` is what the hook input reported for the session (not an assumed fallback), so an unreported one is `default`.
+ * `clampedFrom` is the effort the clamp lowered. A Workflow has no effort of its own (the agents its script launches choose theirs),
+ * so its row carries neither field.
+ */
+function agentEffortFields(
+  tool: string,
+  call: AgentCall & Record<string, unknown>,
+  resolved: ResolvedAgentModel | null,
+  sessionEffort: unknown,
+  clampedFrom?: unknown
+): Partial<EffortFields> {
+  if (tool === 'Workflow') return {};
+  return effortFields({
+    named: costEffortOf(call.effort) ?? costEffortOf(resolved?.definitionEffort),
+    sessionKnown: costEffortOf(readEffort(sessionEffort)) !== null,
+    clampedFrom
+  });
+}
+
 /** The `mode` field of a row (2.3.19): the mode the hook acted under, from the same value `modeBehaviour` was computed from; nothing for off. */
 function modeField(mode: string | undefined): { mode?: 'on' | 'on-demand' } {
   const m = telemetryMode(mode);
@@ -529,6 +553,8 @@ function recordAgentCallWithoutDecision(input: HookInput, deps: HookDeps, tool: 
     sessionModel,
     session_model_source: sessionModelSource,
     ...(resolved ? { model_source: resolved.source, resolved_model: resolved.model } : {}),
+    ...toolUseIdField(input.tool_use_id),
+    ...agentEffortFields(tool, call, resolved, input.effort),
     ...agentCostFields(tool, call, resolved, sessionModel, readEffort(input.effort))
   });
 }
@@ -708,6 +734,11 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   const overGate: OverGate | null = costGate?.kind === 'over' ? costGate : null;
   const modelGate = overGate?.cause === 'model' ? overGate : null;
   const effortGate = overGate?.cause === 'effort' ? overGate : null;
+  // Why a model or effort question holds the call (2.3.20), by the path that decided: a stronger model than the session's is `tier`
+  // (the rank ceiling stands before the gate, so it wins even when the gate is over too); a call the enforced gate alone held is `cost`.
+  // An effort is `cost` with the gate, else the interim xhigh / max rule (`effort-interim`).
+  const modelCause: DenyCause = rawElevation?.kind !== 'elevating' && modelGate ? 'cost' : 'tier';
+  const effortCause: DenyCause = effortGate ? 'cost' : 'effort-interim';
   // With the gate, the model question is the gate's model cause (the call's model weighs more than what it is held to); an
   // instructed model stays `instructed`. Without it, the rank-based classification decides as before.
   let elevation: Elevation | null = rawElevation;
@@ -785,7 +816,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     const signature = callSignature(call as Record<string, unknown>);
     const count = sessionId ? safely(() => deps.approvals?.attempt(sessionId, promptKeyOf(), signature, nowMs, attemptWindowMs)) : undefined;
     attemptCount = typeof count === 'number' ? count : null;
-    verdict = { decision: 'deny', reason: elevationChoiceReason(e, call.subagent_type, attemptCount, modelGate ?? undefined) };
+    verdict = { decision: 'deny', reason: elevationChoiceReason(e, call.subagent_type, attemptCount, modelGate ?? undefined), cause: modelCause };
     elevationState = 'denied';
     approvalScope = null;
     dropAllowOutputs();
@@ -796,7 +827,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   // The deny of the effort choice flow.
   const denyEffortChoice = (found: { level: EffortLevel; reason: string }, nowMs: number): void => {
     attemptCount = denyAttempt('effort');
-    verdict = { decision: 'deny', reason: effortChoiceReason(found.level, found.reason, call.subagent_type, attemptCount, effortGate ?? undefined) };
+    verdict = { decision: 'deny', reason: effortChoiceReason(found.level, found.reason, call.subagent_type, attemptCount, effortGate ?? undefined), cause: effortCause };
     elevationState = 'denied';
     effortLog = { effort_level: found.level, effort_decision: 'denied' };
     dropAllowOutputs(); // a deny cannot share an output with an allow (the clamp's, the auto downgrade's)
@@ -818,12 +849,12 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   } else if (elevation?.kind === 'elevating' && elevation.unranked) {
     if (elevMode === 'dialog') {
       // A model nothing in Jev can rank: the choice flow's marker cannot name it, so only the dialog mode asks.
-      verdict = { decision: 'ask', reason: elevationAskReason(elevation) };
+      verdict = { decision: 'ask', reason: elevationAskReason(elevation), cause: 'unranked' };
       elevationState = 'asked';
     } else {
       // Choice and clamp never ask (a harness that auto-approves would approve the dialog unseen): the call is denied with what to change.
       attemptCount = denyAttempt('unranked');
-      verdict = { decision: 'deny', reason: elevationUnrankedDenyReason(elevation, attemptCount) };
+      verdict = { decision: 'deny', reason: elevationUnrankedDenyReason(elevation, attemptCount), cause: 'unranked' };
       elevationState = 'denied';
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'choice') {
@@ -844,7 +875,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       denyModelChoice(elevation, nowMs);
     }
   } else if (elevation?.kind === 'elevating' && elevMode === 'dialog') {
-    verdict = { decision: 'ask', reason: elevationAskReason(elevation, modelGate ?? undefined) };
+    verdict = { decision: 'ask', reason: elevationAskReason(elevation, modelGate ?? undefined), cause: modelCause };
     elevationState = 'asked';
   } else if (elevation?.kind === 'elevating') {
     if (aliasRemapped(elevation.sessionAlias, deps.env)) {
@@ -852,7 +883,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       // so there is nothing to clamp to. Never a dialog: the call is denied with what to change.
       clampSkipped = 'alias-remapped';
       attemptCount = denyAttempt('remapped');
-      verdict = { decision: 'deny', reason: elevationRemappedDenyReason(elevation, attemptCount) };
+      verdict = { decision: 'deny', reason: elevationRemappedDenyReason(elevation, attemptCount), cause: 'unranked' };
       elevationState = 'denied';
     } else {
       // Clamp: every elevating call, a repeat in the same prompt too, runs on the session model (allow + updatedInput).
@@ -881,11 +912,11 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
   let logReason: string | null = null;
   if (resolved?.unreadable && sessionModel) {
     if (elevMode === 'dialog') {
-      verdict = { decision: 'ask', reason: unreadableDefinitionReason(call.subagent_type, resolved.unreadable, sessionModel) };
+      verdict = { decision: 'ask', reason: unreadableDefinitionReason(call.subagent_type, resolved.unreadable, sessionModel), cause: 'definition' };
       elevationState = 'asked';
     } else {
       attemptCount = denyAttempt('unreadable');
-      verdict = { decision: 'deny', reason: unreadableDefinitionDenyReason(call.subagent_type, sessionModel, attemptCount) };
+      verdict = { decision: 'deny', reason: unreadableDefinitionDenyReason(call.subagent_type, sessionModel, attemptCount), cause: 'definition' };
       elevationState = 'denied';
     }
     logReason = 'definition unreadable or ambiguous'; // the reader's text quotes the definition: it is shown to the user (dialog), never logged
@@ -912,7 +943,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     if (finding) {
       const level = finding.level;
       if (elevMode === 'dialog') {
-        verdict = { decision: 'ask', reason: effortGate ? effortAskReason(effortGate) : `[jev] ${finding.reason} Yes runs it as it is. No cancels the call and stops the turn.` };
+        verdict = { decision: 'ask', reason: effortGate ? effortAskReason(effortGate) : `[jev] ${finding.reason} Yes runs it as it is. No cancels the call and stops the turn.`, cause: effortCause };
         elevationState = 'asked';
         effortAsk = true;
         clamp = null; // the dialog is stricter than a clamp: the clamp's allow must not hide it
@@ -1018,7 +1049,7 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
 
   // An assumed session model says so in the question the user is shown (the deny, or the dialog's text), once.
   if (sessionModelAssumed && verdict && !verdict.reason.includes(assumedNote)) {
-    verdict = { decision: verdict.decision, reason: `${verdict.reason} ${assumedNote}` };
+    verdict = { ...verdict, reason: `${verdict.reason} ${assumedNote}` };
   }
 
   // Pre-flight reminder: only when the dispatch check is available, for staged work (a Workflow, the third
@@ -1070,6 +1101,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
       verdict?.reason ??
       (clamp ? String(clamp.hookSpecificOutput.permissionDecisionReason) : downgradeOut ? String(downgradeOut.hookSpecificOutput.permissionDecisionReason) : null),
     ...(elevationState ? { elevation: elevationState } : {}),
+    // Why a deny or a dialog ask held the call (2.3.20): `denyCause` / `askCause`; an assumed session model with no other cause is `unknown-model`.
+    ...causeFields(verdict?.decision, verdict?.cause ?? (sessionModelAssumed ? 'unknown-model' : undefined)),
     // A dialog-mode `ask` while the permission mode approves without showing it: informational only, the decision is unchanged.
     ...(verdict?.decision === 'ask' && isAutoApprovePermissionMode(input.permission_mode) ? { auto_approve_warning: true } : {}),
     ...downgradeLog,
@@ -1081,6 +1114,16 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     ...(effortSession ? { effort_session: effortSession } : {}),
     // Telemetry only: an estimate of what the call requested (a denied call too); nothing reads it back.
     ...agentCostFields(tool, call, resolved, sessionModel, effortSession),
+    // The host's tool call id (2.3.20): the join to measured usage. A Workflow's id stands for the workflow as a whole.
+    ...toolUseIdField(input.tool_use_id),
+    // Where the effort came from (2.3.20); `clamped` when the clamp lowered it from what the call asked for.
+    ...agentEffortFields(
+      tool,
+      call,
+      resolved,
+      input.effort,
+      clamp && clampInfo?.effort && overGate && overGate.callEffort !== clampInfo.effort ? overGate.callEffort : undefined
+    ),
     ...(clampSkipped ? { clamp_skipped: clampSkipped } : {}),
     ...(approvalScope ? { approval_scope: approvalScope } : {}),
     ...(attemptCount !== null ? { elevation_attempt: attemptCount } : {}),
@@ -1217,6 +1260,13 @@ function evaluateWorkflowCall(a: {
       workflow_models: d.models.map((m) => clip(m)),
       workflow_scripts: d.scripts.map((s) => ({ label: s.label, sha256: s.sha256, bytes: s.bytes }))
     };
+    // Why a held script is held (2.3.20), from the path that held it. A model: `cost` when the enforced cost gate held every elevation
+    // site and the rank ceiling holds none of them (`tierHeld`: a stronger model than the session's, as on the Agent path), else `tier`. An effort: `cost` when the gate held every effort site, else the interim rule. What the analysis
+    // could not establish is `unverifiable`; the dialog reports the first of unverifiable, model, effort.
+    const modelCause: DenyCause = d.elevations.length > 0 && d.elevations.every((s) => s.gate && !s.tierHeld) ? 'cost' : 'tier';
+    const effortCause: DenyCause = d.efforts.length > 0 && d.efforts.every((s) => s.gate) ? 'cost' : 'effort-interim';
+    const dialogCause: DenyCause =
+      d.unverifiable.length > 0 ? 'unverifiable' : d.elevations.length > 0 ? modelCause : d.efforts.length > 0 ? effortCause : 'unverifiable';
     const pin = (decision: 'allow' | 'ask'): void => {
       if (deps.workflowPinDir && a.input.tool_use_id) writeWorkflowPin(deps.workflowPinDir, a.input.tool_use_id, sessionId, decision, d.scripts);
     };
@@ -1231,7 +1281,7 @@ function evaluateWorkflowCall(a: {
     }
     const dialog = (): WorkflowEvaluation => {
       pin('ask');
-      return finish('asked', { verdict: { decision: 'ask', reason: d.message }, elevationState: 'asked' }, { workflow_reasons: d.sites.length });
+      return finish('asked', { verdict: { decision: 'ask', reason: d.message, cause: dialogCause }, elevationState: 'asked' }, { workflow_reasons: d.sites.length });
     };
     // Dialog mode keeps its dialog for everything the guard found. Choice and clamp never ask (a harness that auto-approves
     // would approve it unseen): a script cannot be clamped, so an elevation takes the choice flow in both, and anything the
@@ -1258,7 +1308,7 @@ function evaluateWorkflowCall(a: {
     if (d.unverifiable.length > 0 || (!top && !topEffort)) {
       return finish(
         'denied-unverifiable',
-        { verdict: { decision: 'deny', reason: workflowUnverifiableReason(d, a.sessionModel) }, elevationState: 'denied' },
+        { verdict: { decision: 'deny', reason: workflowUnverifiableReason(d, a.sessionModel), cause: 'unverifiable' }, elevationState: 'denied' },
         { workflow_reasons: d.sites.length }
       );
     }
@@ -1278,7 +1328,7 @@ function evaluateWorkflowCall(a: {
       if (sessionId) safely(() => deps.approvals?.deny(sessionId, e.requested, nowMs, markerEffort ?? undefined));
       return finish(
         'denied',
-        { verdict: { decision: 'deny', reason: workflowChoiceReason(e, d.scripts, attemptCount, modelGateInfo) }, elevationState: 'denied', attemptCount },
+        { verdict: { decision: 'deny', reason: workflowChoiceReason(e, d.scripts, attemptCount, modelGateInfo), cause: modelCause }, elevationState: 'denied', attemptCount },
         { ...highest }
       );
     };
@@ -1290,7 +1340,7 @@ function evaluateWorkflowCall(a: {
       return finish(
         'denied',
         {
-          verdict: { decision: 'deny', reason: workflowEffortChoiceReason(level, d.highestEffortReason ?? '', d.scripts, attemptCount, d.effortCounts, effortGateInfo) },
+          verdict: { decision: 'deny', reason: workflowEffortChoiceReason(level, d.highestEffortReason ?? '', d.scripts, attemptCount, d.effortCounts, effortGateInfo), cause: effortCause },
           elevationState: 'denied',
           attemptCount
         },
@@ -1464,7 +1514,7 @@ async function evaluateDowngrade(a: {
     if (result === 'asked') return skip('already-asked');
     if (mode === 'ask') {
       log.downgrade = 'asked';
-      return done({ decision: 'deny', reason: downgradeReason(p, call.subagent_type, a.effort) });
+      return done({ decision: 'deny', reason: downgradeReason(p, call.subagent_type, a.effort), cause: 'downgrade' });
     }
     const out = applyDowngrade(call as Record<string, unknown>, p);
     if (!out) return skip('no-alias-option');
@@ -1888,6 +1938,8 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
     taskSummary: str(entry.subagent) ? `subagent: ${entry.subagent}` : str(entry.subagent_type) ? `subagent: ${entry.subagent_type}` : undefined,
     tierRecommended: str(entry.tier),
     turn: str(entry.turn),
+    // The host's tool call id (2.3.20): on the PreToolUse `agent_call` rows and the PostToolUse rows of the same tools.
+    ...toolUseIdField(entry.toolUseId),
     ...sessionModelFields(entry),
     ...(isPrompt
       ? // The prompt only advises: nothing is delegated yet, so there is no modelUsed (the old alias is gone).
@@ -1907,6 +1959,11 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
             : {}),
           modelRecommended: str(entry.recommended_model),
           ...(entry.hook === 'PreToolUse' && str(entry.decision) ? { decision: str(entry.decision) } : {}),
+          // The host's tool call id and where the effort came from (2.3.20).
+          ...(entry.hook === 'PreToolUse' && entry.event === 'agent_call' ? effortTelemetry(entry) : {}),
+          // Why a deny or a dialog ask held the call (2.3.20).
+          ...(entry.hook === 'PreToolUse' && asDenyCause(entry.denyCause) ? { denyCause: asDenyCause(entry.denyCause) } : {}),
+          ...(entry.hook === 'PreToolUse' && asDenyCause(entry.askCause) ? { askCause: asDenyCause(entry.askCause) } : {}),
           // The model the call asked for stays on a denied row, where modelUsed is unset.
           ...(entry.hook === 'PreToolUse' && str(entry.requested_model) ? { requestedModel: str(entry.requested_model) } : {}),
           // The combined cost estimate of an `agent_call` (telemetry only; see src/core/cost-estimate.ts).
@@ -1927,6 +1984,14 @@ export function telemetryEvent(entry: Record<string, unknown>): JevTelemetryEven
         }),
     quotaStrategy: str(entry.quota)
   };
+}
+
+/** `effortRequested` / `effortSource` of an `agent_call` entry, only when they are well formed. */
+function effortTelemetry(entry: Record<string, unknown>): { effortRequested?: string; effortSource?: string } {
+  const source = entry.effortSource;
+  if (source !== 'requested' && source !== 'default' && source !== 'inherited' && source !== 'clamped') return {};
+  const requested = costEffortOf(entry.effortRequested);
+  return { ...(requested ? { effortRequested: requested } : {}), effortSource: source };
 }
 
 /** `sessionModel` / `sessionModelSource` for a log entry that went through the session-model lookup (null when unknown). */

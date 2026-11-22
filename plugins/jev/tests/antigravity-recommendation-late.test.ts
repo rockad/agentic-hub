@@ -132,13 +132,13 @@ describe('agent_call rows carry the recommendation known when the call arrives (
     }
   });
 
-  it('every agent_call row carries a callKey: the tool call id, else the step index', () => {
+  it('an agent_call row carries callKey only when the host gave a tool call id (2.3.20); an id-less call has none', () => {
     seedTurn();
     runHook(call('flash_lite', 'call_x', 11));
     const noId = call('flash_lite', 'ignored', 12) as any;
     delete noId.toolCall.id;
     runHook(noId);
-    expect(agentCalls().map((r) => r.callKey)).toEqual(['call_x', 'step:12']);
+    expect(agentCalls().map((r) => r.callKey)).toEqual(['call_x', undefined]);
   });
 });
 

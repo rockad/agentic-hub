@@ -13,6 +13,7 @@ import {
   type QuotaView
 } from '../src/core/governance.js';
 import { isRecognisedSubagentModel } from '../src/core/model-tier.js';
+import { causeFields, type DenyCause } from '../src/core/deny-cause.js';
 import type { JevMode } from '../src/core/config.js';
 import { modeBehaviour, telemetryMode } from '../src/core/mode-policy.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
@@ -21,7 +22,8 @@ import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
-import { antigravityCostFields, antigravityDowngradeSaving } from '../src/core/cost-estimate.js';
+import { DEFAULT_COST_EFFORT, antigravityCostFields, antigravityDowngradeSaving, costEffortOf, effortFromModelId } from '../src/core/cost-estimate.js';
+import { antigravityEffortFields, callKeyField, joinToken, type EffortFields } from '../src/core/join-keys.js';
 import {
   DEFAULT_COST_GATE_MODE,
   antigravityClampModel,
@@ -34,7 +36,7 @@ import {
   type CostGateShadowState,
   type CostGateState
 } from '../src/core/cost-gate.js';
-import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, servedModelGuidance, servedQuestionPhrase, subagentEnumOf } from '../src/core/served-model.js';
+import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelExpected, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
 import type { ApprovalStore, ApprovalScope } from './approvals.js';
 
@@ -64,6 +66,8 @@ export type AntigravityHookDecision = {
    */
   decision: 'pass' | 'allow' | 'deny' | 'ask' | 'force_ask';
   reason?: string;
+  /** Why a `deny` or `ask` held the call (2.3.20); written to the rows as `denyCause` / `askCause`. Chosen by the code path, never by the reason text. */
+  cause?: DenyCause;
   permissionOverrides?: string[];
   overwrite?: Record<string, unknown>;
   elevation?: 'approved' | 'instructed' | 'denied' | 'asked' | 'clamped';
@@ -752,6 +756,8 @@ type ChoiceElevationContext = {
   reasonOverride?: (attempt: number) => string;
   /** The cost gate's sentence (2.3.19): what the call costs against the session's, written into the deny reason. */
   costNote?: string;
+  /** Why the call is held (2.3.20): `tier` (default), `cost` or `orchestrator`, `unverifiable` for a script. */
+  cause?: DenyCause;
   /** The model the call was written with, when `requestedModel` (the marker's and the approval's key) is its tier-and-effort form: the deny reason re-invokes with this one. */
   displayModel?: string;
 };
@@ -853,6 +859,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
   return {
     decision: 'deny',
     reason,
+    cause: ctx.cause ?? 'tier',
     elevation: 'denied',
     attemptCount: count,
     ...(pullFallback ? { pullFallback } : {})
@@ -892,13 +899,15 @@ export function evaluateAntigravitySubagentCall(
     if (reqLower.includes('free') || reqLower.includes('openrouter')) {
       return {
         decision: 'deny',
-        reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.'
+        reason: '[jev] Antigravity invoke_subagent does not support openrouter/free models directly. Use jev_execute_free or jev_agent_free for autonomous free-tier tasks.',
+        cause: 'unranked'
       };
     }
     if (!isRecognisedSubagentModel(reqLower)) {
       return {
         decision: 'deny',
-        reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`
+        reason: `[jev] Unrecognized model '${requestedModel}' on invoke_subagent. Choose one of: inherit, flash_lite, flash, pro.`,
+        cause: 'unranked'
       };
     }
   }
@@ -911,7 +920,8 @@ export function evaluateAntigravitySubagentCall(
     if (isOrchestrator) {
       return {
         decision: 'deny',
-        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON
+        reason: ORCHESTRATOR_EXPLICIT_MODEL_REASON,
+        cause: 'orchestrator'
       };
     }
     effectiveTier = rankToTierName(subagentCeilingRank(sessionModel, isOrchestrator));
@@ -921,7 +931,9 @@ export function evaluateAntigravitySubagentCall(
 
   // 3. Quota check (BEFORE any approval or override!)
   if (deps.quotaView) {
-    const pool = poolForTier(deps.quotaView, effectiveTier);
+    // The pool the call draws is the pool of the model it is SERVED on (2.3.20): an enum value by its served model (`pro` is served on
+    // Gemini 4 Hydrogen, so it draws the Gemini pool), a full id by its family, an omitted or `inherit` Model the parent's pool.
+    const pool = poolForTier(deps.quotaView, !isExplicit || !requestedModel ? 'inherit' : requestedModel, sessionModel);
     let poolLabel = 'Gemini';
     if (deps.quotaView.pools) {
       if (pool === deps.quotaView.pools.frontier) {
@@ -939,13 +951,15 @@ export function evaluateAntigravitySubagentCall(
     if (pool.strategy === 'free_only') {
       return {
         decision: 'deny',
-        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`
+        reason: `[jev] ${poolLabel} quota is critically low${pct}. All paid tiers ('${effectiveTier}') are blocked. Offload to openrouter/free via jev_execute_free or jev_agent_free.`,
+        cause: 'quota'
       };
     }
     if (pool.strategy === 'conserve' && modelTierRank(effectiveTier) > 1) {
       return {
         decision: 'deny',
-        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`
+        reason: `[jev] ${poolLabel} quota is in conserve mode${pct}. Subagents above flash_lite are blocked. Re-invoke with Model: "flash_lite" or use jev_execute_free.`,
+        cause: 'quota'
       };
     }
   }
@@ -986,6 +1000,9 @@ export function evaluateAntigravitySubagentCall(
   // What the marker and the approval carry: the tier and effort form when the gate is over, and for a tier ask the gate let through.
   const markerGate = overGate ?? (tierAbove && gate.kind === 'pass' ? gate : null);
   const gateNote = overGate ? { costNote: costComparison(overGate, (m) => String(m ?? 'the session model')) } : {};
+  // Why the call is held (2.3.20), from the path that held it: the enforced cost gate (and not the tier check, which stands before it
+  // for a full id) is `cost`; otherwise the rank ceiling, which under an Orchestrator conversation is the Orchestrator's flash ceiling.
+  const heldBy: DenyCause = overGate && !tierAbove ? 'cost' : isOrchestrator ? 'orchestrator' : 'tier';
 
   // Check explicit override in user prompt
   if (named && !overGate) {
@@ -1010,6 +1027,7 @@ export function evaluateAntigravitySubagentCall(
     return {
       decision: 'ask',
       reason: `[jev] Subagent '${typeName}' requested Model '${requestedModel}' above session ceiling '${sessionCeilingTier}'${overGate ? ` (it ${gateNote.costNote})` : ''}. Approve to run on ${requestedModel}, or cancel.${servedModelGuidance(requestedModel) ? ` ${servedModelGuidance(requestedModel)}` : ''}`,
+      cause: heldBy,
       elevation: 'asked',
       ...(detectAntigravityAutoApprove() ? { autoApproveWarning: true as const } : {})
     };
@@ -1051,6 +1069,7 @@ export function evaluateAntigravitySubagentCall(
     promptHash,
     signature,
     config: deps.config,
+    cause: heldBy,
     ...(overGate ? { costNote: gateNote.costNote } : {})
   });
 }
@@ -1316,9 +1335,11 @@ export function flushPendingServed(
               event: 'subagent_served',
               harness: 'antigravity',
               session_id: sessionId,
+              ...callKeyField(item.toolCallId),
               child_conversation_id: childConvId,
               requested_model: item.requestedModel ?? null,
               served_model: servedModel,
+              ...quotaPoolField(item.requestedModel, servedModel, null),
               backfilled: true
             });
             changed = true;
@@ -1333,6 +1354,7 @@ export function flushPendingServed(
               event: 'subagent_served',
               harness: 'antigravity',
               session_id: sessionId,
+              ...callKeyField(item.toolCallId),
               child_conversation_id: childConvId,
               requested_model: item.requestedModel ?? null,
               served_model: null,
@@ -1536,8 +1558,10 @@ export const PENDING_RECOMMENDATION_TTL_MS = 10 * 60_000;
  * `agent_call_recommendation` row needs to stand alone (the decision and the models), never prompt text.
  */
 export type PendingRecommendationCall = {
-  /** The same key the `agent_call` row carries as `callKey`. */
+  /** The key this call is tracked under here (see {@link antigravityCallKey}): the tool call id, else a step or one-off key. */
   callKey: string;
+  /** The host's tool call id, when it is a short token (2.3.20): what the late row writes as `callKey`. Absent when the call had none, or a malformed one. */
+  callId?: string;
   /** Epoch ms the call was recorded. */
   at: number;
   decision: string;
@@ -1712,7 +1736,7 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
       /** What the cost gate would have done, in shadow mode (2.3.19); absent in enforce and in a mode without decisions. */
       costGateShadow?: CostGateShadowState;
       quotaStrategy?: string;
-      /** The key of this call (see {@link antigravityCallKey}); a late `agent_call_recommendation` row carries the same one. */
+      /** The host's tool call id (2.3.20; the caller passes the validated one, see {@link antigravityCallId}): written as `callKey`, and repeated by a late `agent_call_recommendation` row. Omitted when the call had none. */
       callKey?: string;
       /** Jev is on and the turn's recommendation was not known yet: the row says so, and a late row may follow. */
       recommendationPending?: boolean;
@@ -1734,6 +1758,8 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
       turnModel?: string | null;
       quotaView?: Pick<QuotaView, 'active_model' | 'activeModelSource'> | null;
       childConversationId?: string | null;
+      /** The host's tool call id of the `invoke_subagent` call (2.3.20), written as `callKey`: the join to its `agent_call` row. */
+      callKey?: string | null;
       requestedModel?: string | null;
       servedModel?: string | null;
       backfilled?: boolean;
@@ -1742,6 +1768,25 @@ export type AntigravityTelemetryInput = AntigravityTelemetryMode &
 
 /** The `mode` every Antigravity telemetry row carries (2.3.19): the mode the hook acted under (`on` or `on-demand`; off writes nothing). */
 type AntigravityTelemetryMode = { mode?: string | null };
+
+/**
+ * The `quotaPool` of an `agent_call` / `subagent_served` row (2.3.20): `gemini`, `argon` or `3p`. The model the call was actually served on
+ * when it is known (a `subagent_served` row), else the one it is expected to be served on (`servedQuotaPool`: an enum value by its
+ * served model, a full id by its family, `inherit` or nothing the parent's).
+ */
+export function subagentQuotaPool(requested: unknown, served: unknown, parentModel: unknown): QuotaPoolName {
+  return quotaPoolOfModel(served) ?? servedQuotaPool(requested, parentModel);
+}
+
+/**
+ * `{ quotaPool }` for a decisions-log row, or nothing when the pool cannot be told: no served model, and the call named no model of
+ * its own (it runs on the parent's) while the parent is not known either.
+ */
+export function quotaPoolField(requested: unknown, served: unknown, parentModel: unknown): { quotaPool?: QuotaPoolName } {
+  const named = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '' && v.trim().toLowerCase() !== 'inherit';
+  if (!named(served) && !named(requested) && !named(parentModel)) return {};
+  return { quotaPool: subagentQuotaPool(requested, served, parentModel) };
+}
 
 /** `turnModel` on a telemetry row: only when the turn ran on another model than the (sticky) session model. */
 function turnModelField(sessionModel: string | null, turnModel: string | null | undefined): { turnModel?: string } {
@@ -1792,7 +1837,7 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       event: 'agent_call_recommendation',
       sessionId: params.conversationId ?? null,
       turn: params.turn,
-      callKey: c.callKey,
+      ...callKeyField(c.callId),
       toolName: c.toolName,
       ...(c.taskSummary ? { taskSummary: c.taskSummary } : {}),
       sessionModel: c.sessionModel,
@@ -1817,9 +1862,12 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       sessionModel,
       sessionModelSource,
       ...turnModelField(sessionModel, params.turnModel),
+      ...callKeyField(params.callKey),
+      // Child conversations write their own usage rows with `session_id` equal to this: the join to measured usage.
       childConversationId: params.childConversationId ?? null,
       requestedModel: params.requestedModel ?? null,
       servedModel: params.servedModel ?? null,
+      quotaPool: subagentQuotaPool(params.requestedModel, params.servedModel, sessionModel),
       backfilled: Boolean(params.backfilled)
     };
   }
@@ -1876,14 +1924,21 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
       : {}),
     ...(modelUsed ? { modelUsed } : {}),
     ...(modelUsedSource ? { modelUsedSource } : {}),
-    ...(params.callKey ? { callKey: params.callKey } : {}),
+    // The host's tool call id (2.3.20), the join to the call's other rows and to measured usage; omitted when the call carried none.
+    ...callKeyField(params.callKey),
     ...(!matchedRecommendedTier && params.recommendationPending ? { recommendationPending: true } : {}),
     requestedModel: requestedModel ?? null,
     decision: params.decision.decision,
+    // Why a deny or a dialog ask held the call (2.3.20): `denyCause` / `askCause`.
+    ...causeFields(params.decision.decision, params.decision.cause),
     ...(params.decision.elevation ? { elevation: params.decision.elevation } : {}),
+    // The quota pool the call is expected to draw (2.3.20): by the model it is served on, not by the enum value's name.
+    quotaPool: subagentQuotaPool(requestedModel, null, sessionModel),
     ...(downgrade ? { downgrade } : {}),
     // The combined cost estimate (telemetry only; see src/core/cost-estimate.ts): what the call requested, a denied call too.
     ...antigravityCostFields(requestedModel, sessionModel),
+    // Where the effort came from (2.3.20), see `antigravityEffortFor`.
+    ...antigravityEffortFor(requestedModel, sessionModel, params.decision.clampedEffort),
     // What a suggested or applied downgrade saves (2.3.19), priced by the served models; absent on a row without one.
     ...(downgrade === 'asked' || downgrade === 'applied'
       ? { costSaving: antigravityDowngradeSaving(requestedModel, params.downgradeLog?.downgrade_to, sessionModel) }
@@ -1895,9 +1950,36 @@ function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTeleme
 }
 
 /**
- * The key an `agent_call` row carries as `callKey`: the tool call id, else `step:<stepIdx>` (real transcripts often carry
- * no tool call ids), else a one-off `call:<time>-<random>`. A late `agent_call_recommendation` row repeats it, so the two
- * rows of one call are matched on this key and the `turn`.
+ * The effort fields of an `agent_call` row (2.3.20): `effortSource` and, when a literal level was named, `effortRequested`. The
+ * effort of an Antigravity call is the suffix of the model id it is served on (the enum values have a fixed served effort, see
+ * {@link antigravityEffortFields} for the mapping). `clampedEffort` is the effort the cost-gate clamp lowered the call to: when it
+ * differs from the call's own the source is `clamped`, and `effortRequested` the level it asked for.
+ */
+export function antigravityEffortFor(requestedModel: unknown, sessionModel: unknown, clampedEffort?: unknown): EffortFields {
+  const served = servedModelExpected(requestedModel, sessionModel);
+  const clamped = costEffortOf(clampedEffort);
+  const callEffort = served.effort ?? effortFromModelId(sessionModel) ?? DEFAULT_COST_EFFORT;
+  return antigravityEffortFields({
+    // `inherit` or an omitted `Model` is served on the parent's model: its suffix is the session's effort, inherited, not named by the call.
+    servedEffort: served.kind === 'parent' ? null : served.effort,
+    sessionModel,
+    clampedFrom: clamped !== null && clamped !== callEffort ? callEffort : undefined
+  });
+}
+
+/**
+ * The host's tool call id as a join token (2.3.20): the `callKey` the rows of this call carry. Undefined when the input has no id
+ * or a malformed one (the rows then carry no `callKey`).
+ */
+export function antigravityCallId(input: Pick<AntigravityHookInput, 'toolCall'>): string | undefined {
+  return joinToken(input.toolCall?.id);
+}
+
+/**
+ * The key a call is tracked under inside the hook (the pending-recommendation list and the `step:` fallbacks): the tool call
+ * id, else `step:<stepIdx>` (real transcripts often carry no tool call ids), else a one-off `call:<time>-<random>`. The rows carry
+ * `callKey` only when it is the host's id (see {@link antigravityCallId}); this key matches a late `agent_call_recommendation`
+ * to the call it belongs to.
  */
 export function antigravityCallKey(input: Pick<AntigravityHookInput, 'toolCall' | 'stepIdx'>): string {
   const id = input.toolCall?.id;
@@ -1911,6 +1993,7 @@ export function pendingCallFromEvent(ev: JevTelemetryEvent, callKey: string, at:
   const s = (v: unknown, max = 200): string | undefined => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : undefined);
   return {
     callKey,
+    ...(joinToken(ev.callKey) ? { callId: joinToken(ev.callKey) } : {}),
     at,
     decision: s(ev.decision as unknown, 20) ?? 'pass',
     requestedModel: s(ev.requestedModel as unknown) ?? null,

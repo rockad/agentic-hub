@@ -212,6 +212,7 @@ describe('ask mode', () => {
     expect(reason).toContain('ask_question');
     expect(reason).toContain(`'Yes, flash_lite', 'No, keep flash', 'No, and don't ask again this session'`);
     expect(r.log.downgrade).toBe('asked');
+    expect(r.decision.cause).toBe('downgrade');
     expect(r.log.downgrade_needed).toBe('flash_lite');
     expect(r.log.downgrade_from).toBe('flash');
     expect(r.log.downgrade_to).toBe('flash_lite');

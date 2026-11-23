@@ -1,6 +1,6 @@
 # clarify reference: Google Antigravity (`ask_question`)
 
-Read this once before the first question when the `ask_question` tool exists. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the mandatory tool call rule, the option naming rule and the counter prefix rule.
+Read this once before the first question when the `ask_question` tool exists. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the option naming rule and the counter prefix rule.
 
 Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. Always invoke `ask_question` in the same reply as `## Question 1 (of Total)` — do not end Turn 1 after the recommendation without calling the tool. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 

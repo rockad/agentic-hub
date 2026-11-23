@@ -1,6 +1,6 @@
 # clarify reference: Closing the Series & Jev-Aware Execution Handoff
 
-Read this once, only after the last fork has been answered. The core `SKILL.md` rules still apply: the Style section (terse closing) and the rule to never write code without an explicit go. In Mode B, also use the Mode B decision table and artifact in `plain-mode.md`.
+Read this once, only after the last fork has been answered. The core `SKILL.md` rules still apply: the terse-styles rule (the closing stays terse) and the rule to never write code without an explicit go. In Mode B, also use the Mode B decision table and artifact in `plain-mode.md`.
 
 Once all forks are resolved, present the consolidated architectural blueprint and transition gate.
 

@@ -1,6 +1,6 @@
 # clarify reference: Mode B, Plain English & Intuitive format (`/cplain`, `/celi5`)
 
-Read this once before the first question, only in Mode B. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the mandatory tool call rule, the option naming rule and the counter prefix rule. Closing-time Mode B pieces (decision table and final artifact) are at the end of this file; the rest of the closing format is in `closing.md`.
+Read this once before the first question, only in Mode B. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the option naming rule and the counter prefix rule. Closing-time Mode B pieces (decision table and final artifact) are at the end of this file; the rest of the closing format is in `closing.md`.
 
 Plain English mode translates technical trade-offs into accessible mental models, everyday analogies, and clear risk boundaries while maintaining technical precision underneath.
 

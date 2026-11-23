@@ -72,7 +72,7 @@ Common steps, in this order, each failing quietly:
 | `A2A_AGY_CONNECT_TIMEOUT` | 0.2 (pending), 1 (session) | seconds |
 | `A2A_AGY_MAX_TIME` | 2 | seconds per call |
 
-A value that is not a plain number falls back to the default. How the hook gets these variables from agy is not recorded: agy's environment for hook commands is **[unverified]**, so the installer may have to bake them into the entry or a wrapper (open question, see the report of this stream).
+A value that is not a plain number, is zero or under 0.001, or is 6 or more falls back to the default (section 10). How the hook gets these variables from agy is not recorded: agy's environment for hook commands is **[unverified]**, so the installer may have to bake them into the entry or a wrapper (open question, see the report of this stream).
 
 ## 5. The hook entries
 
@@ -99,9 +99,10 @@ A value that is not a plain number falls back to the default. How the hook gets 
 | 4xx, 5xx (curl `--fail`, exit 22) | `{}`, exit 0 | no output, exit 0 |
 | `200` with invalid JSON, empty body, truncated JSON, no object | `{}`, exit 0 | no output (registration), count left out (pending) |
 | `announce` false, missing, quoted or not `true` | `{}` | not read |
-| count 0, negative, fractional, exponent, leading zero, quoted, null | `{}` | count left out |
+| count 0 | `{}` (nothing to announce) | `0 pending` |
+| negative, fractional, exponent, leading zero, quoted, null count | `{}` | count left out |
 | count 10000 or more, however large | announced as 9999 | 9999 |
-| bad or missing `conversationId`, no key, bad URL, no `curl`, opt-out, an escaped workspace path, an input over 1 MiB | `{}`, no call | no output, no call |
+| bad or missing `conversationId`, no key, bad URL, no `curl`, opt-out, a workspace path with an escape other than `&`, `<`, `>`, an input over 1 MiB | `{}`, no call | no output, no call |
 | registration answered 403 (key of another card), 401, 409 | `{}` (the pending call is 410 or 403) | no output, the count is not asked |
 
 All of the above [verified] against the stub; 403 against another card's key and 401 against a forged key [verified] against the real server.
@@ -130,17 +131,17 @@ Seven mutants were run against the tests and each was caught by at least one tes
 - **agy itself.** No agy was run. The two hook scripts were never run by agy; the hook entries were never loaded by it; whether `~` expands, which environment the hook gets, and whether agy accepts the fragment are **[unverified]**. The live checks are in the report of this stream: the 4-of-5 trial of SP3 P1 and the `/clear` check of BP11.
 - **S1-INST**: the installer that copies the scripts to `~/.local/share/a2a-coord/<version>/bin/`, switches `current`, merges the fragment (Y9) and writes the key file. Two musts from the Opus review of PR #95 (2026-11-23), both unverified until the installer exists: the hook `command` paths are written as the absolute path of `current` (every spike used absolute paths; whether agy expands `~` in `command` is only reported from its `hooks.md`), and the installer sets `A2A_AGY_CARD` or checks the host name against the key's card (the default card comes from `uname -n`, which is a Windows machine name under WSL and not `mac` on the mac; a wrong card is a 403 and the hooks stay silent with no log).
 - **The `PreInvocation` backstop for a missed `SessionStart`** (plan, BP11) works only for a conversation that is registered and still live: for an unknown or ended session the server answers `410` and the hook prints `{}`. After a resume past `A2A_SESSION_IDLE_TTL_H` the session is `ended` and nothing is announced until `SessionStart` or a tool call registers it again (api 5.4.1).
-
-## 10. Hardening after the Opus review of PR #95 (2026-11-23)
-
-All [verified] by the tests named in `tests/test_agy_hooks.py`:
-
-- **Opt-out the script cannot read makes no call.** The workspace path is matched as raw JSON text, so a path with a backslash (an escaped quote or backslash, or `&` written as `&` by a Go encoder) cannot be turned into the directory, and an input over 1 MiB can lose `workspacePaths`. Both stop the script with no network call instead of ignoring a marker that may exist.
-- **A count over 9999 prints as 9999** (as the server's own stub does, `wake/outcomes.py`), because the server records the announcement before the hook prints it; dropping the line lost it until the ten-minute repeat.
-- **An unreadable count is left out of the session message**, not reported as `0 pending`: the message then reads `... Call a2a_hello with it before other a2a_ tools. Check a2a_inbox now. ...`. This is one more byte-constant form; the only variable parts are still the validated handle and one validated integer.
-- **A curl limit of zero, or over 5 seconds, falls back to the default** (curl reads `0` as no limit, and a mistyped value would hold every model call until agy gives up, about 31 s, SP3 P6). This replaces the count-0 row of the failure table: "count 0" for `a2a-agy-session` now reads "count left out".
-- **The first `"conversationId"` in the text still wins**, even inside a nested object. The input's keys are scalars or string arrays (SP3 P2), so no same-named nested key occurs today; this is an accepted assumption, not a check.
 - **S1-CLAUDE**: `a2a-register`, `a2a-listen`, `a2a-pending` and the Claude hooks.
 - **`a2a_wait`** is a server tool (S1-MCP, built); this stream adds no code for it. agy's idle session is not woken (accepted, D9).
 - **An untrusted workspace** past agy's trust dialog: unverified (SP3 P8).
 - **Reliability of `systemMessage`** over many conversations (Y5 note): unverified.
+
+## 10. Hardening after the Opus reviews of PR #95 and PR #96 (2026-11-23)
+
+All [verified] by the tests named in `tests/test_agy_hooks.py`:
+
+- **An opt-out the script cannot read makes no call.** The workspace path is matched as raw JSON text. Go's encoder writes `<`, `>` and `&` as `\u003c`, `\u003e` and `\u0026`: the scripts decode those three, so a folder named `R&D` is an ordinary workspace whose hooks work and whose `.a2a-optout` marker is found. Any other backslash (an escaped quote or backslash, another `\u` escape) means the real directory cannot be told, so the script makes no call. Consequence, stated plainly: a workspace whose path contains a double quote, a backslash or a character written as another escape gets **no hooks at all**, with no log line, even though it never opted out. Failing closed is the right default for an opt-out; whether agy's encoder is Go and which characters it escapes is **[unverified]** (the spike results do not cover it). An input over 1 MiB (cut by `head -c`, so `workspacePaths` may be missing) also makes no call.
+- **A count over 9999 prints as 9999** (as the server's own stub does, `wake/outcomes.py`), because the server records the announcement before the hook prints it; dropping the line lost it until the ten-minute repeat.
+- **An unreadable count is left out of the session message**, not reported as `0 pending`: the message then reads `... Call a2a_hello with it before other a2a_ tools. Check a2a_inbox now. ...`. This is one more byte-constant form; the only variable parts are still the validated handle and one validated integer. A count of exactly `0` that the server did return is still reported as `0 pending`.
+- **A curl limit outside 0.001 s to just under 6 s falls back to the default.** curl reads `0` as no limit and rounds anything under 1 ms to `0` (so `0.0009` hung against a silent listener), and a long mistyped value would hold every model call until agy gives up, about 31 s (SP3 P6). The check is in `numeric()` in both scripts and covers the total limit for both hooks and the connect limit.
+- **The first `"conversationId"` in the text still wins**, even inside a nested object. The input's keys are scalars or string arrays (SP3 P2), so no same-named nested key occurs today; this is an accepted assumption, not a check.

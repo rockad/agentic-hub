@@ -202,30 +202,77 @@ def test_a_count_over_9999_is_announced_as_9999_not_lost(stub, env, count):
 # a limit that curl reads as "no limit", or a long one, must not hold every model call ----------
 
 
-@pytest.mark.parametrize("name", ["A2A_AGY_CONNECT_TIMEOUT", "A2A_AGY_MAX_TIME"])
-@pytest.mark.parametrize("value", ["0", "0.0", "00", "7", "30", "9999"])
-def test_a_zero_or_long_curl_limit_falls_back_to_the_default(stub, env, name, value):
+def stdin_for(script: str) -> str:
+    return hook_input() if script == PENDING else hook_input(event="SessionStart")
+
+
+@pytest.mark.parametrize("script", [PENDING, SESSION])
+@pytest.mark.parametrize("value", ["0", "0.0", "00", "0.000", "0.0009", "0.00001", "7", "30", "9999"])
+def test_a_zero_sub_millisecond_or_long_total_limit_falls_back_to_the_default(stub, env, script, value):
+    """curl reads 0 as no limit and rounds anything under 1 ms to 0 (Opus review of PR #96)."""
     stub.pending = Reply(200, announce_body(2), delay=8.0)
-    result = run_hook(PENDING, hook_input(), {**env, name: value})
-    assert (result.code, result.out, result.err) == (0, "{}\n", "")
-    assert result.seconds < 4.5, f"{name}={value} was applied ({result.seconds:.1f} s); the default 2 s limit must win"
+    result = run_hook(script, stdin_for(script), {**env, "A2A_AGY_MAX_TIME": value})
+    assert result.code == 0
+    assert result.seconds < 4.5, f"A2A_AGY_MAX_TIME={value} was applied ({result.seconds:.1f} s); the default 2 s limit must win"
+
+
+@pytest.mark.parametrize("value", ["0.5", "1", "5", "5.9"])
+def test_a_sane_limit_is_kept(stub, env, value):
+    stub.pending = Reply(200, announce_body(2))
+    result = run_hook(PENDING, hook_input(), {**env, "A2A_AGY_MAX_TIME": value, "A2A_AGY_CONNECT_TIMEOUT": value})
+    assert (result.code, result.out) == (0, pending_line(2))
+
+
+@pytest.mark.parametrize("script", [PENDING, SESSION])
+@pytest.mark.parametrize("value", ["0", "0.0", "0.0009", "7"])
+def test_a_bad_connect_limit_falls_back_to_the_default(tmp_path, key, script, value):
+    # 192.0.2.0/24 is never routed: the connect fails at once or hangs until the limit. A connect
+    # limit of 0 (curl: 300 s default) or 7 s would show as a hang up to the 4 s total limit.
+    env = hook_env(tmp_path, url="http://192.0.2.1:8120", key_file=write_key_file(tmp_path, key))
+    result = run_hook(script, stdin_for(script), {**env, "A2A_AGY_CONNECT_TIMEOUT": value, "A2A_AGY_MAX_TIME": "4"})
+    assert result.code == 0 and result.seconds < 2.5, f"{value}: {result.seconds:.1f} s"
 
 
 # an opt-out the script cannot read must not be ignored ------------------------------------------
 
 
-def test_an_escaped_workspace_path_makes_no_call(stub, env, tmp_path):
-    """Go writes `&` as \\u0026: the raw text is not the directory, so the marker cannot be looked for."""
+def test_an_escaped_path_with_an_optout_marker_makes_no_call(stub, env, tmp_path):
     ws = tmp_path / "a&b"
     ws.mkdir()
     (ws / OPTOUT).write_text("")
     stub.pending = Reply(200, announce_body(5))
-    # json.dumps leaves `&` alone; Go's encoder writes it as &, so rewrite the serialised text
+    # json.dumps leaves the ampersand alone; Go's encoder writes it as a backslash-u0026 escape
     pending_input = hook_input(workspace=str(ws)).replace("&", "\\u0026")
     session_input = hook_input(event="SessionStart", workspace=str(ws)).replace("&", "\\u0026")
     assert "\\u0026" in pending_input and "&" not in pending_input
     pending = run_hook(PENDING, pending_input, env)
     session = run_hook(SESSION, session_input, env)
+    assert (pending.code, pending.out, pending.err) == (0, "{}\n", "")
+    assert (session.code, session.out, session.err) == (0, "", "")
+    assert stub.seen == []
+
+
+def test_go_escapes_for_ampersand_and_angle_brackets_are_decoded(stub, env, tmp_path):
+    """A folder named R&D is an ordinary workspace: its hooks work, and its marker is found."""
+    ws = tmp_path / "R&D"
+    ws.mkdir()
+    stub.pending = Reply(200, announce_body(4))
+    text = hook_input(workspace=str(ws)).replace("&", "\\u0026")
+    assert run_hook(PENDING, text, env).out == pending_line(4), "no marker: the hook works"
+    (ws / OPTOUT).write_text("")
+    calls = len(stub.seen)
+    assert run_hook(PENDING, text, env).out == "{}\n"
+    assert len(stub.seen) == calls, "with the marker: no call"
+
+
+@pytest.mark.parametrize("name", ['we"ird', "back\\slash"])
+def test_any_other_escape_in_a_workspace_path_makes_no_call(stub, env, tmp_path, name):
+    ws = tmp_path / name
+    ws.mkdir()
+    (ws / OPTOUT).write_text("")
+    stub.pending = Reply(200, announce_body(5))
+    pending = run_hook(PENDING, hook_input(workspace=str(ws)), env)
+    session = run_hook(SESSION, hook_input(event="SessionStart", workspace=str(ws)), env)
     assert (pending.code, pending.out, pending.err) == (0, "{}\n", "")
     assert (session.code, session.out, session.err) == (0, "", "")
     assert stub.seen == []

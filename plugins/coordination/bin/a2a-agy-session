@@ -48,15 +48,26 @@ MAX_T=${A2A_AGY_MAX_TIME:-2}
 
 silent() { exit 0; }
 
-# A curl limit: digits with at most one dot, not zero (curl reads 0 as "no limit"), at most 5 s.
+# A curl limit: digits with at most one dot, from 0.001 s up to just under 6 s. curl reads 0 as "no
+# limit" and rounds anything under 1 ms to 0.
 numeric() {
   case $1 in
     '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;;
-    *[1-9]*) ;;
-    *) return 1 ;;
   esac
   ip=${1%%.*}
-  [ "${#ip}" -le 1 ] && [ "$ip" -le 5 ]
+  { [ "${#ip}" -le 1 ] && [ "$ip" -le 5 ]; } || return 1
+  case $ip in
+    [1-9]) return 0 ;;
+  esac
+  case $1 in
+    *.*) frac=${1#*.} ;;
+    *) return 1 ;;
+  esac
+  f3=$(printf '%.3s' "$frac")
+  case $f3 in
+    *[1-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 numeric "$CONNECT_T" || CONNECT_T=1
 numeric "$MAX_T" || MAX_T=2
@@ -79,8 +90,10 @@ esac
 
 ws=$(printf '%s' "$input" | grep -o '"workspacePaths"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]*"' | head -n 1 |
   sed 's/.*\[[[:space:]]*"\(.*\)"$/\1/')
-# The path is matched as raw JSON text. A backslash means it is escaped (a quote, a backslash, or a
-# character Go writes as \u0026), so the real directory cannot be told: no call.
+# The path is matched as raw JSON text. Go's encoder writes < > & as \u003c \u003e \u0026: those
+# three are decoded (a folder named R&D is an ordinary workspace). Any other backslash (an escaped
+# quote or backslash, another \u escape) means the real directory cannot be told: no call.
+ws=$(printf '%s' "$ws" | sed 's/\\u0026/\&/g; s/\\u003c/</g; s/\\u003e/>/g')
 case $ws in
   *\\*) silent ;;
   /*) if [ -e "$ws/.a2a-optout" ]; then silent; fi ;;

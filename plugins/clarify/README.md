@@ -70,7 +70,7 @@ Rules alone stopped holding in long sessions: after many turns or a compaction, 
 
 ## Verify a session
 
-`scripts/check-clarify-transcript.sh` (repo root, bash + `jq`) checks a session transcript:
+`scripts/check-clarify-transcript.sh` (repo root; bash + `jq` for Claude Code, `node` for Antigravity) checks a session transcript:
 
 ```bash
 # Claude Code

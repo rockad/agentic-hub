@@ -5,5 +5,9 @@
 
 set -uo pipefail
 
-command -v node >/dev/null 2>&1 || { printf '{}\n'; exit 0; }
+command -v node >/dev/null 2>&1 || {
+  printf 'clarify-stop-check: node not found on PATH; failing open\n' >&2
+  printf '{}\n'
+  exit 0
+}
 exec node "$(cd "$(dirname "$0")" && pwd)/clarify-stop-check.mjs"

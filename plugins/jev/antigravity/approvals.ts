@@ -222,15 +222,16 @@ export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: nu
 }
 
 /**
- * The effort Jev prescribed for the model an answer names: the highest effort among the questions it prescribed for that model's tier
- * (same kind), unless the prescription predates the last mode change; null when there is none on record.
+ * The effort Jev prescribed for the model an answer names: the highest effort among the questions it prescribed for that model's own
+ * tier (same kind), unless the prescription predates the last mode change; null when there is none on record. As in Claude Code, only
+ * the model's own prescription counts: a stronger tier's question never raises the cap of a weaker one's answer.
  */
 export function prescribedEffortFor(state: ApprovalState, model: string, config?: ModeChangeConfigLike | null): CostEffort | null {
   const want = modelTierRank(model);
   let best: CostEffort | null = null;
   for (const [m, t] of Object.entries(state.denied ?? {})) {
     if (voided(t, { config })) continue;
-    if (modelTierRank(m) < want || !approvalKindCovers(m, model)) continue;
+    if (modelTierRank(m) !== want || !approvalKindCovers(m, model)) continue;
     const e = prescriptionEffort(m);
     if (best === null || effortIndex(e) > effortIndex(best)) best = e;
   }
@@ -312,7 +313,7 @@ export function claimApproval(
   return { state: { ...state, approvals: state.approvals.filter((a) => a !== hit), onceUsed: markOnceUsed(state.onceUsed, hit.model, ectx?.turn) }, approval: hit };
 }
 
-/** Pure: the state with a No added, or null when its answer row was already consumed. A No drops the approvals it contradicts (that model or a stronger one of the same kind); a session No replaces earlier declines of the same model. */
+/** Pure: the state with a No added, or null when its answer row was already consumed. A session No drops the approvals it contradicts (that model or a stronger one of the same kind) and replaces earlier declines of the same model; a once No drops only the unused once approvals, never a session Yes. */
 export function recordDecline(
   state: ApprovalState,
   decline: Decline,
@@ -321,7 +322,10 @@ export function recordDecline(
   const alreadyConsumed = state.consumedAnswers ?? [];
   if (consumedKeys.some((k) => alreadyConsumed.includes(k))) return null;
   const rank = modelTierRank(decline.model);
-  const approvals = state.approvals.filter((a) => !(modelTierRank(a.model) >= rank && approvalKindCovers(a.model, decline.model)));
+  // A once No never withdraws the user's standing "Yes, for this session": it drops only the unused once approvals it contradicts.
+  const approvals = state.approvals.filter(
+    (a) => !(modelTierRank(a.model) >= rank && approvalKindCovers(a.model, decline.model) && (decline.scope === 'session' || a.scope === 'once'))
+  );
   const declines = (state.declines ?? []).filter(
     (d) => !(decline.scope === 'session' && d.model === decline.model) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn)
   );

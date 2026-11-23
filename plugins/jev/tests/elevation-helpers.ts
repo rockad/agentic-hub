@@ -12,6 +12,7 @@ import {
   recordDecline,
   recordEffortApproval,
   recordEffortDecline,
+  resolveEffortDecline,
   type ApprovalState
 } from '../claude/logic.ts';
 import type { ApprovalStore } from '../claude/hook.ts';
@@ -48,8 +49,12 @@ export function memoryApprovals(): ApprovalStore & { states: Map<string, Approva
       return done.approval;
     },
     recordDecline: (s, decline) => void states.set(s, recordDecline(get(s), decline)),
-    recordEffortDecline: (s, decline) => void states.set(s, recordEffortDecline(get(s), decline)),
-    denyEffort: (s, level, nowMs, model) => void states.set(s, noteEffortDenied(get(s), level, nowMs, model)),
+    recordEffortDecline: (s, decline, config) => {
+      const stored = resolveEffortDecline(get(s), decline, config);
+      states.set(s, recordEffortDecline(get(s), stored));
+      return stored;
+    },
+    denyEffort: (s, level, nowMs, model, noEffort) => void states.set(s, noteEffortDenied(get(s), level, nowMs, model, noEffort)),
     claimEffort: (s, level, nowMs, model, ectx) => {
       const { state, approval } = claimEffortApproval(get(s), level, nowMs, model, ectx);
       states.set(s, state);

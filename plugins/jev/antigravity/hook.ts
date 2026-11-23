@@ -388,7 +388,7 @@ async function main() {
         }
 
         // What the user answered, for the `elevation_answer` row and the line the assistant is told (set once the answer row is read).
-        let answerFacts: { reason?: NotRecordedReason; answer: 'yes' | 'no' | null; scope: ApprovalScope | null; effort: CostEffort | null; model: string | null; target?: string } | null = null;
+        let answerFacts: { reason?: NotRecordedReason; answer: 'yes' | 'no' | null; scope: ApprovalScope | null; effort: CostEffort | null; model: string | null } | null = null;
         try {
           const questions = input.toolCall?.args?.questions;
           let elevateModel: string | undefined;
@@ -447,7 +447,10 @@ async function main() {
           if (!markerFound && !malformed) {
             outcome = 'not_elevation';
           } else if (!rowFound) {
+            // The answer row is not in the transcript yet: a later PreToolUse may still pull it (and writes the recorded row then), but when
+            // none does the answer must not leave no trace, so this one says it was not read.
             outcome = 'no_row';
+            answerFacts = { reason: 'unread', answer: null, scope: null, effort: null, model: elevateModel ?? null };
           } else if (malformed) {
             // The question's marker does not parse: nothing can be stored, and the assistant is told how to ask it again.
             outcome = 'rejected';
@@ -482,7 +485,7 @@ async function main() {
               const done = approvals.recordDecline?.(conversationId, { model: elevateModel, scope: parsedResult.scope, created_at: Date.now(), ...(parsedResult.scope === 'once' ? { turn: turnKey } : {}) }, keys);
               if (done === undefined) throw new Error('no decline store');
               outcome = done ? 'recorded' : 'consumed';
-              answerFacts = done ? { answer: 'no', scope: parsedResult.scope, effort: null, model: elevateModel, ...(parseAnswerLabel(answerLabel(rawAnswer ?? ''), 'model')?.noTarget ? { target: parseAnswerLabel(answerLabel(rawAnswer ?? ''), 'model')!.noTarget } : {}) } : null;
+              answerFacts = done ? { answer: 'no', scope: parsedResult.scope, effort: null, model: elevateModel } : null; // the launches run on the session ceiling whatever the label's text names
             }
           }
         } catch {
@@ -522,7 +525,7 @@ async function main() {
           const line = recorded
             ? facts.answer === 'yes'
               ? recordedYesLine({ kind: 'model', subject: facts.model ?? '', scope: facts.scope as ApprovalScope, effort: facts.effort })
-              : recordedNoLine({ kind: 'model', subject: facts.model ?? '', scope: facts.scope as ApprovalScope, target: facts.target ?? antigravityCeilingTier(input.modelName) })
+              : recordedNoLine({ kind: 'model', subject: facts.model ?? '', scope: facts.scope as ApprovalScope, target: antigravityCeilingTier(input.modelName) })
             : notRecordedLine(facts.reason as NotRecordedReason, 'model', '[jev-elevate:<model>]', ELEVATION_LABELS.noOnce('<session ceiling>'));
           if (conversationId) queueAnswerNotice(sessionsDir, conversationId, line, mode);
         }

@@ -1022,6 +1022,8 @@ export type ApprovalState = {
   effortDenied?: Record<string, number>;
   /** The model the effort question named, per effort level (the marker's `:<model>`): a bare answer is recorded for that model, never for any model. Absent: the question named none. */
   effortDeniedModel?: Record<string, ClaudeModelAlias>;
+  /** The level the effort question's own No ran at, per effort level (`No, run at <level>`: the cost gate's, else `high`). A session No ("don't ask again") names no level, so it lowers to this one. */
+  effortDeniedNo?: Record<string, EffortLevel>;
   denied?: Record<string, number>;
   /** The effort the model question was prescribed with, per model alias (2.3.19, no expiry): an answer cannot approve a higher effort than the question named. */
   deniedEffort?: Record<string, EffortLevel>;
@@ -1220,6 +1222,11 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     rawEffortDeniedModel && typeof rawEffortDeniedModel === 'object' && !Array.isArray(rawEffortDeniedModel)
       ? Object.fromEntries(Object.entries(rawEffortDeniedModel).filter(([l, m]) => EFFORT_LEVELS.includes(l as EffortLevel) && typeof m === 'string' && modelRank(m) !== null))
       : undefined;
+  const rawEffortDeniedNo = (r as { effortDeniedNo?: unknown } | null)?.effortDeniedNo;
+  const effortDeniedNo =
+    rawEffortDeniedNo && typeof rawEffortDeniedNo === 'object' && !Array.isArray(rawEffortDeniedNo)
+      ? Object.fromEntries(Object.entries(rawEffortDeniedNo).filter(([l, n]) => EFFORT_LEVELS.includes(l as EffortLevel) && EFFORT_LEVELS.includes(n as EffortLevel)))
+      : undefined;
   const rawDeniedEffort = (r as { deniedEffort?: unknown } | null)?.deniedEffort;
   const deniedEffort =
     rawDeniedEffort && typeof rawDeniedEffort === 'object' && !Array.isArray(rawDeniedEffort)
@@ -1231,6 +1238,7 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     ...(effortApprovals.length ? { effortApprovals } : {}),
     ...(effortDenied && Object.keys(effortDenied).length ? { effortDenied: effortDenied as Record<string, number> } : {}),
     ...(effortDeniedModel && Object.keys(effortDeniedModel).length ? { effortDeniedModel: effortDeniedModel as Record<string, ClaudeModelAlias> } : {}),
+    ...(effortDeniedNo && Object.keys(effortDeniedNo).length ? { effortDeniedNo: effortDeniedNo as Record<string, EffortLevel> } : {}),
     ...(declines.length ? { declines } : {}),
     ...(effortDeclines.length ? { effortDeclines } : {}),
     ...(onceUsed.length ? { onceUsed } : {}),
@@ -1336,10 +1344,14 @@ export function claimApproval(
   return { state: { ...state, approvals: state.approvals.filter((a) => a !== hit), onceUsed: markOnceUsed(state.onceUsed, hit.model, ectx?.turn) }, approval: hit };
 }
 
-/** Pure: the state with a No to the model question added. A No drops the approvals it contradicts (of that model or a stronger one), and a session No replaces earlier declines of the same model. */
+/**
+ * Pure: the state with a No to the model question added. A session No drops the approvals it contradicts (of that model or a stronger
+ * one) and replaces earlier declines of the same model. A once No ("this delegation only") never withdraws the user's standing
+ * "Yes, for this session": it drops only the unused once approvals it contradicts, so the session Yes is back in force at the next prompt.
+ */
 export function recordDecline(state: ApprovalState, decline: Decline): ApprovalState {
   const rank = modelRank(decline.model) ?? 0;
-  const approvals = state.approvals.filter((a) => (modelRank(a.model) ?? -1) < rank);
+  const approvals = state.approvals.filter((a) => (modelRank(a.model) ?? -1) < rank || (decline.scope === 'once' && a.scope === 'session'));
   const declines = (state.declines ?? []).filter((d) => !(decline.scope === 'session' && d.model === decline.model) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn));
   return { ...state, approvals, declines: [...declines, decline].slice(-ANSWERS_CAP) };
 }
@@ -1437,14 +1449,24 @@ export function parseEffortDecline(input: unknown, nowMs: number, turn?: string)
   return { level: read.level, noEffort, scope: parsed.scope, created_at: nowMs, ...(parsed.scope === 'once' && turn !== undefined ? { turn } : {}) };
 }
 
-/** Pure: note that the effort question was prescribed for `level` now (no expiry), with the model its marker named. */
-export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string): ApprovalState {
+/**
+ * Pure: note that the effort question was prescribed for `level` now (no expiry), with the model its marker named and the level its own No
+ * runs at (`noEffort`: a session No, which names no level, lowers to it).
+ */
+export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string, noEffort?: EffortLevel): ApprovalState {
   const alias = model !== undefined ? modelAlias(model) : null;
   // The model the question named, per level: replaced for this one (none when the question named none).
   const models = Object.fromEntries(Object.entries(state.effortDeniedModel ?? {}).filter(([l]) => l !== level));
   const { effortDeniedModel: _drop, ...rest } = state;
   const effortDeniedModel = { ...models, ...(alias ? { [level]: alias } : {}) };
-  return { ...rest, effortDenied: { ...(state.effortDenied ?? {}), [level]: nowMs }, ...(Object.keys(effortDeniedModel).length ? { effortDeniedModel } : {}) };
+  const { effortDeniedNo: _no, ...restNo } = rest;
+  const nos = { ...Object.fromEntries(Object.entries(state.effortDeniedNo ?? {}).filter(([l]) => l !== level)), ...(noEffort ? { [level]: noEffort } : {}) };
+  return {
+    ...restNo,
+    effortDenied: { ...(state.effortDenied ?? {}), [level]: nowMs },
+    ...(Object.keys(effortDeniedModel).length ? { effortDeniedModel } : {}),
+    ...(Object.keys(nos).length ? { effortDeniedNo: nos as Record<string, EffortLevel> } : {})
+  };
 }
 
 /**
@@ -1465,7 +1487,9 @@ export function recordEffortApproval(
   const highest = prescriptions.map(([l]) => l as EffortLevel).sort((a, b) => effortIndex(b) - effortIndex(a))[0];
   const cap: EffortLevel = highest ?? (EFFORT_FALLBACK as EffortLevel);
   const level = effortIndex(approval.level) <= effortIndex(cap) ? approval.level : cap;
-  const latest = prescriptions.filter(([l]) => effortCovers(l, approval.level)).sort((a, b) => b[1] - a[1])[0];
+  // Looked up with the CAPPED level: a marker naming a higher level than any prescription must still find the prescription the cap
+  // came from, or the stored approval would keep a bare marker's "no model" and cover every model.
+  const latest = prescriptions.filter(([l]) => effortCovers(l, level)).sort((a, b) => b[1] - a[1])[0];
   const prescribed = latest ? state.effortDeniedModel?.[latest[0]] : undefined;
   const { model: _m, ...rest } = approval;
   const model = prescribed
@@ -1507,9 +1531,21 @@ export function claimEffortApproval(
   return { state: { ...rest, ...(effortApprovals.length ? { effortApprovals } : {}), effortOnceUsed: markOnceUsed(state.effortOnceUsed, hit.level, ectx?.turn) }, approval: hit };
 }
 
-/** Pure: the state with a No to the effort question added; a session No replaces earlier declines of the same level. */
+/**
+ * Pure: the decline as it is stored. A session No ("don't ask again") names no level, so it lowers to the level the question's own No
+ * ran at (the cost gate's `No, run at <level>`, which can be below `high`), as noted when Jev prescribed the question; with none on
+ * record (or from before the last mode change) it is `high`. A once No names its level in its label and is kept as it is.
+ */
+export function resolveEffortDecline(state: ApprovalState, decline: EffortDecline, config?: ModeChangeConfigLike | null): EffortDecline {
+  if (decline.scope !== 'session') return decline;
+  const at = state.effortDenied?.[decline.level];
+  const noted = at !== undefined && !voided(at, { config }) ? state.effortDeniedNo?.[decline.level] : undefined;
+  return noted ? { ...decline, noEffort: noted } : decline;
+}
+
+/** Pure: the state with a No to the effort question added; a session No replaces earlier declines of the same level and drops that level's approvals, a once No only the unused once approvals (see `recordDecline`). */
 export function recordEffortDecline(state: ApprovalState, decline: EffortDecline): ApprovalState {
-  const approvals = (state.effortApprovals ?? []).filter((a) => !(a.level === decline.level));
+  const approvals = (state.effortApprovals ?? []).filter((a) => a.level !== decline.level || (decline.scope === 'once' && a.scope === 'session'));
   const declines = (state.effortDeclines ?? []).filter((d) => !(decline.scope === 'session' && d.level === decline.level) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn));
   const { effortApprovals: _a, ...rest } = state;
   return { ...rest, ...(approvals.length ? { effortApprovals: approvals } : {}), effortDeclines: [...declines, decline].slice(-ANSWERS_CAP) };

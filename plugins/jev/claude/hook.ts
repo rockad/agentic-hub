@@ -83,6 +83,7 @@ import {
   AGENT_WINDOW_MS,
   ATTEMPT_FALLBACK_WINDOW_MS,
   NO_INTENT,
+  EFFORT_FALLBACK,
   PREFLIGHT_WINDOW_MS,
   STAGED_AGENT_CALLS,
   buildDirective,
@@ -101,6 +102,7 @@ import {
   parseEffortDecline,
   recordDecline,
   recordEffortDecline,
+  resolveEffortDecline,
   effortAskReason,
   gateCostSentence,
   gateMarkerEffort,
@@ -312,10 +314,10 @@ export type ApprovalStore = {
   recordEffort?: (sessionId: string, approval: EffortApproval, config?: ModeChangeConfigLike | null) => EffortApproval | null;
   /** Record a No to the model question (2.3.21): this delegation only (`once`, bound to its turn) or the rest of the session. Absent: a No is not recorded. */
   recordDecline?: (sessionId: string, decline: Decline) => void;
-  /** Record a No to the effort question. */
-  recordEffortDecline?: (sessionId: string, decline: EffortDecline) => void;
-  /** `model`: the model the question's marker named (when it did), so a bare answer is recorded for that model and never for any. */
-  denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number, model?: string) => void;
+  /** Record a No to the effort question; returns what was stored (a session No lowers to the level the question's own No ran at). */
+  recordEffortDecline?: (sessionId: string, decline: EffortDecline, config?: ModeChangeConfigLike | null) => EffortDecline | void;
+  /** `model`: the model the question's marker named (when it did), so a bare answer is recorded for that model and never for any. `noEffort`: the level the question's own No runs at. */
+  denyEffort?: (sessionId: string, level: EffortLevel, nowMs: number, model?: string, noEffort?: EffortLevel) => void;
   /** When the choice question was last prescribed for `model` or a stronger one (epoch ms), or null when there is no note of one. Absent: unknown. */
   deniedAt?: (sessionId: string, model: string) => number | null;
   claimEffort?: (sessionId: string, level: EffortLevel, nowMs: number, model?: string, ectx?: ElevationCtx | null) => EffortApproval | null;
@@ -911,7 +913,8 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     // The question is now prescribed for this level: only an answer after this can record an approval.
     // The marker names the model only with the cost gate (see effortChoiceReason): the denial is noted with the very model it shows.
     const markerModel = effortGate ? (modelAlias(String(effortGate.callModel)) ?? undefined) : undefined;
-    if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs, markerModel));
+    const noLevel = (effortGate ? effortGate.noEffort : EFFORT_FALLBACK) as EffortLevel;
+    if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, found.level, nowMs, markerModel, noLevel));
   };
   if (gateOn && envForced && rawElevation?.kind === 'elevating') {
     // CLAUDE_CODE_SUBAGENT_MODEL_FORCE with the cost gate: the forced model is the user's own instruction, so the model is
@@ -1453,7 +1456,7 @@ function evaluateWorkflowCall(a: {
       const snap = sessionId ? safely(() => deps.approvals?.snapshot?.(sessionId)) : undefined;
       const clause = snap ? effortStoredClause(snap, level, effortModel, a.ectx) : null;
       // Noted with the model the marker shows (none when the question is bare, i.e. has no cost gate).
-      if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs, effortGateInfo?.model));
+      if (sessionId) safely(() => deps.approvals?.denyEffort?.(sessionId, level, nowMs, effortGateInfo?.model, (effortGateInfo ? effortGateInfo.gate.noEffort : EFFORT_FALLBACK) as EffortLevel));
       return finish(
         'denied',
         {
@@ -1465,8 +1468,11 @@ function evaluateWorkflowCall(a: {
       );
     };
     // A No the user already gave (2.3.21): a script cannot be run on another model or effort, so it is denied, but without the question.
-    const declined = (what: string, scope: AnswerScope): WorkflowEvaluation =>
-      finish(
+    // A once No is spent by this denial (the next launch of the turn, as for an Agent call): a script of the same turn that still holds the
+    // model is asked about again, not denied silently for the rest of the turn. Spent by a parallel call since the peek: ask instead.
+    const declined = (what: string, scope: AnswerScope, spend: Parameters<NonNullable<ApprovalStore['consume']>>[1], ask: () => WorkflowEvaluation): WorkflowEvaluation => {
+      if (scope === 'once' && !(sessionId && safely(() => deps.approvals?.consume?.(sessionId, spend, nowMs, a.ectx)))) return ask();
+      return finish(
         'denied',
         {
           verdict: { decision: 'deny', reason: workflowDeclinedReason(what, modelAlias(a.sessionModel) ?? 'the session model', scope), cause: what.startsWith('effort') ? effortCause : modelCause },
@@ -1474,16 +1480,17 @@ function evaluateWorkflowCall(a: {
         },
         { ...highest, decline_scope: scope }
       );
+    };
     const peekModel = (): Approval | null =>
       top && sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, top.requested, nowMs, a.rankCtx, needEffort, a.ectx)) ?? null) : null;
     if (top && !peekModel()) {
       const no = sessionId ? (safely(() => deps.approvals?.peekDecline?.(sessionId, top.requested, a.rankCtx, a.ectx)) ?? null) : null;
-      return no ? declined(modelAlias(top.requested) ?? top.requested, no.scope) : denyModel(top);
+      return no ? declined(modelAlias(top.requested) ?? top.requested, no.scope, { decline: { requested: top.requested, ctx: a.rankCtx } }, () => denyModel(top)) : denyModel(top);
     }
     const effortHit = topEffort && sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs, effortModel, a.ectx)) ?? null) : null;
     if (topEffort && !effortHit) {
       const no = sessionId ? (safely(() => deps.approvals?.peekEffortDecline?.(sessionId, topEffort, a.ectx)) ?? null) : null;
-      return no ? declined(`effort ${topEffort}`, no.scope) : denyEffort(topEffort);
+      return no ? declined(`effort ${topEffort}`, no.scope, { effortDecline: { level: topEffort } }, () => denyEffort(topEffort)) : denyEffort(topEffort);
     }
     const wants = {
       ...(top ? { model: { requested: top.requested, ctx: a.rankCtx, ...(needEffort ? { effort: needEffort } : {}) } } : {}),
@@ -1788,8 +1795,9 @@ function answerElevationQuestion(
         } else {
           if (!deps.approvals.recordDecline) throw new Error('no decline store');
           deps.approvals.recordDecline(sessionId, { model: (read as { model: ClaudeModelAlias }).model, scope: parsed.scope, created_at: nowMs, ...(parsed.scope === 'once' ? { turn } : {}) });
-          // The session model the launches run on: the label names it (the once No); the session No names none, so the session record does.
-          const target = parsed.noTarget ?? modelAlias(safely(() => deps.readSessionModel?.(sessionId)) ?? '') ?? 'the session model';
+          // The launches run on the session model whatever the label's text names (the clamp always uses the session alias); the label's
+          // own name is only a fallback when the session model is not known.
+          const target = modelAlias(safely(() => deps.readSessionModel?.(sessionId)) ?? '') ?? parsed.noTarget ?? 'the session model';
           line = recordedNoLine({ kind, subject, scope: parsed.scope, target });
         }
       } else if (kind === 'effort' && read.marker === 'ok') {
@@ -1803,8 +1811,8 @@ function answerElevationQuestion(
         } else {
           const decline = parseEffortDecline(input, nowMs, turn);
           if (!decline || !deps.approvals.recordEffortDecline) throw new Error('not stored');
-          deps.approvals.recordEffortDecline(sessionId, decline);
-          line = recordedNoLine({ kind, subject, scope: parsed.scope, target: decline.noEffort });
+          const stored = deps.approvals.recordEffortDecline(sessionId, decline, config) ?? decline;
+          line = recordedNoLine({ kind, subject, scope: parsed.scope, target: stored.noEffort });
         }
       }
     } catch {
@@ -2022,10 +2030,15 @@ const approvalStore: ApprovalStore = {
     }),
   recordDecline: (sessionId, decline) =>
     withApprovalsLock(sessionId, () => writeApprovalState(sessionId, recordDecline(readApprovalState(sessionId), decline))),
-  recordEffortDecline: (sessionId, decline) =>
-    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, recordEffortDecline(readApprovalState(sessionId), decline))),
-  denyEffort: (sessionId, level, nowMs, model) =>
-    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteEffortDenied(readApprovalState(sessionId), level, nowMs, model))),
+  recordEffortDecline: (sessionId, decline, config) =>
+    withApprovalsLock(sessionId, () => {
+      const before = readApprovalState(sessionId);
+      const stored = resolveEffortDecline(before, decline, config);
+      writeApprovalState(sessionId, recordEffortDecline(before, stored));
+      return stored;
+    }),
+  denyEffort: (sessionId, level, nowMs, model, noEffort) =>
+    withApprovalsLock(sessionId, () => writeApprovalState(sessionId, noteEffortDenied(readApprovalState(sessionId), level, nowMs, model, noEffort))),
   claimEffort: (sessionId, level, nowMs, model, ectx) =>
     withApprovalsLock(sessionId, () => {
       const { state, approval } = claimEffortApproval(readApprovalState(sessionId), level, nowMs, model, ectx);

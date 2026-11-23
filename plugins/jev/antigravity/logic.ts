@@ -826,12 +826,11 @@ export function declinedDecision(
 export function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
   const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
   const ectx: ElevationCtx = { turn: promptHash, config: ctx.config ?? null };
-  // A No already on record: this delegation (the next launch of the turn) or the rest of the session. A script cannot be clamped, so it
-  // is only peeked (denied while the No stands, without the question); a subagent call is clamped and a `once` No is spent.
+  // A No already on record: this delegation (the next launch of the turn) or the rest of the session. A subagent call is clamped; a script
+  // cannot be, so it is denied without the question. Either way a `once` No is spent by this launch (the next one of the turn is asked
+  // about again, not denied silently for the rest of the turn); a session No stands.
   try {
-    const no = ctx.declineClamp
-      ? approvalStore?.claimDecline?.(sessionId, requestedModel, nowMs, ectx)
-      : approvalStore?.peekDecline?.(sessionId, requestedModel, nowMs, ectx);
+    const no = approvalStore?.claimDecline?.(sessionId, requestedModel, nowMs, ectx);
     if (no) return declinedDecision(ctx, no.scope);
   } catch {
     // An unreadable store: the call is denied below, as for a first attempt.

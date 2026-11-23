@@ -697,14 +697,14 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 - Spec: api 7.1, 7.5, 11.1; D8, D24.
 - Deliverables:
   - `a2a-register start|end`: reads hook JSON, calls `/sessions`, prints the constant `SessionStart` template with the handle validated against the handle regex (api 5.1, including the `~<sid8>` suffix; the model never composes the handle); `end` uses a 1 s limit; exits 0 on every failure.
-  - `a2a-listen`: guards (`CLAUDE_CODE_SESSION_ATTENDED=0`, event not `Stop` or `SessionStart` with `startup` or `resume`, bad `session_id`), 900 s rounds, the status table of api 7.1, marker file so the notice is shown once, exit when the owner process dies, key passed with `curl -K -` (never argv).
+  - `a2a-listen`: guards (`CLAUDE_CODE_SESSION_ATTENDED=0`, event not `Stop`, `UserPromptSubmit` or `SessionStart` with `startup`, `resume` or `clear` (api 11.1: `clear` arms a listener, `compact` does not), bad `session_id`), 900 s rounds, the status table of api 7.1, marker file so the notice is shown once, exit when the owner process dies, key passed with `curl -K -` (never argv).
   - `UserPromptSubmit` hook in the form BP5 selects.
   - `SessionEnd` hook.
 - Acceptance:
   - `shellcheck` clean and runs under `dash`.
   - Against the S1 server: 200 prints `[a2a] N pending. Call a2a_inbox.` on stderr and exits 2; 408 loops; 409 exits 0 silently; 401, 403, 410 write the marker and exit 2 once, the second occurrence is silent; 429 and 5xx back off; reset backoff when the call lasted 10 s or more.
   - While the script runs, `/proc/<pid>/cmdline` of curl and the script never contain the key.
-  - Guard tests: attended=0, bad session id and `clear` or `compact` sources exit 0 at once.
+  - Guard tests: attended=0, a bad session id and the `compact` source exit 0 at once (the `clear` source arms a listener, api 11.1).
   - Owner-pid watch ends the listener within a few seconds of `kill -9` of the parent (scratch parent).
   - Live, USER: an idle interactive session starts a turn from a stub release with latency under 10 s (SP1 T1 criterion); `claude --version` is at or above 2.1.290.
 - Inside S1, not before it (D39), each with its own exit test:

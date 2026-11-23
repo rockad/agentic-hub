@@ -80,6 +80,28 @@ def test_start_registers_and_prints_the_constant_context_with_the_servers_handle
     assert json.loads(req.body) == {"card": CARD, "harness_session_id": SID, "name_hint": "agents-52"}
 
 
+def test_a_successful_start_clears_the_marker_an_earlier_end_left(register, stub, hook_env):
+    """After `--resume` the session lives again: a real 401 of its next listener must be told once,
+    not swallowed by the marker the SessionEnd left (review finding)."""
+    stub.script("/sessions/end", Reply(200, "{}"))
+    stub.script("/sessions", session_reply())
+    env = hook_env(stub.url)
+    run_script(register, ["end"], stdin=hook_json("SessionEnd"), env=env)
+    assert (hook_env.state / f"notice-{SID}").exists()
+    r = run_script(register, ["start"], stdin=hook_json("SessionStart", source="resume"), env=env)
+    assert r.returncode == 0 and r.stdout != ""
+    assert not (hook_env.state / f"notice-{SID}").exists()
+
+
+def test_a_failed_start_keeps_the_marker(register, stub, hook_env):
+    stub.script("/sessions/end", Reply(200, "{}"))
+    stub.script("/sessions", Reply(500, ""))
+    env = hook_env(stub.url)
+    run_script(register, ["end"], stdin=hook_json("SessionEnd"), env=env)
+    run_script(register, ["start"], stdin=hook_json("SessionStart", source="resume"), env=env)
+    assert (hook_env.state / f"notice-{SID}").exists()
+
+
 def test_start_without_a_name_sends_no_name_hint(register, stub, hook_env):
     stub.script("/sessions", session_reply(f"{CARD}/{SID[:8]}~{SID[:8]}"))
     r = run_script(register, ["start"], stdin=hook_json("SessionStart", source="startup"), env=hook_env(stub.url))

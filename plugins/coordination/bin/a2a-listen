@@ -35,11 +35,17 @@
 
 unset A2A_API_KEY
 umask 077
+# stderr is the channel an exit 2 wakes the model with, so it carries only the constant lines below.
+# A shell error (a failed redirection, bad arithmetic) must never reach it: keep the real stderr on
+# fd 3 for those lines and silence fd 2.
+exec 3>&2 2>/dev/null
 
 num() { # value default min max: the value if it is an integer inside [min, max], else the default
   case $1 in
     ''|*[!0-9]*) printf '%s' "$2"; return ;;
   esac
+  # a number too long for shell arithmetic would abort the script: keep the default
+  if [ "${#1}" -gt 9 ]; then printf '%s' "$2"; return; fi
   if [ "$1" -lt "$3" ] || [ "$1" -gt "$4" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
 }
 
@@ -55,11 +61,13 @@ KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
 
 mkdir -p "$STATE" 2>/dev/null || exit 0
 [ -d "$STATE" ] && [ -w "$STATE" ] || exit 0
+# an own directory only: the temp names are predictable (no `test -O` in POSIX sh)
+[ -n "$(find "$STATE" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ] || exit 0
 LOG=$STATE/listen.log
 TMP=$STATE/run.$$
 
 log() { # one line, no hook input and no server body, ever; the log is capped at 256 KiB
-  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then : > "$LOG"; fi
+  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then ( : > "$LOG" ) 2>/dev/null; fi
   printf '%s pid=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*" >> "$LOG" 2>/dev/null
 }
 
@@ -155,6 +163,7 @@ trap cleanup EXIT
 
 # markers of sessions that ended long ago are not needed any more
 find "$STATE" -maxdepth 1 -type f -name 'notice-*' -mtime +7 -exec rm -f {} + 2>/dev/null
+find "$STATE" -maxdepth 1 -type f -name 'run.*' -mtime +1 -exec rm -f {} + 2>/dev/null # left by a killed run
 
 end_session() { # best effort, 1 s limit; the server answers 404 for a session it does not know
   [ -n "$CARD" ] || return 0
@@ -187,7 +196,7 @@ while :; do
   n=$((n + 1))
   t0=$(date +%s)
   rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
-  : > "$TMP.code"
+  ( : > "$TMP.code" ) 2>/dev/null
   # The key goes to curl on stdin as a config line: it never appears in argv, and this script does
   # not export it, so it is not in curl's environment either.
   curl -q -sS --noproxy '*' -o "$TMP.body" -D "$TMP.hdr" -w '%{http_code}' \
@@ -222,7 +231,7 @@ EOF
       if [ -n "$body" ] && [ "${#body}" -le 4 ]; then
         rm -f "$NOTICE"
         log "wake: $body pending, exit 2"
-        printf '[a2a] %s pending. Call a2a_inbox.\n' "$body" >&2
+        printf '[a2a] %s pending. Call a2a_inbox.\n' "$body" >&3
         exit 2
       fi
       log "200 with a body that is not one integer: not waking, treated as a server error"
@@ -232,15 +241,21 @@ EOF
     409)
       log "409 superseded, exit 0"; exit 0 ;;
     401|403|410)
-      if [ "$code" = 410 ] && grep -qi '^x-coord-reason:[[:space:]]*unregistered' "$TMP.hdr" 2>/dev/null \
-         && [ $(( $(date +%s) - t_start )) -lt "$RETRY410" ]; then
-        log "410 unregistered inside the ${RETRY410}s start window, retrying"
-        nap 1; continue
+      # Inside the start window the registration hook may not have landed yet: "unregistered" is
+      # retried for every event; "ended" only for SessionStart, where `--resume` of a session an
+      # earlier SessionEnd closed races the revive of `a2a-register start` (review finding)
+      if [ "$code" = 410 ] && [ $(( $(date +%s) - t_start )) -lt "$RETRY410" ]; then
+        if grep -qi '^x-coord-reason:[[:space:]]*unregistered' "$TMP.hdr" 2>/dev/null \
+           || { [ "$event" = SessionStart ] && grep -qi '^x-coord-reason:[[:space:]]*ended' "$TMP.hdr" 2>/dev/null; }; then
+          log "410 inside the ${RETRY410}s start window, retrying"
+          nap 1; continue
+        fi
       fi
       if [ -e "$NOTICE" ]; then log "$code again, marker present, exit 0"; exit 0; fi
-      : > "$NOTICE"
+      # created exclusively, so two listeners that fail together give one notice
+      ( set -C; : > "$NOTICE" ) 2>/dev/null || { log "$code, marker taken by another listener, exit 0"; exit 0; }
       log "$code, marker written, exit 2 once"
-      printf '[a2a] wake listener stopped: the server answered %s. Check the coordination server and the API key.\n' "$code" >&2
+      printf '[a2a] wake listener stopped: the server answered %s. Check the coordination server and the API key.\n' "$code" >&3
       exit 2 ;;
     429|5[0-9][0-9]|000) ;;
     *)

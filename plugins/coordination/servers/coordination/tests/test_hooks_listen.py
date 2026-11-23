@@ -229,11 +229,64 @@ def test_410_unregistered_is_final_at_once_with_a_zero_window(listen, stub, hook
     assert len(stub.requests("/wake/listen")) == 1
 
 
-def test_410_ended_is_never_retried_even_inside_the_window(listen, stub, hook_env):
+def test_410_ended_on_a_stop_or_prompt_event_is_never_retried(listen, stub, hook_env):
     stub.script("/wake/listen", listen_reply(410, "", **{"X-Coord-Reason": "ended"}))
-    r = run_script(listen, stdin=hook_json("SessionStart", source="startup"), env=hook_env(stub.url))
+    r = run_script(listen, stdin=stop_input(), env=hook_env(stub.url))
     assert r.returncode == 2 and r.stderr == stopped_text(410)
     assert len(stub.requests("/wake/listen")) == 1
+
+
+def test_410_ended_at_session_start_is_retried_until_the_revive_lands(listen, stub, hook_env):
+    """`claude --resume` of a session an earlier SessionEnd closed: the listener can park before
+    `a2a-register start` has revived the session, so the server answers 410 ended (review finding)."""
+    ended = listen_reply(410, "", **{"X-Coord-Reason": "ended"})
+    stub.script("/wake/listen", ended, ended, listen_reply(200, "2"))
+    r = run_script(listen, stdin=hook_json("SessionStart", source="resume"), env=hook_env(stub.url))
+    assert r.returncode == 2 and r.stderr == stderr_of_wake(2)
+    assert len(stub.requests("/wake/listen")) == 3
+    assert not (hook_env.state / f"notice-{SID}").exists()
+
+
+def test_410_ended_at_session_start_is_final_after_the_window(listen, stub, hook_env):
+    stub.script("/wake/listen", listen_reply(410, "", **{"X-Coord-Reason": "ended"}))
+    r = run_script(listen, stdin=hook_json("SessionStart", source="startup"), env=hook_env(stub.url, A2A_410_RETRY_S="0"))
+    assert r.returncode == 2 and r.stderr == stopped_text(410)
+    assert len(stub.requests("/wake/listen")) == 1
+
+
+# ---- shell errors never reach stderr, which an exit 2 shows the model (review finding) -------------
+
+
+def test_an_unwritable_log_does_not_put_shell_errors_in_the_wake_text(listen, stub, hook_env):
+    stub.script("/wake/listen", listen_reply(200, "3"))
+    hook_env.state.mkdir(mode=0o700, exist_ok=True)
+    log = hook_env.state / "listen.log"
+    log.write_text("")
+    log.chmod(0)
+    try:
+        r = run_script(listen, stdin=stop_input(), env=hook_env(stub.url))
+    finally:
+        log.chmod(0o600)
+    assert r.returncode == 2
+    assert r.stderr == stderr_of_wake(3), "only the constant stub, no path and no shell error"
+
+
+def test_an_oversized_unwritable_log_is_a_silent_exit_not_a_false_wake(listen, stub, hook_env):
+    stub.script("/wake/listen", listen_reply(408), listen_reply(408), listen_reply(409))
+    hook_env.state.mkdir(mode=0o700, exist_ok=True)
+    log = hook_env.state / "listen.log"
+    log.write_text("x" * 300_000)
+    log.chmod(0o400)
+    r = run_script(listen, stdin=stop_input(), env=fast(hook_env, stub.url), timeout=30)
+    assert r.returncode == 0 and r.stderr == "" and r.stdout == ""
+
+
+def test_a_number_too_long_for_shell_arithmetic_keeps_the_default(listen, stub, hook_env):
+    stub.script("/wake/listen", listen_reply(200, "1"))
+    r = run_script(listen, stdin=stop_input(), env=hook_env(stub.url, A2A_ROUND_S="9" * 25))
+    assert r.returncode == 2 and r.stderr == stderr_of_wake(1)
+    (req,) = stub.requests("/wake/listen")
+    assert req.headers["x-coord-wait"] == "900"
 
 
 # ---- 429, 5xx, no answer: back off, never wake ---------------------------------------------------

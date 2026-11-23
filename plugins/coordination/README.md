@@ -169,7 +169,7 @@ What changed on 2026-11-04:
 
 - DDR-004 was accepted, which lifts the daemon and container restrictions.
 - ACP was removed from the plan entirely.
-- The file channel (`~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files) is frozen, with one exception: Antigravity may still use it for research on this work. Go-live is after S3; then a one-time migration imports those files into this plugin's store, a tar backup is taken, and the channel is deleted.
+- The file channel (`~/.agents/custom/bridge-v2-coordination-channel.md` and the other `~/.agents/custom` channel files) is frozen, with one exception: Antigravity may still use it for research on this work. Go-live is after S3; then a one-time migration imports those files into this plugin's store, a tar backup is taken, and the channel is deleted.
 - The six research clones in `~/projects` were deleted on 2026-11-04; spec references use pinned GitHub URLs (plan section 8).
 - The old Phase 2 ledger forks, Phase 3 swarmail and Phase 4 ACP are superseded.
 

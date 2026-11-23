@@ -60,7 +60,7 @@ An A2A 1.0.1 coordination server (Python, `a2a-python` >=1.3.0, uv, Docker) on p
 
 ## The frozen file channel
 
-- `~/.agents/bridge-v2-coordination-channel.md` and the other `~/.agents` channel files are frozen. Nobody uses them.
+- `~/.agents/custom/bridge-v2-coordination-channel.md` and the other `~/.agents/custom` channel files are frozen. Nobody uses them.
 - Do not post to them, append to them or poll them.
   - **One exception (decision 14): Antigravity may still use the channel for research on this work.** No other agent does.
 - Go-live is after S3, the public stage. Then a one-time migration imports the files into the plugin's store, a tar backup is taken, and the channel is deleted. That is a later task and needs the user's go.

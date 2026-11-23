@@ -44,6 +44,7 @@ The rules in this file apply on every question; the references hold examples and
 > **Same-Reply Invariant.** A `## Question N (of Total)` heading and the interactive question tool call MUST appear in the same assistant reply. Never end a turn after `> **Recommendation:**` without the call.
 > - Antigravity: `ask_question`. Claude Code: `AskUserQuestion` with `"multiSelect": false`. OpenCode: `question`.
 > - Pickers render only when the tool is called; prose alone degrades to static text and the user has to type answers.
+> - Never print numbered text options when a question tool exists; numbered text options belong only in the Terminal CLI fallback.
 > - Use the Terminal CLI fallback only when no question tool is exposed.
 > - Antigravity also needs the clarify Stop hook (see `references/antigravity.md` and the plugin README).
 
@@ -105,6 +106,8 @@ Example: `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Archite
 - **Recommendation line:**
 
   > **Recommendation:** **Option A: <name>** — <one clause explaining why>.
+
+- **Next cue & tool call:** immediately after the Recommendation, print a one-line cue (`→ next: call the question tool now for Question N`), then immediately invoke the question tool in the same reply.
 
 Mode B's full format (Door Type and Under the Hood header, 4-question framing, example option) is in `references/plain-mode.md`. Read it before the first question in Mode B.
 

@@ -2,7 +2,7 @@
 
 Read this once before the first question when the `ask_question` tool exists. The core `SKILL.md` rules still apply on every question: the Per-fork invariant, the Same-Reply Invariant, the option naming rule and the counter prefix rule.
 
-Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. Always invoke `ask_question` in the same reply as `## Question 1 (of Total)` — do not end Turn 1 after the recommendation without calling the tool. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
+Uses `ask_question`. The recommended option (Option A) is listed first and prefixed with `(Recommended)`. The question string is prefixed with `[Question N of Total]`. Always invoke `ask_question` in the same reply as `## Question 1 (of Total)` — never end Turn 1 after codebase discovery and the recommendation without calling `ask_question`. The UI automatically prepends numbers (`1.`, `2.`, `3.`) and appends an `Other` option:
 
 **Mode A (Standard Architecture):**
 ```json
@@ -38,20 +38,6 @@ ask_question({
 })
 ```
 
-*What the user sees in the Antigravity UI picker (Mode B):*
-```
-1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
-2. Option B: The Direct Sharpie Label (Denormalized JSONB)
-3. Option C: The Comma List on the Box (Delimited String)
-4. Other (the Antigravity CLI shows it as `Write-in...`)
-```
+The Antigravity UI automatically numbers the picker options and appends an `Other` option (rendered as `Write-in...` in the Antigravity CLI). Never print numbered text options in prose—always pass the options to `ask_question` instead.
 
-**Antigravity `Stop` hook (required; setup in the plugin README, `../../../README.md`)** (`plugins/clarify/hooks/clarify-stop-check.sh`, in the plugin's `hooks/` directory, not next to `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:
-```json
-{ "clarify-require-tool-call": {
-  "enabled": true,
-  "Stop": [{ "type": "command", "command": "~/.agents/skills/clarify/hooks/clarify-stop-check.sh", "timeout": 5 }]
-} }
-```
-
-The skill install does not register the hook. See the plugin README (`../../../README.md`) for the full setup and verification steps. The registration path in the example above is the old standalone-skill path and is being updated for the plugin layout.
+**Antigravity `Stop` hook:** The plugin bundles `hooks.json` at the plugin root to register `hooks/clarify-stop-check.mjs` (with the `clarify-stop-check.sh` wrapper) automatically on `agy plugin install`. It catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and forces the missing call. See the plugin README (`../../../README.md`) for details and verification steps.

@@ -1,0 +1,12 @@
+{
+  "clarify-require-tool-call": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/clarify-stop-check.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

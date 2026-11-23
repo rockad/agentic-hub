@@ -3,7 +3,7 @@
 A skill that walks a non-trivial design through its open decisions ("forks"), one question at a time. Each question gets a full write-up: context, argued options with pros and cons, and a recommendation. Each answer is taken through the harness's interactive question tool.
 
 - `/clarify`, `/grill-me` run Mode A, the standard architecture mode.
-- `/clarify:plain` and `/clarify:eli5` (`commands/`) run Mode B, plain English with analogies. They are thin commands; the protocol lives in the skill. The old `/cplain` and `/celi5` standalone skills are gone.
+- `/clarify:plain` and `/clarify:eli5` (`commands/`) in Claude Code, or `/clarify --plain` and `/clarify --eli5` in Antigravity, run Mode B, plain English with analogies. In Claude Code they are thin commands; in Antigravity they pass arguments to `/clarify`; the protocol lives in the skill. The old `/cplain` and `/celi5` standalone skills are gone.
 
 Works in Claude Code, Google Antigravity and OpenCode.
 
@@ -11,66 +11,45 @@ Works in Claude Code, Google Antigravity and OpenCode.
 
 - `SKILL.md`: the core protocol, always loaded. It holds the rules that apply on every question (same-reply, per-fork, option naming, counter prefix, locked fork count, terse styles, Claude Code dialog rules), target resolution, the fork taxonomy, the Mode A step format, the CLI fallback, after-answer order and anti-patterns.
 - `references/antigravity.md`, `references/claude-code.md`, `references/opencode.md`: the dialog format and examples for one harness. The session reads only its own.
-- `references/plain-mode.md`: the Mode B (`/cplain`, `/celi5`) step format, decision table and artifact. Read only in Mode B.
+- `references/plain-mode.md`: the Mode B (`/clarify:plain`, `/clarify:eli5`, `--plain`, `--eli5`) step format, decision table and artifact. Read only in Mode B.
 - `references/closing.md`: the decision table, artifact, workstream table and execution handoff. Read only after the last fork.
-- `hooks/clarify-stop-check.sh`: the Antigravity Stop hook, required in Antigravity (see below).
+- `hooks.json`: the Antigravity root hook manifest that auto-registers `clarify-require-tool-call` on `Stop`.
+- `hooks/clarify-stop-check.mjs` + `hooks/clarify-common.mjs`: the Antigravity Stop hook and shared transcript parser (with `hooks/clarify-stop-check.sh` kept as a compatibility wrapper; see below).
 
 ## Install
 
+Clarify is a plugin, no longer a standalone skill, so `npx skills add --skill clarify` (and `cplain`, `celi5`) no longer works.
+
 - **Claude Code marketplace:** `/plugin install clarify@agentic-hub`. This installs the skill, the `/clarify:plain` and `/clarify:eli5` commands and the Claude Code ask hook below, and a new version on `main` reaches you when the plugin updates. If you had installed the skill with `npx skills` earlier, remove that copy (`~/.claude/skills/clarify` and `~/.agents/skills/clarify`) so the skill does not load twice.
+- **Antigravity plugin install (from `main`):**
+  ```bash
+  agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/clarify
+  ```
+  Or from a local checkout:
+  ```bash
+  agy plugin install /path/to/agentic-hub/plugins/clarify
+  ```
+  Installing copies the plugin to `~/.gemini/config/plugins/clarify/` and auto-registers the Stop hook via `hooks.json`. To update from `main`, re-run `agy plugin install`.
+- **Antigravity upgrade cleanup:** if you previously installed the standalone skill or registered the Stop hook manually, remove `~/.agents/skills/clarify` and delete the old `clarify-require-tool-call` entry from `~/.gemini/config/hooks.json` so neither the skill nor the hook loads twice.
 
-Install from `main`. Clarify is a plugin, no longer a standalone skill, so `npx skills add --skill clarify` (and `cplain`, `celi5`) no longer works. Antigravity: the Antigravity side is updating its install and Stop hook paths, which used to be `~/.agents/skills/clarify/hooks/`; until then the Antigravity steps below are out of date.
+## Antigravity: the Stop hook (plugin install)
 
-## Antigravity: enable the Stop hook (required)
+In Antigravity, the model can end a reply with a question's full write-up printed but **no `ask_question` call**, so no picker appears. This happens when the skill used tools (codebase discovery) before Question 1. Rules in `SKILL.md` alone did not fix it in testing; see issue #79. `hooks/clarify-stop-check.mjs` (registered automatically via `hooks.json` on plugin install) catches that case and makes the agent continue and call `ask_question`.
 
-In Antigravity, the model can end a reply with a question's full write-up printed but **no `ask_question` call**, so no picker appears. This happens when the skill used tools (codebase discovery) before Question 1. Rules in `SKILL.md` alone did not fix it in testing; see issue #79. `hooks/clarify-stop-check.sh` catches that case and makes the agent continue and call `ask_question`.
-
-The skill install does **not** register the hook. Add this entry to `~/.gemini/config/hooks.json`, merging it with any hooks already there:
-
-```json
-{
-  "clarify-require-tool-call": {
-    "enabled": true,
-    "Stop": [
-      {
-        "type": "command",
-        "command": "~/.agents/skills/clarify/hooks/clarify-stop-check.sh",
-        "timeout": 5
-      }
-    ]
-  }
-}
-```
-
-With `jq`, keeping existing hooks:
+Verify the installed plugin and hook registration:
 
 ```bash
-f=~/.gemini/config/hooks.json
-jq '. + {"clarify-require-tool-call": {"enabled": true, "Stop": [{"type": "command", "command": "~/.agents/skills/clarify/hooks/clarify-stop-check.sh", "timeout": 5}]}}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+agy plugin list --json | jq '.[] | select(.name == "clarify") | {enabled, skills, hooks}'
 ```
 
 What the hook does:
-- It acts only when a reply ends without a tool call (`terminationReason: "NO_TOOL_CALL"`) right after a `## Question N` heading in a clarify session. It then returns `{"decision":"continue", ...}`.
-- A clarify session starts at a `/clarify` (or alias, any case) command, a `Target resolved:` line, an `Identified N orthogonal` or `Decomposing into N orthogonal` line, or an `ask_question` call tagged `[Question N of M]` or `[Fork N of M]`. Any mention of the command arms it, including in unrelated prose.
-- It ends at a `Decision Table` heading (any case; optional number, emoji, `Final`, quote marker or bold) in a reply with no `## Question` heading, once the last question has been asked (`N >= M`), or when a `Gated Execution` heading shows the run ended early. It also closes if no question was tracked yet. A reply that itself calls `ask_question` never closes the session. `Fork map revised: N → M` updates the total. A table or artifact recap in the middle of a series does not end it. A run that stops early with only the table (no gate) leaves the session armed.
-- Outside the session the hook stays silent. Headings inside fenced code blocks are ignored (CommonMark fence rules, CRLF handled). Only `## Question N (of M)` or `## Question N —` headings count.
-- It also ends the session when the user abandons the series (#82). The user's message after the last question (the `A1: ...` answer of an `ask_question`, including a write-in, or a typed message) counts as a cancel when it opens with an explicit cancel phrase that ends the sentence or leads into a new request (`forget that.`, `never mind, write ...`, `cancel`, `stop`, `let's stop here`, `I'm done`, `that's enough`, `skip clarify`), or when it is a different slash command (`/jev status`). A phrase inside an ordinary answer (`never mind the cost, go with A`, `stop using Redis`) is still an answer. A new `/clarify` or a tagged `ask_question` arms the hook again.
-- Safety net: after 2 consecutive interventions with no `ask_question` call and no user turn in between, the hook stands down (returns `{}`) and prints one line on stderr (`standing down after N consecutive interventions ...`). The count comes from the hook's own earlier `Stop hook blocked termination` messages in the transcript. It resets on an `ask_question` call and on a user turn. A genuine stall is one intervention away from being fixed, so the cap does not weaken the #79 fix.
-- Known gaps (#82): a "new unrelated request" that is not a slash command and is not phrased as a cancel (for example `now write me an FAQ`) is not recognised, so the first `## Question N` reply after it still draws up to 2 interventions. The cancel phrase list is English only. Antigravity writes the hook's own block messages to the transcript before the next model call (verified on live runs), so the cap works. The Stop payload keys seen on Antigravity 1.5.x are `artifactDirectoryPath`, `conversationId`, `cwd`, `error`, `executionNum`, `fullyIdle`, `hookEventName`, `lastUserInput`, `modelName`, `terminationReason`, `transcriptPath` and `workspacePaths`; 1.5.14 also sends `continuationActive`, so the check on it stays. `transcriptPath` is `transcript_full.jsonl`, which is never truncated. Re-check the key list on the version in use.
-- An empty answer line (`A1: `, the picker skipped with Esc) counts as leaving the series.
-- Tests set `CLARIFY_HOOK_STRICT=1` so a broken jq program exits 3 instead of failing open. Normal use never sets it.
-- `continuationActive` alone did not prevent a loop in live run E8 (17 interventions in a row on an abandoned series), which is why the cap above exists.
-- It fails open (returns `{}`) if `jq` or the transcript is missing.
-- It needs `bash` and `jq`. It takes about 15 ms on a typical transcript and about 200 ms on an 11 MB one.
 
-Check it:
-
-```bash
-jq '."clarify-require-tool-call".enabled' ~/.gemini/config/hooks.json   # true
-test -x ~/.agents/skills/clarify/hooks/clarify-stop-check.sh && echo ok
-```
-
-To turn it off, set `"enabled": false`, or delete the `clarify-require-tool-call` entry.
+- **What it catches:** acts only when a reply ends without a tool call (`terminationReason: "NO_TOOL_CALL"`) right after a `## Question N` heading (`## Question N (of M)` or `## Question N —`, ignoring fenced code blocks) in an active clarify session, returning `{"decision":"continue", ...}` so the agent calls `ask_question`.
+- **When it arms and disarms:** arms on `/clarify` (or `/grill-me`, `/clarify:plain`, `/clarify:eli5`, etc.), `Target resolved:`, `Identified N orthogonal` / `Decomposing into N orthogonal`, or a tagged `ask_question` (`[Question N of M]` / `[Fork N of M]`); disarms on a closing `Decision Table` heading (once `N >= M`, `Gated Execution`, or if no question was tracked), an explicit cancel phrase or different slash command (#82), or an empty `A1: ` answer (Esc).
+- **2-intervention stand-down cap:** after 2 consecutive `Stop hook blocked termination` interventions with no `ask_question` call and no user turn in between, the hook stands down (`{}`) and logs one line to stderr; the counter resets on `ask_question` or a user turn (`continuationActive` alone was insufficient in live run E8).
+- **Fail-open design:** stays silent (`{}`) outside clarify sessions or if the transcript is missing or unreadable (tests set `CLARIFY_HOOK_STRICT=1` to exit non-zero on parser errors instead).
+- **Runtime requirement:** requires `node`; runs `hooks/clarify-stop-check.mjs` using the shared parser in `hooks/clarify-common.mjs` (with `hooks/clarify-stop-check.sh` kept as a compatibility wrapper).
+- **Verified Stop payload:** tested against Antigravity `1.5.15`'s 13-key Stop payload (`artifactDirectoryPath`, `continuationActive`, `conversationId`, `cwd`, `error`, `executionNum`, `fullyIdle`, `hookEventName`, `lastUserInput`, `modelName`, `terminationReason`, `transcriptPath` pointing to `transcript_full.jsonl`, `workspacePaths`).
 
 OpenCode needs no hook. Claude Code has its own hook, below.
 

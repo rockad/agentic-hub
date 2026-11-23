@@ -1,13 +1,12 @@
 {
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "clarify",
+  "displayName": "Clarify",
   "version": "2.0.0",
   "description": "Walk a non-trivial design through its forks one question at a time, with trade-offs and explicit recommendations. Also /grill-me.",
   "author": {
     "name": "Aleksandr Korolev"
   },
-  "skills": [
-    "skills/clarify"
-  ],
   "keywords": [
     "clarify",
     "design",

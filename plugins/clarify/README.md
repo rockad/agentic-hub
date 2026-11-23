@@ -59,7 +59,8 @@ Rules alone stopped holding in long sessions: after many turns or a compaction, 
 
 - It acts only on a clarify question, whose text starts with `[Question N of M]` or `[Fork N of M]`. Other questions pass untouched.
 - It looks at the assistant text since the last user entry (a prompt or a tool result). With no `## Question N` heading there, it denies the call and tells the model to print the full step and ask again.
-- It denies each question number once per session. The transcript is written asynchronously and can lag, so a missing heading may be a false alarm; the retry passes, so the worst case is one extra round trip and it cannot loop.
+- **Transcript lag.** Claude Code writes the transcript asynchronously, so when the hook fires, the write-up the model just printed may not be in it yet. A live run showed this: every fork that had its write-up was denied once. The hook therefore judges only once the transcript already holds the `tool_use` entry of this very call (the payload's `tool_use_id`); it polls up to about 2 seconds for it, and if it never appears the call passes (fail open).
+- It denies each question number once per user prompt, not once per session, so a second series in a long session is checked again. The retry passes, so a wrong verdict can still cost at most one round trip and cannot loop.
 - It fails open if `jq` or the transcript is missing. It needs `bash` and `jq`.
 - Tests: `scripts/test-clarify-ask-hook.sh`. It only runs when the skill is installed as the plugin; a plain `npx skills` copy has no Claude Code hook.
 
@@ -83,6 +84,7 @@ scripts/check-clarify-transcript.sh --format antigravity \
 - It fails a question that has no `## Question N` write-up before it, a Claude Code description under 120 characters, an empty preview, or a fork count that changes without a `Fork map revised` notice.
 - In Antigravity, it also fails a question heading with no `ask_question` call in the same reply.
 - It warns on a Claude Code preview without the `→ next:` line.
+- In Claude Code transcripts, a question call that the ask hook denied is reported as `DENIED` and counted in `denied=N` at the end of the summary line, not as a result; the retry after it counts the write-up printed before the denied attempt. So `failed` describes what the user saw, and `denied` shows how often the hook had to step in (a high count on a session where every write-up exists points at transcript lag, a high count with missing write-ups at a skill that is not being followed).
 - Exit codes: `0` all pass, `1` a failure, `2` no clarify questions found, `3` usage error.
 
 Background and test history: `docs/plans/clarify-claude-code-option-explanations.md` and issue #79.

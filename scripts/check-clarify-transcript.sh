@@ -125,6 +125,25 @@ def hdr: [ (. // "") | capture("^\\s*(?<k>Fork|Q)\\s*(?<n>[0-9]+)\\s*/\\s*(?<m>[
 def blank: ((. // "") | tostring | gsub("\\s"; "")) == "";
 def items: (.message.content // []) | if type == "array" then . else [] end;
 
+# A question call is judged when the next user entry arrives. A call the clarify ask hook
+# denied is not a result: it is reported as DENIED (the hook did its job and the model
+# retried), so the counts describe what the user actually saw.
+def settle($denied):
+  if .pend == null then .
+  elif $denied then
+    .denied += 1
+    | .out += ["DENIED \(.pend.name): blocked by the clarify hook, retried (line \(.pend.line))"]
+    | .pend = null
+  else
+    .checked += 1
+    | .failed += (if (.pend.why | length) > 0 then 1 else 0 end)
+    | .warned += (.pend.warn | length)
+    | .out += [ if (.pend.why | length) > 0
+                then "FAIL \(.pend.name): \(.pend.why | join("; ")) (line \(.pend.line))"
+                else "PASS \(.pend.name) (line \(.pend.line))" end ] + .pend.warn
+    | .pend = null
+  end;
+
 def check($line; $in; $st):
   ($in.questions // []) as $qs
   | ($qs[0].header | hdr) as $h
@@ -153,20 +172,23 @@ def check($line; $in; $st):
                    | test("^\\s*→ next:") | not)
           | "WARN \($name): preview without \($sq)→ next:\($sq) line (\(.label // "?"))" ] as $warn
       | $st
-      | .checked += 1
-      | .failed += (if ($why | length) > 0 then 1 else 0 end)
-      | .warned += ($warn | length)
-      | .out += [ if ($why | length) > 0
-                  then "FAIL \($name): \($why | join("; ")) (line \($line))"
-                  else "PASS \($name) (line \($line))" end ] + $warn
+      | settle(false)
+      | .pend = {name: $name, line: $line, why: $why, warn: $warn}
       | .prev = $m
       | .rev = ""
     end;
 
 reduce (inputs | fromjson? | select(type == "object")) as $e
-  ({line: 0, text: "", rev: "", prev: null, checked: 0, failed: 0, warned: 0, out: []};
+  ({line: 0, text: "", rev: "", prev: null, checked: 0, failed: 0, warned: 0, denied: 0, pend: null, out: []};
    .line += 1
-   | if $e.type == "user" then .text = ""
+   | if $e.type == "user" then
+       # The next user entry after a question call is its tool result: an answer, or the
+       # clarify ask hook denying the call (which the model then retries with a write-up).
+       ([ $e | items[] | select(type == "object" and .type == "tool_result") | (.content | tostring) ]
+        | any(test("PreToolUse:AskUserQuestion hook error: clarify:"))) as $denied
+       | settle($denied)
+       # After a denial the retry follows the same write-up, so the text is kept.
+       | (if $denied then . else .text = "" end)
      elif $e.type == "assistant" then
        reduce ($e | items[]) as $c (.;
          if $c.type == "text" then
@@ -175,7 +197,8 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
            check(.line; ($c.input // {}); .)
          else . end)
      else . end)
-| (.out[], "checked=\(.checked) failed=\(.failed) warned=\(.warned)")
+| settle(false)
+| (.out[], "checked=\(.checked) failed=\(.failed) warned=\(.warned) denied=\(.denied)")
 '
 
 if [ "$format" = "antigravity" ]; then

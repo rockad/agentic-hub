@@ -82,7 +82,11 @@ input=$(head -c 1048581 2>/dev/null | tr '\n\r\t' '   ')
 # newline is served. Reading 4 bytes more than that, and refusing a read that fills them, means a cut
 # input whose cut happens to land on a space is still refused.
 [ "${#input}" -le 1048580 ] || silent
-input=${input%"${input##*[![:space:]]}"}
+i=0 # strip at most the 4 trailing white-space bytes read above: a bounded loop, not a pattern strip, which is quadratic on a long run
+while [ "$i" -lt 4 ]; do
+  case $input in *[[:space:]]) input=${input%?} ;; *) break ;; esac
+  i=$((i + 1))
+done
 [ "${#input}" -le 1048576 ] || silent
 
 conv=$(printf '%s' "$input" | grep -o '"conversationId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 |

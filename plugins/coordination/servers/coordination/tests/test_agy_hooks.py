@@ -864,3 +864,19 @@ def test_the_bin_directory_holds_no_stop_hook_script_of_this_stream():
     bin_dir = script(SESSION).parent
     mine = sorted(p.name for p in bin_dir.glob("a2a-agy-*"))
     assert mine == [PENDING, SESSION]  # no stop or park script ships for agy (D9, Y8)
+
+
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+@pytest.mark.parametrize("run_of", [100_000, 1_000_000])
+def test_a_long_run_of_trailing_white_space_is_not_a_slow_path(stub, env, name, run_of):
+    """The first version stripped trailing white space with a pattern strip, quadratic in the run:
+    50,000 spaces took about 20 s and about 1 MiB did not finish. The strip is a bounded loop now."""
+    import time
+
+    stub.pending = Reply(200, announce_body(5))
+    event = "PreInvocation" if name == PENDING else "SessionStart"
+    started = time.monotonic()
+    result = run_hook(name, hook_input_of_size(2000, event=event) + " " * run_of, env)
+    assert time.monotonic() - started < 5
+    assert (result.code, result.err) == (0, "")
+    assert result.out == (pending_line(5) if name == PENDING else session_line(HANDLE, 5))

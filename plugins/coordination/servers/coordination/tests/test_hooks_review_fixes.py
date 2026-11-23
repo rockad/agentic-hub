@@ -1,6 +1,8 @@
 """S1-CLAUDE, follow-up fixes after the reviews of PR #94 (WS0a): `bin/a2a-listen`, `bin/a2a-register`
-and `bin/a2a-pending` under dash against the stub HTTP server. No Docker needed. Each test is written
-to fail against the scripts of PR #94 and pass after the fix.
+and `bin/a2a-pending` under dash against the stub HTTP server. No Docker needed. Most tests are written
+to fail against the scripts of PR #94 and pass after the fix; a few guard behaviour that was already
+right (the six concurrent listeners, a Stop that keeps its marker, the /proc path, the 410 retry for
+a Stop without a marker) and are named as such.
 
 - 1  a number with a leading zero keeps the default (dash reads 08 and 09 as bad octal);
 - 2  only the two documented paths may exit 2 (the INTENDED2 guard turns a shell error into exit 0);
@@ -470,3 +472,20 @@ def test_pending_prints_no_shell_error_when_its_stdout_is_closed(pending, stub, 
     )
     assert r.returncode == 0 and r.stderr == ""
     assert len(stub.requests("/wake/pending")) == 1
+
+
+@pytest.mark.parametrize("value", ["08", "09", "010"])
+def test_a_retry_after_with_a_leading_zero_is_ignored_not_read_as_octal(listen, stub, hook_env, value):
+    """`Retry-After: 08` reached `left=$((left - POLL))` as `08`, a bad octal that kills dash (exit 2,
+    then the EXIT guard's silent exit 0): the listener must stay up and use its own backoff."""
+    stub.script("/wake/listen", listen_reply(503, "", **{"Retry-After": value}))
+    proc = start_script(listen, stdin=stop_input(), env=hook_env(stub.url))
+    try:
+        wait_for(lambda: any("backing off" in line for line in log_lines(hook_env)), 8, "the first back-off")
+        (line,) = [x for x in log_lines(hook_env) if "backing off" in x]
+        assert line.endswith("backing off 1s"), line
+        assert proc.poll() is None, "the listener is still running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=10)
+        kill_quietly(proc)

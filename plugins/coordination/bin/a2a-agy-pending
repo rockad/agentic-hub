@@ -82,7 +82,11 @@ input=$(head -c 1048581 2>/dev/null | tr '\n\r\t' '   ')
 # 4 bytes more than that, and refusing a read that fills them, means a cut input whose cut happens
 # to land on a space is still refused.
 [ "${#input}" -le 1048580 ] || nothing
-input=${input%"${input##*[![:space:]]}"}
+i=0 # strip at most the 4 trailing white-space bytes read above: a bounded loop, not a pattern strip, which is quadratic on a long run
+while [ "$i" -lt 4 ]; do
+  case $input in *[[:space:]]) input=${input%?} ;; *) break ;; esac
+  i=$((i + 1))
+done
 [ "${#input}" -le 1048576 ] || nothing
 # The first "conversationId" in the text wins. The known keys of the input are scalars or string
 # arrays (SP3 P2), so a same-named key in a nested object does not occur today; this is an assumption.

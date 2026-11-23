@@ -302,6 +302,7 @@ EOF
   # 429, 5xx, no answer: back off, never wake. A long call resets the backoff.
   [ "$dur" -ge "$RESET" ] && backoff=1
   ra=$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$TMP.hdr" 2>/dev/null | head -n 1)
+  ra=$(num "$ra" 0 0 3600) # a leading zero or a huge value must not reach shell arithmetic
   delay=$backoff
   [ -n "$ra" ] && [ "$ra" -gt "$delay" ] && delay=$ra
   [ "$delay" -gt "$BMAX" ] && delay=$BMAX

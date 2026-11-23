@@ -57,20 +57,28 @@ fi
 
 if [ -n "$allowed" ]; then
   # The classname of each skipped testcase: a <skipped> element sits inside the nearest preceding
-  # <testcase ...> tag.
+  # <testcase ...> tag. A module-level skip (pytest.skip(allow_module_level=True)) has an empty
+  # classname and the module path in name: that name is used. Anything unreadable is "?", never allowed.
   skips=$(printf '%s' "$flat" | grep -oE '<testcase [^>]*>|<skipped[ />]' | awk '
-    /^<testcase / { cls = "?"; if (match($0, / classname="[^"]*"/)) { cls = substr($0, RSTART + 12, RLENGTH - 13) } next }
+    /^<testcase / {
+      cls = ""
+      if (match($0, / classname="[^"]*"/)) { cls = substr($0, RSTART + 12, RLENGTH - 13) }
+      if (cls == "" && match($0, / name="[^"]*"/)) { cls = substr($0, RSTART + 7, RLENGTH - 8) }
+      if (cls == "") { cls = "?" }
+      next }
     /^<skipped/ { print cls }') || true
   found=0
-  [ -z "$skips" ] || found=$(printf '%s\n' "$skips" | wc -l)
+  [ -z "$skips" ] || found=$(printf '%s\n' "$skips" | wc -l | tr -d ' ')
   [ "$found" = "$skipped" ] || fail "$skipped tests skipped but $found skipped testcases could be read, so their modules cannot be checked"
   offenders=
-  for cls in $skips; do
+  while IFS= read -r cls; do
+    [ -n "$cls" ] || continue
+    # a skip inside a test class has the classname module.Class: the module decides
     case " $allowed " in
-      *" $cls "*) ;;
+      *" $cls "*|*" ${cls%.*} "*) ;;
       *) offenders="$offenders$cls"$'\n' ;;
     esac
-  done
+  done <<<"$skips"
   if [ -n "$offenders" ]; then
     echo "FAIL: skipped tests in modules that are not allowed to skip (allowed: $allowed):" >&2
     printf '%s' "$offenders" | sort | uniq -c >&2

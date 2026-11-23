@@ -197,3 +197,45 @@ def test_the_real_junit_file_of_a_one_test_project_with_one_skip(tmp_path):
     assert other.returncode == 1 and "test_one" in other.stderr
     assert gate(xml, 0, 2).returncode == 1
     assert gate(xml, 1, 3).returncode == 1
+
+
+def test_a_module_level_skip_is_attributed_to_its_module_not_dropped(tmp_path):
+    """pytest.skip(allow_module_level=True) writes an empty classname and the module path in name. The
+    first version printed an empty line for it, counted it, and then let it pass the allowlist."""
+    case = (
+        '<testcase classname="" name="tests.test_modskip" time="0.000">'
+        '<skipped type="pytest.skip" message="why">tests/test_modskip.py:1: why</skipped></testcase>'
+    )
+    body = skip_case("tests.test_compose") + skip_case("tests.test_a2a_tck") + case
+    xml = junit(tmp_path, suite(tests=10, skipped=3, body=body))
+    bad = gate(xml, 3, 1, ALLOWED)
+    assert bad.returncode == 1 and "tests.test_modskip" in bad.stderr
+    ok_body = skip_case("tests.test_compose") + skip_case("tests.test_a2a_tck") + case.replace("test_modskip", "test_backup_script")
+    ok = junit(tmp_path, suite(tests=10, skipped=3, body=ok_body))
+    assert gate(ok, 3, 1, ALLOWED).returncode == 0
+
+
+def test_a_skip_in_a_test_class_of_an_allowed_module_is_allowed(tmp_path):
+    xml = junit(tmp_path, suite(tests=5, skipped=1, body=skip_case("tests.test_compose.TestStack")))
+    assert gate(xml, 1, 1, ALLOWED).returncode == 0
+    other = junit(tmp_path, suite(tests=5, skipped=1, body=skip_case("tests.test_other.TestStack")))
+    assert gate(other, 1, 1, ALLOWED).returncode == 1
+
+
+def test_a_real_module_level_skip_is_caught(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "test_modskip.py").write_text("import pytest\n\npytest.skip('on purpose', allow_module_level=True)\n")
+    (project / "test_allowed.py").write_text(
+        "import pytest\n\n\n@pytest.mark.skip(reason='a')\ndef test_a():\n    pass\n\n\n@pytest.mark.skip(reason='b')\ndef test_b():\n    pass\n"
+    )
+    xml = tmp_path / "real.xml"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTEST_", "A2A_"))}
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={xml}", "."],
+        cwd=project, capture_output=True, text=True, env=env, check=False, timeout=120,
+    )
+    assert xml.is_file()
+    bad = gate(xml, 3, 0, "test_allowed")
+    assert bad.returncode == 1, bad.stdout + bad.stderr
+    assert "test_modskip" in bad.stderr

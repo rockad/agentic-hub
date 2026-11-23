@@ -64,7 +64,8 @@ jobs:
         run: |
           uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/hooks.xml" \
             tests/test_hooks_static.py tests/test_hooks_listen.py tests/test_hooks_register_pending.py \
-            tests/test_agy_hooks.py
+            tests/test_hooks_review_fixes.py tests/test_agy_hooks.py tests/test_skip_gate.py \
+            tests/test_mcp_agy_opening.py
           bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 300
 
       - name: The whole suite with Docker, only the three known skips

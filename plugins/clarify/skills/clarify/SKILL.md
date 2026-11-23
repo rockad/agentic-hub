@@ -45,7 +45,7 @@ The rules in this file apply on every question; the references hold examples and
 > - Antigravity: `ask_question`. Claude Code: `AskUserQuestion` with `"multiSelect": false`. OpenCode: `question`.
 > - Pickers render only when the tool is called; prose alone degrades to static text and the user has to type answers.
 > - Use the Terminal CLI fallback only when no question tool is exposed.
-> - Antigravity also needs the clarify Stop hook (see `references/antigravity.md` and `README.md`).
+> - Antigravity also needs the clarify Stop hook (see `references/antigravity.md` and the plugin README).
 
 > [!IMPORTANT]
 > **Per-fork invariant.** Fork N gets its complete step in prose immediately before its own question call, for forks 2..N too, with no exceptions. An answer arriving as a tool result in the same turn is not a reason to skip the next step. Mode A: heading, context, argued options, your reading, recommendation. Mode B: Door Type and Under the Hood header, the 4-question framing, recommendation.

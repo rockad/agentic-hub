@@ -10,8 +10,9 @@
 # "[Fork N of M]". Any other AskUserQuestion passes untouched.
 #
 # The transcript is written asynchronously and can lag, so a missing heading may be a false
-# alarm. The hook therefore denies each question number once per session and lets the retry
-# through: a lagging transcript costs one extra round trip and can never loop.
+# alarm. The hook therefore denies each question number once per user prompt and lets the
+# retry through: a lagging transcript costs one extra round trip and can never loop. A new
+# prompt (a new series, or a typed complaint) gets a fresh deny per question number.
 #
 # Requires: bash, jq. Fails open (prints nothing, exits 0) on any error.
 # CLARIFY_HOOK_STRICT=1 (tests only) makes a broken jq program exit 3 instead.
@@ -38,24 +39,36 @@ read -r session transcript < <(printf '%s' "$payload" | jq -r '[.session_id // "
 # Assistant text since the last user entry (a user entry is a prompt or a tool result).
 # Only the tail of the transcript is read: that region sits at the very end. If the window
 # holds no user entry, the answer is unknown and the call passes.
-verdict="$(tail -n 300 "$transcript" | jq -rRs --argjson n "$n" '
+# Also prints the uuid of the last real user prompt (not a tool result, not isMeta), which
+# scopes the once-per-question deny below to one reply chain.
+out="$(tail -n 300 "$transcript" | jq -rRs --argjson n "$n" '
   [ split("\n")[] | fromjson? | select(type == "object") ] as $es
   | ([ $es | to_entries[] | select(.value.type == "user") | .key ] | last) as $u
-  | if $u == null then "unknown"
+  | ([ $es[] | select(.type == "user" and (.isMeta != true)
+         and (((.message.content | type) == "string")
+              or ((.message.content | type) == "array"
+                  and ((.message.content | any(.type == "tool_result")) | not))))
+       | .uuid // "" ] | last // "") as $p
+  | if $u == null then "unknown\t"
     else
       ( [ $es[($u + 1):][] | select(.type == "assistant")
           | (.message.content // []) | if type == "array" then .[] else empty end
           | select(.type == "text") | (.text // "") ] | join("\n")
       ) as $text
-      | if ($text | test("(^|\n)\\s*##\\s*Question\\s+\($n)(\\D|$)")) then "ok" else "missing" end
+      | (if ($text | test("(^|\n)\\s*#{2,}\\s*Question\\s+\($n)(\\D|$)")) then "ok" else "missing" end) + "\t" + $p
     end' 2>/dev/null)" || fail
+IFS=$'\t' read -r verdict prompt <<< "$out"
 [ "$verdict" = "missing" ] || exit 0
 
-# Deny each question number once per session.
+# Deny each question number once per user prompt, not once per session: a session runs many
+# series and a typed complaint starts a new chain. Retries inside one reply chain share the
+# prompt, so a lagging transcript cannot loop the hook. Without a prompt uuid in the window,
+# fall back to the session.
 dir="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-/tmp}}"
 mark="$dir/clarify-ask-check-${session:-nosession}.denied"
-if [ -r "$mark" ] && grep -qx "$n" "$mark" 2>/dev/null; then exit 0; fi
-{ mkdir -p "$dir" && printf '%s\n' "$n" >> "$mark"; } 2>/dev/null || exit 0
+key="$n:${prompt:-$session}"
+if [ -r "$mark" ] && grep -qxF "$key" "$mark" 2>/dev/null; then exit 0; fi
+{ mkdir -p "$dir" && printf '%s\n' "$key" >> "$mark"; } 2>/dev/null || exit 0
 
 reason="clarify: Question $n has no write-up before it. Print the full step for Question $n now: the '## Question $n (of Total)' heading, context, argued options with pros and cons, your reading and the recommendation. Then call AskUserQuestion again with the same question. The dialog must not be the only explanation (clarify SKILL.md, Per-fork invariant)."
 jq -nc --arg r "$reason" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'

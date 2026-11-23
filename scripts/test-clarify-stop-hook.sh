@@ -203,9 +203,8 @@ done
 # A step that calls ask_question together with another tool writes the other tool's result
 # first. That result carries no answer line, so it must not consume the wait for the answer.
 tool_result() { jq -nc '{type: "GENERIC", content: "Created At: 2026-01-01T00:00:00Z\nCompleted At: 2026-01-01T00:00:01Z\nfile contents"}'; }
-{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; tool_result; answer "$CANCEL"; reply "$FAQ"; } \
-  | run_hook 28a-multi-tool-step-keeps-waiting silent
-# The same shape with an ordinary answer is still a stall.
+# A multi-tool step followed by an ordinary answer is still a stall to catch. Without the
+# answer gate the tool result eats the wait, the real answer is missed and the hook stays silent.
 { user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; tool_result; answer "Option B"; reply "$FAQ"; } \
   | run_hook 28b-multi-tool-step-control continue
 # Esc on the picker returns an empty answer line: the series is abandoned.

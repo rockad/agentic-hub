@@ -46,7 +46,7 @@ ask_question({
 4. Other (the Antigravity CLI shows it as `Write-in...`)
 ```
 
-**Antigravity `Stop` hook (required; setup in `../README.md`)** (`hooks/clarify-stop-check.sh`, alongside `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:
+**Antigravity `Stop` hook (required; setup in the plugin README, `../../../README.md`)** (`plugins/clarify/hooks/clarify-stop-check.sh`, in the plugin's `hooks/` directory, not next to `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:
 ```json
 { "clarify-require-tool-call": {
   "enabled": true,
@@ -54,4 +54,4 @@ ask_question({
 } }
 ```
 
-The skill install does not register the hook. See `../README.md` for the full setup and verification steps.
+The skill install does not register the hook. See the plugin README (`../../../README.md`) for the full setup and verification steps. The registration path in the example above is the old standalone-skill path and is being updated for the plugin layout.

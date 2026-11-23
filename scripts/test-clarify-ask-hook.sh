@@ -18,7 +18,8 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 ok() { echo "PASS $1"; echo x >> "$tmp/pass"; }
 bad() { echo "FAIL $1"; echo x >> "$tmp/fail"; }
 
-user() { jq -nc --arg c "${1:-go}" '{type: "user", message: {role: "user", content: $c}}'; }
+# A real prompt carries a uuid; the same text means the same prompt (a retry), other text a new one.
+user() { jq -nc --arg c "${1:-go}" '{type: "user", uuid: ("u-" + $c), message: {role: "user", content: $c}}'; }
 result() { jq -nc '{type: "user", message: {role: "user", content: [{type: "tool_result", tool_use_id: "t1", content: "ok"}]}}'; }
 text() { jq -nc --arg c "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "text", text: $c}]}}'; }
 ask() { jq -nc --arg q "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "tool_use", name: "AskUserQuestion", input: {questions: [{question: $q, header: "Fork 3/8"}]}}]}}'; }
@@ -62,6 +63,24 @@ printf 'not json\n' | run garbage-transcript allow "$Q3"
 { user; ask "$Q3"; } | run retry-second allow "$Q3" s-retry
 { user; ask '[Question 4 of 8] Next?'; } | run retry-other-number deny '[Question 4 of 8] Next?' s-retry
 { user; ask "$Q3"; } | run other-session-denied-again deny "$Q3" s-other
+
+# A session runs many series (review finding on #98): the same question number missing its
+# write-up in a later prompt is denied again, while a retry inside that prompt still passes.
+{ user "series one"; ask "$Q3"; } | run two-series-first deny "$Q3" s-long
+{ user "series one"; ask "$Q3"; } | run two-series-first-retry allow "$Q3" s-long
+{ user "series two"; ask "$Q3"; } | run two-series-second deny "$Q3" s-long
+{ user "series two"; ask "$Q3"; } | run two-series-second-retry allow "$Q3" s-long
+# A tool result is not a new prompt: an answer then a missing write-up keeps the same chain.
+{ user "series three"; result; ask "$Q3"; } | run chain-first deny "$Q3" s-chain
+{ user "series three"; result; result; ask "$Q3"; } | run chain-retry-after-tool allow "$Q3" s-chain
+# A meta entry (hook or skill injection) is not a prompt either.
+{ user "series four"; jq -nc '{type: "user", isMeta: true, uuid: "meta-1", message: {role: "user", content: "injected"}}'; ask "$Q3"; } \
+  | run meta-entry-first deny "$Q3" s-meta
+{ user "series four"; jq -nc '{type: "user", isMeta: true, uuid: "meta-2", message: {role: "user", content: "injected again"}}'; ask "$Q3"; } \
+  | run meta-entry-retry allow "$Q3" s-meta
+
+# Other heading levels count: ### Question N is a write-up too.
+{ user "h3"; text '### Question 3 (of 8) — The store'; ask "$Q3"; } | run h3-heading allow "$Q3"
 
 # Missing transcript path and an empty payload fail open.
 silent no-transcript-path '{"tool_input":{"questions":[{"question":"[Question 3 of 8] x"}]}}'

@@ -23,7 +23,7 @@ const flashRec: Dispatch = { subagent: 'general-purpose', tier: 'flash', model: 
 
 /** The recorded PostToolUse payload with the question and the chosen label replaced. */
 function answered(question: string, label: string, extra: Record<string, unknown> = {}): Record<string, any> {
-  const s = structuredClone(SAMPLE);
+  const s = { ...structuredClone(SAMPLE), prompt_id: 'p1' }; // the prompt the question was asked in (the calls' prompt_id)
   for (const part of [s.tool_input, s.tool_response]) {
     part.questions[0].question = question;
     part.answers = { [question]: label };
@@ -216,7 +216,8 @@ describe('the real hook process by mode', () => {
 
     setMode('on-demand');
     const post = run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
-    expect([post.exitCode, post.stdout.toString()]).toEqual([0, '']);
+    expect(post.exitCode).toBe(0);
+    expect(JSON.parse(post.stdout.toString()).hookSpecificOutput.additionalContext).toContain('[jev] Not recorded: Jev is not on');
     expect(approvalsOf('sx')).toEqual([]);
     expect(run('pre-tool-use', agent()).stdout.toString()).toBe(''); // on-demand decides nothing
 
@@ -225,19 +226,20 @@ describe('the real hook process by mode', () => {
     expect(approvalsOf('sx')).toEqual([]);
   });
 
-  it('a denial, then on-demand and back in on (the mode change is stamped), then the answer: no approval; the fresh question counts', () => {
+  it('an approval recorded before a mode change (stamped) is void: opus is denied again; an answer given after the change counts', () => {
     run('session-start', { session_id: 'sx', model: 'claude-sonnet-5' });
     expect(decision(run('pre-tool-use', agent()))).toBe('deny');
+    run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
+    expect(approvalsOf('sx')).toHaveLength(1);
+    expect(run('pre-tool-use', agent()).stdout.toString()).toBe(''); // approved
 
     Bun.sleepSync(25);
     fs.writeFileSync(configFile(), JSON.stringify({ defaults: { mode: 'on', modeChangedAt: new Date().toISOString() } }));
     Bun.sleepSync(25);
-    run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
-    expect(approvalsOf('sx')).toEqual([]);
 
-    expect(decision(run('pre-tool-use', agent()))).toBe('deny'); // asked again with a fresh question
+    expect(decision(run('pre-tool-use', agent()))).toBe('deny'); // the mode changed: what was approved before it counts for nothing
     run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
-    expect(approvalsOf('sx')).toHaveLength(1);
+    expect(run('pre-tool-use', agent()).stdout.toString()).toBe(''); // the answer given after the change is the user's click and counts
   });
 
   it('control: with no mode change the late answer approves as before', () => {
@@ -312,24 +314,30 @@ describe('a mode change voids a pending denial (Claude Code, unit)', () => {
     return { ...s, clock };
   }
 
-  it('deny in on, a mode change stamped after it, a "Yes, for this session" answer, back in on: no approval, denied again with a fresh question', async () => {
+  it('approve in on, a mode change stamped after it: the approval, a decline and the prescription all count for nothing; denied again with a fresh question', async () => {
     const config = { value: {} as Record<string, unknown> };
     const { d, approvals, clock } = clocked(config);
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny'); // the denial is on record at T0
+    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+    expect(await onPreToolUse(call(), d)).toBeNull();
+    await onPostToolUse({ ...answered(MARKED('sonnet'), "No, don't ask again this session"), session_id: 's1' } as HookInput, d);
 
     config.value = stampAt(T0 + 500); // on -> on-demand -> on
-    clock.t = T0 + 1000;
-    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
-    expect(approvals.states.get('s1')?.approvals ?? []).toEqual([]);
-
     clock.t = T0 + 2000;
+
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny'); // asked again, as for a first attempt
     expect(approvals.states.get('s1')?.denied?.opus).toBe(T0 + 2000);
+  });
 
-    // The fresh question's own answer counts.
-    clock.t = T0 + 3000;
-    await onPostToolUse({ ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
-    expect(approvals.states.get('s1')?.approvals).toHaveLength(1);
+  it('an answer given after the change is the user\'s click and counts; the voided prescription caps its effort at none (at most high)', async () => {
+    const config = { value: stampAt(T0 + 500) as Record<string, unknown> };
+    const { d, approvals, clock } = clocked(config);
+    approvals.deny('s1', 'opus', T0, 'xhigh'); // prescribed before the mode change: void
+
+    clock.t = T0 + 1000;
+    await onPostToolUse({ ...answered(MARKED('opus') .replace('[jev-elevate:opus]', '[jev-elevate:opus:xhigh]'), 'Yes, for this session'), session_id: 's1' } as HookInput, d);
+
+    expect(approvals.states.get('s1')?.approvals).toEqual([{ model: 'opus', scope: 'session', created_at: T0 + 1000 }]);
   });
 
   it('control: no mode change since the denial, the answer still approves exactly as before', async () => {

@@ -26,6 +26,7 @@ import {
 } from '../antigravity/logic.ts';
 import {
   ApprovalStore,
+  antigravityTurnKey,
   createAntigravityApprovalStore
 } from '../antigravity/approvals.ts';
 
@@ -150,9 +151,12 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     expect(decision.reason).toContain('[jev-elevate:pro]');
     expect(decision.reason).toContain('ask_question');
     expect(decision.reason).toContain('Yes, once');
-    expect(decision.reason).toContain('Yes, for the next 5 minutes');
+    expect(decision.reason).not.toContain('5 minutes');
     expect(decision.reason).toContain('Yes, for this session');
     expect(decision.reason).toContain('No, proceed on flash');
+    expect(decision.reason).toContain('"No, don\'t ask again this session"');
+    expect(decision.reason).toContain('Stored: no approval for pro in this session.');
+    expect(decision.stored).toBe('none');
     expect(decision.elevation).toBe('denied');
   });
 
@@ -458,7 +462,8 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
     const parsed = parseElevationAnswer('A1: (Recommended) Yes, once');
     expect(parsed.approved).toBe(true);
     expect(parsed.scope).toBe('once');
-    approvals.record('c1', { model: 'pro', scope: 'once', created_at: 1050 });
+    // A once is bound to the turn it was answered in: the user turn of this call.
+    approvals.record('c1', { model: 'pro', scope: 'once', created_at: 1050, turn: antigravityTurnKey('run subagent on pro') });
 
     const input: AntigravityHookInput = {
       conversationId: 'c1',
@@ -552,13 +557,11 @@ describe('Antigravity PreToolUse subagent guard (logic)', () => {
 
 describe('Antigravity elevation answer parsing (review fix: exact labels only)', () => {
   it('records the scope of each prescribed label, with or without the A1 prefix and the (Recommended) tag', () => {
-    const cases: Array<[string, 'once' | '5min' | 'session']> = [
+    const cases: Array<[string, 'once' | 'session']> = [
       ['Yes, once', 'once'],
       ['A1: Yes, once', 'once'],
       ['A1: (Recommended) Yes, once', 'once'],
       ['A1: Yes, once (Recommended)', 'once'],
-      ['Yes, for the next 5 minutes', '5min'],
-      ['A1: (Recommended) Yes, for the next 5 minutes', '5min'],
       ['Yes, for this session', 'session'],
       ['A2: Yes, for this session', 'session']
     ];
@@ -571,6 +574,7 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
       'A1: No, proceed on flash',
       'A1: (Recommended) No, proceed on flash',
       'A1: No, not even once',
+      'A1: Yes, for the next 5 minutes', // 2.3.21: not a label any more
       'A1: yes once please',
       'A1: Yes, once, but only on flash',
       'A1: Not for this session',
@@ -583,7 +587,10 @@ describe('Antigravity elevation answer parsing (review fix: exact labels only)',
       undefined,
       null
     ];
-    for (const text of none) expect(parseElevationAnswer(text as string | undefined)).toEqual({ approved: false });
+    for (const text of none.filter((t) => !/^(A\d: )?(\(Recommended\) )?No, proceed on flash$/.test(String(t)))) expect(parseElevationAnswer(text as string | undefined)).toEqual({ approved: false });
+    // The No labels decline (2.3.21): this delegation only, or the rest of the session.
+    for (const text of ['No, proceed on flash', 'A1: No, proceed on flash', 'A1: (Recommended) No, proceed on flash']) expect(parseElevationAnswer(text)).toEqual({ approved: false, declined: true, scope: 'once' });
+    for (const text of ["No, don't ask again this session", "A2: No, don't ask again this session"]) expect(parseElevationAnswer(text)).toEqual({ approved: false, declined: true, scope: 'session' });
   });
 
   it('extractAskAnswer reads only the content field, per question', () => {
@@ -882,19 +889,18 @@ describe('ApprovalStore record return and wasDeniedRecently timestamp', () => {
     expect(approvals.wasDeniedRecently('s1', 'pro', 1000)).toBeNull();
     approvals.deny('s1', 'pro', 2000);
     expect(approvals.wasDeniedRecently('s1', 'pro', 2500)).toBe(2000);
-    // After denial window expires (15 min = 900,000 ms)
-    expect(approvals.wasDeniedRecently('s1', 'pro', 2000 + 16 * 60 * 1000)).toBeNull();
+    // 2.3.21: what Jev prescribed has no expiry (it holds the effort an answer is capped at)
+    expect(approvals.wasDeniedRecently('s1', 'pro', 2000 + 16 * 60 * 1000)).toBe(2000);
+    expect(approvals.wasDeniedRecently('s1', 'pro', 2000 + 90 * 60 * 1000)).toBe(2000);
   });
 
-  it('record returns false when not denied recently, and true when denied recently', () => {
-    // Attempt record without prior denial -> returns false
-    const ok1 = approvals.record('s1', { model: 'pro', scope: 'once', created_at: 1000 });
-    expect(ok1).toBe(false);
+  it('record stores an answer whether or not a denial came first (2.3.21), and refuses an answer row that was already consumed', () => {
+    // No prior denial: an answer asked before any launch is recorded.
+    expect(approvals.record('s1', { model: 'pro', scope: 'once', created_at: 1000, turn: 't1' }, ['step:3#0'])).toBe(true);
+    expect(approvals.record('s1', { model: 'pro', scope: 'once', created_at: 1001, turn: 't1' }, ['step:3#0'])).toBe(false);
 
-    // Deny first -> record returns true
     approvals.deny('s1', 'pro', 2000);
-    const ok2 = approvals.record('s1', { model: 'pro', scope: 'once', created_at: 2100 });
-    expect(ok2).toBe(true);
+    expect(approvals.record('s1', { model: 'pro', scope: 'session', created_at: 2100 })).toBe(true);
   });
 });
 
@@ -977,13 +983,13 @@ describe('pullElevationAnswerFromTranscript and PreToolUse pull fallback', () =>
     const transcriptFile = path.join(testDir, 'transcript.jsonl');
     const content =
       '{"step_index":1,"type":"PLANNER_RESPONSE","content":"Calling ask_question with [jev-elevate:pro] Allow subagent?"}\n' +
-      '{"step_index":2,"type":"GENERIC","content":"A1: Yes, for the next 5 minutes"}\n';
+      '{"step_index":2,"type":"GENERIC","content":"A1: Yes, for this session"}\n';
     fs.writeFileSync(transcriptFile, content);
 
     // A prose match has no tool call: with no recorded answer row (PostToolUse stepIdx) the next GENERIC is not trusted.
     expect(pullElevationAnswerFromTranscript(transcriptFile, 'pro')).toBeNull();
     const pull = pullElevationAnswerFromTranscript(transcriptFile, 'pro', undefined, 2);
-    expect(pull).toEqual({ approved: true, scope: '5min' });
+    expect(pull).toEqual({ approved: true, scope: 'session' });
   });
 
   it('picks the latest ask_question when multiple exist and respects deniedAtMs tolerance', () => {
@@ -1193,9 +1199,9 @@ describe('approval store: unsafe session ids (A2)', () => {
     const sessions = path.join(tmpDir, 'a', 'b', 'sessions');
     const store = createAntigravityApprovalStore(sessions);
     store.deny('../../x', 'pro', 1000);
-    expect(store.record('../../x', { model: 'pro', scope: 'once', created_at: 1001 })).toBe(true);
-    expect(store.claim('a/b', 'pro', 1002)).toBeNull(); // a different normalised id ('ab')
-    expect(store.claim('../../x', 'pro', 1002)?.scope).toBe('once');
+    expect(store.record('../../x', { model: 'pro', scope: 'once', created_at: 1001, turn: 't1' })).toBe(true);
+    expect(store.claim('a/b', 'pro', 1002, undefined, { turn: 't1' })).toBeNull(); // a different normalised id ('ab')
+    expect(store.claim('../../x', 'pro', 1002, undefined, { turn: 't1' })?.scope).toBe('once');
     const outside = fs.readdirSync(path.join(tmpDir, 'a')).sort();
     expect(outside).toEqual(['b']);
     expect(fs.readdirSync(path.join(tmpDir, 'a', 'b')).sort()).toEqual(['sessions']);
@@ -1280,7 +1286,8 @@ describe('pull fallback answer matching and record failure (A3, A4)', () => {
         '{"step_index":2,"type":"GENERIC","toolCallId":"other_tool","content":"A1: Yes, once"}\n' +
         '{"step_index":3,"type":"GENERIC","toolCallId":"ask_X","content":"A1: No, proceed on flash"}\n'
     );
-    expect(pullElevationAnswerFromTranscript(file, 'pro', Date.parse('2026-11-16T12:00:00.000Z'))).toEqual({ approved: false });
+    // The question's own row says No: a decline (2.3.21), never the other tool's Yes.
+    expect(pullElevationAnswerFromTranscript(file, 'pro', Date.parse('2026-11-16T12:00:00.000Z'))).toEqual({ approved: false, declined: true, scope: 'once' });
   });
 
   it('A3: a question without a tool call id still falls back to the first GENERIC after it', () => {
@@ -1971,7 +1978,7 @@ describe('Antigravity on-demand makes no decisions', () => {
 
       it('does not honour or consume a stored approval, and ignores JEV_ELEVATION modes', () => {
         approvals.deny('c-ondemand', 'pro', 900); // an approval is only accepted after a denial prescribed the question
-        expect(approvals.record('c-ondemand', { model: 'pro', scope: 'once', created_at: 1000 })).toBe(true);
+        expect(approvals.record('c-ondemand', { model: 'pro', scope: 'once', created_at: 1000, turn: 't1' })).toBe(true);
         const before = sessionFiles();
         for (const elevationMode of ['dialog', 'clamp', 'choice'] as const) {
           const d = run(call('pro', { lastUserInput: 'use gemini pro for this' }), { elevationMode });
@@ -1979,7 +1986,7 @@ describe('Antigravity on-demand makes no decisions', () => {
         }
         expect(sessionFiles()).toEqual(before);
         // The approval is still there for mode on.
-        expect(approvals.claim('c-ondemand', 'pro', 1000)).not.toBeNull();
+        expect(approvals.claim('c-ondemand', 'pro', 1000, undefined, { turn: 't1' })).not.toBeNull();
       });
     });
   }

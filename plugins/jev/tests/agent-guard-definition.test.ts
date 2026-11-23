@@ -14,7 +14,7 @@ import { out, rig, type Rig } from './workflow-helpers.ts';
 const SAMPLE = JSON.parse(fs.readFileSync(path.join(import.meta.dir, 'fixtures', 'posttooluse-askuserquestion.json'), 'utf8'));
 const MARKED = (model: string) => `[jev-elevate:${model}] Run the deep delegation on ${model} (session sonnet): refactor the parser module?`;
 function answered(question: string, label: string): Record<string, any> {
-  const s = structuredClone(SAMPLE);
+  const s = { ...structuredClone(SAMPLE), prompt_id: 'p1' }; // the prompt the question was asked in (the calls' prompt_id)
   for (const part of [s.tool_input, s.tool_response]) {
     part.questions[0].question = question;
     part.answers = { [question]: label };

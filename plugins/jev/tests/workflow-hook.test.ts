@@ -15,7 +15,7 @@ import { out, rig, wf, type Rig } from './workflow-helpers.ts';
 const SAMPLE = JSON.parse(fs.readFileSync(path.join(import.meta.dir, 'fixtures', 'posttooluse-askuserquestion.json'), 'utf8'));
 const MARKED = (model: string) => `[jev-elevate:${model}] Run the Workflow on ${model} (session sonnet): refactor the parser module?`;
 function answered(question: string, label: string): Record<string, any> {
-  const s = structuredClone(SAMPLE);
+  const s = { ...structuredClone(SAMPLE), prompt_id: 'p1' }; // the prompt the question was asked in (the calls' prompt_id)
   for (const part of [s.tool_input, s.tool_response]) {
     part.questions[0].question = question;
     part.answers = { [question]: label };
@@ -42,7 +42,7 @@ describe('the elevation choice flow for a Workflow', () => {
 
     expect(o.permissionDecision).toBe('deny');
     expect(o.permissionDecisionReason).toContain('STARTS with the marker [jev-elevate:opus]');
-    expect(o.permissionDecisionReason).toContain("exactly four options in this order and with these labels: 'Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, proceed on sonnet'");
+    expect(o.permissionDecisionReason).toContain("exactly four options in this order and with these labels: 'Yes, once', 'Yes, for this session', 'No, proceed on sonnet', \"No, don't ask again this session\"");
     expect(o.permissionDecisionReason).toContain('Workflow');
     expect(o.permissionDecisionReason).not.toContain('SECRET');
     const log = r.logs[0];
@@ -86,10 +86,10 @@ describe('the elevation choice flow for a Workflow', () => {
     expect(out(await onPreToolUse(wf({ script: OPUS }, r), r.d)).permissionDecision).toBe('deny');
   });
 
-  it.each([['once'], ['5min'], ['session']] as const)('an approved opus passes (%s), then the retried call is the same script', async (scope) => {
+  it.each([['once'], ['session']] as const)('an approved opus passes (%s), then the retried call is the same script', async (scope) => {
     setup();
     expect(out(await onPreToolUse(wf({ script: OPUS }, r), r.d)).permissionDecision).toBe('deny');
-    await answer(scope === 'once' ? 'Yes, once' : scope === '5min' ? 'Yes, for the next 5 minutes' : 'Yes, for this session');
+    await answer(scope === 'once' ? 'Yes, once' : 'Yes, for this session');
 
     const retry = await onPreToolUse(wf({ script: OPUS }, r, {}, 'toolu_02'), r.d);
 

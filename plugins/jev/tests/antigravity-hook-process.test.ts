@@ -99,6 +99,7 @@ describe('Antigravity hook as a process', () => {
     // User answers ask_question with 'Yes, once'
     const postPayload = {
       conversationId: 'conv-proc-2',
+      lastUserInput: 'Invoke expert on pro',
       toolCall: {
         id: 'call_ask',
         name: 'ask_question',
@@ -249,7 +250,8 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
   const pre = (conv: string) => JSON.parse(run('pre-tool-use', elevate(conv)).stdout.toString());
   /** The synthetic payload for this conversation; `content` replaced, or removed when undefined. */
   const answered = (conv: string, content: string | undefined, extra: Record<string, unknown> = {}) => {
-    const p: Record<string, any> = { ...SYNTHETIC_ASK, conversationId: conv, ...extra };
+    // The turn the question was asked in: the same user input as the denied call (a once answer is bound to it).
+    const p: Record<string, any> = { ...SYNTHETIC_ASK, conversationId: conv, lastUserInput: 'Invoke expert on pro', ...extra };
     if (content === undefined) delete p.content;
     else p.content = content;
     return p;
@@ -279,13 +281,15 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(pre('c-notonce').decision).toBe('deny');
   });
 
-  it('SYNTHETIC: the exact No label approves nothing', () => {
+  it('SYNTHETIC: the exact No label approves nothing: it is recorded as a decline, and the next launch of the turn runs on the session model', () => {
     expect(pre('c-no').decision).toBe('deny');
 
     run('post-tool-use', answered('c-no', 'Created At: x\nCompleted At: y\nA1: No, proceed on flash'));
 
     expect(approvalsOf('c-no')).toEqual([]);
-    expect(pre('c-no').decision).toBe('deny');
+    const next = pre('c-no');
+    expect([next.decision, next.overwrite]).toEqual(['allow', { Model: 'flash' }]);
+    expect(pre('c-no').decision).toBe('deny'); // that No was this delegation's: it is spent
   });
 
   it('SYNTHETIC: an option-list-only or answer-less payload records nothing, whatever else it carries', () => {
@@ -300,7 +304,6 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     const cases: Array<[string, string]> = [
       ['A1: Yes, once', 'once'],
       ['A1: (Recommended) Yes, once', 'once'],
-      ['A1: Yes, for the next 5 minutes', '5min'],
       ['A1: Yes, for this session', 'session']
     ];
     cases.forEach(([content, scope], i) => {
@@ -314,11 +317,11 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     });
   });
 
-  it('SYNTHETIC: the denial tie still applies: an answer with no earlier denial records nothing', () => {
+  it('SYNTHETIC: an answer with no earlier denial is recorded (2.3.21: it counts as given), and approves the launch that follows', () => {
     run('post-tool-use', answered('c-tie', 'A1: Yes, for this session'));
 
-    expect(approvalsOf('c-tie')).toEqual([]);
-    expect(pre('c-tie').decision).toBe('deny');
+    expect(approvalsOf('c-tie')).toMatchObject([{ model: 'pro', scope: 'session' }]);
+    expect(pre('c-tie').decision).toBe('allow');
   });
 
   it('SYNTHETIC: a stale mode-on denial, then an answer given in on-demand records no approval; back in on, pro is still denied', () => {
@@ -332,10 +335,13 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(post.exitCode).toBe(0);
     expect(post.stdout.toString().trim()).toBe('{}');
     expect(approvalsOf('c-od-answer')).toEqual([]);
-    // Nothing is recorded in the answer log either: on-demand makes no decisions.
+    // On-demand makes no decisions, so nothing is recorded: the answer log says so (`mode`), and the elevation_answer row says why.
     const log = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
     const rows = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
-    expect(rows.filter((r) => r.event === 'ask_answer')).toEqual([]);
+    expect(rows.filter((r) => r.event === 'ask_answer').map((r) => r.outcome)).toEqual(['mode']);
+    expect(rows.filter((r) => r.event === 'elevation_answer')).toMatchObject([
+      { kind: 'model', model: 'pro', answer: 'yes', scope: 'session', recorded: false, reason: 'mode', mode: 'on-demand' }
+    ]);
 
     setMode('on');
     expect(pre('c-od-answer').decision).toBe('deny');
@@ -457,7 +463,7 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     expect(typeof entry.timestamp).toBe('string');
   });
 
-  it('PostToolUse ask_question logs outcome: rejected when user selects No', () => {
+  it('PostToolUse ask_question logs outcome: recorded (a decline) when user selects No', () => {
     pre('c-ask-rej');
     run('post-tool-use', answered('c-ask-rej', 'A1: No, proceed on flash', { stepIdx: 2 }));
 
@@ -466,11 +472,11 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     const entry = JSON.parse(lines[lines.length - 1]);
 
     expect(entry.event).toBe('ask_answer');
-    expect(entry.outcome).toBe('rejected');
-    expect(entry.parsed).toEqual({ approved: false, scope: null });
+    expect(entry.outcome).toBe('recorded');
+    expect(entry.parsed).toEqual({ approved: false, declined: true, scope: 'once' });
   });
 
-  it('PostToolUse ask_question logs outcome: not_denied when user approves without prior denial', () => {
+  it('PostToolUse ask_question logs outcome: recorded when user approves without prior denial (2.3.21)', () => {
     // No prior pre-tool-use deny for c-ask-notdenied
     run('post-tool-use', answered('c-ask-notdenied', 'A1: Yes, once', { stepIdx: 2 }));
 
@@ -479,7 +485,7 @@ describe('Antigravity elevation answer through the real hook process (SYNTHETIC 
     const entry = JSON.parse(lines[lines.length - 1]);
 
     expect(entry.event).toBe('ask_answer');
-    expect(entry.outcome).toBe('not_denied');
+    expect(entry.outcome).toBe('recorded');
   });
 
   it('PostToolUse ask_question logs outcome: not_elevation when questions array lacks elevation marker', () => {
@@ -675,6 +681,7 @@ describe('Antigravity hook: unsafe conversation ids (A2)', () => {
     expect(JSON.parse(run('pre-tool-use', ELEVATE('../../x')).stdout.toString()).decision).toBe('deny');
     const post = run('post-tool-use', {
       conversationId: '../../x',
+      lastUserInput: ELEVATE('../../x').lastUserInput,
       toolCall: {
         id: 'call_ask',
         name: 'ask_question',

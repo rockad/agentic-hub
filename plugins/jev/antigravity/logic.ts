@@ -22,7 +22,7 @@ import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core
 import { privateDir, privateFile, jevHomeDir, PRIVATE_FILE_MODE } from '../src/core/private-fs.js';
 import { withDirLockOrSkip } from '../src/core/dir-lock.js';
 import { resolveModelUsed, type JevTelemetryEvent, type ModelUsedSource } from '../src/core/telemetry.js';
-import { DEFAULT_COST_EFFORT, antigravityCostFields, antigravityDowngradeSaving, costEffortOf, effortFromModelId } from '../src/core/cost-estimate.js';
+import { type CostEffort, DEFAULT_COST_EFFORT, antigravityCostFields, antigravityDowngradeSaving, costEffortOf, effortFromModelId } from '../src/core/cost-estimate.js';
 import { antigravityEffortFields, callKeyField, joinToken, type EffortFields } from '../src/core/join-keys.js';
 import {
   DEFAULT_COST_GATE_MODE,
@@ -38,7 +38,14 @@ import {
 } from '../src/core/cost-gate.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelExpected, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
-import type { ApprovalStore, ApprovalScope } from './approvals.js';
+import { antigravityTurnKey, storedClauseFor, type ApprovalStore, type ApprovalScope, type ElevationCtx } from './approvals.js';
+import {
+  ELEVATION_LABELS,
+  elevationLabelList,
+  parseAnswerLabel,
+  type StoredClause,
+  type StoredKind
+} from '../src/core/elevation-answer.js';
 
 export type AntigravityHookInput = {
   conversationId?: string;
@@ -70,8 +77,14 @@ export type AntigravityHookDecision = {
   cause?: DenyCause;
   permissionOverrides?: string[];
   overwrite?: Record<string, unknown>;
-  elevation?: 'approved' | 'instructed' | 'denied' | 'asked' | 'clamped';
+  elevation?: 'approved' | 'instructed' | 'denied' | 'asked' | 'clamped' | 'declined-once' | 'declined-session';
   approvalScope?: ApprovalScope;
+  /** What Jev had stored for the model when it denied (2.3.21): `none`, `once-used`, `once-stale` or `effort-below`. */
+  stored?: StoredKind;
+  /** The scope of the No that lowered this call (`declined-once` / `declined-session`). */
+  declineScope?: ApprovalScope;
+  /** An answer this call pulled from the transcript and recorded (the hook writes its `elevation_answer` row): what the user said, for which model key, and the effort the stored approval carries. */
+  pulledAnswer?: { answer: 'yes' | 'no'; scope: ApprovalScope; model: string; effort: CostEffort | null };
   attemptCount?: number;
   clampedTo?: string;
   /** The effort the cost gate's clamp runs the call at (2.3.19). */
@@ -102,11 +115,12 @@ export type AntigravityLogicDeps = {
 
 export const ELEVATE_MARKER_PREFIX = '[jev-elevate:';
 
+/** The four options of the question, in order (2.3.21: no timed scope). `no` is this delegation only; `noSession` the rest of the session. */
 export const CHOICE_OPTIONS = {
-  once: 'Yes, once',
-  fiveMin: 'Yes, for the next 5 minutes',
-  session: 'Yes, for this session',
-  no: (ceiling: string) => `No, proceed on ${ceiling}`
+  once: ELEVATION_LABELS.yesOnce,
+  session: ELEVATION_LABELS.yesSession,
+  no: (ceiling: string) => ELEVATION_LABELS.noOnce(ceiling),
+  noSession: ELEVATION_LABELS.noSession
 };
 
 /**
@@ -179,6 +193,11 @@ export function extractSubagentModel(args?: Record<string, unknown>): { requeste
   return { requestedModel: candidates[0], isExplicit: true };
 }
 
+/** The tier name a call is run at when the user declines (the session's ceiling tier: `flash` for a flash session), for the line that tells the model. `orchestrator`: an Orchestrator conversation has a flash ceiling. */
+export function antigravityCeilingTier(sessionModel: unknown, orchestrator = false): string {
+  return rankToTierName(subagentCeilingRank(typeof sessionModel === 'string' && sessionModel ? sessionModel : DEFAULT_ANTIGRAVITY_SESSION_MODEL, orchestrator || isOrchestratorModel(String(sessionModel ?? ''))));
+}
+
 export function buildElevationQuestion(opts: {
   typeName: string;
   requestedModel: string;
@@ -192,9 +211,9 @@ export function buildElevationQuestion(opts: {
   const question = `${ELEVATE_MARKER_PREFIX}${opts.requestedModel}] Allow subagent '${opts.typeName}' to run on ${opts.requestedModel}${servedPart}${summaryPart} (session ceiling: ${opts.ceilingTier})?`;
   const options = [
     CHOICE_OPTIONS.once,
-    CHOICE_OPTIONS.fiveMin,
     CHOICE_OPTIONS.session,
-    CHOICE_OPTIONS.no(opts.ceilingTier)
+    CHOICE_OPTIONS.no(opts.ceilingTier),
+    CHOICE_OPTIONS.noSession
   ];
   return { question, options };
 }
@@ -209,6 +228,8 @@ export function buildElevationReason(opts: {
   markerModel?: string;
   /** The cost gate's sentence (2.3.19), when it found the call: "costs 30 vs the session's 22.5 (...)". */
   costNote?: string;
+  /** What Jev has stored for the model (2.3.21): the clause the reason ends with (before the stop-retrying sentence). */
+  stored?: StoredClause | null;
 }): string {
   const servedPhrase = servedQuestionPhrase(opts.requestedModel);
   const q = buildElevationQuestion({
@@ -220,17 +241,18 @@ export function buildElevationReason(opts: {
   });
 
   const noAction = opts.isOrchestrator
-    ? `if No, re-invoke with '${opts.sessionCeilingTier}' or 'flash_lite'`
-    : `if No, re-invoke with '${opts.sessionCeilingTier}' (or inherit)`;
+    ? `if a No, re-invoke with '${opts.sessionCeilingTier}' or 'flash_lite'`
+    : `if a No, re-invoke with '${opts.sessionCeilingTier}' (or inherit)`;
   const served = servedModelGuidance(opts.requestedModel);
 
   return (
     `[jev] Subagent '${opts.typeName}' requested Model '${opts.requestedModel}', which exceeds session ceiling '${opts.sessionCeilingTier}'${opts.costNote ? ` (it ${opts.costNote})` : ''}, ` +
     `and no approval covers it.${served ? ` ${served}` : ''} Ask the user with ask_question: one question whose text starts with ` +
     `'${ELEVATE_MARKER_PREFIX}${opts.markerModel ?? opts.requestedModel}]', ${servedPhrase ? `followed by a short question that says plainly "${servedPhrase}", ` : ''}with four options in this order: ` +
-    `'${q.options[0]}', '${q.options[1]}', '${q.options[2]}', '${q.options[3]}'. ` +
+    `${elevationLabelList(q.options[2])}. ` +
     `If the user approves, re-invoke with '${opts.requestedModel}'; ${noAction}; ` +
-    `do not ask in any other form.`
+    `do not ask in any other form.` +
+    (opts.stored ? ` ${opts.stored.text}` : '')
   );
 }
 
@@ -261,13 +283,6 @@ export function detectAntigravityAutoApprove(home: string = jevHomeDir()): boole
     return false;
   }
 }
-
-/** The prescribed approving labels and the scope each records. `No, proceed on <model>` and anything else record nothing. */
-const SCOPE_BY_LABEL = new Map<string, ApprovalScope>([
-  [CHOICE_OPTIONS.once, 'once'],
-  [CHOICE_OPTIONS.fiveMin, '5min'],
-  [CHOICE_OPTIONS.session, 'session']
-]);
 
 /**
  * The answer to the elevation question, read from the PostToolUse `content` field or the session transcript step.
@@ -414,15 +429,17 @@ export function answerLabel(answerText: string): string {
 }
 
 /**
- * Whether an answer approves, and for how long. The answer must be EXACTLY one of the prescribed labels (after the
- * `A1:` prefix and the `(Recommended)` tag are removed): `Yes, once`, `Yes, for the next 5 minutes`,
- * `Yes, for this session`. `No, proceed on <model>`, free text ("No, not even once"), a missing answer and anything
- * else approve nothing. Substring matching is deliberately not used.
+ * What an answer says, and for how long (2.3.21). The answer must be EXACTLY one of the four prescribed labels (after the
+ * `A1:` prefix and the `(Recommended)` tag are removed): `Yes, once` and `Yes, for this session` approve (`approved`, `scope`),
+ * `No, proceed on <model>` (this delegation only, scope `once`) and `No, don't ask again this session` (scope `session`) decline
+ * (`declined`, `scope`). Free text ("No, not even once"), a missing answer and anything else say nothing. Substring matching is
+ * deliberately not used. The rules are shared with Claude Code: src/core/elevation-answer.ts.
  */
-export function parseElevationAnswer(answerText?: string | null): { approved: boolean; scope?: ApprovalScope } {
+export function parseElevationAnswer(answerText?: string | null): { approved: boolean; declined?: boolean; scope?: ApprovalScope } {
   if (!answerText || typeof answerText !== 'string') return { approved: false };
-  const scope = SCOPE_BY_LABEL.get(answerLabel(answerText));
-  return scope ? { approved: true, scope } : { approved: false };
+  const parsed = parseAnswerLabel(answerLabel(answerText), 'model');
+  if (!parsed) return { approved: false };
+  return parsed.answer === 'yes' ? { approved: true, scope: parsed.scope } : { approved: false, declined: true, scope: parsed.scope };
 }
 
 /**
@@ -445,9 +462,9 @@ export function pullElevationAnswerFromTranscript(
   answerStepIdx?: number | null,
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
-): { approved: boolean; scope?: ApprovalScope } | null {
+): { approved: boolean; declined?: boolean; scope?: ApprovalScope } | null {
   const r = pullElevationAnswerDetailed(transcriptPath, requestedModel, deniedAtMs, answerStepIdx, answerQuestionIdx, consumedKeys);
-  return r ? { approved: r.approved, ...(r.scope ? { scope: r.scope } : {}) } : null;
+  return r ? { approved: r.approved, ...(r.declined ? { declined: true } : {}), ...(r.scope ? { scope: r.scope } : {}) } : null;
 }
 
 /** Like `pullElevationAnswerFromTranscript`, plus the consumption key of the answer row that was read (when it has one). */
@@ -458,7 +475,7 @@ export function pullElevationAnswerDetailed(
   answerStepIdx?: number | null,
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
-): { approved: boolean; scope?: ApprovalScope; answerKey?: string } | null {
+): { approved: boolean; declined?: boolean; scope?: ApprovalScope; answerKey?: string } | null {
   const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, {
     deniedAtMs,
     answerStepIdx,
@@ -749,27 +766,76 @@ type ChoiceElevationContext = {
   isOrchestrator: boolean;
   nowMs: number;
   transcriptPath: string | undefined;
+  /** The key of the user turn (`antigravityTurnKey`): the attempt counter's, and the turn a once answer belongs to. */
   promptHash: string;
   signature: string;
   config?: ModeChangeConfigLike;
-  /** Builds the whole deny reason from the attempt count (the run_workflow guard words the question for a script, not a subagent). */
-  reasonOverride?: (attempt: number) => string;
+  /** Builds the whole deny reason from the attempt count and what is stored (the run_workflow guard words the question for a script, not a subagent). */
+  reasonOverride?: (attempt: number, stored?: StoredClause | null) => string;
   /** The cost gate's sentence (2.3.19): what the call costs against the session's, written into the deny reason. */
   costNote?: string;
   /** Why the call is held (2.3.20): `tier` (default), `cost` or `orchestrator`, `unverifiable` for a script. */
   cause?: DenyCause;
   /** The model the call was written with, when `requestedModel` (the marker's and the approval's key) is its tier-and-effort form: the deny reason re-invokes with this one. */
   displayModel?: string;
+  /** The effort the call runs at, when its model id names none (the cost gate's call effort): what the stored clause compares an approval's effort with. */
+  callEffort?: CostEffort;
+  /**
+   * A call that can be run on another model (an `invoke_subagent`): what a No lowers it to (`allow` + `overwrite: { Model }`, and
+   * the effort when the clamp lowers it). Absent (a script, which cannot be clamped): a No is recorded and the script is denied with
+   * `declineReason` instead.
+   */
+  declineClamp?: { model: string; effort?: string };
+  declineReason?: (scope: ApprovalScope) => string;
 };
 
+/** The decision of a call the user declined (a No, 2.3.21): the clamp (`allow` + `overwrite`) when the call can be run on another model, else a deny that says not to ask again. */
+export function declinedDecision(
+  ctx: Pick<ChoiceElevationContext, 'declineClamp' | 'declineReason' | 'cause' | 'sessionCeilingTier'>,
+  scope: ApprovalScope,
+  extra: Partial<AntigravityHookDecision> = {}
+): AntigravityHookDecision {
+  const elevation = scope === 'session' ? 'declined-session' : 'declined-once';
+  if (ctx.declineClamp) {
+    return {
+      decision: 'allow',
+      overwrite: { Model: ctx.declineClamp.model },
+      elevation,
+      declineScope: scope,
+      clampedTo: ctx.declineClamp.model,
+      ...(ctx.declineClamp.effort ? { clampedEffort: ctx.declineClamp.effort } : {}),
+      ...extra
+    };
+  }
+  return {
+    decision: 'deny',
+    reason: ctx.declineReason ? ctx.declineReason(scope) : `[jev] The user declined this model ${scope === 'session' ? 'for this session' : 'for this delegation'}; use '${ctx.sessionCeilingTier}' or lower and do not ask again.`,
+    cause: ctx.cause ?? 'tier',
+    elevation,
+    declineScope: scope,
+    ...extra
+  };
+}
+
 /**
- * The choice flow's tail, used by choice mode: count the
- * attempt, pull a late answer from the transcript on every attempt, otherwise deny. It never returns `ask`: under
- * auto-approve a dialog is approved without being shown, so a repeated attempt would run the stronger model
- * unapproved.
+ * The choice flow's tail, used by choice mode: a No the user already gave (2.3.21) runs the call on the session model, no
+ * question; otherwise count the attempt, pull a late answer from the transcript on every attempt (a Yes allows, a No clamps), otherwise
+ * deny with what is stored. It never returns `ask`: under auto-approve a dialog is approved without being shown, so a repeated attempt
+ * would run the stronger model unapproved.
  */
 export function resolveChoiceElevation(ctx: ChoiceElevationContext): AntigravityHookDecision {
   const { approvalStore, sessionId, requestedModel, typeName, sessionCeilingTier, isOrchestrator, nowMs, promptHash, signature } = ctx;
+  const ectx: ElevationCtx = { turn: promptHash, config: ctx.config ?? null };
+  // A No already on record: this delegation (the next launch of the turn) or the rest of the session. A script cannot be clamped, so it
+  // is only peeked (denied while the No stands, without the question); a subagent call is clamped and a `once` No is spent.
+  try {
+    const no = ctx.declineClamp
+      ? approvalStore?.claimDecline?.(sessionId, requestedModel, nowMs, ectx)
+      : approvalStore?.peekDecline?.(sessionId, requestedModel, nowMs, ectx);
+    if (no) return declinedDecision(ctx, no.scope);
+  } catch {
+    // An unreadable store: the call is denied below, as for a first attempt.
+  }
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
   if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
@@ -808,18 +874,20 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
         // refuses an answer row that already approved a run. recordAndClaim does both under one lock, so there is
         // no gap; a store without it falls back to record then claim, and only a claim that returns an approval
         // allows.
-        const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs };
+        const pulled = { model: requestedModel, scope: pull.scope, created_at: nowMs, ...(pull.scope === 'once' ? { turn: promptHash } : {}) };
         const keys = pull.answerKey ? [pull.answerKey] : undefined;
         let stored = false;
         let claimed = false;
+        let storedModel = requestedModel;
         try {
           if (typeof approvalStore.recordAndClaim === 'function') {
-            const res = approvalStore.recordAndClaim(sessionId, pulled, keys);
+            const res = approvalStore.recordAndClaim(sessionId, pulled, keys, ectx);
             stored = res.stored === true;
             claimed = stored && res.approval !== null;
+            if (res.approval) storedModel = res.approval.model;
           } else {
-            stored = approvalStore.record(sessionId, pulled, keys) === true;
-            claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs) !== null;
+            stored = approvalStore.record(sessionId, pulled, keys, ctx.config) === true;
+            claimed = stored && approvalStore.claim(sessionId, requestedModel, nowMs, undefined, ectx) !== null;
           }
         } catch {
           stored = false;
@@ -830,20 +898,41 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
             decision: 'allow',
             elevation: 'approved',
             approvalScope: pull.scope,
-            pullFallback: true
+            pullFallback: true,
+            pulledAnswer: { answer: 'yes', scope: pull.scope, model: requestedModel, effort: effortFromModelId(storedModel) }
           };
         }
         pullFallback = stored ? 'claim_lost' : 'record_failed';
+      } else if (pull?.declined && pull.scope) {
+        // A No pulled from the transcript: recorded and, for a call that can be clamped, applied to this call at once (a once No is spent).
+        const decline = { model: requestedModel, scope: pull.scope, created_at: nowMs, ...(pull.scope === 'once' ? { turn: promptHash } : {}) };
+        const keys = pull.answerKey ? [pull.answerKey] : undefined;
+        let applied = false;
+        try {
+          if (ctx.declineClamp && typeof approvalStore.recordDeclineAndClaim === 'function') {
+            const res = approvalStore.recordDeclineAndClaim(sessionId, decline, keys, ectx);
+            applied = res.stored === true && res.decline !== null;
+          } else if (typeof approvalStore.recordDecline === 'function') {
+            applied = approvalStore.recordDecline(sessionId, decline, keys) === true && !ctx.declineClamp;
+          }
+        } catch {
+          applied = false;
+        }
+        if (applied) return declinedDecision(ctx, pull.scope, { pullFallback: true, pulledAnswer: { answer: 'no', scope: pull.scope, model: requestedModel, effort: null } });
+        pullFallback = 'record_failed';
       }
     }
   }
 
+  // What is stored for the model, read before the denial is noted (the clause says what Jev has, not what this deny writes).
+  const snapshot = approvalStore?.snapshot?.(sessionId);
+  const clause = snapshot ? storedClauseFor(snapshot, requestedModel, ctx.callEffort, ectx) : null;
   approvalStore?.deny(sessionId, requestedModel, nowMs);
   // Choice mode never returns `ask`: under Antigravity auto-approve a dialog is approved without being shown, so a
   // repeated attempt would run the stronger model unapproved. From the third attempt the reason says plainly to stop.
   let reason: string;
   if (ctx.reasonOverride) {
-    reason = ctx.reasonOverride(count);
+    reason = ctx.reasonOverride(count, clause);
   } else {
     const baseReason = buildElevationReason({
       typeName,
@@ -851,7 +940,8 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
       markerModel: requestedModel,
       sessionCeilingTier,
       isOrchestrator,
-      costNote: ctx.costNote
+      costNote: ctx.costNote,
+      stored: clause
     });
     const stop = stopRetryingText(count, requestedModel, sessionCeilingTier, 'ask_question');
     reason = stop ? `${baseReason} ${stop}` : baseReason;
@@ -862,6 +952,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
     cause: ctx.cause ?? 'tier',
     elevation: 'denied',
     attemptCount: count,
+    ...(clause ? { stored: clause.stored } : {}),
     ...(pullFallback ? { pullFallback } : {})
   };
 }
@@ -1009,9 +1100,12 @@ export function evaluateAntigravitySubagentCall(
     return { decision: 'allow', elevation: 'instructed' };
   }
 
-  // Check covering approval
+  // Check covering approval. The turn a once answer belongs to is the user turn this call is in (`antigravityTurnKey`).
   const markerModel = antigravityMarkerModel(requestedModel, markerGate);
-  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, subagentEnumOf(requestedModel) === null ? markerGate?.callEffort : undefined);
+  const promptHash = antigravityTurnKey(input.lastUserInput);
+  const ectx: ElevationCtx = { turn: promptHash, config: deps.config ?? null };
+  const callEffort = subagentEnumOf(requestedModel) === null ? markerGate?.callEffort : undefined;
+  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, callEffort, ectx);
   if (approval) {
     return {
       decision: 'allow',
@@ -1033,17 +1127,15 @@ export function evaluateAntigravitySubagentCall(
     };
   }
 
-  const promptHash = input.lastUserInput
-    ? createHash('sha256').update(input.lastUserInput).digest('hex').slice(0, 16)
-    : 'no-prompt';
   const signature = `${typeName}:${requestedModel}`;
+  // What the cost gate's clamp (and a No) lowers the call to: the ceiling model when the model is what is too much, and the effort lowered to the highest level that fits.
+  const clampModel = overGate ? antigravityClampModel(requestedModel, overGate, sessionCeilingTier) : sessionCeilingTier;
 
   if (elevationMode === 'clamp') {
     // Every attempt is clamped, never asked: under auto-approve an `ask` is approved without a dialog. With the cost gate the clamp
     // is the most expensive (model, effort) that keeps the call within the session's cost: the ceiling model when the model is what
     // is too much, and the effort lowered to the highest level that fits.
     const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
-    const clampModel = overGate ? antigravityClampModel(requestedModel, overGate, sessionCeilingTier) : sessionCeilingTier;
     return {
       decision: 'allow',
       overwrite: { Model: clampModel },
@@ -1070,6 +1162,9 @@ export function evaluateAntigravitySubagentCall(
     signature,
     config: deps.config,
     cause: heldBy,
+    ...(callEffort ? { callEffort } : {}),
+    // A No the user gave runs the call on the session model (the same clamp as `JEV_ELEVATION=clamp`), without a question.
+    declineClamp: { model: clampModel, ...(overGate ? { effort: overGate.clampEffort } : {}) },
     ...(overGate ? { costNote: gateNote.costNote } : {})
   });
 }
@@ -1703,6 +1798,15 @@ export type AntigravityModelUsedSource = ModelUsedSource;
 export type AntigravityTelemetryInput = AntigravityTelemetryMode &
   (
   | {
+      /** An answer to the elevation question (2.3.21): the fields are `elevationAnswerFields` (what was asked and answered, whether it was stored, the effort cap, the reason when not). */
+      kind: 'elevation_answer';
+      conversationId?: string | null;
+      /** The turn id (`turnId` of the cleaned last user input), the join to the `agent_call` rows of the same prompt. */
+      turn?: string | null;
+      callKey?: string | null;
+      fields: Record<string, unknown>;
+    }
+  | {
       kind: 'pre_invocation';
       conversationId?: string | null;
       inputModelName?: string | null;
@@ -1806,6 +1910,17 @@ export function buildAntigravityTelemetryEvent(params: AntigravityTelemetryInput
 
 function buildAntigravityEventBody(params: AntigravityTelemetryInput): JevTelemetryEvent {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
+
+  if (params.kind === 'elevation_answer') {
+    return {
+      harness: 'antigravity',
+      toolOrHook: 'PostToolUse',
+      sessionId: params.conversationId ?? null,
+      ...(params.turn ? { turn: params.turn } : {}),
+      ...callKeyField(params.callKey),
+      ...params.fields
+    };
+  }
 
   if (params.kind === 'pre_invocation') {
     const { sessionModel, sessionModelSource } = resolveAntigravitySessionModel(params.inputModelName, params.quotaView, params.turnModel);

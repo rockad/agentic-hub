@@ -126,29 +126,29 @@ describe('elevation pull: one answer approves exactly one run, even with a paral
 
   it('recordAndClaim stores and claims under one lock: the approval is gone afterwards', () => {
     expect(store.recordAndClaim).toBeDefined();
-    const res = store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T }, ['step:6#0']);
+    const res = store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T, turn: 't1' }, ['step:6#0'], { turn: 't1' });
     expect(res.stored).toBe(true);
     expect(res.approval?.scope).toBe('once');
-    expect(store.claim(SID, 'pro', T + 1)).toBeNull();
+    expect(store.claim(SID, 'pro', T + 1, undefined, { turn: 't1' })).toBeNull();
     expect(store.getConsumedAnswers?.(SID)).toEqual(['step:6#0']);
   });
 
   it('recordAndClaim refuses an answer row that was already consumed, and stores nothing', () => {
-    store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T }, ['step:6#0']);
+    store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T, turn: 't1' }, ['step:6#0'], { turn: 't1' });
     store.deny(SID, 'pro', T + 10);
-    const again = store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T + 20 }, ['step:6#0']);
+    const again = store.recordAndClaim!(SID, { model: 'pro', scope: 'once', created_at: T + 20, turn: 't1' }, ['step:6#0'], { turn: 't1' });
     expect(again).toEqual({ stored: false, approval: null });
-    expect(store.claim(SID, 'pro', T + 30)).toBeNull();
+    expect(store.claim(SID, 'pro', T + 30, undefined, { turn: 't1' })).toBeNull();
   });
 
-  it('recordAndClaim without a pending denial stores nothing', () => {
+  it('recordAndClaim needs no pending denial (2.3.21): the answer is stored and claimed', () => {
     const fresh = createAntigravityApprovalStore(path.join(dir, 'sessions2'));
-    expect(fresh.recordAndClaim!('s2', { model: 'pro', scope: 'once', created_at: T })).toEqual({ stored: false, approval: null });
+    expect(fresh.recordAndClaim!('s2', { model: 'pro', scope: 'once', created_at: T, turn: 't1' }, undefined, { turn: 't1' })).toMatchObject({ stored: true, approval: { scope: 'once' } });
   });
 
-  it('a 5min answer pulled through recordAndClaim stays claimable for later pro calls', () => {
-    const res = store.recordAndClaim!(SID, { model: 'pro', scope: '5min', created_at: T });
-    expect(res.approval?.scope).toBe('5min');
-    expect(store.claim(SID, 'pro', T + 1000)?.scope).toBe('5min');
+  it('a session answer pulled through recordAndClaim stays claimable for later pro calls', () => {
+    const res = store.recordAndClaim!(SID, { model: 'pro', scope: 'session', created_at: T });
+    expect(res.approval?.scope).toBe('session');
+    expect(store.claim(SID, 'pro', T + 1000)?.scope).toBe('session');
   });
 });

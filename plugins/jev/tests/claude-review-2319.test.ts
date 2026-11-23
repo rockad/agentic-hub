@@ -156,18 +156,18 @@ describe('a bare effort answer is recorded for the model the prescribed question
     const asked = noteEffortDenied({ approvals: [] }, 'xhigh', 100, 'sonnet');
     expect(asked.effortDeniedModel).toEqual({ xhigh: 'sonnet' });
     const bare = recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 101 }, 101);
-    expect(bare?.effortApprovals?.[0]).toMatchObject({ model: 'sonnet' });
+    expect(bare.state.effortApprovals?.[0]).toMatchObject({ model: 'sonnet' });
     const stronger = recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 101, model: 'opus' }, 101);
-    expect(stronger?.effortApprovals?.[0]).toMatchObject({ model: 'sonnet' });
+    expect(stronger.state.effortApprovals?.[0]).toMatchObject({ model: 'sonnet' });
     const weaker = recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 101, model: 'haiku' }, 101);
-    expect(weaker?.effortApprovals?.[0]).toMatchObject({ model: 'haiku' });
+    expect(weaker.state.effortApprovals?.[0]).toMatchObject({ model: 'haiku' });
   });
 
   it('legacy: a denial that named no model records the answer as it is (no model: any model)', () => {
     const asked = noteEffortDenied({ approvals: [] }, 'xhigh', 100);
     expect(asked.effortDeniedModel).toBeUndefined();
-    expect(recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 101 }, 101)?.effortApprovals?.[0]).not.toHaveProperty('model');
-    expect(recordEffortApproval({ approvals: [], effortDenied: { xhigh: 100 } }, { level: 'xhigh', scope: 'session', created_at: 101 }, 101)?.effortApprovals?.[0]).not.toHaveProperty('model');
+    expect(recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 101 }, 101).state.effortApprovals?.[0]).not.toHaveProperty('model');
+    expect(recordEffortApproval({ approvals: [], effortDenied: { xhigh: 100 } }, { level: 'xhigh', scope: 'session', created_at: 101 }, 101).state.effortApprovals?.[0]).not.toHaveProperty('model');
   });
 
   it('a newer denial with no model replaces an older one that had one, and the models survive a round trip through the state file', () => {
@@ -184,19 +184,19 @@ describe('a model approval takes the effort prescribed for its own model only', 
     let s = noteDenied({ approvals: [] }, 'opus', 100, 'max');
     s = noteDenied(s, 'sonnet', 101, 'high');
     const next = recordApproval(s, { model: 'sonnet', scope: 'session', created_at: 102, effort: 'max' }, 102);
-    expect(next?.approvals[0]).toMatchObject({ model: 'sonnet', effort: 'high' });
+    expect(next.state.approvals[0]).toMatchObject({ model: 'sonnet', effort: 'high' });
   });
 
   it('no effort on record for the model: the approval keeps none (it stands for at most high), even when a stronger model\'s denial has one', () => {
     let s = noteDenied({ approvals: [] }, 'opus', 100, 'max');
     s = noteDenied(s, 'sonnet', 101);
     const next = recordApproval(s, { model: 'sonnet', scope: 'session', created_at: 102, effort: 'max' }, 102);
-    expect(next?.approvals[0]).toEqual({ model: 'sonnet', scope: 'session', created_at: 102 });
+    expect(next.state.approvals[0]).toEqual({ model: 'sonnet', scope: 'session', created_at: 102 });
   });
 
   it('the same model: an answer at or below the prescribed effort is kept, above it is capped', () => {
     const s = noteDenied({ approvals: [] }, 'opus', 100, 'xhigh');
-    expect(recordApproval(s, { model: 'opus', scope: 'session', created_at: 101, effort: 'high' }, 101)?.approvals[0]).toMatchObject({ effort: 'high' });
-    expect(recordApproval(s, { model: 'opus', scope: 'session', created_at: 101, effort: 'max' }, 101)?.approvals[0]).toMatchObject({ effort: 'xhigh' });
+    expect(recordApproval(s, { model: 'opus', scope: 'session', created_at: 101, effort: 'high' }, 101).state.approvals[0]).toMatchObject({ effort: 'high' });
+    expect(recordApproval(s, { model: 'opus', scope: 'session', created_at: 101, effort: 'max' }, 101).state.approvals[0]).toMatchObject({ effort: 'xhigh' });
   });
 });

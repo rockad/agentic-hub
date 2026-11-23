@@ -96,7 +96,8 @@ import {
   type AntigravityHookDecision,
   type AntigravityHookInput
 } from './logic.js';
-import type { ApprovalStore } from './approvals.js';
+import { antigravityTurnKey, type ApprovalStore, type ElevationCtx } from './approvals.js';
+import { elevationLabelList, type StoredClause } from '../src/core/elevation-answer.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
 import type { DenyCause } from '../src/core/deny-cause.js';
 import { safeSessionId } from '../src/core/governance.js';
@@ -979,7 +980,7 @@ export function workflowUnverifiableReason(d: Pick<WorkflowDecision, 'sites' | '
 }
 
 /** The deny reason of the choice flow for a script: the same marker and four options as an invoke_subagent elevation, naming the script by its hash. */
-export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts: readonly ScriptFact[], attempt: number, marker?: { model: string; costNote?: string }): string {
+export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts: readonly ScriptFact[], attempt: number, marker?: { model: string; costNote?: string }, stored?: StoredClause | null): string {
   const tier = marker?.model ?? top.tier ?? 'pro';
   const ids = scriptIds(scripts);
   const o = CHOICE_OPTIONS;
@@ -989,9 +990,10 @@ export function workflowChoiceReason(top: CallSite, ceilingTier: string, scripts
   return (
     `[jev] This run_workflow script (${ids}) has agent(...) calls on model '${tier}', above session ceiling '${ceilingTier}'${marker?.costNote ? ` (its most costly agent ${marker.costNote})` : ''}, and no approval covers it.${served ? ` ${served}` : ''} ` +
     `Ask the user with ask_question: one question whose text starts with '${ELEVATE_MARKER_PREFIX}${tier}]' followed by a short question naming the script (${ids}), ` +
-    `the strongest requested model${served ? ' (and what it is served on, as said above)' : ''} and the session ceiling, with four options in this order: '${o.once}', '${o.fiveMin}', '${o.session}', '${o.no(ceilingTier)}'. ` +
-    `If the user approves, call run_workflow again unchanged; if No, change the agent(...) calls to '${ceilingTier}' (or 'flash_lite') and call it again, or do the work directly; ` +
+    `the strongest requested model${served ? ' (and what it is served on, as said above)' : ''} and the session ceiling, with four options in this order: ${elevationLabelList(o.no(ceilingTier))}. ` +
+    `If the user approves, call run_workflow again unchanged; if a No, change the agent(...) calls to '${ceilingTier}' (or 'flash_lite') and call it again, or do the work directly; ` +
     'do not ask in any other form.' +
+    (stored ? ` ${stored.text}` : '') +
     (stop ? ` ${stop}` : '')
   );
 }
@@ -1132,12 +1134,13 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     // `cost_gate` of the row: what the cost gate did with the calls it could judge (`fallback` when the model ceiling by rank judged any).
     const gateIdle: CostGateState = d.gate && d.gate.fallbacks === 0 && d.unverifiable.length === 0 ? 'pass' : 'fallback';
     const costGate = (state: CostGateState): Record<string, unknown> => gateField(gated.length > 0 ? state : gateIdle);
-    const claimed = approvals?.claim(sessionId, markerModel, nowMs, maxEffort) ?? null;
+    const promptHash = antigravityTurnKey(input.lastUserInput);
+    const ectx: ElevationCtx = { turn: promptHash, config: deps.config ?? null };
+    const claimed = approvals?.claim(sessionId, markerModel, nowMs, maxEffort, ectx) ?? null;
     if (claimed) {
       pin('allow');
       return finish('allow', { decision: 'allow', elevation: 'approved', approvalScope: claimed.scope }, { workflow_highest: top.tier, ...costGate('approved') });
     }
-    const promptHash = input.lastUserInput ? digest16(input.lastUserInput, 'sha256') : 'no-prompt';
     const choice = resolveChoiceElevation({
       approvalStore: approvals,
       sessionId,
@@ -1151,7 +1154,11 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
       signature: workflowSignature(d.scripts),
       config: deps.config,
       cause: elevationCause,
-      reasonOverride: (attempt) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt, { model: markerModel, ...(worstGate ? { costNote: costComparison(worstGate) } : {}) })
+      reasonOverride: (attempt, stored) => workflowChoiceReason(top, ceilingTier, d.scripts, attempt, { model: markerModel, ...(worstGate ? { costNote: costComparison(worstGate) } : {}) }, stored),
+      ...(maxEffort ? { callEffort: maxEffort } : {}),
+      // A script cannot be run on another model, so a No the user gave denies it, without the question.
+      declineReason: (scope) =>
+        `[jev] The user declined model '${markerModel}' ${scope === 'session' ? 'for this session' : 'for this delegation'}. Do not ask again: change the agent(...) calls in the script to '${ceilingTier}' (or 'flash_lite'), then call run_workflow again.`
     });
     if (choice.decision === 'allow') pin('allow');
     return finish(choice.decision === 'allow' ? 'allow' : 'denied', choice, { workflow_highest: top.tier, ...costGate(choice.decision === 'allow' ? 'approved' : 'denied') });

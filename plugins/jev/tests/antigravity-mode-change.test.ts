@@ -260,7 +260,7 @@ describe('the real Antigravity hook process and the mode change', () => {
     modelName: 'gemini-3.8-flash-low',
     toolCall: { name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } }
   });
-  const askDone = (transcriptPath: string) => ({ conversationId: CONV, transcriptPath, stepIdx: 7, modelName: 'gemini-3.8-flash-low', toolCall: { name: 'ask_question', args: ASK.args } });
+  const askDone = (transcriptPath: string) => ({ conversationId: CONV, transcriptPath, stepIdx: 7, lastUserInput: 'Invoke expert on pro', modelName: 'gemini-3.8-flash-low', toolCall: { name: 'ask_question', args: ASK.args } });
   const decisionOf = (p: ReturnType<typeof run>) => JSON.parse(p.stdout.toString()).decision;
   const rows = (): Record<string, any>[] =>
     fs.readFileSync(path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -281,13 +281,26 @@ describe('the real Antigravity hook process and the mode change', () => {
     Bun.sleepSync(25);
     setConfig({ defaults: { mode: 'on', modeChangedAt: new Date().toISOString() } });
     Bun.sleepSync(25);
-    expect(run('post-tool-use', askDone(file)).exitCode).toBe(0);
-    expect(rows().find((r) => r.event === 'ask_answer').outcome).toBe('mode_changed');
-    expect(approvalsOnDisk()).toEqual([]);
 
+    // No PostToolUse ran for the answer (it was given where nothing is recorded): the pull must not read it for the old denial.
     expect(decisionOf(run('pre-tool-use', elevate(file)))).toBe('deny');
     expect(rows().filter((r) => r.event === 'agent_call').pop().pull_fallback).toBe('mode_changed');
     expect(approvalsOnDisk()).toEqual([]);
+  });
+
+  it('an approval recorded before a stamped mode change is void; the same answer row is never read twice', () => {
+    const file = transcript();
+    expect(decisionOf(run('pre-tool-use', elevate(file)))).toBe('deny');
+    run('post-tool-use', askDone(file));
+    expect(decisionOf(run('pre-tool-use', elevate(file)))).toBe('allow'); // recorded in mode on
+
+    Bun.sleepSync(25);
+    setConfig({ defaults: { mode: 'on', modeChangedAt: new Date().toISOString() } });
+    Bun.sleepSync(25);
+    expect(decisionOf(run('pre-tool-use', elevate(file)))).toBe('deny'); // what was approved before the change counts for nothing
+
+    expect(run('post-tool-use', askDone(file)).exitCode).toBe(0);
+    expect(rows().filter((r) => r.event === 'ask_answer').pop().outcome).toBe('consumed');
   });
 
   it('control: no mode change, the same answer is recorded and the next pro call is allowed', () => {

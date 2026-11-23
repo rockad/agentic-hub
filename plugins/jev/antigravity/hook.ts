@@ -18,7 +18,7 @@ import { logJevTelemetry, taskFingerprint } from '../src/core/telemetry.js';
 import { checkEgress, egressContextDirs } from '../src/core/egress.js';
 import { loadDowngradeMinProbability, loadDowngradeMode } from '../src/core/downgrade-config.js';
 import { withTimeout } from '../src/core/with-timeout.js';
-import { isModeOff, modeBehaviour } from '../src/core/mode-policy.js';
+import { isModeOff, modeBehaviour, telemetryMode } from '../src/core/mode-policy.js';
 import { getCostGateMode, loadJevConfigSync } from '../src/core/config.js';
 import { denialPredatesModeChange, modeChangedAtMs } from '../src/core/mode-change.js';
 import { ceilingModelForHarness } from '../src/tools/dispatch.js';
@@ -30,6 +30,7 @@ import {
   parseElevationAnswer,
   pollForAskAnswer,
   pollForAskAnswers,
+  answerLabel,
   askAnswerKey,
   askQuestionCount,
   extractChildConversationId,
@@ -39,6 +40,7 @@ import {
   readAntigravityTurn,
   buildAntigravityTelemetryEvent,
   antigravityCallKey,
+  antigravityCeilingTier,
   antigravityCallId,
   antigravityEffortFor,
   quotaPoolField,
@@ -49,10 +51,22 @@ import {
   turnId,
   TRANSCRIPT_TAIL_WINDOW_BYTES,
   ELEVATE_MARKER_PREFIX,
+  type AntigravityHookDecision,
   type AntigravityHookInput
 } from './logic.js';
 import { readRegularFileTail } from '../claude/safe-read.js';
-import { createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
+import { antigravityTurnKey, createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
+import { queueAnswerNotice } from './answer-notice.js';
+import {
+  ELEVATION_LABELS,
+  elevationAnswerFields,
+  notRecordedLine,
+  parseAnswerLabel,
+  recordedNoLine,
+  recordedYesLine,
+  type NotRecordedReason
+} from '../src/core/elevation-answer.js';
+import { effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
 import { applyAntigravityDowngrade, findDowngradeQuestions, liveRateTask, parseDowngradeAnswer } from './downgrade.js';
 import { RUN_WORKFLOW_TOOL, evaluateAntigravityWorkflowCall } from './workflow-guard.js';
 import { antigravityWorkflowPinDir, pruneWorkflowPins, recordRunWorkflowPostToolUse } from './workflow-pin.js';
@@ -94,6 +108,14 @@ function safelyPrune(dir: string): void {
   } catch {
     // best-effort
   }
+}
+
+/**
+ * The `elevation_answer` row of an answer a PreToolUse pulled from the transcript and recorded (2.3.21): the decisions log and telemetry, as
+ * the PostToolUse recorder writes them (no line for the assistant: the call it is deciding already reflects the answer).
+ */
+function pulledAnswerFields(pa: NonNullable<AntigravityHookDecision['pulledAnswer']>): Record<string, unknown> {
+  return elevationAnswerFields({ kind: 'model', model: pa.model, effort: pa.effort, answer: pa.answer, scope: pa.scope, recorded: true });
 }
 
 function isTranscriptReadable(transcriptPath?: string): boolean {
@@ -260,12 +282,9 @@ async function main() {
       const toolName = input?.toolCall?.name;
       if (toolName === 'ask_question') {
         // Answers feed approvals and downgrade choices, which are decisions: a mode without decisions (on-demand) records
-        // none, so a stale denial from an earlier mode `on` cannot be approved from an answer given now.
-        if (!modeBehaviour(mode).decisions) {
-          await flushTelemetry();
-          console.log('{}');
-          process.exit(0);
-        }
+        // none, so a stale denial from an earlier mode `on` cannot be approved from an answer given now. An elevation answer
+        // is still read there, to write its `elevation_answer` row (`recorded: false`, reason `mode`) and tell the assistant.
+        const decisions = modeBehaviour(mode).decisions;
         const conversationId = noSession ? null : input.conversationId || 'default-session';
         const contentOnStdin = typeof input.content === 'string' && input.content.trim().length > 0;
         const transcriptReadable = isTranscriptReadable(input.transcriptPath);
@@ -273,14 +292,19 @@ async function main() {
         let markerFound = false;
         let rowFound = false;
         let answerStepRecorded = false;
-        let parsed: { approved: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
-        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'not_denied' | 'mode_changed' | 'no_session' | 'error' = 'error';
+        let parsed: { approved: boolean; declined?: boolean; scope: ApprovalScope | null } = { approved: false, scope: null };
+        let outcome: 'recorded' | 'not_elevation' | 'no_row' | 'rejected' | 'consumed' | 'mode' | 'no_session' | 'error' = 'error';
 
         // A downgrade question (`[jev-downgrade:flash_lite:<sig8>]` or the plain marker, text starts with the marker) is
         // recorded by its own branch, EVERY such question of the call (each answer line belongs to its own delegation).
         // An elevation marker wins when a call carries both: the elevation flow is the one that must never miss an answer.
         const downgradeQuestions = findDowngradeQuestions(input.toolCall?.args?.questions);
         const carriesElevation = JSON.stringify(input.toolCall?.args?.questions ?? '').includes(ELEVATE_MARKER_PREFIX);
+        if (!decisions && !carriesElevation) {
+          await flushTelemetry();
+          console.log('{}');
+          process.exit(0);
+        }
         if (downgradeQuestions.length > 0 && !carriesElevation) {
           // A question asked before the last mode change is dropped first: an answer to it records nothing.
           if (conversationId && modeChangedAtMs(jevConfig, 'antigravity') !== null) {
@@ -363,11 +387,15 @@ async function main() {
           process.exit(0);
         }
 
+        // What the user answered, for the `elevation_answer` row and the line the assistant is told (set once the answer row is read).
+        let answerFacts: { reason?: NotRecordedReason; answer: 'yes' | 'no' | null; scope: ApprovalScope | null; effort: CostEffort | null; model: string | null; target?: string } | null = null;
         try {
           const questions = input.toolCall?.args?.questions;
           let elevateModel: string | undefined;
           // Which question carries the marker, so its own answer line (A1 = first question) is the one read.
           let markerIndex = 0;
+          // The first question that carries the marker prefix even when its marker does not parse (a malformed marker).
+          let prefixIndex = -1;
 
           if (Array.isArray(questions)) {
             questions.forEach((q, index) => {
@@ -375,6 +403,7 @@ async function main() {
               if (elevateModel !== undefined) return;
               const qText = typeof q === 'string' ? q : (q && typeof q === 'object' ? (q as Record<string, unknown>).question : '');
               if (typeof qText === 'string' && qText.includes(ELEVATE_MARKER_PREFIX)) {
+                if (prefixIndex < 0) prefixIndex = index;
                 const m = qText.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
                 if (m) {
                   elevateModel = m[1].toLowerCase();
@@ -383,16 +412,18 @@ async function main() {
               }
             });
           } else if (typeof questions === 'string' && questions.includes(ELEVATE_MARKER_PREFIX)) {
+            prefixIndex = 0;
             const m = questions.match(/\[jev-elevate:([a-z0-9_-]+)\]/i);
             if (m) elevateModel = m[1].toLowerCase();
           }
 
           markerFound = typeof elevateModel === 'string';
+          const malformed = !markerFound && prefixIndex >= 0;
 
           // Record where the answer row is, before waiting for it and whatever the answer turns out to be: the row's
           // step_index is this call's own stepIdx, even when the row is not written yet. The PreToolUse pull reads only
           // that row (real transcripts carry no tool call ids, and parallel tool calls make position unreliable).
-          if (markerFound && elevateModel && approvals && conversationId && typeof input.stepIdx === 'number') {
+          if (decisions && markerFound && elevateModel && approvals && conversationId && typeof input.stepIdx === 'number') {
             try {
               answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex) === true;
             } catch {
@@ -402,47 +433,98 @@ async function main() {
 
           // Only an elevation question is worth waiting for: a bounded wait (~150 ms polls, <= 2 s) for the answer row
           // when content is not on stdin and transcriptPath + stepIdx are given. Any other question returns at once.
-          const rawAnswer = markerFound ? await pollForAskAnswer(input, markerIndex, { questionCount: askQuestionCount(input.toolCall?.args) }) : null;
+          const rawAnswer = markerFound || malformed ? await pollForAskAnswer(input, markerFound ? markerIndex : prefixIndex, { questionCount: askQuestionCount(input.toolCall?.args) }) : null;
           rowFound = rawAnswer !== null;
 
           const parsedResult = parseElevationAnswer(rawAnswer);
           parsed = {
             approved: parsedResult.approved,
+            ...(parsedResult.declined ? { declined: true } : {}),
             scope: parsedResult.scope ?? null
           };
+          const answered = parsedResult.approved ? 'yes' : parsedResult.declined ? 'no' : null;
 
-          if (!markerFound || !elevateModel) {
+          if (!markerFound && !malformed) {
             outcome = 'not_elevation';
           } else if (!rowFound) {
             outcome = 'no_row';
-          } else if (!parsed.approved || !parsed.scope) {
+          } else if (malformed) {
+            // The question's marker does not parse: nothing can be stored, and the assistant is told how to ask it again.
             outcome = 'rejected';
+            answerFacts = { reason: 'marker', answer: answered, scope: parsedResult.scope ?? null, effort: null, model: null };
+          } else if (!answered || !parsedResult.scope) {
+            outcome = 'rejected';
+            answerFacts = { reason: 'label', answer: null, scope: null, effort: null, model: elevateModel ?? null };
+          } else if (!decisions) {
+            outcome = 'mode';
+            answerFacts = { reason: 'mode', answer: answered, scope: parsedResult.scope, effort: null, model: elevateModel ?? null };
+          } else if (!approvals || !conversationId || !elevateModel) {
+            outcome = 'no_session';
+            answerFacts = { reason: 'write', answer: answered, scope: parsedResult.scope, effort: null, model: elevateModel ?? null };
           } else {
-            if (!approvals || !conversationId) {
-              outcome = 'no_session';
+            // The answer row this approval comes from is consumed with it (by step and, when present, by tool call
+            // id): the same row cannot approve a later denial, whichever hook reads it.
+            const consumedKeys: string[] = [];
+            if (typeof input.stepIdx === 'number') consumedKeys.push(`step:${input.stepIdx}#${markerIndex}`);
+            if (typeof input.toolCall?.id === 'string' && input.toolCall.id) consumedKeys.push(`${input.toolCall.id}#${markerIndex}`);
+            const keys = consumedKeys.length > 0 ? consumedKeys : undefined;
+            const turnKey = antigravityTurnKey(input.lastUserInput);
+            // An answer counts whether or not Jev denied anything first, and whenever it was given (2.3.21: no window); a once is bound to this turn.
+            if (answered === 'yes') {
+              const stored = approvals.recordWithResult
+                ? approvals.recordWithResult(conversationId, { model: elevateModel, scope: parsedResult.scope, created_at: Date.now(), ...(parsedResult.scope === 'once' ? { turn: turnKey } : {}) }, keys, jevConfig)
+                : approvals.record(conversationId, { model: elevateModel, scope: parsedResult.scope, created_at: Date.now(), ...(parsedResult.scope === 'once' ? { turn: turnKey } : {}) }, keys, jevConfig)
+                  ? { model: elevateModel }
+                  : null;
+              outcome = stored ? 'recorded' : 'consumed';
+              answerFacts = stored ? { answer: 'yes', scope: parsedResult.scope, effort: effortFromModelId(stored.model), model: elevateModel } : null;
             } else {
-              // The answer row this approval comes from is consumed with it (by step and, when present, by tool call
-              // id): the same row cannot approve a later denial, whichever hook reads it.
-              const consumedKeys: string[] = [];
-              if (typeof input.stepIdx === 'number') consumedKeys.push(`step:${input.stepIdx}#${markerIndex}`);
-              if (typeof input.toolCall?.id === 'string' && input.toolCall.id) consumedKeys.push(`${input.toolCall.id}#${markerIndex}`);
-              // A denial from before the last mode change is never approved by an answer (the answer may have been given in
-              // on-demand, where nothing is recorded): the call is denied again with a fresh question instead.
-              const deniedAt = approvals.wasDeniedRecently(conversationId, elevateModel, Date.now());
-              if (typeof deniedAt === 'number' && denialPredatesModeChange(deniedAt, jevConfig, 'antigravity')) {
-                outcome = 'mode_changed';
-              } else {
-                const recorded = approvals.record(
-                  conversationId,
-                  { model: elevateModel, scope: parsed.scope, created_at: Date.now() },
-                  consumedKeys.length > 0 ? consumedKeys : undefined
-                );
-                outcome = recorded ? 'recorded' : 'not_denied';
-              }
+              const done = approvals.recordDecline?.(conversationId, { model: elevateModel, scope: parsedResult.scope, created_at: Date.now(), ...(parsedResult.scope === 'once' ? { turn: turnKey } : {}) }, keys);
+              if (done === undefined) throw new Error('no decline store');
+              outcome = done ? 'recorded' : 'consumed';
+              answerFacts = done ? { answer: 'no', scope: parsedResult.scope, effort: null, model: elevateModel, ...(parseAnswerLabel(answerLabel(rawAnswer ?? ''), 'model')?.noTarget ? { target: parseAnswerLabel(answerLabel(rawAnswer ?? ''), 'model')!.noTarget } : {}) } : null;
             }
           }
         } catch {
           outcome = 'error';
+          if (markerFound || rowFound) answerFacts = { reason: 'write', answer: parsed.approved ? 'yes' : parsed.declined ? 'no' : null, scope: parsed.scope, effort: null, model: null };
+        }
+
+        // The `elevation_answer` row (2.3.21), one per marker answer read: the decisions log and telemetry. Then the one line for the assistant,
+        // queued for the next pre-invocation (the PostToolUse output of Antigravity is `{}` only).
+        if (answerFacts) {
+          const facts = answerFacts;
+          const recorded = !facts.reason;
+          const fields = elevationAnswerFields({
+            kind: 'model',
+            model: facts.model,
+            effort: recorded ? facts.effort : null,
+            answer: facts.answer,
+            scope: facts.scope,
+            recorded,
+            ...(facts.reason ? { reason: facts.reason } : {})
+          });
+          const cleaned = cleanUserInput(input.lastUserInput || '');
+          const turn = cleaned.length > 0 ? turnId(cleaned) : null;
+          appendDecisionLog({
+            harness: 'antigravity',
+            ...fields,
+            session_id: conversationId,
+            turn,
+            ...callKeyField(input.toolCall?.id),
+            ...(telemetryMode(mode) ? { mode: telemetryMode(mode) } : {})
+          });
+          trackTelemetry(
+            logJevTelemetry(
+              buildAntigravityTelemetryEvent({ mode, kind: 'elevation_answer', conversationId, turn, callKey: input.toolCall?.id, fields })
+            )
+          );
+          const line = recorded
+            ? facts.answer === 'yes'
+              ? recordedYesLine({ kind: 'model', subject: facts.model ?? '', scope: facts.scope as ApprovalScope, effort: facts.effort })
+              : recordedNoLine({ kind: 'model', subject: facts.model ?? '', scope: facts.scope as ApprovalScope, target: facts.target ?? antigravityCeilingTier(input.modelName) })
+            : notRecordedLine(facts.reason as NotRecordedReason, 'model', '[jev-elevate:<model>]', ELEVATION_LABELS.noOnce('<session ceiling>'));
+          if (conversationId) queueAnswerNotice(sessionsDir, conversationId, line, mode);
         }
 
         appendDecisionLog({
@@ -572,6 +654,24 @@ async function main() {
       activeModel = ceilingModelForHarness('antigravity', sessionModel);
     }
 
+    // The row of an answer this call pulled from the transcript and recorded (the PostToolUse recorder did not see its row in time).
+    const writePulledAnswerRow = (pa: NonNullable<AntigravityHookDecision['pulledAnswer']>): void => {
+      const fields = pulledAnswerFields(pa);
+      const cleaned = cleanUserInput(input.lastUserInput || '');
+      const turn = cleaned.length > 0 ? turnId(cleaned) : null;
+      appendDecisionLog({
+        harness: 'antigravity',
+        ...fields,
+        session_id: input.conversationId || null,
+        turn,
+        ...callKeyField(input.toolCall?.id),
+        ...(telemetryMode(mode) ? { mode: telemetryMode(mode) } : {})
+      });
+      trackTelemetry(
+        logJevTelemetry(buildAntigravityTelemetryEvent({ mode, kind: 'elevation_answer', conversationId: input.conversationId, turn, callKey: input.toolCall?.id, fields }))
+      );
+    };
+
     // The cost gate ships in shadow mode: the rank ceiling decides and the rows say what the gate would have done. JEV_COST_GATE wins.
     const costGateMode = getCostGateMode('antigravity');
     // run_workflow: the agents a script launches never reach this hook, so the script itself is analysed (workflow-guard.ts).
@@ -604,6 +704,8 @@ async function main() {
         ...causeFields(wf.decision, wf.cause),
         elevation: wf.elevation || null,
         approval_scope: wf.approvalScope || null,
+        ...(wf.stored ? { stored: wf.stored } : {}),
+        ...(wf.declineScope ? { decline_scope: wf.declineScope } : {}),
         attempt_count: wf.attemptCount || null,
         prompt_length: wfPrompt.taskLen,
         prompt_hash: wfPrompt.taskLen > 0 ? wfPrompt.taskHash : null,
@@ -611,6 +713,7 @@ async function main() {
         ...(wf.autoApproveWarning ? { auto_approve_warning: true } : {}),
         ...w.log
       });
+      if (wf.pulledAnswer) writePulledAnswerRow(wf.pulledAnswer);
       if (modeBehaviour(mode).decisions) safelyPrune(pinDir);
       await flushTelemetry();
       if (wf.decision === 'pass') {
@@ -693,6 +796,8 @@ async function main() {
       ...causeFields(decision.decision, decision.cause),
       elevation: decision.elevation || null,
       approval_scope: decision.approvalScope || null,
+      ...(decision.stored ? { stored: decision.stored } : {}),
+      ...(decision.declineScope ? { decline_scope: decision.declineScope } : {}),
       attempt_count: decision.attemptCount || null,
       clamped_to: decision.clampedTo || null,
       ...(decision.clampedEffort ? { clamped_effort: decision.clampedEffort } : {}),
@@ -713,6 +818,8 @@ async function main() {
       // Where the effort came from (2.3.20).
       ...antigravityEffortFor(requestedModel, activeModel, decision.clampedEffort)
     });
+
+    if (isSubagentCall && decision.pulledAnswer) writePulledAnswerRow(decision.pulledAnswer);
 
     if (isSubagentCall && modeBehaviour(mode).telemetry) {
       const cleaned = cleanUserInput(input.lastUserInput || '');

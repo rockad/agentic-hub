@@ -17,7 +17,7 @@ import {
   workflowSignature,
   type DefinitionResolver
 } from '../antigravity/workflow-guard.ts';
-import { createAntigravityApprovalStore, type ApprovalStore } from '../antigravity/approvals.ts';
+import { antigravityTurnKey, createAntigravityApprovalStore, type ApprovalStore } from '../antigravity/approvals.ts';
 import type { AntigravityHookInput } from '../antigravity/logic.ts';
 import type { ScriptFact } from '../src/core/workflow-pin.ts';
 
@@ -326,7 +326,7 @@ describe('evaluateAntigravityWorkflowCall', () => {
 
     it('a covering approval allows the call and pins it; once is used up by one run', () => {
       evaluateAntigravityWorkflowCall(call(PRO), deps());
-      approvals.record('conv-wf', { model: 'pro', scope: 'once', created_at: 1_000_000 });
+      approvals.record('conv-wf', { model: 'pro', scope: 'once', created_at: 1_000_000, turn: antigravityTurnKey(call(PRO).lastUserInput) });
       const ok = evaluateAntigravityWorkflowCall(call(PRO), deps());
       expect(ok.decision.decision).toBe('allow');
       expect(ok.decision.elevation).toBe('approved');
@@ -506,8 +506,10 @@ describe('texts', () => {
     const r = workflowChoiceReason(top, 'flash', facts, 1);
     expect(r).toContain("'[jev-elevate:pro]'");
     expect(r).toContain('sha256:aaaaaaaaaaaa');
-    expect(r.indexOf('Yes, once')).toBeLessThan(r.indexOf('Yes, for the next 5 minutes'));
+    expect(r.indexOf('Yes, once')).toBeLessThan(r.indexOf('Yes, for this session'));
     expect(r.indexOf('Yes, for this session')).toBeLessThan(r.indexOf('No, proceed on flash'));
+    expect(r.indexOf('No, proceed on flash')).toBeLessThan(r.indexOf("No, don't ask again this session"));
+    expect(r).not.toContain('5 minutes');
     expect(workflowChoiceReason(top, 'flash', facts, 3)).toContain('stop retrying');
   });
 

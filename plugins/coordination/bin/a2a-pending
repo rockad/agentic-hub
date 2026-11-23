@@ -1,0 +1,65 @@
+#!/bin/sh
+# a2a-pending: the UserPromptSubmit command hook (S1-CLAUDE; BP5; spec: server-api.md 7.5, 11.1 and
+# docs/specs/claude-hooks.md). POSIX sh plus curl, nothing else.
+#
+# It posts the session id to POST /wake/pending (and nothing else from the hook input: the prompt,
+# the working directory and the transcript path never leave the machine) with a 2 s limit, and prints
+# the UserPromptSubmit hook output when the server has something to announce:
+#
+#   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+#                           "additionalContext": "[a2a] N pending. Call a2a_inbox."}}
+#
+# The text is built here from one integer (1 to 4 digits) read out of the server's answer; nothing
+# else the server sends is ever copied. Nothing is printed when there is nothing to announce, and on
+# every failure. Exits 0 always, so a prompt is never held up (SP1 T11: the prompt proceeds on every
+# failure of a hook anyway).
+#
+# Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
+# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key). The key goes to curl on stdin (`curl -K -`),
+# never in argv; A2A_API_KEY is never read, and is unset so curl does not inherit it.
+
+unset A2A_API_KEY
+umask 077
+
+URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
+URL=${URL%/}
+KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
+
+input=''
+if [ ! -t 0 ]; then input=$(head -c 1048576 2>/dev/null | tr '\n\r' '  '); fi
+
+# The first occurrence of the key: in the hook input the session id comes before the prompt, which
+# can hold any text, so a "session_id" written inside a prompt is never reached [unverified for
+# UserPromptSubmit: the recorded key order is for SessionStart; the result is validated either way].
+pat='"session_id"'
+rest=${input#*"$pat"}
+[ "$rest" = "$input" ] && exit 0
+sid=$(printf '%s' "$rest" | sed -n 's/^[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q')
+case $sid in
+  ''|*[!A-Za-z0-9_-]*) exit 0 ;;
+esac
+[ "${#sid}" -le 128 ] || exit 0
+
+KEY=''
+if [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
+case $KEY in
+  ''|*[!A-Za-z0-9._~+/=-]*) exit 0 ;; # empty, or a character that could break out of the curl config line
+esac
+
+resp=$(curl -q -sS --noproxy '*' --connect-timeout 1 --max-time 2 -K - -X POST \
+  -H 'Content-Type: application/json' -H 'Accept: application/json' \
+  --data "{\"session_id\":\"$sid\"}" -w '\n%{http_code}' "$URL/wake/pending" 2>/dev/null <<EOF
+header = "Authorization: Bearer $KEY"
+EOF
+)
+code=$(printf '%s' "$resp" | tail -n 1)
+[ "$code" = 200 ] || exit 0
+json=$(printf '%s' "$resp" | sed '$d' | tr '\n' ' ')
+
+# The server's text is "[a2a] N pending. Call a2a_inbox." in additionalContext; take N only.
+n=$(printf '%s' "$json" | sed -n 's/.*"additionalContext"[[:space:]]*:[[:space:]]*"\[a2a\] \([0-9]\{1,4\}\) pending\. Call a2a_inbox\."[[:space:]]*}.*/\1/p')
+case $n in
+  ''|*[!0-9]*) exit 0 ;;
+esac
+printf '{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "[a2a] %s pending. Call a2a_inbox."}}\n' "$n"
+exit 0

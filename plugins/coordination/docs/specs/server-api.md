@@ -1609,6 +1609,14 @@ The literal expansion above would store the key in Claude's config. Use a projec
   "headers": {"Authorization": "Bearer ${A2A_API_KEY}"}}}}
 ```
 
+- As built (S1-CLAUDE, 2026-11-21): `bin/a2a-register`, `bin/a2a-listen`, `bin/a2a-pending` and `hooks/hooks.json` exist and are described in [claude-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/claude-hooks.md). They differ from the sketch above in these ways, all [design] unless noted:
+  - the hook commands are `"${CLAUDE_PLUGIN_ROOT}/bin/<script>"`, not the `~/.local/share/a2a-coord/current/bin/` copy (that is the installer's, decision D28);
+  - the `UserPromptSubmit` HTTP hook is replaced by the `a2a-pending` command hook (BP5): it reads the key from the key file, posts only `{"session_id": ...}` to `POST /wake/pending` with `curl --max-time 2`, builds the text itself from one validated integer and exits 0 on every failure; the `a2a-listen` re-arm entry follows it (BP2, BP3, D39);
+  - the key is read from the key file only (`A2A_KEY_FILE`, default `~/.config/a2a-coord/api-key`) and handed to curl with `-K -`; the server URL is `A2A_SERVER_URL` (default `http://127.0.0.1:8120`) and the card is `A2A_CARD` (default `claude-code@<short hostname>`);
+  - the `410 unregistered` 15 s retry stays in `a2a-listen` (BP7); a status the 7.1 table does not list ends the listener silently; `a2a-register end` writes the session's marker before it posts the end, so the listener the server closes with `410 ended` leaves silently instead of waking the next session of the same process after `/clear`;
+  - `a2a-register start` appends a constant warning sentence when `A2A_API_KEY` is not exported (SP2 C9).
+  - The Claude Code side (`asyncRewake` on `UserPromptSubmit`, `${CLAUDE_PLUGIN_ROOT}` in a plugin command hook, `SessionEnd` on `/exit` and `/clear`, a GUI-launched Claude) is [unverified]; the live checks are in claude-hooks.md section 9.
+
 ### 11.2 Antigravity (agy)
 
 All agy shapes below follow the official hooks page as read by the audit (events, `command` handlers, camelCase JSON, `injectSteps`) [verified for those facts]. The exact `hooks.json` nesting is `[unverified]`. `mcp_config.json` header support is documented only in `agy mcp add --help` (`--header`), not in agy's `mcp_servers.md`, which documents `url` (legacy `serverUrl`, line 66) and does not mention `headers` [verified, Claude Code review of the A6 run]. Per-request delivery is now **verified by wire log** (spikes.md SP2 A6 Result, 2026-11-04): the header is sent on every request. Env-var interpolation is **verified unsupported**: agy sent `${A2A_TOKEN}` and `$A2A_TOKEN` literally (SP2 A6 follow-up).

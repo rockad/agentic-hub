@@ -1,0 +1,276 @@
+#!/bin/sh
+# a2a-listen: the Claude Code idle-wake listener (S1-CLAUDE; spec: server-api.md 7.1, 7.5, 11.1 and
+# docs/specs/claude-hooks.md). POSIX sh plus curl, nothing else. Run as an `asyncRewake` hook on
+# SessionStart (startup, resume, clear), Stop and UserPromptSubmit; an exit 2 with a line on stderr
+# wakes the idle session, any other exit is silent.
+#
+# It long-polls POST /wake/listen in rounds of up to 900 s and acts on the status table of api 7.1:
+#   200  print "[a2a] N pending. Call a2a_inbox." on stderr (N validated as 1 to 4 digits), exit 2
+#   408  the round ended with nothing to deliver: loop at once
+#   409  a newer listener for this handle took over: exit 0, silent
+#   401, 403, 410  write the marker file and exit 2 once; the next occurrence is silent. A
+#        "410 unregistered" in the first A2A_410_RETRY_S seconds (default 15) is retried instead,
+#        because the registration hook runs in parallel with this one (BP7, SP2 C7)
+#   429, 5xx, no answer  back off; the backoff resets when the call lasted at least 10 s
+#
+# Hook input (stdin JSON): hook_event_name, session_id, source. The listener ends when its owner
+# process (the claude process, $CLAUDE_PID, else the parent) is gone, and then posts /sessions/end
+# best effort. The API key is read from a file (never the environment, never argv) and handed to curl
+# on stdin with `curl -K -`; this script unsets A2A_API_KEY so curl does not inherit it either.
+#
+# Configuration (environment, all optional):
+#   A2A_SERVER_URL      default http://127.0.0.1:8120
+#   A2A_KEY_FILE        default ~/.config/a2a-coord/api-key (first line is the key, decision D34)
+#   A2A_CARD            this machine's card; default claude-code@<short hostname> [design]
+#   A2A_STATE_DIR       marker files and listen.log; default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord
+#   A2A_ROUND_S         round length in seconds, 1 to 900, default 900
+#   A2A_OWNER_PID       pid whose death ends the listener; default $CLAUDE_PID, else the parent pid
+#   A2A_POLL_S          owner-watch tick in whole seconds, default 1
+#   A2A_BACKOFF_MAX_S   default 60
+#   A2A_BACKOFF_RESET_S a call that lasted at least this long resets the backoff, default 10
+#   A2A_410_RETRY_S     window for retrying "410 unregistered" after start, default 15
+#
+# Exits 0 on every failure of its own (no key, no state directory, bad input). Only the two cases
+# above exit 2.
+
+unset A2A_API_KEY
+umask 077
+# stderr is the channel an exit 2 wakes the model with, so it carries only the constant lines below.
+# A shell error (a failed redirection, bad arithmetic) must never reach it: keep the real stderr on
+# fd 3 for those lines and silence fd 2.
+exec 3>&2 2>/dev/null
+
+num() { # value default min max: the value if it is an integer inside [min, max], else the default
+  case $1 in
+    ''|*[!0-9]*) printf '%s' "$2"; return ;;
+  esac
+  # a number too long for shell arithmetic would abort the script: keep the default
+  if [ "${#1}" -gt 9 ]; then printf '%s' "$2"; return; fi
+  if [ "$1" -lt "$3" ] || [ "$1" -gt "$4" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+
+URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
+URL=${URL%/}
+ROUND=$(num "${A2A_ROUND_S:-}" 900 1 900)
+POLL=$(num "${A2A_POLL_S:-}" 1 1 60)
+BMAX=$(num "${A2A_BACKOFF_MAX_S:-}" 60 1 3600)
+RESET=$(num "${A2A_BACKOFF_RESET_S:-}" 10 1 3600)
+RETRY410=$(num "${A2A_410_RETRY_S:-}" 15 0 3600)
+STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
+KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
+
+mkdir -p "$STATE" 2>/dev/null || exit 0
+[ -d "$STATE" ] && [ -w "$STATE" ] || exit 0
+# an own directory only: the temp names are predictable (no `test -O` in POSIX sh)
+[ -n "$(find "$STATE" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ] || exit 0
+LOG=$STATE/listen.log
+TMP=$STATE/run.$$
+
+log() { # one line, no hook input and no server body, ever; the log is capped at 256 KiB
+  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then ( : > "$LOG" ) 2>/dev/null; fi
+  printf '%s pid=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*" >> "$LOG" 2>/dev/null
+}
+
+# ---- guards ------------------------------------------------------------------------------------
+
+if [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ]; then
+  log "guard: CLAUDE_CODE_SESSION_ATTENDED=0 (a non-interactive or background session), exit 0"
+  exit 0
+fi
+
+input=''
+if [ ! -t 0 ]; then input=$(head -c 1048576 2>/dev/null | tr '\n\r' '  '); fi
+
+jget() { # a flat string field, first occurrence only: "key" : "value"
+  pat="\"$1\""
+  rest=${input#*"$pat"}
+  [ "$rest" = "$input" ] && return 1
+  printf '%s' "$rest" | sed -n 's/^[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q'
+}
+
+event=$(jget hook_event_name)
+sid=$(jget session_id)
+source_=$(jget source)
+
+case $event in
+  Stop|UserPromptSubmit) ;;
+  SessionStart)
+    case $source_ in
+      startup|resume|clear) ;;
+      *) log "guard: SessionStart source is not startup, resume or clear, exit 0"; exit 0 ;;
+    esac ;;
+  *) log "guard: event is not Stop, UserPromptSubmit or SessionStart, exit 0"; exit 0 ;;
+esac
+case $sid in
+  ''|*[!A-Za-z0-9_-]*) log "guard: session_id missing or fails ^[A-Za-z0-9_-]+\$, exit 0"; exit 0 ;;
+esac
+[ "${#sid}" -le 128 ] || { log "guard: session_id longer than 128 characters, exit 0"; exit 0; }
+
+# ---- owner process -----------------------------------------------------------------------------
+
+OWNER=''
+case ${A2A_OWNER_PID:-} in ''|*[!0-9]*) ;; *) OWNER=$A2A_OWNER_PID ;; esac
+if [ -z "$OWNER" ]; then
+  case ${CLAUDE_PID:-} in ''|*[!0-9]*) OWNER=$PPID ;; *) OWNER=$CLAUDE_PID ;; esac
+fi
+[ "$OWNER" -gt 1 ] 2>/dev/null || OWNER=$PPID
+
+owner_alive() { # kill -0 is also true for a zombie, so read the state where /proc exists
+  kill -0 "$OWNER" 2>/dev/null || return 1
+  if [ -r "/proc/$OWNER/status" ]; then
+    while IFS= read -r line; do
+      case $line in
+        State:*Z*|State:*X*) return 1 ;;
+        State:*) return 0 ;;
+      esac
+    done < "/proc/$OWNER/status"
+  fi
+  return 0
+}
+
+# ---- key, card ---------------------------------------------------------------------------------
+
+KEY=''
+if [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
+case $KEY in
+  ''|*[!A-Za-z0-9._~+/=-]*) # empty, or a character that could break out of the curl config line
+    log "no usable API key in the key file, exit 0"; exit 0 ;;
+esac
+
+nl='
+'
+CARD=${A2A_CARD:-}
+if [ -z "$CARD" ]; then
+  h=$(uname -n 2>/dev/null); h=${h%%.*}
+  h=$(printf '%s' "$h" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32)
+  while :; do case $h in -*) h=${h#-} ;; *) break ;; esac; done
+  CARD=claude-code@$h
+fi
+case $CARD in *"$nl"*) CARD='' ;; esac
+if ! printf '%s' "$CARD" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$'; then CARD=''; fi
+
+# ---- state -------------------------------------------------------------------------------------
+
+NOTICE=$STATE/notice-$sid
+CURL_PID=''
+
+cleanup() {
+  [ -n "$CURL_PID" ] && kill "$CURL_PID" 2>/dev/null
+  rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
+}
+trap 'log "signal received, exit 0"; cleanup; exit 0' TERM INT HUP
+trap cleanup EXIT
+
+# markers of sessions that ended long ago are not needed any more
+find "$STATE" -maxdepth 1 -type f -name 'notice-*' -mtime +7 -exec rm -f {} + 2>/dev/null
+find "$STATE" -maxdepth 1 -type f -name 'run.*' -mtime +1 -exec rm -f {} + 2>/dev/null # left by a killed run
+
+end_session() { # best effort, 1 s limit; the server answers 404 for a session it does not know
+  [ -n "$CARD" ] || return 0
+  curl -q -sS --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 1 -K - -X POST \
+    -H 'Content-Type: application/json' \
+    --data "{\"card\":\"$CARD\",\"harness_session_id\":\"$sid\"}" "$URL/sessions/end" >/dev/null 2>&1 <<EOF
+header = "Authorization: Bearer $KEY"
+EOF
+}
+
+nap() { # $1 seconds, in POLL steps, ending the listener early if the owner dies
+  left=$1
+  while [ "$left" -gt 0 ]; do
+    owner_alive || { log "owner $OWNER gone during a wait, exit 0"; end_session; exit 0; }
+    sleep "$POLL"
+    left=$((left - POLL))
+  done
+}
+
+owner_alive || { log "owner $OWNER is not alive at start, exit 0"; exit 0; }
+log "start event=$event source=${source_:-none} owner=$OWNER round=${ROUND}s"
+
+cr=$(printf '\r')
+n=0
+backoff=1
+t_start=$(date +%s)
+
+while :; do
+  owner_alive || { log "owner $OWNER gone, exit 0"; end_session; exit 0; }
+  n=$((n + 1))
+  t0=$(date +%s)
+  rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
+  ( : > "$TMP.code" ) 2>/dev/null
+  # The key goes to curl on stdin as a config line: it never appears in argv, and this script does
+  # not export it, so it is not in curl's environment either.
+  curl -q -sS --noproxy '*' -o "$TMP.body" -D "$TMP.hdr" -w '%{http_code}' \
+    --connect-timeout 10 --max-time "$((ROUND + 30))" -K - -X POST \
+    -H "X-Coord-Session: $sid" -H "X-Coord-Wait: $ROUND" -H "X-Coord-Again: $n" \
+    "$URL/wake/listen" > "$TMP.code" 2> "$TMP.err" <<EOF &
+header = "Authorization: Bearer $KEY"
+EOF
+  CURL_PID=$!
+  # A finished child stays a zombie until it is waited for, so completion is judged by curl's
+  # -w output (written last, also for 000), not by kill -0 alone.
+  while [ ! -s "$TMP.code" ] && kill -0 "$CURL_PID" 2>/dev/null; do
+    if ! owner_alive; then
+      log "owner $OWNER gone while parked, exit 0"
+      kill "$CURL_PID" 2>/dev/null; wait "$CURL_PID" 2>/dev/null; CURL_PID=''
+      end_session
+      exit 0
+    fi
+    sleep "$POLL"
+  done
+  wait "$CURL_PID" 2>/dev/null
+  CURL_PID=''
+  code=$(cat "$TMP.code" 2>/dev/null); [ -n "$code" ] || code=000
+  dur=$(( $(date +%s) - t0 ))
+  log "round=$n http=$code dur=${dur}s"
+
+  case $code in
+    200)
+      body=$(cat "$TMP.body" 2>/dev/null)  # command substitution drops trailing newlines
+      body=${body%"$cr"}
+      case $body in ''|*[!0-9]*) body='' ;; esac
+      if [ -n "$body" ] && [ "${#body}" -le 4 ]; then
+        rm -f "$NOTICE"
+        log "wake: $body pending, exit 2"
+        printf '[a2a] %s pending. Call a2a_inbox.\n' "$body" >&3
+        exit 2
+      fi
+      log "200 with a body that is not one integer: not waking, treated as a server error"
+      code=500 ;;
+    408)
+      rm -f "$NOTICE"; backoff=1; continue ;;
+    409)
+      log "409 superseded, exit 0"; exit 0 ;;
+    401|403|410)
+      # Inside the start window the registration hook may not have landed yet: "unregistered" is
+      # retried for every event; "ended" only for SessionStart, where `--resume` of a session an
+      # earlier SessionEnd closed races the revive of `a2a-register start` (review finding)
+      if [ "$code" = 410 ] && [ $(( $(date +%s) - t_start )) -lt "$RETRY410" ]; then
+        if grep -qi '^x-coord-reason:[[:space:]]*unregistered' "$TMP.hdr" 2>/dev/null \
+           || { [ "$event" = SessionStart ] && grep -qi '^x-coord-reason:[[:space:]]*ended' "$TMP.hdr" 2>/dev/null; }; then
+          log "410 inside the ${RETRY410}s start window, retrying"
+          nap 1; continue
+        fi
+      fi
+      if [ -e "$NOTICE" ]; then log "$code again, marker present, exit 0"; exit 0; fi
+      # created exclusively, so two listeners that fail together give one notice
+      ( set -C; : > "$NOTICE" ) 2>/dev/null || { log "$code, marker taken by another listener, exit 0"; exit 0; }
+      log "$code, marker written, exit 2 once"
+      printf '[a2a] wake listener stopped: the server answered %s. Check the coordination server and the API key.\n' "$code" >&3
+      exit 2 ;;
+    429|5[0-9][0-9]|000) ;;
+    *)
+      # A client error the table does not list (400, 404, 413 ...) does not go away by waiting:
+      # never wake and never loop on it [design].
+      log "http=$code is not in the status table, exit 0"; exit 0 ;;
+  esac
+
+  # 429, 5xx, no answer: back off, never wake. A long call resets the backoff.
+  [ "$dur" -ge "$RESET" ] && backoff=1
+  ra=$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$TMP.hdr" 2>/dev/null | head -n 1)
+  delay=$backoff
+  [ -n "$ra" ] && [ "$ra" -gt "$delay" ] && delay=$ra
+  [ "$delay" -gt "$BMAX" ] && delay=$BMAX
+  log "http=$code, backing off ${delay}s"
+  nap "$delay"
+  backoff=$((backoff * 2)); [ "$backoff" -gt "$BMAX" ] && backoff=$BMAX
+done

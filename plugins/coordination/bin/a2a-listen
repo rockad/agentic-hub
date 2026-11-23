@@ -5,12 +5,16 @@
 # wakes the idle session, any other exit is silent.
 #
 # It long-polls POST /wake/listen in rounds of up to 900 s and acts on the status table of api 7.1:
-#   200  print "[a2a] N pending. Call a2a_inbox." on stderr (N validated as 1 to 4 digits), exit 2
+#   200  print "[a2a] N pending. Call a2a_inbox." on stderr (N is [1-9][0-9]{0,3}: 1 to 4 digits, no
+#        leading zero, not 0), exit 2; any other body is treated as a server error (back off)
 #   408  the round ended with nothing to deliver: loop at once
 #   409  a newer listener for this handle took over: exit 0, silent
-#   401, 403, 410  write the marker file and exit 2 once; the next occurrence is silent. A
-#        "410 unregistered" in the first A2A_410_RETRY_S seconds (default 15) is retried instead,
-#        because the registration hook runs in parallel with this one (BP7, SP2 C7)
+#   401, 403, 410  write the marker file (created exclusively) and exit 2 once; the next occurrence is
+#        silent. In the first A2A_410_RETRY_S seconds (default 15) two 410 cases are retried instead,
+#        because the registration hook runs in parallel with this one (BP7, SP2 C7):
+#          "410 unregistered" when the event is SessionStart, or when the session's marker does not
+#          exist (a Stop or UserPromptSubmit with the marker present is final at once);
+#          "410 ended" only when the event is SessionStart (the `--resume` race with a2a-register start)
 #   429, 5xx, no answer  back off; the backoff resets when the call lasted at least 10 s
 #
 # Hook input (stdin JSON): hook_event_name, session_id, source. The listener ends when its owner
@@ -28,12 +32,17 @@
 #   A2A_POLL_S          owner-watch tick in whole seconds, default 1
 #   A2A_BACKOFF_MAX_S   default 60
 #   A2A_BACKOFF_RESET_S a call that lasted at least this long resets the backoff, default 10
-#   A2A_410_RETRY_S     window for retrying "410 unregistered" after start, default 15
+#   A2A_410_RETRY_S     window for retrying a 410 after start (the rule above), default 15
+#   A2A_PROC_DIR        where the owner's /proc/<pid>/status is read; default /proc (a test seam)
+#
+# A number in the environment is taken only as digits without a leading zero (dash reads 08 and 09
+# as bad octal) and of at most 9 digits; anything else keeps the default.
 #
 # Exits 0 on every failure of its own (no key, no state directory, bad input). Only the two cases
-# above exit 2.
+# above exit 2: each sets INTENDED2=1 just before its `exit 2`, and the EXIT trap turns any other
+# exit status 2 (an unintended shell error such as a failed arithmetic expansion) into a silent exit 0.
 
-unset A2A_API_KEY
+unset A2A_API_KEY INTENDED2
 umask 077
 # stderr is the channel an exit 2 wakes the model with, so it carries only the constant lines below.
 # A shell error (a failed redirection, bad arithmetic) must never reach it: keep the real stderr on
@@ -42,7 +51,7 @@ exec 3>&2 2>/dev/null
 
 num() { # value default min max: the value if it is an integer inside [min, max], else the default
   case $1 in
-    ''|*[!0-9]*) printf '%s' "$2"; return ;;
+    ''|*[!0-9]*|0?*) printf '%s' "$2"; return ;; # not a number, or a leading zero (bad octal in dash)
   esac
   # a number too long for shell arithmetic would abort the script: keep the default
   if [ "${#1}" -gt 9 ]; then printf '%s' "$2"; return; fi
@@ -115,15 +124,21 @@ if [ -z "$OWNER" ]; then
 fi
 [ "$OWNER" -gt 1 ] 2>/dev/null || OWNER=$PPID
 
-owner_alive() { # kill -0 is also true for a zombie, so read the state where /proc exists
+PROCDIR=${A2A_PROC_DIR:-/proc}
+
+owner_alive() { # kill -0 is also true for a zombie, so read the state: /proc, else ps
   kill -0 "$OWNER" 2>/dev/null || return 1
-  if [ -r "/proc/$OWNER/status" ]; then
+  if [ -r "$PROCDIR/$OWNER/status" ]; then
     while IFS= read -r line; do
       case $line in
         State:*Z*|State:*X*) return 1 ;;
         State:*) return 0 ;;
       esac
-    done < "/proc/$OWNER/status"
+    done < "$PROCDIR/$OWNER/status"
+  else
+    # no /proc (macOS): an empty answer or a state starting with Z (zombie) or X (dead) is gone
+    st=$(ps -o stat= -p "$OWNER" 2>/dev/null | tr -d '[:space:]')
+    case $st in ''|Z*|X*) return 1 ;; esac
   fi
   return 0
 }
@@ -158,8 +173,19 @@ cleanup() {
   [ -n "$CURL_PID" ] && kill "$CURL_PID" 2>/dev/null
   rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
 }
+on_exit() { # the status first: only the two intended exit 2 paths (INTENDED2=1) may leave with 2
+  rc=$?
+  cleanup
+  if [ "$rc" = 2 ] && [ "${INTENDED2:-}" != 1 ]; then
+    log "unexpected exit 2 (a shell error), exit 0"
+    exit 0
+  fi
+}
 trap 'log "signal received, exit 0"; cleanup; exit 0' TERM INT HUP
-trap cleanup EXIT
+trap on_exit EXIT
+
+# a marker left by an earlier SessionEnd must not swallow a real 401 or 403 after `claude --resume`
+[ "$event" = SessionStart ] && rm -f "$NOTICE" 2>/dev/null
 
 # markers of sessions that ended long ago are not needed any more
 find "$STATE" -maxdepth 1 -type f -name 'notice-*' -mtime +7 -exec rm -f {} + 2>/dev/null
@@ -227,26 +253,34 @@ EOF
     200)
       body=$(cat "$TMP.body" 2>/dev/null)  # command substitution drops trailing newlines
       body=${body%"$cr"}
-      case $body in ''|*[!0-9]*) body='' ;; esac
+      case $body in ''|*[!0-9]*|0*) body='' ;; esac # [1-9][0-9]{0,3}: no 0, no leading zero
       if [ -n "$body" ] && [ "${#body}" -le 4 ]; then
         rm -f "$NOTICE"
         log "wake: $body pending, exit 2"
         printf '[a2a] %s pending. Call a2a_inbox.\n' "$body" >&3
+        INTENDED2=1
         exit 2
       fi
-      log "200 with a body that is not one integer: not waking, treated as a server error"
+      log "200 with a body that is not a count of 1 to 4 digits: not waking, treated as a server error"
       code=500 ;;
     408)
       rm -f "$NOTICE"; backoff=1; continue ;;
     409)
       log "409 superseded, exit 0"; exit 0 ;;
     401|403|410)
-      # Inside the start window the registration hook may not have landed yet: "unregistered" is
-      # retried for every event; "ended" only for SessionStart, where `--resume` of a session an
-      # earlier SessionEnd closed races the revive of `a2a-register start` (review finding)
+      # Inside the start window the registration hook may not have landed yet. "unregistered" is
+      # retried for SessionStart, and for another event only while the session's marker does not
+      # exist (a marker means this notice was told already: final at once). "ended" is retried only
+      # for SessionStart, where `--resume` of a session an earlier SessionEnd closed races the
+      # revive of `a2a-register start` (review findings)
       if [ "$code" = 410 ] && [ $(( $(date +%s) - t_start )) -lt "$RETRY410" ]; then
-        if grep -qi '^x-coord-reason:[[:space:]]*unregistered' "$TMP.hdr" 2>/dev/null \
-           || { [ "$event" = SessionStart ] && grep -qi '^x-coord-reason:[[:space:]]*ended' "$TMP.hdr" 2>/dev/null; }; then
+        again=0
+        if grep -qi '^x-coord-reason:[[:space:]]*unregistered' "$TMP.hdr" 2>/dev/null; then
+          if [ "$event" = SessionStart ] || [ ! -e "$NOTICE" ]; then again=1; fi
+        elif grep -qi '^x-coord-reason:[[:space:]]*ended' "$TMP.hdr" 2>/dev/null; then
+          if [ "$event" = SessionStart ]; then again=1; fi
+        fi
+        if [ "$again" = 1 ]; then
           log "410 inside the ${RETRY410}s start window, retrying"
           nap 1; continue
         fi
@@ -256,6 +290,7 @@ EOF
       ( set -C; : > "$NOTICE" ) 2>/dev/null || { log "$code, marker taken by another listener, exit 0"; exit 0; }
       log "$code, marker written, exit 2 once"
       printf '[a2a] wake listener stopped: the server answered %s. Check the coordination server and the API key.\n' "$code" >&3
+      INTENDED2=1
       exit 2 ;;
     429|5[0-9][0-9]|000) ;;
     *)

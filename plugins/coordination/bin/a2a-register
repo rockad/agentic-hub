@@ -30,6 +30,10 @@ exec 2>/dev/null # the hook must never print a shell error: stderr of a hook rea
 mode=${1:-}
 case $mode in start|end) ;; *) exit 0 ;; esac
 
+# An unattended or background session is not registered through the hook (decision Z21 item 4): exit
+# before any file or network access, for `start` and `end` alike.
+[ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ] && exit 0
+
 URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
 URL=${URL%/}
 STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
@@ -72,8 +76,13 @@ printf '%s' "$CARD" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}
 if [ "$mode" = end ]; then
   # The listener of this session gets "410 ended" when the server closes it. Write its marker first,
   # so that listener leaves silently instead of waking whatever session now runs in this process
-  # (/clear fires SessionEnd for the old session and keeps the claude process) [design].
-  if mkdir -p "$STATE" 2>/dev/null && [ -w "$STATE" ]; then ( : > "$STATE/notice-$sid" ) 2>/dev/null; fi
+  # (/clear fires SessionEnd for the old session and keeps the claude process) [design]. The state
+  # directory must be the user's own (as in the listener), and the marker is created exclusively
+  # (`set -C`), so a symlink planted under the predictable name is not followed.
+  if mkdir -p "$STATE" 2>/dev/null && [ -w "$STATE" ] \
+     && [ -n "$(find "$STATE" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; then
+    ( set -C; : > "$STATE/notice-$sid" ) 2>/dev/null
+  fi
   curl -q -sS --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 1 -K - -X POST \
     -H 'Content-Type: application/json' \
     --data "{\"card\":\"$CARD\",\"harness_session_id\":\"$sid\"}" "$URL/sessions/end" >/dev/null 2>&1 <<EOF

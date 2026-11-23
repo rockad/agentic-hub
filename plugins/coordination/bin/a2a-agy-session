@@ -76,8 +76,13 @@ if [ -t 0 ]; then silent; fi
 
 # One line, at most 1 MiB. A JSON string cannot hold a bare double quote, so a quoted key token
 # below can only be a real key, never text inside a value.
-input=$(head -c 1048577 2>/dev/null | tr '\n\r\t' '   ')
-# Over 1 MiB the input was cut and workspacePaths may be missing: no opt-out check, so no call.
+input=$(head -c 1048581 2>/dev/null | tr '\n\r\t' '   ')
+# Over 1 MiB the input was cut and workspacePaths may be missing: no opt-out check, so no call. Up to
+# 4 bytes of trailing white space (a final newline, or CR LF) are not input: 1 MiB of JSON plus its
+# newline is served. Reading 4 bytes more than that, and refusing a read that fills them, means a cut
+# input whose cut happens to land on a space is still refused.
+[ "${#input}" -le 1048580 ] || silent
+input=${input%"${input##*[![:space:]]}"}
 [ "${#input}" -le 1048576 ] || silent
 
 conv=$(printf '%s' "$input" | grep -o '"conversationId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 |

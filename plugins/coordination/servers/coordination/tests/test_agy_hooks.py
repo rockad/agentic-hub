@@ -40,6 +40,7 @@ from agy_hook_helpers import (
     fragment_path,
     hook_env,
     hook_input,
+    hook_input_of_size,
     pending_line,
     run_hook,
     sample_for_secret,
@@ -207,9 +208,9 @@ def stdin_for(script: str) -> str:
 
 
 @pytest.mark.parametrize("script", [PENDING, SESSION])
-@pytest.mark.parametrize("value", ["0", "0.0", "00", "0.000", "0.0009", "0.00001", "7", "30", "9999"])
+@pytest.mark.parametrize("value", ["0", "0.0", "00", "0.000", "0.0009", "0.00001", "7", "30", "9999", "05", "005"])
 def test_a_zero_sub_millisecond_or_long_total_limit_falls_back_to_the_default(stub, env, script, value):
-    """curl reads 0 as no limit and rounds anything under 1 ms to 0 (Opus review of PR #96)."""
+    """curl reads 0 as no limit and rounds anything under 1 ms to 0 (Opus review of PR #96); a leading zero (05, which curl would read as 5 s) falls back too."""
     stub.pending = Reply(200, announce_body(2), delay=8.0)
     result = run_hook(script, stdin_for(script), {**env, "A2A_AGY_MAX_TIME": value})
     assert result.code == 0
@@ -285,6 +286,69 @@ def test_an_input_over_one_mib_makes_no_call(stub, env):
     session = run_hook(SESSION, big.replace("PreInvocation", "SessionStart"), env)
     assert (pending.code, pending.out, pending.err) == (0, "{}\n", "")
     assert (session.code, session.out, session.err) == (0, "", "")
+    assert stub.seen == []
+
+
+MIB = 1 << 20
+
+
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n", "\n\n"], ids=["bare", "newline", "crlf", "two-newlines"])
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+def test_exactly_one_mib_of_json_plus_trailing_white_space_is_served(stub, env, name, ending):
+    """The final newline is not input: 1 MiB of JSON and its newline is 1048577 bytes once the tr has
+    folded the newline into a space, and must not be refused for that alone."""
+    stub.pending = Reply(200, announce_body(5))
+    event = "PreInvocation" if name == PENDING else "SessionStart"
+    result = run_hook(name, hook_input_of_size(MIB, event=event) + ending, env)
+    assert (result.code, result.err) == (0, "")
+    assert result.out == (pending_line(5) if name == PENDING else session_line(HANDLE, 5))
+    assert len(stub.calls("/wake/pending")) == 1
+
+
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+def test_one_mib_plus_one_byte_of_json_still_makes_no_call(stub, env, name):
+    stub.pending = Reply(200, announce_body(5))
+    event = "PreInvocation" if name == PENDING else "SessionStart"
+    result = run_hook(name, hook_input_of_size(MIB + 1, event=event), env)
+    assert (result.code, result.out, result.err) == (0, "{}\n" if name == PENDING else "", "")
+    assert stub.seen == []
+    # With a trailing newline too: the content alone is over the limit.
+    result = run_hook(name, hook_input_of_size(MIB + 1, event=event) + "\n", env)
+    assert (result.code, result.out, result.err) == (0, "{}\n" if name == PENDING else "", "")
+    assert stub.seen == []
+
+
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+def test_a_cut_input_whose_cut_lands_on_white_space_makes_no_call(stub, env, name):
+    """A hook input of more than 1 MiB is refused even when the byte at the cut is a space: more than
+    a final newline of white space after 1 MiB means the input went on."""
+    stub.pending = Reply(200, announce_body(5))
+    event = "PreInvocation" if name == PENDING else "SessionStart"
+    result = run_hook(name, hook_input_of_size(MIB, event=event) + " " * 8 + "x" * 100, env)
+    assert (result.code, result.out, result.err) == (0, "{}\n" if name == PENDING else "", "")
+    assert stub.seen == []
+
+
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+def test_one_mib_under_bash_posix_too(stub, env, name):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed")
+    stub.pending = Reply(200, announce_body(5))
+    event = "PreInvocation" if name == PENDING else "SessionStart"
+    proc = subprocess.run(
+        [bash, "--posix", str(script(name))], input=hook_input_of_size(MIB, event=event) + "\n",
+        capture_output=True, text=True, env=env, timeout=60, check=False,
+    )
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert proc.stdout == (pending_line(5) if name == PENDING else session_line(HANDLE, 5))
+
+
+@pytest.mark.parametrize("stdin", ["   ", " \n \n", "\n"])
+@pytest.mark.parametrize("name", [PENDING, SESSION])
+def test_white_space_only_input_makes_no_call(stub, env, name, stdin):
+    result = run_hook(name, stdin, env)
+    assert (result.code, result.out, result.err) == (0, "{}\n" if name == PENDING else "", "")
     assert stub.seen == []
 
 

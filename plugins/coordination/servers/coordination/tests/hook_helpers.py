@@ -106,6 +106,21 @@ def wait_for(predicate: Callable[[], object], timeout: float = 10.0, what: str =
     raise AssertionError(f"timed out after {timeout} s waiting for {what}")
 
 
+def fake_tool(directory: Path, name: str, body: str) -> Path:
+    """An executable `#!/bin/sh` script `name` in `directory` (made if needed), to put first on a
+    hook's PATH with `path_with`: it stands in for a system tool (`date`, `ps`, `find`)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def path_with(directory: Path) -> str:
+    """The PATH of a hook run with `directory` first."""
+    return f"{directory}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+
+
 # ---- /proc helpers ----------------------------------------------------------------------------
 
 

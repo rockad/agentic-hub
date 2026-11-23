@@ -88,6 +88,15 @@ def hook_input(
     return json.dumps(dict(sorted(data.items())), indent=2 if pretty else None)
 
 
+def hook_input_of_size(size: int, *, event: str = "PreInvocation") -> str:
+    """Valid compact hook JSON of exactly `size` bytes: the padding is one long `lastUserInput`
+    value, so every key stays valid and conversationId and workspacePaths are inside the first MiB."""
+    base = len(hook_input(event=event, last_user_input="").encode())
+    text = hook_input(event=event, last_user_input="x" * (size - base))
+    assert len(text.encode()) == size
+    return text
+
+
 @dataclass
 class Result:
     code: int

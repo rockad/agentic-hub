@@ -45,11 +45,16 @@ nothing() {
   exit 0
 }
 
+# A curl limit: digits with at most one dot, not zero (curl reads 0 as "no limit"), at most 5 s (a
+# mistyped value must not make every model call wait until agy gives up, about 31 s, SP3 P6).
 numeric() {
   case $1 in
     '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;;
+    *[1-9]*) ;;
+    *) return 1 ;;
   esac
-  return 0
+  ip=${1%%.*}
+  [ "${#ip}" -le 1 ] && [ "$ip" -le 5 ]
 }
 numeric "$CONNECT_T" || CONNECT_T=0.2
 numeric "$MAX_T" || MAX_T=2
@@ -59,7 +64,12 @@ if [ -t 0 ]; then nothing; fi
 
 # One line, at most 1 MiB. A JSON string cannot hold a bare double quote, so a quoted key token
 # below can only be a real key, never text inside a value such as lastUserInput.
-input=$(head -c 1048576 2>/dev/null | tr '\n\r\t' '   ')
+input=$(head -c 1048577 2>/dev/null | tr '\n\r\t' '   ')
+# An input over 1 MiB was cut: workspacePaths may be missing, so the opt-out cannot be checked. Make
+# no call rather than ignore an opt-out (Opus review of PR #95).
+[ "${#input}" -le 1048576 ] || nothing
+# The first "conversationId" in the text wins. The known keys of the input are scalars or string
+# arrays (SP3 P2), so a same-named key in a nested object does not occur today; this is an assumption.
 
 conv=$(printf '%s' "$input" | grep -o '"conversationId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 |
   sed 's/^[^:]*:[[:space:]]*"\(.*\)"$/\1/')
@@ -71,7 +81,10 @@ esac
 
 ws=$(printf '%s' "$input" | grep -o '"workspacePaths"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]*"' | head -n 1 |
   sed 's/.*\[[[:space:]]*"\(.*\)"$/\1/')
+# The path is matched as raw JSON text. A backslash means the text is escaped (a quote, a backslash
+# or a character Go writes as &), so the real directory cannot be told: make no call.
 case $ws in
+  *\\*) nothing ;;
   /*) if [ -e "$ws/.a2a-optout" ]; then nothing; fi ;;
 esac
 
@@ -111,7 +124,9 @@ n=$(printf '%s' "$body" | grep -o '"pending"[[:space:]]*:[[:space:]]*[-0-9.eE+]*
 case $n in
   '' | 0* | *[!0-9]*) nothing ;;
 esac
-[ "${#n}" -le 4 ] || nothing
+# The server records the announcement before this script prints, and clamps its own stub to 9999
+# (wake/outcomes.py), so a larger count prints as 9999 instead of being lost until the repeat.
+[ "${#n}" -le 4 ] || n=9999
 
 printf '{"injectSteps":[{"systemMessage":{"systemMessage":"[a2a] %s pending. Call a2a_inbox."}}]}\n' "$n"
 exit 0

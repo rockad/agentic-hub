@@ -45,6 +45,7 @@ from agy_hook_helpers import (
     sample_for_secret,
     script,
     session_line,
+    session_line_without_count,
     session_reply,
     spawn,
     start_stub,
@@ -95,13 +96,11 @@ HTTP_FAILURES = [
     pytest.param(Reply(200, '{"pending": 2, "announce": false}'), id="announce-false"),
     pytest.param(Reply(200, '{"announce": true}'), id="announce-without-a-count"),
     pytest.param(Reply(200, announce_body(0)), id="count-zero"),
-    pytest.param(Reply(200, announce_body(10000)), id="count-over-9999"),
     pytest.param(Reply(200, announce_body(-1)), id="count-negative"),
     pytest.param(Reply(200, '{"pending": 2.5, "announce": true}'), id="count-fractional"),
     pytest.param(Reply(200, '{"pending": 1e2, "announce": true}'), id="count-exponent"),
     pytest.param(Reply(200, '{"pending": 007, "announce": true}'), id="count-leading-zero"),
     pytest.param(Reply(200, '{"pending": "2", "announce": true}'), id="count-is-a-string"),
-    pytest.param(Reply(200, '{"pending": 99999999999999999999, "announce": true}'), id="count-huge"),
     pytest.param(Reply(200, '{"pending": null, "announce": true}'), id="count-null"),
     pytest.param(Reply(reset=True), id="connection-reset"),
 ]
@@ -171,24 +170,75 @@ def test_session_server_down_is_silent_and_exits_0(tmp_path, key):
         pytest.param(Reply(403, "{}"), id="403"),
         pytest.param(Reply(200, "not json"), id="invalid-json"),
         pytest.param(Reply(200, ""), id="empty"),
-        pytest.param(Reply(200, '{"pending": 100000}'), id="count-out-of-range"),
         pytest.param(Reply(200, '{"pending": -3}'), id="count-negative"),
         pytest.param(Reply(200, '{"pending": 2.5}'), id="count-fractional"),
         pytest.param(Reply(200, '{"pending": 007}'), id="count-leading-zero"),
         pytest.param(Reply(reset=True), id="reset"),
     ],
 )
-def test_session_without_a_usable_pending_count_still_announces_the_handle_with_zero(stub, env, reply):
+def test_session_without_a_usable_pending_count_still_announces_the_handle_and_leaves_the_count_out(stub, env, reply):
+    """"0 pending" would be a false statement when the count is unknown (Opus review of PR #95)."""
     stub.pending = reply
     result = run_hook(SESSION, hook_input(event="SessionStart"), env)
-    assert (result.code, result.out, result.err) == (0, session_line(HANDLE, 0), "")
+    assert (result.code, result.out, result.err) == (0, session_line_without_count(HANDLE), "")
 
 
-def test_session_pending_timeout_still_announces_the_handle_with_zero(stub, env):
+def test_session_pending_timeout_still_announces_the_handle_and_leaves_the_count_out(stub, env):
     stub.pending = Reply(200, '{"pending": 4}', delay=3.5)
     result = run_hook(SESSION, hook_input(event="SessionStart"), env)
-    assert (result.code, result.out, result.err) == (0, session_line(HANDLE, 0), "")
+    assert (result.code, result.out, result.err) == (0, session_line_without_count(HANDLE), "")
     assert 1.5 < result.seconds < 4.5
+
+
+@pytest.mark.parametrize("count", [10000, 100000, 123456789, 99999999999999999999])
+def test_a_count_over_9999_is_announced_as_9999_not_lost(stub, env, count):
+    """The server records the announcement before the hook prints; the server's own stub clamps to 9999."""
+    stub.pending = Reply(200, announce_body(count))
+    assert run_hook(PENDING, hook_input(), env).out == pending_line(9999)
+    stub.pending = Reply(200, announce_body(count, announce=False))
+    assert run_hook(SESSION, hook_input(event="SessionStart"), env).out == session_line(HANDLE, 9999)
+
+
+# a limit that curl reads as "no limit", or a long one, must not hold every model call ----------
+
+
+@pytest.mark.parametrize("name", ["A2A_AGY_CONNECT_TIMEOUT", "A2A_AGY_MAX_TIME"])
+@pytest.mark.parametrize("value", ["0", "0.0", "00", "7", "30", "9999"])
+def test_a_zero_or_long_curl_limit_falls_back_to_the_default(stub, env, name, value):
+    stub.pending = Reply(200, announce_body(2), delay=8.0)
+    result = run_hook(PENDING, hook_input(), {**env, name: value})
+    assert (result.code, result.out, result.err) == (0, "{}\n", "")
+    assert result.seconds < 4.5, f"{name}={value} was applied ({result.seconds:.1f} s); the default 2 s limit must win"
+
+
+# an opt-out the script cannot read must not be ignored ------------------------------------------
+
+
+def test_an_escaped_workspace_path_makes_no_call(stub, env, tmp_path):
+    """Go writes `&` as \\u0026: the raw text is not the directory, so the marker cannot be looked for."""
+    ws = tmp_path / "a&b"
+    ws.mkdir()
+    (ws / OPTOUT).write_text("")
+    stub.pending = Reply(200, announce_body(5))
+    # json.dumps leaves `&` alone; Go's encoder writes it as &, so rewrite the serialised text
+    pending_input = hook_input(workspace=str(ws)).replace("&", "\\u0026")
+    session_input = hook_input(event="SessionStart", workspace=str(ws)).replace("&", "\\u0026")
+    assert "\\u0026" in pending_input and "&" not in pending_input
+    pending = run_hook(PENDING, pending_input, env)
+    session = run_hook(SESSION, session_input, env)
+    assert (pending.code, pending.out, pending.err) == (0, "{}\n", "")
+    assert (session.code, session.out, session.err) == (0, "", "")
+    assert stub.seen == []
+
+
+def test_an_input_over_one_mib_makes_no_call(stub, env):
+    stub.pending = Reply(200, announce_body(5))
+    big = hook_input(last_user_input="x" * 1_100_000)
+    pending = run_hook(PENDING, big, env)
+    session = run_hook(SESSION, big.replace("PreInvocation", "SessionStart"), env)
+    assert (pending.code, pending.out, pending.err) == (0, "{}\n", "")
+    assert (session.code, session.out, session.err) == (0, "", "")
+    assert stub.seen == []
 
 
 # unusable input, key and settings: no network call, no output -----------------------------

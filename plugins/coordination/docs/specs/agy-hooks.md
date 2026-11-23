@@ -59,7 +59,7 @@ Common steps, in this order, each failing quietly:
 
 - `POST <server>/sessions` with exactly `{"card":"<card>","harness_session_id":"<conversationId>"}`: no name hint (agy's `SessionStart` input carries none that any spike recorded, so the session is unnamed and the server builds `antigravity@<machine>/<c8>~<c8>`, Z17), no path, no working directory. The server stores nothing else (identity.md section 3).
 - Validates the returned `handle`: it must start with `<card>/`, then a name of 1 to 39 characters from `[a-z0-9._-]` starting with `[a-z0-9]`, exactly one `~`, and exactly 8 lowercase hex characters (api 5.1). Anything else is dropped and nothing is printed, so a model never sees a handle the server did not build or one that could break the JSON [verified, 27 bad handles including JSON breakers, a second tilde, 7 and 9 hex characters, another card and the old `#` separator].
-- `GET <server>/wake/pending?session=<conversationId>` **without** `announce`, so the count is read and no announcement is recorded: the first `PreInvocation` of the conversation still announces it. The model may therefore see the count twice in its first turn (SP3 P1b saw two `SYSTEM_MESSAGE` steps and passed). A failed or unusable count reads as 0 **[design]**: the handle and "check a2a_inbox now" still go out.
+- `GET <server>/wake/pending?session=<conversationId>` **without** `announce`, so the count is read and no announcement is recorded: the first `PreInvocation` of the conversation still announces it. The model may therefore see the count twice in its first turn (SP3 P1b saw two `SYSTEM_MESSAGE` steps and passed). A failed or unusable count is left out of the message **[design]** (section 10; it read as 0 before 2026-11-23): the handle and "check a2a_inbox now" still go out.
 - Connect timeout 1 s and total limit 2 s per call **[design]** (the session hook runs once per conversation; its `timeout` ceiling is 10 s).
 
 ## 4. Settings
@@ -97,10 +97,11 @@ A value that is not a plain number falls back to the default. How the hook gets 
 | --- | --- | --- |
 | server down, connection reset, 2 s timeout | `{}`, exit 0 | no output, exit 0 |
 | 4xx, 5xx (curl `--fail`, exit 22) | `{}`, exit 0 | no output, exit 0 |
-| `200` with invalid JSON, empty body, truncated JSON, no object | `{}`, exit 0 | no output (registration), count 0 (pending) |
+| `200` with invalid JSON, empty body, truncated JSON, no object | `{}`, exit 0 | no output (registration), count left out (pending) |
 | `announce` false, missing, quoted or not `true` | `{}` | not read |
-| count 0, 10000 or more, negative, fractional, exponent, leading zero, quoted, null, huge | `{}` | count 0 |
-| bad or missing `conversationId`, no key, bad URL, no `curl`, opt-out | `{}`, no call | no output, no call |
+| count 0, negative, fractional, exponent, leading zero, quoted, null | `{}` | count left out |
+| count 10000 or more, however large | announced as 9999 | 9999 |
+| bad or missing `conversationId`, no key, bad URL, no `curl`, opt-out, an escaped workspace path, an input over 1 MiB | `{}`, no call | no output, no call |
 | registration answered 403 (key of another card), 401, 409 | `{}` (the pending call is 410 or 403) | no output, the count is not asked |
 
 All of the above [verified] against the stub; 403 against another card's key and 401 against a forged key [verified] against the real server.
@@ -127,7 +128,18 @@ Seven mutants were run against the tests and each was caught by at least one tes
 ## 9. Not covered here
 
 - **agy itself.** No agy was run. The two hook scripts were never run by agy; the hook entries were never loaded by it; whether `~` expands, which environment the hook gets, and whether agy accepts the fragment are **[unverified]**. The live checks are in the report of this stream: the 4-of-5 trial of SP3 P1 and the `/clear` check of BP11.
-- **S1-INST**: the installer that copies the scripts to `~/.local/share/a2a-coord/<version>/bin/`, switches `current`, merges the fragment (Y9) and writes the key file.
+- **S1-INST**: the installer that copies the scripts to `~/.local/share/a2a-coord/<version>/bin/`, switches `current`, merges the fragment (Y9) and writes the key file. Two musts from the Opus review of PR #95 (2026-11-23), both unverified until the installer exists: the hook `command` paths are written as the absolute path of `current` (every spike used absolute paths; whether agy expands `~` in `command` is only reported from its `hooks.md`), and the installer sets `A2A_AGY_CARD` or checks the host name against the key's card (the default card comes from `uname -n`, which is a Windows machine name under WSL and not `mac` on the mac; a wrong card is a 403 and the hooks stay silent with no log).
+- **The `PreInvocation` backstop for a missed `SessionStart`** (plan, BP11) works only for a conversation that is registered and still live: for an unknown or ended session the server answers `410` and the hook prints `{}`. After a resume past `A2A_SESSION_IDLE_TTL_H` the session is `ended` and nothing is announced until `SessionStart` or a tool call registers it again (api 5.4.1).
+
+## 10. Hardening after the Opus review of PR #95 (2026-11-23)
+
+All [verified] by the tests named in `tests/test_agy_hooks.py`:
+
+- **Opt-out the script cannot read makes no call.** The workspace path is matched as raw JSON text, so a path with a backslash (an escaped quote or backslash, or `&` written as `&` by a Go encoder) cannot be turned into the directory, and an input over 1 MiB can lose `workspacePaths`. Both stop the script with no network call instead of ignoring a marker that may exist.
+- **A count over 9999 prints as 9999** (as the server's own stub does, `wake/outcomes.py`), because the server records the announcement before the hook prints it; dropping the line lost it until the ten-minute repeat.
+- **An unreadable count is left out of the session message**, not reported as `0 pending`: the message then reads `... Call a2a_hello with it before other a2a_ tools. Check a2a_inbox now. ...`. This is one more byte-constant form; the only variable parts are still the validated handle and one validated integer.
+- **A curl limit of zero, or over 5 seconds, falls back to the default** (curl reads `0` as no limit, and a mistyped value would hold every model call until agy gives up, about 31 s, SP3 P6). This replaces the count-0 row of the failure table: "count 0" for `a2a-agy-session` now reads "count left out".
+- **The first `"conversationId"` in the text still wins**, even inside a nested object. The input's keys are scalars or string arrays (SP3 P2), so no same-named nested key occurs today; this is an accepted assumption, not a check.
 - **S1-CLAUDE**: `a2a-register`, `a2a-listen`, `a2a-pending` and the Claude hooks.
 - **`a2a_wait`** is a server tool (S1-MCP, built); this stream adds no code for it. agy's idle session is not woken (accepted, D9).
 - **An untrusted workspace** past agy's trust dialog: unverified (SP3 P8).

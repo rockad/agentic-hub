@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-clarify-stop-hook.sh - regression tests for skills/clarify/hooks/clarify-stop-check.sh
+# test-clarify-stop-hook.sh - regression tests for plugins/clarify/hooks/clarify-stop-check.sh
 # and the matching Antigravity mode of scripts/check-clarify-transcript.sh.
 #
 # Requires: bash, jq, grep. Exits non-zero when any case fails.
@@ -8,7 +8,7 @@
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-hook="$root/skills/clarify/hooks/clarify-stop-check.sh"
+hook="$root/plugins/clarify/hooks/clarify-stop-check.sh"
 checker="$root/scripts/check-clarify-transcript.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

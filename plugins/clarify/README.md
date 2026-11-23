@@ -3,7 +3,7 @@
 A skill that walks a non-trivial design through its open decisions ("forks"), one question at a time. Each question gets a full write-up: context, argued options with pros and cons, and a recommendation. Each answer is taken through the harness's interactive question tool.
 
 - `/clarify`, `/grill-me` run Mode A, the standard architecture mode.
-- `/cplain`, `/celi5` run Mode B, plain English with analogies. They are thin aliases in `skills/cplain` and `skills/celi5`, and the protocol lives here.
+- `/clarify:plain` and `/clarify:eli5` (`commands/`) run Mode B, plain English with analogies. They are thin commands; the protocol lives in the skill. The old `/cplain` and `/celi5` standalone skills are gone.
 
 Works in Claude Code, Google Antigravity and OpenCode.
 
@@ -17,10 +17,9 @@ Works in Claude Code, Google Antigravity and OpenCode.
 
 ## Install
 
-- **Agent Skills / Antigravity:** `npx skills add rockad/agentic-hub --skill clarify`. Repeat the command with `--skill cplain` and `--skill celi5` for the aliases.
-- **Claude Code marketplace:** `/plugin install clarify@agentic-hub`
+- **Claude Code marketplace:** `/plugin install clarify@agentic-hub`. This installs the skill, the `/clarify:plain` and `/clarify:eli5` commands and the Claude Code ask hook below, and a new version on `main` reaches you when the plugin updates. If you had installed the skill with `npx skills` earlier, remove that copy (`~/.claude/skills/clarify` and `~/.agents/skills/clarify`) so the skill does not load twice.
 
-Install from `main`. `npx skills add` copies the whole `skills/clarify/` directory, including `hooks/`.
+Install from `main`. Clarify is a plugin, no longer a standalone skill, so `npx skills add --skill clarify` (and `cplain`, `celi5`) no longer works. Antigravity: the Antigravity side is updating its install and Stop hook paths, which used to be `~/.agents/skills/clarify/hooks/`; until then the Antigravity steps below are out of date.
 
 ## Antigravity: enable the Stop hook (required)
 
@@ -70,7 +69,17 @@ test -x ~/.agents/skills/clarify/hooks/clarify-stop-check.sh && echo ok
 
 To turn it off, set `"enabled": false`, or delete the `clarify-require-tool-call` entry.
 
-Claude Code and OpenCode need no hook.
+OpenCode needs no hook. Claude Code has its own hook, below.
+
+## Claude Code: the ask hook (plugin install)
+
+Rules alone stopped holding in long sessions: after many turns or a compaction, forks 3 and later were asked with only the dialog and no write-up (issue #97). `hooks/clarify-ask-check.sh` is a `PreToolUse` hook on `AskUserQuestion`, registered by `hooks/hooks.json` through the plugin manifest.
+
+- It acts only on a clarify question, whose text starts with `[Question N of M]` or `[Fork N of M]`. Other questions pass untouched.
+- It looks at the assistant text since the last user entry (a prompt or a tool result). With no `## Question N` heading there, it denies the call and tells the model to print the full step and ask again.
+- It denies each question number once per session. The transcript is written asynchronously and can lag, so a missing heading may be a false alarm; the retry passes, so the worst case is one extra round trip and it cannot loop.
+- It fails open if `jq` or the transcript is missing. It needs `bash` and `jq`.
+- Tests: `scripts/test-clarify-ask-hook.sh`. It only runs when the skill is installed as the plugin; a plain `npx skills` copy has no Claude Code hook.
 
 ## Claude Code notes
 

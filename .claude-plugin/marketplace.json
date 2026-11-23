@@ -50,24 +50,9 @@
     },
     {
       "name": "clarify",
-      "source": "./skills/clarify",
-      "description": "Walk a non-trivial design through its forks one question at a time, with trade-offs and explicit recommendations. Also /grill-me.",
-      "version": "1.0.0",
-      "category": "skills"
-    },
-    {
-      "name": "cplain",
-      "source": "./skills/cplain",
-      "description": "Plain-English variant of clarify: no jargon, intuitive mental models. Use via /cplain.",
-      "version": "1.0.0",
-      "category": "skills"
-    },
-    {
-      "name": "celi5",
-      "source": "./skills/celi5",
-      "description": "Explain-like-I'm-five variant of clarify, with everyday analogies. Use via /celi5.",
-      "version": "1.0.0",
-      "category": "skills"
+      "source": "./plugins/clarify",
+      "description": "Walk a non-trivial design through its forks one question at a time, with trade-offs and explicit recommendations. Commands: /clarify, /grill-me, /clarify:plain, /clarify:eli5. Includes a hook that keeps every question explained.",
+      "version": "2.0.0"
     },
     {
       "name": "handoff",

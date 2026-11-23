@@ -13,6 +13,7 @@ This file provides guidance to Google Antigravity (CLI and IDE), Claude Code, an
 agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
+│   ├── clarify/          # Design clarification: /clarify, /grill-me, /clarify:plain, /clarify:eli5, plus the question hooks
 │   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)
 │   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
 │   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
@@ -24,9 +25,6 @@ agentic-hub/
 │   │   └── docker-compose.yml # Resident daemon compose stack
 │   └── subagents/        # Specialised engineering, QA, research and operations subagents
 ├── skills/               # Standalone agent skills
-│   ├── celi5/            # Plain-English (explain like I'm five) variant of clarify
-│   ├── clarify/          # Interactive design clarification skill
-│   ├── cplain/           # Plain-English variant of clarify
 │   ├── handoff/          # Living HANDOFF.md (optional HANDOFF_DIR), switch mode, optional drift hook
 │   ├── markdown-convert/ # Document to Markdown converter
 │   ├── mcp-toggle/       # Toggle on-demand MCP plugins to save context tokens

@@ -199,6 +199,24 @@ done
 # A cancel disarms only the series before it: a new /clarify re-arms.
 { user "/clarify storage"; reply_ask "$Q1"; answer "$CANCEL"; reply "$FAQ"; user "/clarify again"; reply "$Q1"; } \
   | run_hook 27i-new-clarify-after-cancel continue
+# Review fixes from #84 (issue #89).
+# A step that calls ask_question together with another tool writes the other tool's result
+# first. That result carries no answer line, so it must not consume the wait for the answer.
+tool_result() { jq -nc '{type: "GENERIC", content: "Created At: 2026-01-01T00:00:00Z\nCompleted At: 2026-01-01T00:00:01Z\nfile contents"}'; }
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; tool_result; answer "$CANCEL"; reply "$FAQ"; } \
+  | run_hook 28a-multi-tool-step-keeps-waiting silent
+# The same shape with an ordinary answer is still a stall.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; tool_result; answer "Option B"; reply "$FAQ"; } \
+  | run_hook 28b-multi-tool-step-control continue
+# Esc on the picker returns an empty answer line: the series is abandoned.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer ""; reply "$FAQ"; } \
+  | run_hook 28c-empty-answer-disarms silent
+# A long user turn is middle-truncated in transcript.jsonl: the closing tag can be lost.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"
+  user $'<USER_REQUEST>\nNever mind, write me an FAQ.\n<truncated 5000 bytes>\nmore text'; reply "$FAQ"; } \
+  | run_hook 28d-truncated-user-request-cancel silent
+# The offline checker agrees (same shared region): the FAQ reply after a skipped picker is not flagged.
+{ user "/clarify storage"; reply_ask "$Q1"; answer ""; reply "$FAQ"; } | run_checker 28e-empty-answer-disarms 0
 # Safety net: at most 2 consecutive interventions without an ask_question call.
 { user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; } | run_hook 27j-second-consecutive-intervention continue
 { user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; block; reply "$Q1"; } | run_hook 27k-cap-stands-down silent

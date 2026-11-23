@@ -262,11 +262,16 @@ def last_question($tags; $hs):
 # The text of a user turn: the <USER_REQUEST> block when the harness wraps one (the skill
 # body and metadata around it are not what the user typed), else the whole content.
 def user_text:
-  str | (([capture("<USER_REQUEST>\\s*(?<t>[\\s\\S]*?)\\s*</USER_REQUEST>")][0].t) // .);
+  str | (([capture("<USER_REQUEST>\\s*(?<t>[\\s\\S]*?)(?:\\s*</USER_REQUEST>|\\n<truncated )")][0].t) // .);
 
 # The first answer line of an ask_question result ("A1: ...", also for a write-in).
 def answer_text:
   str | ([ split("\n")[] | capture("^A[0-9]+:[ \\t]*(?<t>.*)$") | .t ][0] // "");
+
+# Whether a tool result carries an ask_question answer line (an empty "A1: " counts: that
+# is the picker skipped with Esc).
+def has_answer:
+  str | test("(^|\\n)A[0-9]+:[ \\t]*");
 
 # A message that leaves the series: it opens with an explicit cancel phrase that ends the
 # sentence (or leads into a new request), or it is a different slash command. Anchored at
@@ -372,9 +377,9 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
        | (if ($ucontent | user_text | abandons) then .clarify_seen = false | .last = null
           elif ($ucontent | clarify_cmd) then .clarify_seen = true | .last = null
           else . end)
-     elif $e.type == "GENERIC" and .awaiting then
+     elif $e.type == "GENERIC" and .awaiting and ($e.content | has_answer) then
        .awaiting = false
-       | (if ($e.content | answer_text | abandons) then .clarify_seen = false | .last = null else . end)
+       | (if ($e.content | answer_text | (. == "" or abandons)) then .clarify_seen = false | .last = null else . end)
      elif $e.type == "PLANNER_RESPONSE" then
        ($e.content | str) as $content
        | ($content | outside_fences) as $lines

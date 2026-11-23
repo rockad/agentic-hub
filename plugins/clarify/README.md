@@ -56,7 +56,8 @@ What the hook does:
 - Outside the session the hook stays silent. Headings inside fenced code blocks are ignored (CommonMark fence rules, CRLF handled). Only `## Question N (of M)` or `## Question N —` headings count.
 - It also ends the session when the user abandons the series (#82). The user's message after the last question (the `A1: ...` answer of an `ask_question`, including a write-in, or a typed message) counts as a cancel when it opens with an explicit cancel phrase that ends the sentence or leads into a new request (`forget that.`, `never mind, write ...`, `cancel`, `stop`, `let's stop here`, `I'm done`, `that's enough`, `skip clarify`), or when it is a different slash command (`/jev status`). A phrase inside an ordinary answer (`never mind the cost, go with A`, `stop using Redis`) is still an answer. A new `/clarify` or a tagged `ask_question` arms the hook again.
 - Safety net: after 2 consecutive interventions with no `ask_question` call and no user turn in between, the hook stands down (returns `{}`) and prints one line on stderr (`standing down after N consecutive interventions ...`). The count comes from the hook's own earlier `Stop hook blocked termination` messages in the transcript. It resets on an `ask_question` call and on a user turn. A genuine stall is one intervention away from being fixed, so the cap does not weaken the #79 fix.
-- Known gaps (#82): a "new unrelated request" that is not a slash command and is not phrased as a cancel (for example `now write me an FAQ`) is not recognised, so the first `## Question N` reply after it still draws up to 2 interventions. The cancel phrase list is English only. If Antigravity omits the hook's own block messages from `transcript.jsonl`, the cap does not engage and only the cancel check protects against the loop (not verified).
+- Known gaps (#82): a "new unrelated request" that is not a slash command and is not phrased as a cancel (for example `now write me an FAQ`) is not recognised, so the first `## Question N` reply after it still draws up to 2 interventions. The cancel phrase list is English only. Antigravity writes the hook's own block messages to the transcript before the next model call (verified on live runs), so the cap works. The Stop payload keys seen on Antigravity 1.5.x are `artifactDirectoryPath`, `conversationId`, `cwd`, `error`, `executionNum`, `fullyIdle`, `hookEventName`, `lastUserInput`, `modelName`, `terminationReason`, `transcriptPath` and `workspacePaths`; 1.5.14 also sends `continuationActive`, so the check on it stays. `transcriptPath` is `transcript_full.jsonl`, which is never truncated. Re-check the key list on the version in use.
+- An empty answer line (`A1: `, the picker skipped with Esc) counts as leaving the series.
 - Tests set `CLARIFY_HOOK_STRICT=1` so a broken jq program exits 3 instead of failing open. Normal use never sets it.
 - `continuationActive` alone did not prevent a loop in live run E8 (17 interventions in a row on an abandoned series), which is why the cap above exists.
 - It fails open (returns `{}`) if `jq` or the transcript is missing.
@@ -97,7 +98,7 @@ Rules alone stopped holding in long sessions: after many turns or a compaction, 
 scripts/check-clarify-transcript.sh ~/.claude/projects/<project>/<session>.jsonl
 # Antigravity
 scripts/check-clarify-transcript.sh --format antigravity \
-  ~/.gemini/antigravity-cli/brain/<session>/.system_generated/logs/transcript.jsonl
+  ~/.gemini/antigravity-cli/brain/<session>/.system_generated/logs/transcript_full.jsonl
 ```
 
 - It fails a question that has no `## Question N` write-up before it, a Claude Code description under 120 characters, an empty preview, or a fork count that changes without a `Fork map revised` notice.

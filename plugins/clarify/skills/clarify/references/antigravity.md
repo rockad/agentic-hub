@@ -43,7 +43,7 @@ ask_question({
 1. (Recommended) Option A: The Digital Sticky Tag (M:N Join Table)
 2. Option B: The Direct Sharpie Label (Denormalized JSONB)
 3. Option C: The Comma List on the Box (Delimited String)
-4. Other
+4. Other (the Antigravity CLI shows it as `Write-in...`)
 ```
 
 **Antigravity `Stop` hook (required; setup in `../README.md`)** (`hooks/clarify-stop-check.sh`, alongside `SKILL.md`): catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and returns `{"decision":"continue",...}` to force the missing `ask_question` call automatically. `~/.gemini/config/hooks.json`:

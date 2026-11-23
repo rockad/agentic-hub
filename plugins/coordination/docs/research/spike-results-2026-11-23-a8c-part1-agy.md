@@ -1,0 +1,41 @@
+# SP2 A8c Part 1 and the S1-AGY hook questions: agy's documentation answers (2026-11-23)
+
+Status: read-only Part 1 of the A8c runbook ([runbook](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/research/spike-runbook-a8c-agy-open-items-2026-11-09.md)) plus the hook questions that the merged S1-AGY spec ([agy-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/agy-hooks.md)) lists as unverified. The runs R0 to R3 of A8c have **not** been done. Labels: **verified** (quoted by agy from a doc or help output), **reported** (stated in a doc without an example), **unverified** (agy found nothing), **[design]** (a consequence we draw, not tested).
+
+How it was done: the user started a fresh agy in a scratch workspace and pasted one prompt (11 questions, read-only: no plugin install, no sign-in or sign-out, no credential file opened, one answers file written). agy answered from `agy --help`, its bundled customization docs and the official docs pages it references. The answers file stays in the user's scratch directory (`~/scratch/a2a-spikes/sp2-agy-a8c/part1-answers.md`, not in git). agy reported 8 answers verified and 2 unverified at the core, with sub-questions listed. Nothing here is a statement about what agy does at run time: it is what the docs say.
+
+## 1. What the docs settle, and what that does to the plan
+
+| A8c item | What agy's docs say | Consequence |
+| --- | --- | --- |
+| 1: `.mcp.json` at user level (H1) | **Verified**: a plugin's MCP servers load from `<plugin-root>/mcp_config.json`; `.mcp.json` and `mcp.json` are "safely ignored by Antigravity because MCP servers load from `mcp_config.json`". `.mcp.json` is converted only by `agy plugin import claude`. | R1 is expected to fail. The installer keeps the A8b native `mcp_config.json` form. R1 can be dropped or reduced to one read-only `agy plugin validate`. |
+| 1: manifest | **Verified**: `plugin.json` is required ("Required: Manifest file"), at `<plugin-root>/plugin.json` or `<plugin-root>/.antigravity-plugin/plugin.json`. | The agy placement is a directory with `plugin.json` and `mcp_config.json`. The A8b candidate had a manifest; the installer must write one. |
+| 2: `agy plugin install` | **Verified**: `agy plugin install <path>` and `agy plugin uninstall <name>`; install stages the plugin in `~/.gemini/config/plugins/<name>/`. **Reported**: install names each installed component and says "(replaced existing installation)"; uninstall stops the plugin's MCP servers and "cleans up configuration registries". **Unverified**: whether install writes `plugins.<name>.enabled` into `config.json`, whether it writes the MCP schema cache, and what exactly uninstall removes. | R2 still has to be run to answer the side effects. |
+| 2: installed directory is replaced | **Verified** (build-plugins): "Installed plugins are unpacked into a read-only plugin directory (`~/.gemini/config/plugins/<plugin-name>`) that is replaced when the plugin updates." | **[design] risk for decision 34**: the agy API key is a literal in an unmanaged, mode-0600 `mcp_config.json` in that directory. A plugin placed through `agy plugin install` would lose it on update or reinstall. Copying the directory by hand (the A8b form) is not "installed" in that sense. The docs also describe plugin MCP `variables` (install then leaves the plugin disabled "until its MCP servers are configured"), which could hold a key outside the file; not tested. Decision for the user at S1-INST. |
+| 3: sign out and in | **Verified**: `/logout` "purge[s] authentication tokens from the secure keyring"; sign-in is silent from the keyring, else a browser flow (over SSH, an authorization URL and a code). **Reported**: `/logout` also short-circuits to file storage when the keyring is bypassed; "clears active credentials and local cache directories"; `/login` is named in the changelog but not in the slash-command table. **Unverified**: whether `/logout` removes `~/.gemini/antigravity-cli/antigravity-oauth-token`, which cache directories it clears, whether MCP OAuth tokens are touched. | The signed-out run R3 stays the user's, last, with the credential backup of the runbook. |
+| 3: signed-in requirement | **Unverified** for a loopback HTTP plugin MCP server; the startup text "Not reloading plugin MCP servers: cannot get the signed-in user" appears in no doc. **Reported** only: plugin MCP servers that use OAuth now belong to the signed-in user. | R3 is the only way to settle it. |
+
+New tool, read-only: `agy plugin validate [--json] <dir>` validates a plugin directory with the loader agy uses, without installing. agy proposes it as the cheapest check for the manifest and `mcp_config.json` questions, and for an isolated sign-out experiment a scratch `HOME` inside a fresh D-Bus session so the real keyring is never touched (agy's proposal, not tried). Both fit "borrow and put back" and DDR-003 (the user starts agy). **[design]**
+
+## 2. The S1-AGY hook questions
+
+| Question | Answer |
+| --- | --- |
+| `~` in a hook `command` | **Verified**: "`~` is expanded to the home directory." The command runs via `sh -c` on Unix. No example uses `~` (the examples use relative paths). Still **unverified at run time**: no agy has run our hooks. `$HOME` is not named; `sh -c` would expand it if `HOME` is set, whether agy guarantees that is unverified. |
+| Working directory | **Verified**: the directory that contains `hooks.json` (`~/.gemini/config/` for the user-level file); `cwd` in the input is the agent's directory, not the hook's. Matches SP3 P8. |
+| Environment | **Verified**: only plugin hooks get `PLUGIN_ROOT` and `PLUGIN_DATA`. **Unverified**: whether a hook inherits the environment agy was started with. |
+| Trusted and untrusted workspaces | **Verified**: the user-level folder applies to every project. **Unverified**: whether user-level `hooks.json` is read in an untrusted workspace (SP3 P8 saw a trust dialog stop an untrusted workspace). |
+| Input keys | **Verified** (camelCase, protojson): `conversationId`, `workspacePaths`, `transcriptPath`, `artifactDirectoryPath`, `modelName`, `lastUserInput`, `hookEventName`, `cwd`; `PreInvocation` adds `invocationNum` and `initialNumSteps`. No extra `SessionStart` keys. |
+| Escaping of `<`, `>`, `&` | **Unverified**. The docs say only that keys use camelCase "(protojson encoding)": the encoder is protobuf's JSON, not Go's `encoding/json`, so the HTML-escape behaviour the Opus review of PR #96 feared is not established either way. The merged scripts decode the three escapes and make no call for any other backslash, so both cases are safe. They already allow whitespace around the colon in the JSON text. |
+| Timeout | **Verified**: `timeout` is "Execution timeout in seconds. Defaults to `30`." **Unverified**: whether agy kills a command hook past the timeout or stops waiting (SP3 P6 saw agy proceed after about 31.5 s with the hook not killed). The changelog says hooks that call a model "stop at their configured timeout". |
+| Output shapes | **Verified**: `{}` for hooks that return nothing; `injectSteps` with `{"systemMessage": {"systemMessage": "..."}}` (a nested object, not a plain string) for `SessionStart` and `PreInvocation`; `userMessage` takes a plain string; `ephemeralMessage` is deprecated (Y5); `errorMessage` shows an error to the user only. |
+
+## 3. What changes in the tasklist and the installer musts
+
+- The agy installer musts (tasklist 4.2) get the findings above:
+  - the hook `command` may use `~` (documented), but the absolute path stays the safe form until a live check;
+  - **do not rely on `A2A_AGY_CARD` coming from the shell's environment**: inheritance is unverified; bake the card into the hook command (`A2A_AGY_CARD=... <script>`) or read it from a 0600 file next to the key, as planned for the Claude hooks;
+  - the plugin needs `plugin.json` and `mcp_config.json`; `.mcp.json` is not used;
+  - an `agy plugin install` placement replaces the directory on update, so a literal key in it is lost (decision 34 needs a look before the installer writes it).
+- A8c R1 (`.mcp.json`) is expected to fail on the docs alone; R2 and R3 are still open; every item that agy could not answer is a candidate for the runs and for the live checks of S1-AGY.
+- Not done: any live agy run.

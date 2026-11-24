@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 from conftest import PLUGIN_DIR
 
-SCRIPT = PLUGIN_DIR.parents[1] / "scripts" / "check-pytest-skips.sh"
+# Inside the server image PLUGIN_DIR is /app-like and has no second parent: the lookup must not raise at
+# import, the autouse fixture below skips the module instead.
+try:
+    SCRIPT = PLUGIN_DIR.parents[1] / "scripts" / "check-pytest-skips.sh"
+except IndexError:
+    SCRIPT = Path("/nonexistent/check-pytest-skips.sh")
 ALLOWED = "tests.test_a2a_tck tests.test_backup_script tests.test_compose"
 
 

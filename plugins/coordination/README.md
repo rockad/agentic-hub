@@ -48,6 +48,8 @@ The plugin brings the hooks (`hooks/hooks.json`: `a2a-register`, `a2a-listen`, `
 agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination
 ```
 
+**Unverified:** A8c ran `agy plugin install <path>` only. Installing from a GitHub tree URL, `agy plugin validate --strict` on this plugin, and whether agy also reads the Claude `hooks/hooks.json` have not been run; they are on the user's live-check list.
+
 The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-session` on `SessionStart`, `./bin/a2a-agy-pending` on `PreInvocation`). It brings **no** MCP entry and no key: agy expands only its own placeholders in a plugin's MCP config, not environment variables, so agy's entry is a user-scope server in your global `~/.gemini/config/mcp_config.json`, with the key as a literal `Authorization` header. Add this entry once (merge it into the existing `mcpServers` object by hand or with `agy mcp add`; the plugin never edits the file) and keep the file private:
 
 ```json
@@ -71,10 +73,10 @@ The agy hooks read the key from the same file: the first `a2ak_` token in it (`A
 
 ### Settings file
 
-Both harnesses read the machine's settings from `${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/config` (`A2A_CONFIG_FILE` names another file), plain `KEY=value` lines. The file is outside the plugin, so installing, updating or reinstalling the plugin loses nothing. Every setting is optional.
+Both harnesses read the machine's settings from `${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings` (`A2A_SETTINGS_FILE` names another file), plain `KEY=value` lines. The file is outside the plugin, so installing, updating or reinstalling the plugin loses nothing. Every setting is optional.
 
 ```sh
-# ~/.config/a2a-coord/config
+# ~/.config/a2a-coord/settings
 A2A_SERVER_URL=http://127.0.0.1:8120
 A2A_CARD=claude-code@mybox
 A2A_AGY_CARD=antigravity@mybox
@@ -85,7 +87,8 @@ A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
 - Only these five names are read. Anything else, a comment (`#`), a blank line and a line without `=` is ignored.
 - The file is read line by line and never sourced or evaluated. A value is literal text: `$HOME`, `~`, a backtick or `$(...)` are not expanded, so write absolute paths. One pair of surrounding single or double quotes is removed; a value over 512 bytes or with a control character is dropped.
 - An environment variable that is set and not empty wins over the file; the first occurrence of a name in the file wins over a later one.
-- A missing or unreadable file is ignored silently. Keys stay in their own files and never go into this one.
+- A missing or unreadable file, a directory of that name, or a file you do not own (`test -O`) is ignored silently: another local user must not be able to point the hooks at their own listener. Keep the file mode 0600; `a2a-doctor` will report a wider mode. The name is `settings`, not `config`: `~/.config/a2a-coord/config/` is where a hand-run server keeps its cards.
+- `A2A_SERVER_URL` must be `http://` or `https://` with plain URL characters in every script (the Claude scripts check it now as the agy ones did), and curl is called with `--proto =http,https`, so a settings value can never become a curl option.
 
 ## Architecture
 
@@ -154,7 +157,7 @@ plugins/coordination/
 ├── hooks/hooks.json              # Claude hooks (auto-loaded): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
 ├── .mcp.json                     # Claude MCP entry a2a-coord (never loaded by agy; there is no mcp_config.json here)
 ├── bin/
-│   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/config)
+│   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/settings)
 │   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks
 │   └── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
 ├── docker-compose.yml            # the server stack (port 8120)

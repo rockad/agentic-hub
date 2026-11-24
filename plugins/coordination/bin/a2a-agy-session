@@ -27,7 +27,7 @@
 #                               taken from `uname -n` (first label, lowercased, reduced to a-z 0-9 and -)
 #                               [design: set it when the host name is not the card name]
 #   A2A_SERVER_URL, A2A_AGY_KEY_FILE and A2A_AGY_CARD may also be set in
-#   ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/config as plain KEY=value lines, read by
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings as plain KEY=value lines, read by
 #   bin/a2a-lib.sh; an environment variable wins over the file.
 #   A2A_AGY_CONNECT_TIMEOUT     curl connect timeout in seconds, default 1
 #   A2A_AGY_MAX_TIME            curl total time limit per call in seconds, default 2

@@ -1,6 +1,6 @@
 """WS1 (decision Z21 item 5): `bin/a2a-lib.sh`, the settings reader every hook script sources.
 
-The file `${A2A_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/config}` is plain `KEY=value`
+The file `${A2A_SETTINGS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings}` is plain `KEY=value`
 lines, read line by line and never sourced, evaluated or expanded. These tests run `a2a_load_config`
 under dash and check, for each rule, what the shell ends up holding:
 
@@ -27,6 +27,7 @@ import agy_hook_helpers as agy
 import hook_helpers as hh
 import pytest
 from conftest import PLUGIN_DIR
+from hook_helpers import hook_env, stub  # noqa: F401  (fixtures)
 
 LIB = PLUGIN_DIR / "bin" / "a2a-lib.sh"
 NAMES = ("A2A_SERVER_URL", "A2A_CARD", "A2A_AGY_CARD", "A2A_KEY_FILE", "A2A_AGY_KEY_FILE")
@@ -59,7 +60,7 @@ def run_lib(tmp_path: Path, content: bytes | None, *, env: dict[str, str] | None
         cfg.write_bytes(content)
     scratch = tmp_path / "cwd"
     scratch.mkdir(exist_ok=True)
-    full = {"PATH": path if path is not None else os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path / "home"), "A2A_CONFIG_FILE": str(cfg)}
+    full = {"PATH": path if path is not None else os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path / "home"), "A2A_SETTINGS_FILE": str(cfg)}
     full.update(env or {})
     proc = subprocess.run(
         [shutil.which("dash") or "dash", "-c", driver, "dash", str(LIB)],
@@ -131,11 +132,11 @@ def test_the_first_occurrence_of_a_name_wins(tmp_path):
 def test_the_default_location_follows_xdg_config_home_then_home(tmp_path):
     xdg = tmp_path / "xdg" / "a2a-coord"
     xdg.mkdir(parents=True)
-    (xdg / "config").write_text("A2A_CARD=claude-code@xdg\n")
+    (xdg / "settings").write_text("A2A_CARD=claude-code@xdg\n")
     home = tmp_path / "home" / ".config" / "a2a-coord"
     home.mkdir(parents=True)
-    (home / "config").write_text("A2A_CARD=claude-code@home\n")
-    unset_file = {"A2A_CONFIG_FILE": ""}  # an empty A2A_CONFIG_FILE is the same as none
+    (home / "settings").write_text("A2A_CARD=claude-code@home\n")
+    unset_file = {"A2A_SETTINGS_FILE": ""}  # an empty A2A_SETTINGS_FILE is the same as none
     _o, _e, _rc, values = run_lib(tmp_path, None, env={**unset_file, "XDG_CONFIG_HOME": str(tmp_path / "xdg")})
     assert values["A2A_CARD"] == "claude-code@xdg"
     _o, _e, _rc, values = run_lib(tmp_path, None, env=unset_file)
@@ -396,7 +397,7 @@ def test_a2a_agy_pending_takes_the_server_url_and_key_file_from_the_file(tmp_pat
     try:
         key = agy.throwaway_key()
         key_file = agy.write_key_file(tmp_path, key)
-        (_config_dir(tmp_path) / "config").write_text(f"# the machine's settings\nA2A_SERVER_URL={stub.url}\nA2A_AGY_KEY_FILE={key_file}\n")
+        (_config_dir(tmp_path) / "settings").write_text(f"# the machine's settings\nA2A_SERVER_URL={stub.url}\nA2A_AGY_KEY_FILE={key_file}\n")
         stub.pending = agy.Reply(200, agy.announce_body(4))
         result = _run_relative("./bin/a2a-agy-pending", agy.hook_input(), _bare_env(tmp_path))
         assert (result.returncode, result.stderr) == (0, "")
@@ -431,7 +432,7 @@ def test_a2a_agy_pending_reads_the_key_from_the_global_mcp_config_by_default(tmp
         key = agy.throwaway_key()
         (tmp_path / ".gemini" / "config").mkdir(parents=True)
         agy.write_key_file(tmp_path / ".gemini" / "config", key)
-        (_config_dir(tmp_path) / "config").write_text(f"A2A_SERVER_URL={stub.url}\n")
+        (_config_dir(tmp_path) / "settings").write_text(f"A2A_SERVER_URL={stub.url}\n")
         stub.pending = agy.Reply(200, agy.announce_body(1))
         result = _run_relative("./bin/a2a-agy-pending", agy.hook_input(), _bare_env(tmp_path))
         assert result.stdout == agy.pending_line(1)
@@ -446,7 +447,7 @@ def test_a2a_agy_pending_environment_beats_the_file(tmp_path):
     stub = agy.start_stub()
     try:
         key_file = agy.write_key_file(tmp_path, agy.throwaway_key())
-        (_config_dir(tmp_path) / "config").write_text("A2A_SERVER_URL=http://127.0.0.1:1\n")
+        (_config_dir(tmp_path) / "settings").write_text("A2A_SERVER_URL=http://127.0.0.1:1\n")
         stub.pending = agy.Reply(200, agy.announce_body(2))
         env = {**_bare_env(tmp_path), "A2A_SERVER_URL": stub.url, "A2A_AGY_KEY_FILE": str(key_file)}
         assert _run_relative("./bin/a2a-agy-pending", agy.hook_input(), env).stdout == agy.pending_line(2)
@@ -464,7 +465,7 @@ def test_a2a_agy_session_takes_url_key_file_and_card_from_the_file(tmp_path):
         handle = f"{card}/{agy.SID8}~{agy.SID8}"
         stub.sessions = agy.Reply(201, '{"handle": "%s", "card": "%s", "created": true}' % (handle, card))
         stub.pending = agy.Reply(200, agy.announce_body(0, announce=False))
-        (_config_dir(tmp_path) / "config").write_text(f"A2A_SERVER_URL={stub.url}\nA2A_AGY_KEY_FILE={key_file}\nA2A_AGY_CARD={card}\n")
+        (_config_dir(tmp_path) / "settings").write_text(f"A2A_SERVER_URL={stub.url}\nA2A_AGY_KEY_FILE={key_file}\nA2A_AGY_CARD={card}\n")
         result = _run_relative("./bin/a2a-agy-session", agy.hook_input(event="SessionStart"), _bare_env(tmp_path))
         assert (result.returncode, result.stderr) == (0, "")
         assert result.stdout == agy.session_line(handle, 0)
@@ -484,7 +485,7 @@ def test_the_claude_scripts_take_url_key_file_and_card_from_the_file(tmp_path):
         card = "claude-code@fromfile"
         handle = f"{card}/agents-1~{hh.SID8}"
         stub.script("/sessions", hh.session_reply(handle))
-        (_config_dir(tmp_path) / "config").write_text(f"A2A_SERVER_URL={stub.url}\nA2A_KEY_FILE={key_file}\nA2A_CARD={card}\n")
+        (_config_dir(tmp_path) / "settings").write_text(f"A2A_SERVER_URL={stub.url}\nA2A_KEY_FILE={key_file}\nA2A_CARD={card}\n")
         env = {**_bare_env(tmp_path), "A2A_STATE_DIR": str(tmp_path / "state"), "CLAUDE_CODE_SESSION_ATTENDED": "1"}
         result = hh.run_script(register, ["start"], stdin=hh.hook_json("SessionStart", source="startup"), env=env)
         assert (result.returncode, result.stderr) == (0, "")
@@ -511,3 +512,50 @@ def test_a_script_is_unchanged_when_the_lib_is_missing(tmp_path):
             [shutil.which("dash") or "dash", str(lone / name), "start"], input="{}", capture_output=True, text=True, env=env, cwd=tmp_path, timeout=30, check=False
         )
         assert (proc.returncode, proc.stderr) == (0, ""), name
+
+
+# ============================ review findings of PR #102 (Opus) ============================
+
+
+def test_the_lib_trusts_only_a_settings_file_the_user_owns():
+    """A file another local user owns (or can replace) could point A2A_SERVER_URL at their listener
+    and collect the bearer key. The behaviour needs a file owned by someone else, which a test cannot
+    create without root, so the guard is checked in the source and the positive case by the tests above."""
+    source = LIB.read_text()
+    assert '[ -O "$a2a_cfg_file" ]' in source
+
+
+def test_a_settings_file_that_is_a_directory_is_ignored_silently(tmp_path):
+    """The hand-run server stack keeps its cards in a directory named like the old default
+    (`~/.config/a2a-coord/config/`); the settings file is `settings`, so the two cannot clash."""
+    cfg = tmp_path / "settings"
+    cfg.mkdir()
+    (cfg / "cards.yaml").write_text("cards: []\n")
+    out, err, rc, values = run_lib(tmp_path, None, env={"A2A_SETTINGS_FILE": str(cfg)})
+    assert rc == 0 and err == "" and rc == 0
+    assert all(v is None for v in values.values())
+
+
+def test_the_default_settings_path_is_settings_not_config(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config" / "a2a-coord").mkdir(parents=True)
+    (home / ".config" / "a2a-coord" / "settings").write_text("A2A_CARD=from-settings\n")
+    (home / ".config" / "a2a-coord" / "config").mkdir()
+    out, err, rc, values = run_lib(tmp_path, None, env={"HOME": str(home), "A2A_SETTINGS_FILE": ""})
+    assert (rc, err) == (0, "") and values["A2A_CARD"] == "from-settings"
+
+
+BAD_URLS = ["--config=/tmp/x", "ftp://127.0.0.1:1", "http://127.0.0.1:1/ x", "http://x/$(id)", "http://x/;id", "file:///etc/passwd"]
+
+
+@pytest.mark.parametrize("url", BAD_URLS)
+@pytest.mark.parametrize("name", ["bin/a2a-register", "bin/a2a-pending", "bin/a2a-listen"])
+def test_the_claude_scripts_refuse_a_server_url_that_could_become_a_curl_option(stub, hook_env, name, url):
+    """The settings file can now set A2A_SERVER_URL: a value such as `--config=/tmp/x` would reach curl
+    as `--config=/tmp/x/wake/pending`. The agy scripts already checked this; the Claude ones now do too."""
+    script = hh.plugin_file(name)
+    event = {"bin/a2a-register": "SessionStart", "bin/a2a-pending": "UserPromptSubmit", "bin/a2a-listen": "Stop"}[name]
+    args = ["start"] if name == "bin/a2a-register" else []
+    r = hh.run_script(script, args, stdin=hh.hook_json(event), env=hook_env(stub.url, A2A_SERVER_URL=url), timeout=30)
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", ""), (r.returncode, r.stdout, r.stderr)
+    assert stub.requests("/sessions") == [] and stub.requests("/wake/pending") == [] and stub.requests("/wake/listen") == []

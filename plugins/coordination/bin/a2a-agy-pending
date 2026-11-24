@@ -22,7 +22,7 @@
 #                               $HOME/.gemini/config/mcp_config.json (the user's global agy MCP file,
 #                               mode 0600, outside the plugin, decisions Z20 and Z21; the first a2ak_
 #                               token in it is the key)
-#   A2A_SERVER_URL and A2A_AGY_KEY_FILE may also be set in ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/config
+#   A2A_SERVER_URL and A2A_AGY_KEY_FILE may also be set in ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings
 #   as plain KEY=value lines, read by bin/a2a-lib.sh; an environment variable wins over the file.
 #   A2A_AGY_CONNECT_TIMEOUT     curl connect timeout in seconds, default 0.2 (Y6)
 #   A2A_AGY_MAX_TIME            curl total time limit in seconds, default 2 (plan 4.2)

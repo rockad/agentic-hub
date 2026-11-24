@@ -15,7 +15,7 @@
 # Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
 # A2A_KEY_FILE (default ~/.config/a2a-coord/api-key), A2A_CARD (default claude-code@<short
 # hostname> [design]), A2A_STATE_DIR (default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord). The first
-# three may also be set in ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/config (KEY=value lines,
+# three may also be set in ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/settings (KEY=value lines,
 # bin/a2a-lib.sh; the environment wins).
 # The key is handed to curl on stdin (`curl -K -`), never in argv; A2A_API_KEY is never read, and
 # is unset so curl does not inherit it.
@@ -30,6 +30,7 @@ umask 077
 exec 2>/dev/null # the hook must never print a shell error: stderr of a hook reaches the user or the model
 # The settings file (docs/specs/claude-hooks.md): silent, never fails; the -r test because `.` of a
 # missing file would end a POSIX shell with status 2.
+LC_ALL=C # a plain assignment, not passed on to children: the shell's own 512-byte limit and the control-character test of the lib count bytes
 # shellcheck source=/dev/null
 if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
@@ -42,6 +43,15 @@ case $mode in start|end) ;; *) exit 0 ;; esac
 
 URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
 URL=${URL%/}
+# The URL can come from the settings file now: only http(s) and plain URL characters, as in the agy
+# scripts, so a value can never turn into a curl option (Opus review of PR #102).
+case $URL in
+  http://* | https://*) ;;
+  *) exit 0 ;;
+esac
+case $URL in
+  *[!A-Za-z0-9._~:/@%-]*) exit 0 ;;
+esac
 STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
 KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
 
@@ -89,7 +99,7 @@ if [ "$mode" = end ]; then
      && [ -n "$(find "$STATE" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; then
     ( set -C; : > "$STATE/notice-$sid" ) 2>/dev/null
   fi
-  curl -q -sS --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 1 -K - -X POST \
+  curl -q -sS --proto '=http,https' --noproxy '*' -o /dev/null --connect-timeout 1 --max-time 1 -K - -X POST \
     -H 'Content-Type: application/json' \
     --data "{\"card\":\"$CARD\",\"harness_session_id\":\"$sid\"}" "$URL/sessions/end" >/dev/null 2>&1 <<EOF
 header = "Authorization: Bearer $KEY"
@@ -105,7 +115,7 @@ body="{\"card\":\"$CARD\",\"harness_session_id\":\"$sid\""
 [ -n "$hint" ] && body="$body,\"name_hint\":\"$hint\""
 body="$body}"
 
-resp=$(curl -q -sS --noproxy '*' --connect-timeout 2 --max-time 5 -K - -X POST \
+resp=$(curl -q -sS --proto '=http,https' --noproxy '*' --connect-timeout 2 --max-time 5 -K - -X POST \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data "$body" -w '\n%{http_code}' "$URL/sessions" 2>/dev/null <<EOF
 header = "Authorization: Bearer $KEY"

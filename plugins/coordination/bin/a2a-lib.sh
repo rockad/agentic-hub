@@ -4,7 +4,7 @@
 #   . "${0%/*}/a2a-lib.sh" && a2a_load_config
 #
 # The settings file is plain `KEY=value` lines, by default
-# ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/config (A2A_CONFIG_FILE names another one). It is read
+# ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings (A2A_SETTINGS_FILE names another one). It is read
 # line by line with `read -r` and is never sourced, evaluated or expanded: a value is only ever
 # assigned, so `$(cmd)`, a backtick and `$VAR` in it stay the characters they are.
 #
@@ -25,8 +25,11 @@
 # starts no process: the common path is shell built-ins only. The names are set, not exported.
 
 a2a_load_config() {
-  a2a_cfg_file=${A2A_CONFIG_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/a2a-coord/config}
-  if [ -f "$a2a_cfg_file" ] && [ -r "$a2a_cfg_file" ]; then
+  a2a_cfg_file=${A2A_SETTINGS_FILE:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/a2a-coord/settings}
+  # -O: a file the user does not own is not trusted (another local user could point the hooks at
+  # their own listener and collect the bearer key); the mode is `a2a-doctor`s to report.
+  # shellcheck disable=SC3067 # -O is not in POSIX, but dash, bash and busybox all have it
+  if [ -f "$a2a_cfg_file" ] && [ -r "$a2a_cfg_file" ] && [ -O "$a2a_cfg_file" ]; then
     a2a_cfg_cr=$(printf '\r')
     # The redirection comes after `2>/dev/null` so that a failed open prints nothing either.
     while IFS= read -r a2a_cfg_line || [ -n "$a2a_cfg_line" ]; do

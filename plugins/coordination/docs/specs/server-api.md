@@ -1498,6 +1498,7 @@ What it configures:
 
 Hook script install [D28]:
 
+- **Superseded by Z20 and Z21 (PR #102): no copy, no `current` symlink; each harness installs the plugin itself and its hooks call `${CLAUDE_PLUGIN_ROOT}/bin/` (Claude) or `./bin/` (agy). The text below is the old design.**
 - The scripts (`a2a-register`, `a2a-listen`, `a2a-agy-session`, `a2a-agy-pending`) are copied from the plugin `bin/` to `~/.local/share/a2a-coord/<version>/bin/`, and a `current` symlink points at the active version.
 - Both harnesses' hook entries reference `~/.local/share/a2a-coord/current/bin/<script>`.
 - An upgrade installs the new version directory and switches the `current` symlink. Uninstall removes `~/.local/share/a2a-coord/`.
@@ -1667,7 +1668,7 @@ The inbox instruction for agy [D27]:
 
 Nothing in this configuration launches, drives or wraps agy [D9, DDR-003].
 
-As built (S1-AGY, 2026-11-21; full text in [agy-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/agy-hooks.md)). The scripts are `bin/a2a-agy-session` and `bin/a2a-agy-pending`, the entries are the shipped fragment `agy/hooks.fragment.json`, and where this section's sketches differ the as-built form is:
+As built (S1-AGY, 2026-11-21; full text in [agy-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/agy-hooks.md)). The scripts are `bin/a2a-agy-session` and `bin/a2a-agy-pending`, the entries are `hooks.json` at the plugin root (it was the fragment `agy/hooks.fragment.json` until PR #102), and where this section's sketches differ the as-built form is:
 
 - The `injectSteps` item is the nested object `{"systemMessage": {"systemMessage": "<text>"}}`, the form SP2 and SP3 ran; the plain-string form in the sketches above was never tried and is [unverified].
 - The hook entries are the flat form agy reads (SP2 and SP3): one named group (`a2a-coord`) with an array per event and the handler objects directly in it, not the `{"hooks": [...]}` wrapper of the `hooks.json` sketch above, which stays [unverified].

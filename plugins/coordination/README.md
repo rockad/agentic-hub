@@ -39,10 +39,13 @@ claude plugin marketplace add rockad/agentic-hub
 claude plugin install coordination@agentic-hub
 ```
 
-The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`claude/mcp.json`; the Claude manifest names both files, as Jev's does, so agy never sees a `hooks/hooks.json` or `.mcp.json` it would warn about; `http://127.0.0.1:8120/mcp`, header `Authorization: Bearer ${A2A_API_KEY}`).
+The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`claude/mcp.json`; the Claude manifest names both files, as Jev's does, so agy never sees a `hooks/hooks.json` or `.mcp.json` it would warn about; `http://127.0.0.1:8120/mcp`; the credential comes from a `headersHelper`, `${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers`, which prints `{"Authorization":"Bearer <key>"}` from the key file below).
 
-- Put the key in `~/.config/a2a-coord/api-key`: one line, the key, mode 0600 (`chmod 600`). The hooks read this file.
-- Export it for the MCP entry, which Claude Code expands from the environment. This line holds no secret, so it may live in a chezmoi-managed shell profile: `export A2A_API_KEY="$(cat "$HOME/.config/a2a-coord/api-key")"`. Start `claude` from a shell that has it; without it the `a2a_` tools answer 401 (the registration hook says so at session start).
+- Put the key in `~/.config/a2a-coord/keys/claude-code.key`: one line, the key, mode 0600, in a directory of mode 0700 (`install -d -m 700 ~/.config/a2a-coord/keys`, then `(umask 077; ${EDITOR:-vi} ~/.config/a2a-coord/keys/claude-code.key)`). The hooks and the MCP helper both read this one file, so **Claude has no second copy of its key**. There is no `A2A_API_KEY` to export and nothing reads it; a Claude Code started from a desktop launcher or an IDE works like one started from a shell.
+- The helper is built by the key-files stream [design: `bin/a2a-mcp-headers` and the `claude/mcp.json` change]. What backs the approach: on 2026-11-24, with Claude Code 2.1.331, a plugin `headersHelper` that read a key file delivered its header, and a real model call of `a2a_hello` through such a helper on the real server returned `bound: true` with no `A2A_API_KEY` in the environment [verified, an experiment, not a test in this repository]. Claude Code runs the helper at session start and on reconnect, once more after a 401 or 403, with a 10 s limit and no caching [documented, Claude Code docs fetched 2026-11-24].
+- The helper fails closed: on any problem it prints nothing and exits 1 [design].
+- Rotating: write the new key to the same file. The hooks and the helper pick it up at once, with no restart [design, from the documented helper behaviour].
+- Upgrading from the old layout: for one release the hooks still fall back to `~/.config/a2a-coord/api-key`, and `a2a-doctor` warns and shows how to migrate ([Key files](#key-files)).
 
 ### Antigravity (agy)
 

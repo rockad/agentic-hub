@@ -14,7 +14,7 @@ agentic-hub/
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launcher scripts
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
 │   ├── clarify/          # Design clarification: /clarify, /grill-me, /clarify:plain, /clarify:eli5, plus the question hooks
-│   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)
+│   ├── coordination/     # A2A coordination server and one plugin for Claude Code and agy (live peer sessions)
 │   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
 │   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # Jev routing, scoring, model ceiling guard, and automated task execution

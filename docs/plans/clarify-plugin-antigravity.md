@@ -59,7 +59,7 @@ Verified against `agy 1.5.15`, the live Antigravity docs (`https://antigravity.g
 - **Evidence:**
   - `agy-customizations/docs/plugins.md` and `build-plugins.md`: runtime plugin discovery strictly loads `<plugin-root>/hooks.json`. Command hooks execute with `cwd = <plugin-root>` and receive `PLUGIN_ROOT` and `PLUGIN_DATA` environment variables.
   - `plugins/jev/hooks.json` already uses this pattern (`agy plugin list --json` reports `"hooks": ["jev-subagent-guard"]`).
-  - `plugins/coordination/agy/hooks.fragment.json` uses manual merging only because its hook binaries live outside the plugin (`~/.local/share/a2a-coord/current/bin/`). `clarify` bundles its hook script inside `plugins/clarify/hooks/`.
+  - `plugins/coordination` was first planned to merge a hook fragment (`agy/hooks.fragment.json`) by hand because its hook binaries lived outside the plugin (`~/.local/share/a2a-coord/current/bin/`); since PR #102 (2026-11-24) it is a plugin like `clarify`, with `hooks.json` at the plugin root calling `./bin/...`. `clarify` bundles its hook script inside `plugins/clarify/hooks/`.
   - **Empirically verified** in a temp `HOME` with `plugins/clarify/hooks.json`:
     ```json
     {

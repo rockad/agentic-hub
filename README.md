@@ -10,7 +10,7 @@ agentic-hub/
 │   └── marketplace.json
 ├── plugins/              # Composite plugins bundling MCP servers, skills, and launchers
 │   ├── chrome-devtools/  # Persistent Windows Chrome browser automation via CDP & DevTools MCP
-│   ├── coordination/     # Planned A2A coordination server for live peer sessions (docs and plans only)
+│   ├── coordination/     # A2A coordination server and one plugin for Claude Code and agy (live peer sessions)
 │   ├── gitea/            # Gitea repository inspection, issue reading, and commit inspection
 │   ├── google-workspace/ # Google Workspace integration: Gmail and Calendar
 │   ├── jev/              # TypeSafe Jev decision engine v2.3.0, OpenCode & Claude Code integration

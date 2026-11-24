@@ -15,12 +15,17 @@
 # failure of a hook anyway).
 #
 # Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
-# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key). The key goes to curl on stdin (`curl -K -`),
+# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key); both may also be set in
+# ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/config (KEY=value lines, bin/a2a-lib.sh; the environment wins). The key goes to curl on stdin (`curl -K -`),
 # never in argv; A2A_API_KEY is never read, and is unset so curl does not inherit it.
 
 unset A2A_API_KEY
 umask 077
 exec 2>/dev/null # no shell error may reach the model (stderr of a hook does); this script exits 0 always
+# The settings file (docs/specs/claude-hooks.md): silent, never fails; the -r test because `.` of a
+# missing file would end a POSIX shell with status 2.
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
 URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
 URL=${URL%/}

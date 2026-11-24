@@ -14,7 +14,9 @@
 #
 # Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
 # A2A_KEY_FILE (default ~/.config/a2a-coord/api-key), A2A_CARD (default claude-code@<short
-# hostname> [design]), A2A_STATE_DIR (default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord).
+# hostname> [design]), A2A_STATE_DIR (default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord). The first
+# three may also be set in ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/config (KEY=value lines,
+# bin/a2a-lib.sh; the environment wins).
 # The key is handed to curl on stdin (`curl -K -`), never in argv; A2A_API_KEY is never read, and
 # is unset so curl does not inherit it.
 
@@ -26,6 +28,10 @@ ENV_KEY_SET=0
 unset A2A_API_KEY
 umask 077
 exec 2>/dev/null # the hook must never print a shell error: stderr of a hook reaches the user or the model
+# The settings file (docs/specs/claude-hooks.md): silent, never fails; the -r test because `.` of a
+# missing file would end a POSIX shell with status 2.
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
 mode=${1:-}
 case $mode in start|end) ;; *) exit 0 ;; esac

@@ -1,5 +1,5 @@
 """S1-AGY: the two agy hook scripts (`bin/a2a-agy-session`, `bin/a2a-agy-pending`) and the shipped
-hook fragment (`agy/hooks.fragment.json`), driven as agy drives them: hook JSON on stdin, run as a
+agy hooks file (`hooks.json` at the plugin root), driven as agy drives them: hook JSON on stdin, run as a
 child process, under dash.
 
 This file needs no Docker. It uses a tiny stub HTTP server for the answers the real server cannot
@@ -15,7 +15,7 @@ What it checks (plan 4.2, S1-AGY acceptance):
   server sends;
 - the opt-out marker stops both scripts before any network call;
 - the key reaches curl on stdin only: never an argument, never the environment;
-- the scan: no `Stop` entry in the fragment, no `agy` execution in the scripts, shellcheck clean.
+- the scan: no `Stop` entry in the hooks file, no `agy` execution in the scripts, shellcheck clean.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from agy_hook_helpers import (
     SESSION,
     Reply,
     announce_body,
-    fragment_path,
     hook_env,
+    hooks_json_path,
     hook_input,
     hook_input_of_size,
     pending_line,
@@ -413,10 +413,11 @@ def test_no_usable_key_means_no_call_and_no_output(stub, tmp_path, case):
     assert stub.seen == []
 
 
-def test_the_default_key_file_is_the_plugin_mcp_config_under_home(stub, tmp_path, key):
-    plugin_dir = tmp_path / ".gemini" / "config" / "plugins" / "coordination"
-    plugin_dir.mkdir(parents=True)
-    write_key_file(plugin_dir, key)
+def test_the_default_key_file_is_the_global_agy_mcp_config_under_home(stub, tmp_path, key):
+    """Decision Z21 item 6: `$HOME/.gemini/config/mcp_config.json`, not a file inside the plugin."""
+    config_dir = tmp_path / ".gemini" / "config"
+    config_dir.mkdir(parents=True)
+    write_key_file(config_dir, key)
     env = hook_env(tmp_path, url=stub.url, key_file=None)
     stub.pending = Reply(200, announce_body(3))
     assert run_hook(PENDING, hook_input(), env).out == pending_line(3)
@@ -781,7 +782,7 @@ def test_the_scripts_pass_the_key_to_curl_on_stdin_only():
         assert "A2A_API_KEY" not in code  # the Claude Code export is not agy's key source (D34)
 
 
-# static checks on the scripts and the fragment ---------------------------------------------
+# static checks on the scripts and the hooks file ---------------------------------------------
 
 
 @pytest.mark.parametrize("name", [PENDING, SESSION])
@@ -834,30 +835,30 @@ def test_scripts_use_no_runtime_beyond_posix_tools_and_curl(name):
         assert not re.search(rf"(?<![A-Za-z0-9_.-]){tool}(?![A-Za-z0-9_-])", code), f"{name} uses {tool}"
 
 
-def test_the_fragment_ships_session_start_and_pre_invocation_and_no_stop():
-    data = json.loads(fragment_path().read_text())
-    assert list(data) == ["a2a-coord"], "one group, the installer's own key (Y9)"
+def test_the_hooks_file_ships_session_start_and_pre_invocation_and_no_stop():
+    data = json.loads(hooks_json_path().read_text())
+    assert list(data) == ["a2a-coord"], "one group, our own key"
     group = data["a2a-coord"]
     assert sorted(group) == ["PreInvocation", "SessionStart"]
     flat = json.dumps(data)
     for banned in ("Stop", "PostInvocation", "PreToolUse", "PostToolUse", "UserPromptSubmit", "asyncRewake"):
-        assert banned not in flat, f"the fragment must not carry {banned}"
+        assert banned not in flat, f"the hooks file must not carry {banned}"
     for event, name in (("SessionStart", SESSION), ("PreInvocation", PENDING)):
         entries = group[event]
         assert len(entries) == 1
         entry = entries[0]  # the flat form agy reads (SP2 and SP3 ran with it)
         assert entry["type"] == "command"
-        assert entry["command"] == f"~/.local/share/a2a-coord/current/bin/{name}"
+        assert entry["command"] == f"./bin/{name}"  # agy runs a plugin hook with the plugin folder as cwd (A8c part 3)
         assert isinstance(entry["timeout"], int) and 1 <= entry["timeout"] <= 10
         assert set(entry) == {"type", "command", "timeout"}
         assert script(name).is_file()  # the entry points at a script this plugin ships
     assert group["PreInvocation"][0]["timeout"] <= 5 and group["SessionStart"][0]["timeout"] <= 10
 
 
-def test_the_fragment_names_no_agy_execution():
-    text = fragment_path().read_text()
+def test_the_hooks_file_names_no_agy_execution():
+    text = hooks_json_path().read_text()
     assert not re.search(r"(?<![A-Za-z0-9_./@-])agy(?![A-Za-z0-9_@-])", text.replace("a2a-agy-", ""))
-    assert "~/.local/share/a2a-coord/current/bin/" in text
+    assert "./bin/" in text and "~/.local/share" not in text
 
 
 def test_the_bin_directory_holds_no_stop_hook_script_of_this_stream():

@@ -7,6 +7,8 @@
  *  1. Valid JSON formatting.
  *  2. In .claude-plugin/plugin.json, file/script paths (e.g. hooks) start with "./".
  *  3. In .mcp.json, remote servers (having "url") declare "type": "http".
+ *  4. Per plugins/<dir>, the name and version of plugin.json, .claude-plugin/plugin.json and the
+ *     plugin's entries in .claude-plugin/marketplace.json and marketplace.json are equal.
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -85,6 +87,57 @@ async function validateMcpJson(filePath: string, data: any): Promise<void> {
   }
 }
 
+async function readJson(filePath: string): Promise<any | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch {
+    return null; // a missing file is not drift; a syntax error is already reported by main()
+  }
+}
+
+/**
+ * Version drift guard: for every plugins/<dir> the version (and name) of plugin.json (agy),
+ * .claude-plugin/plugin.json (Claude Code), its entry in .claude-plugin/marketplace.json (source
+ * "./plugins/<dir>") and its entry in the root marketplace.json (path "plugins/<dir>") must be equal.
+ * A file or entry that does not exist is skipped, so a plugin with one manifest is not an error.
+ */
+async function validateVersionDrift(): Promise<void> {
+  const claudeMarket = await readJson(path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json'));
+  const rootMarket = await readJson(path.join(REPO_ROOT, 'marketplace.json'));
+  const dirs = (await fs.readdir(PLUGINS_DIR, { withFileTypes: true })).filter((e) => e.isDirectory());
+
+  for (const dir of dirs) {
+    const base = path.join(PLUGINS_DIR, dir.name);
+    const found: { where: string; file: string; name?: string; version?: string }[] = [];
+    const agy = await readJson(path.join(base, 'plugin.json'));
+    if (agy) found.push({ where: 'plugin.json', file: path.join(base, 'plugin.json'), name: agy.name, version: agy.version });
+    const claude = await readJson(path.join(base, '.claude-plugin', 'plugin.json'));
+    if (claude) {
+      const file = path.join(base, '.claude-plugin', 'plugin.json');
+      found.push({ where: '.claude-plugin/plugin.json', file, name: claude.name, version: claude.version });
+    }
+    const cm = (claudeMarket?.plugins ?? []).find((p: any) => p.source === `./plugins/${dir.name}`);
+    if (cm) {
+      found.push({ where: '.claude-plugin/marketplace.json', file: path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json'), name: cm.name, version: cm.version });
+    }
+    const rm = (rootMarket?.plugins ?? []).find((p: any) => p.path === `plugins/${dir.name}`);
+    if (rm) {
+      found.push({ where: 'marketplace.json', file: path.join(REPO_ROOT, 'marketplace.json'), name: rm.id, version: rm.version });
+    }
+    if (found.length < 2) continue;
+
+    const first = found[0];
+    for (const other of found.slice(1)) {
+      if (other.version !== first.version) {
+        reportError(other.file, `plugins/${dir.name}: version "${other.version}" in ${other.where} differs from "${first.version}" in ${first.where}`);
+      }
+      if (other.name !== first.name) {
+        reportError(other.file, `plugins/${dir.name}: name "${other.name}" in ${other.where} differs from "${first.name}" in ${first.where}`);
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`🔍 Scanning ${path.relative(REPO_ROOT, PLUGINS_DIR)} for manifests...`);
   const targetNames = new Set(['plugin.json', '.mcp.json']);
@@ -116,6 +169,8 @@ async function main(): Promise<void> {
       await validateMcpJson(filePath, parsed);
     }
   }
+
+  await validateVersionDrift();
 
   console.log(`\n📋 Validation Summary:`);
   console.log(`   Files checked: ${fileCount}`);

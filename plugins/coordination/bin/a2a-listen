@@ -22,7 +22,9 @@
 # best effort. The API key is read from a file (never the environment, never argv) and handed to curl
 # on stdin with `curl -K -`; this script unsets A2A_API_KEY so curl does not inherit it either.
 #
-# Configuration (environment, all optional):
+# Configuration (environment, all optional; A2A_SERVER_URL, A2A_KEY_FILE and A2A_CARD may also be set
+# in ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/config as KEY=value lines, read by bin/a2a-lib.sh, the
+# environment wins):
 #   A2A_SERVER_URL      default http://127.0.0.1:8120
 #   A2A_KEY_FILE        default ~/.config/a2a-coord/api-key (first line is the key, decision D34)
 #   A2A_CARD            this machine's card; default claude-code@<short hostname> [design]
@@ -48,6 +50,12 @@ umask 077
 # A shell error (a failed redirection, bad arithmetic) must never reach it: keep the real stderr on
 # fd 3 for those lines and silence fd 2.
 exec 3>&2 2>/dev/null
+
+# The settings file (docs/specs/claude-hooks.md): silent, never fails. `.` of a missing file would
+# end a POSIX shell with status 2, hence the -r test; the lib sets only A2A_* names, so INTENDED2 and
+# the exit-2 rules below are untouched.
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
 num() { # value default min max: the value if it is an integer inside [min, max], else the default
   case $1 in

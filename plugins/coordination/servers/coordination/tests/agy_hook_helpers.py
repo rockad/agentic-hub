@@ -41,8 +41,9 @@ def script(name: str) -> Path:
     return path
 
 
-def fragment_path() -> Path:
-    path = PLUGIN_DIR / "agy" / "hooks.fragment.json"
+def hooks_json_path() -> Path:
+    """The agy hooks file: `hooks.json` at the plugin root (decisions Z20 and Z21)."""
+    path = PLUGIN_DIR / "hooks.json"
     if not path.is_file():
         pytest.skip(f"{path} is not present")
     return path
@@ -54,7 +55,7 @@ def throwaway_key() -> str:
 
 
 def write_key_file(directory: Path, key: str) -> Path:
-    """The unmanaged plugin file of D24 and D34: agy's `mcp_config.json`, the key a literal, mode 0600."""
+    """A file shaped like the user's global agy `mcp_config.json` (decision Z21 item 6): the key a literal, mode 0600."""
     path = directory / "mcp_config.json"
     config = {"mcpServers": {"a2a": {"url": "http://127.0.0.1:1/mcp", "headers": {"Authorization": f"Bearer {key}"}}}}
     path.write_text(json.dumps(config))

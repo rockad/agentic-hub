@@ -1,5 +1,7 @@
 # Runbook: backup and restore of the coordination database
 
+The step-by-step procedures that use this text are in [`operations.md`](operations.md); the install is in [`setup.md`](setup.md).
+
 Stream S1-BKP of the implementation plan (decision 37; round-2 R4 to R6; round-3 R9, R11, R12, R14). Values in angle brackets are placeholders: `<workstation>` is the dev box, `<storage-host>` the always-on host, `<media-root>` its storage root, `<gdrive-remote>` the rclone remote name.
 
 ## What is backed up
@@ -52,7 +54,7 @@ A failed dump, or a file that fails the verification, removes the partial file, 
 
 ## Reading `dump_age_h`
 
-The server derives `dump_age_h` from `last_ok` (`coordination.backup_status`); the `/status` endpoint that reports it comes with a later stream. A number is the age of the last good dump in hours.
+The server derives `dump_age_h` from `last_ok` (`coordination.backup_status`); `a2a-coord status` prints it on its `backup:` line (the HTTP `POST /status` for the status client carries it too, and logs a warning when it is stale). [verified 2026-11-24: `null` before the first dump, `0.0` right after one.] A number is the age of the last good dump in hours.
 
 - **`null`**: no good dump yet (file absent, empty or unreadable). Expected before the first dump. After that, it means the profile is not on, `init-dump-role` was not run, or the secret is wrong. Check `docker compose logs dump`.
 - **Up to 36**: healthy for a nightly dump.
@@ -76,13 +78,13 @@ Restore into a scratch Postgres first; do this to check a dump and before every 
 
 ```sh
 IMAGE=$(docker compose config --format json | jq -r '.services.postgres.image')
-docker run -d --name a2a-scratch --network none -e POSTGRES_USER=coordination -e POSTGRES_DB=coordination \
+docker run -d --name a2a-restore-scratch --network none -e POSTGRES_USER=coordination -e POSTGRES_DB=coordination \
     -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE"
 # wait until the log shows "ready to accept connections" twice (the init run, then the real start)
 DUMP=a2a-<UTC timestamp>.dump
-docker exec -i a2a-scratch pg_restore -U coordination -d coordination --exit-on-error < "$A2A_DUMP_DIR/$DUMP"
-docker exec a2a-scratch psql -U coordination -d coordination -c '\dt *.*'   # look around, compare counts
-docker rm -f a2a-scratch
+docker exec -i a2a-restore-scratch pg_restore -U coordination -d coordination --exit-on-error < "$A2A_DUMP_DIR/$DUMP"
+docker exec a2a-restore-scratch psql -U coordination -d coordination -c '\dt'   # the 14 tables of schema v4; compare counts, for example SELECT count(*) FROM api_keys
+docker rm -f a2a-restore-scratch
 ```
 
 `pg_restore` must exit 0 (`--exit-on-error` makes any error fatal). Compare row counts against the source only **after writers are stopped**: a dump is a snapshot of one moment, a live database has moved on since.

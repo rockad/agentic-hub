@@ -52,8 +52,8 @@ export function antigravityTurnKey(lastUserInput: unknown): string {
   return typeof lastUserInput === 'string' && lastUserInput ? createHash('sha256').update(lastUserInput).digest('hex').slice(0, 16) : 'no-prompt';
 }
 
-/** A question-pending note (see `ApprovalState.pendingQuestions`): the answer row's step_index and question index, and when PostToolUse saw the question answered. */
-export type PendingQuestion = { stepIdx: number; questionIdx?: number; asked_at: number };
+/** A question-pending note (see `ApprovalState.pendingQuestions`): the answer row's step_index and question index, when PostToolUse saw the question answered, and the user turn it was answered in (a once answer belongs to that turn). */
+export type PendingQuestion = { stepIdx: number; questionIdx?: number; asked_at: number; turn?: string };
 
 export type ApprovalState = {
   approvals: Approval[];
@@ -71,6 +71,8 @@ export type ApprovalState = {
   answerSteps?: Record<string, number>;
   /** The question index (0 = A1) inside that answer row, per elevation model, recorded together with the step. */
   answerQuestions?: Record<string, number>;
+  /** The user turn (`antigravityTurnKey`) the answer was given in, per elevation model, recorded with the step: a pulled `once` answer is bound to it, not to the launch's turn. */
+  answerTurns?: Record<string, string>;
   /**
    * Answers that already produced an approval (or a decline): `step:<step_index>#<questionIndex>` or `<toolCallId>#<questionIndex>`.
    * A denial that arrives later must not be approved again from the same answer row (one answer, one approval).
@@ -79,7 +81,8 @@ export type ApprovalState = {
   /**
    * Question-pending notes (2.3.21): an elevation question PostToolUse saw answered but whose answer row was not in the transcript yet, with
    * no denial on record for its model (the question was not prescribed by Jev). Per marker model (lower-case): where the answer row will be.
-   * No expiry; voided by a mode change (like the prescriptions); dropped when a denial for the model is noted and when the answer is read.
+   * No expiry; voided by a mode change (like the prescriptions); dropped only when its answer is read. A denial for the model does not drop it:
+   * the next pull still reads the note's row.
    */
   pendingQuestions?: Record<string, PendingQuestion>;
   /** The No answers (2.3.21). */
@@ -126,13 +129,17 @@ export type ApprovalStore = {
   /** When Jev last prescribed the question for `model` or a stronger one (epoch ms; no expiry), or null. */
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
-  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number) => boolean;
+  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number, turn?: string) => boolean;
+  /** The user turn the recorded answer row was given in, or null when none is recorded for a pending denial. */
+  getAnswerTurn?: (sessionId: string, model: string, nowMs: number) => string | null;
+  /** Mark answer keys consumed without storing an answer (a stale once answer: read, not applied, never read again). */
+  consumeAnswers?: (sessionId: string, keys: string[]) => void;
   /** The recorded answer row step_index for `model`, or null when none is recorded for a pending denial. */
   getAnswerStep?: (sessionId: string, model: string, nowMs: number) => number | null;
   /** The recorded question index inside that row, or null when none is recorded for a pending denial. */
   getAnswerQuestion?: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Note a question PostToolUse saw answered but whose row was not in the transcript yet, when no denial for `model` is on record (2.3.21). False when none was stored. */
-  notePendingQuestion?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number) => boolean;
+  notePendingQuestion?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number, turn?: string) => boolean;
   /** The question-pending note standing for `model` (that model or a stronger one), not voided by a mode change; null when none. */
   getPendingQuestion?: (sessionId: string, model: string, config?: ModeChangeConfigLike | null) => PendingQuestion | null;
   /** Drop the question-pending notes standing for `model` (its answer was read). */
@@ -174,12 +181,15 @@ export function noteDenied(state: ApprovalState, model: string, nowMs: number): 
   // A fresh denial starts a fresh question: an answer row recorded for an earlier denial must not be read for it.
   const { [model.toLowerCase()]: _stale, ...answerSteps } = state.answerSteps ?? {};
   const { [model.toLowerCase()]: _staleQ, ...answerQuestions } = state.answerQuestions ?? {};
-  // A denial supersedes a question-pending note for the model: the denial path reads its answer from then on.
-  const next: ApprovalState = { ...(clearPendingQuestion(state, model) ?? state), denied: { ...(state.denied ?? {}), [model.toLowerCase()]: nowMs } };
+  // A standing question-pending note is kept: its answer row is still to be read at the next pull.
+  const { [model.toLowerCase()]: _staleT, ...answerTurns } = state.answerTurns ?? {};
+  const next: ApprovalState = { ...state, denied: { ...(state.denied ?? {}), [model.toLowerCase()]: nowMs } };
   if (Object.keys(answerSteps).length > 0) next.answerSteps = answerSteps;
   else delete next.answerSteps;
   if (Object.keys(answerQuestions).length > 0) next.answerQuestions = answerQuestions;
   else delete next.answerQuestions;
+  if (Object.keys(answerTurns).length > 0) next.answerTurns = answerTurns;
+  else delete next.answerTurns;
   return next;
 }
 
@@ -204,10 +214,10 @@ export function clearPendingQuestion(state: ApprovalState, model: string): Appro
  * Pure: the state with a question-pending note for `model`, or null when a denial for it is on record (the existing denial path reads that answer
  * with `noteAnswerStep`) or the indexes are not plain non-negative integers. A later note for the same model replaces the earlier one.
  */
-export function notePendingQuestion(state: ApprovalState, model: string, stepIdx: number, nowMs: number, markerIndex = 0): ApprovalState | null {
+export function notePendingQuestion(state: ApprovalState, model: string, stepIdx: number, nowMs: number, markerIndex = 0, turn?: string): ApprovalState | null {
   if (!Number.isInteger(stepIdx) || stepIdx < 0 || !Number.isInteger(markerIndex) || markerIndex < 0) return null;
   if (wasDeniedRecently(state, model, nowMs)) return null;
-  return { ...state, pendingQuestions: { ...(state.pendingQuestions ?? {}), [model.toLowerCase()]: { stepIdx, questionIdx: markerIndex, asked_at: nowMs } } };
+  return { ...state, pendingQuestions: { ...(state.pendingQuestions ?? {}), [model.toLowerCase()]: { stepIdx, questionIdx: markerIndex, asked_at: nowMs, ...(turn ? { turn } : {}) } } };
 }
 
 /** The question-pending note standing for `model` (the latest of those that cover it), not voided by a mode change; null when none. */
@@ -226,7 +236,8 @@ export function noteAnswerStep(
   model: string,
   stepIdx: number,
   nowMs: number,
-  markerIndex = 0
+  markerIndex = 0,
+  turn?: string
 ): ApprovalState | null {
   if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
   if (!Number.isInteger(markerIndex) || markerIndex < 0) return null;
@@ -234,8 +245,22 @@ export function noteAnswerStep(
   return {
     ...state,
     answerSteps: { ...(state.answerSteps ?? {}), [model.toLowerCase()]: stepIdx },
-    answerQuestions: { ...(state.answerQuestions ?? {}), [model.toLowerCase()]: markerIndex }
+    answerQuestions: { ...(state.answerQuestions ?? {}), [model.toLowerCase()]: markerIndex },
+    ...(turn ? { answerTurns: { ...(state.answerTurns ?? {}), [model.toLowerCase()]: turn } } : {})
   };
+}
+
+/** The user turn the recorded answer row was given in (recorded with the step), or null when none is recorded for a pending denial. */
+export function getAnswerTurn(state: ApprovalState, model: string, nowMs: number): string | null {
+  if (!wasDeniedRecently(state, model, nowMs)) return null;
+  const v = state.answerTurns?.[model.toLowerCase()];
+  return typeof v === 'string' && v ? v : null;
+}
+
+/** Pure: the state with `keys` marked as consumed answers (the row was read but produced no approval, so it is never read again). */
+export function markAnswersConsumed(state: ApprovalState, keys: string[]): ApprovalState {
+  const consumed = [...(state.consumedAnswers ?? []), ...keys.filter((k) => !(state.consumedAnswers ?? []).includes(k))];
+  return consumed.length > 0 ? { ...state, consumedAnswers: consumed.slice(-CONSUMED_ANSWERS_CAP) } : state;
 }
 
 export function getAnswerQuestion(state: ApprovalState, model: string, nowMs: number): number | null {
@@ -505,9 +530,18 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
             .filter(([, p]) => !!p && typeof p === 'object' && Number.isInteger(p.stepIdx) && p.stepIdx >= 0 && typeof p.asked_at === 'number')
             .map(([m, p]): [string, PendingQuestion] => [
               m,
-              { stepIdx: p.stepIdx, ...(Number.isInteger(p.questionIdx) && p.questionIdx >= 0 ? { questionIdx: p.questionIdx } : {}), asked_at: p.asked_at }
+              {
+                stepIdx: p.stepIdx,
+                ...(Number.isInteger(p.questionIdx) && p.questionIdx >= 0 ? { questionIdx: p.questionIdx } : {}),
+                asked_at: p.asked_at,
+                ...(typeof p.turn === 'string' && p.turn ? { turn: p.turn } : {})
+              }
             ])
         )
+      : undefined;
+  const answerTurns =
+    r.answerTurns && typeof r.answerTurns === 'object' && !Array.isArray(r.answerTurns)
+      ? Object.fromEntries(Object.entries(r.answerTurns as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''))
       : undefined;
   const consumedAnswers = Array.isArray(r.consumedAnswers)
     ? r.consumedAnswers.filter((k): k is string => typeof k === 'string').slice(-CONSUMED_ANSWERS_CAP)
@@ -518,6 +552,7 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
     ...(denied ? { denied } : {}),
     ...(answerSteps && Object.keys(answerSteps).length > 0 ? { answerSteps } : {}),
     ...(answerQuestions && Object.keys(answerQuestions).length > 0 ? { answerQuestions } : {}),
+    ...(answerTurns && Object.keys(answerTurns).length > 0 ? { answerTurns } : {}),
     ...(consumedAnswers && consumedAnswers.length > 0 ? { consumedAnswers } : {}),
     ...(pendingQuestions && Object.keys(pendingQuestions).length > 0 ? { pendingQuestions } : {}),
     ...(declines.length ? { declines } : {}),
@@ -663,21 +698,21 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       });
     },
-    noteAnswerStep: (rawId, model, stepIdx, nowMs, markerIndex) => {
+    noteAnswerStep: (rawId, model, stepIdx, nowMs, markerIndex, turn) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return false;
       return withLock(sessionId, () => {
-        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs, markerIndex);
+        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs, markerIndex, turn);
         if (!next) return false;
         writeState(sessionId, next);
         return true;
       });
     },
-    notePendingQuestion: (rawId, model, stepIdx, nowMs, markerIndex) => {
+    notePendingQuestion: (rawId, model, stepIdx, nowMs, markerIndex, turn) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return false;
       return withLock(sessionId, () => {
-        const next = notePendingQuestion(readState(sessionId), model, stepIdx, nowMs, markerIndex);
+        const next = notePendingQuestion(readState(sessionId), model, stepIdx, nowMs, markerIndex, turn);
         if (!next) return false;
         writeState(sessionId, next);
         return true;
@@ -695,6 +730,16 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         const next = clearPendingQuestion(readState(sessionId), model);
         if (next) writeState(sessionId, next);
       });
+    },
+    getAnswerTurn: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLockIfState(sessionId, () => getAnswerTurn(readState(sessionId), model, nowMs));
+    },
+    consumeAnswers: (rawId, keys) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId || keys.length === 0) return;
+      withLock(sessionId, () => writeState(sessionId, markAnswersConsumed(readState(sessionId), keys)));
     },
     getAnswerStep: (rawId, model, nowMs) => {
       const sessionId = safeSessionId(rawId);

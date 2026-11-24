@@ -144,7 +144,8 @@ export function cappedEffort(marker: CostEffort | undefined, prescribed: CostEff
 
 // ── What the assistant is told, and what the log row says ─────────────────────────────────────────────────────────
 
-export type NotRecordedReason = 'label' | 'marker' | 'mode' | 'write';
+/** `stale` (Antigravity): a once answer pulled at a launch of a later user turn than the one it was given in; it is read and dropped, never applied. */
+export type NotRecordedReason = 'label' | 'marker' | 'mode' | 'write' | 'stale';
 
 const scopeWords = (scope: AnswerScope): string => (scope === 'once' ? 'once (this turn)' : 'for this session');
 
@@ -168,7 +169,8 @@ const REASON_TEXT: Record<NotRecordedReason, (kind: AnswerKind, markerHint: stri
   marker: (_k, markerHint) =>
     `the question's marker is malformed or names an unknown model. Ask again with a question that starts with ${markerHint}`,
   mode: () => 'Jev is not on, so nothing is stored. Launch on the session model, or have the user run /jev on and ask again',
-  write: () => 'the state file could not be written. Ask the question again; if it keeps failing, launch on the session model'
+  write: () => 'the state file could not be written. Ask the question again; if it keeps failing, launch on the session model',
+  stale: () => 'the answer was for an earlier turn; ask again'
 };
 
 /** Queued for the assistant when an answer's row was not readable yet and the question was not prescribed by Jev (Antigravity): the next launch reads it. */

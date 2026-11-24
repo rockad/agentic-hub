@@ -116,6 +116,7 @@ function safelyPrune(dir: string): void {
  * the PostToolUse recorder writes them (no line for the assistant: the call it is deciding already reflects the answer).
  */
 function pulledAnswerFields(pa: NonNullable<AntigravityHookDecision['pulledAnswer']>): Record<string, unknown> {
+  if (pa.stale) return elevationAnswerFields({ kind: 'model', model: pa.model, effort: null, answer: pa.answer, scope: pa.scope, recorded: false, reason: 'stale' });
   return elevationAnswerFields({ kind: 'model', model: pa.model, effort: pa.effort, answer: pa.answer, scope: pa.scope, recorded: true });
 }
 
@@ -426,7 +427,7 @@ async function main() {
           // that row (real transcripts carry no tool call ids, and parallel tool calls make position unreliable).
           if (decisions && markerFound && elevateModel && approvals && conversationId && typeof input.stepIdx === 'number') {
             try {
-              answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex) === true;
+              answerStepRecorded = approvals.noteAnswerStep?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex, antigravityTurnKey(input.lastUserInput)) === true;
             } catch {
               answerStepRecorded = false;
             }
@@ -456,7 +457,7 @@ async function main() {
               // No denial is on record for this model (an unprompted question: nothing to read the answer against later), so the question is
               // noted as pending, where its row will be. The next launch of the model pulls the answer from there, records it and writes the one row.
               try {
-                if (approvals.notePendingQuestion?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex) === true) {
+                if (approvals.notePendingQuestion?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex, antigravityTurnKey(input.lastUserInput)) === true) {
                   queueAnswerNotice(sessionsDir, conversationId, ANSWER_PENDING_LINE, mode);
                 }
               } catch {

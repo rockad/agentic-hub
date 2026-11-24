@@ -17,7 +17,7 @@ const PROMPT = 'Invoke expert on pro';
 const ASK = { name: 'ask_question', args: { questions: [{ question: '[jev-elevate:pro] Allow it?', options: ['Yes, once', 'No'] }] } };
 
 describe('pending question notes (pure)', () => {
-  it('a note stands for its model and weaker ones, is dropped by clear and by a denial, and is voided by a mode change', () => {
+  it('a note stands for its model and weaker ones, is dropped by clear only (not by a denial), and is voided by a mode change', () => {
     const noted = notePendingQuestion({ approvals: [] }, 'pro', 7, 1000, 0)!;
     expect(noted.pendingQuestions).toEqual({ pro: { stepIdx: 7, questionIdx: 0, asked_at: 1000 } });
     expect(getPendingQuestion(noted, 'pro')).toMatchObject({ stepIdx: 7 });
@@ -27,7 +27,8 @@ describe('pending question notes (pure)', () => {
     expect(getPendingQuestion(noted, 'pro', { defaults: { modeChangedAt: new Date(500).toISOString() } })).not.toBeNull();
     expect(clearPendingQuestion(noted, 'pro')!.pendingQuestions).toBeUndefined();
     expect(clearPendingQuestion({ approvals: [] }, 'pro')).toBeNull();
-    expect(noteDenied(noted, 'pro', 2000).pendingQuestions).toBeUndefined();
+    // A denial for the model does not drop a standing note: its answer row is still to be read at the next pull.
+    expect(noteDenied(noted, 'pro', 2000).pendingQuestions).toEqual(noted.pendingQuestions);
   });
 
   it('no note is written when a denial covers the model', () => {
@@ -76,8 +77,8 @@ describe('an unprompted question answered late (process)', () => {
     return fs.existsSync(f) ? JSON.stringify(JSON.parse(fs.readFileSync(f, 'utf8'))).split('","') : [];
   };
   const stamp = (ms: number) => new Date(Date.now() + ms).toISOString();
-  const invoke = (conv: string) => ({ conversationId: conv, transcriptPath: transcript, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } } });
-  const launch = (conv: string) => JSON.parse(run('pre-tool-use', invoke(conv)).stdout.toString());
+  const invoke = (conv: string, prompt = PROMPT) => ({ conversationId: conv, transcriptPath: transcript, lastUserInput: prompt, modelName: SESSION, toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } } });
+  const launch = (conv: string, prompt = PROMPT) => JSON.parse(run('pre-tool-use', invoke(conv, prompt)).stdout.toString());
   const post = (conv: string) => run('post-tool-use', { conversationId: conv, transcriptPath: transcript, stepIdx: 7, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_ask', ...ASK } });
   const askedAndAnsweredLate = (conv: string, questionAtMs = -60_000) => {
     // The question is in the transcript (real transcripts carry no tool call id), its answer row is not yet.
@@ -195,5 +196,115 @@ describe('a consumed answer is not re-read (logic)', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a pending answer keeps its own turn, and its note outlives a denial (process)', () => {
+  let home = '';
+  let transcript = '';
+  const NEXT = 'a different message';
+  const config = () => path.join(home, '.config', 'jev', 'config.json');
+  const run = (event: string, input: object) =>
+    Bun.spawnSync(['bun', HOOK, event], {
+      stdin: new TextEncoder().encode(JSON.stringify(input)),
+      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: config(), JEV_DOWNGRADE: 'off', JEV_ELEVATION: '' }
+    });
+  const rows = (): Array<Record<string, any>> => {
+    const f = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+  };
+  const answerRows = () => rows().filter((r) => r.event === 'elevation_answer');
+  const state = (conv: string): Record<string, any> => {
+    const f = path.join(home, '.config', 'jev', 'antigravity-sessions', `${conv}.approvals.json`);
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  };
+  const stamp = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const launch = (conv: string, prompt = PROMPT) =>
+    JSON.parse(
+      run('pre-tool-use', { conversationId: conv, transcriptPath: transcript, lastUserInput: prompt, modelName: SESSION, toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } } }).stdout.toString()
+    );
+  const askedAndAnsweredLate = (conv: string, questionAtMs = -60_000) => {
+    fs.writeFileSync(transcript, JSON.stringify({ step_index: 5, type: 'PLANNER_RESPONSE', created_at: stamp(questionAtMs), source: 'MODEL', status: 'DONE', content: '', tool_calls: [ASK] }) + '\n');
+    expect(run('post-tool-use', { conversationId: conv, transcriptPath: transcript, stepIdx: 7, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_ask', ...ASK } }).exitCode).toBe(0);
+  };
+  const answerRow = (text: string) =>
+    fs.appendFileSync(transcript, JSON.stringify({ step_index: 7, type: 'GENERIC', created_at: stamp(0), source: 'MODEL', status: 'DONE', content: `A1: ${text}` }) + '\n');
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pq-turn-'));
+    fs.mkdirSync(path.join(home, '.config', 'jev'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.gemini', 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gemini', 'antigravity-cli', 'quota-state.json'), JSON.stringify({ active_model: 'Gemini 3.8 Flash (Medium)' }));
+    fs.writeFileSync(config(), JSON.stringify({ defaults: { mode: 'on' } }));
+    transcript = path.join(home, 'transcript_full.jsonl');
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  it('a once Yes given in an earlier turn is not claimed: one stale row, a denial with a fresh question, the row never read again', () => {
+    askedAndAnsweredLate('t1');
+    answerRow('Yes, once');
+
+    const out = launch('t1', NEXT);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toContain('[jev-elevate:pro]');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'stale', answer: 'yes', scope: 'once', model: 'pro' }]);
+    expect(state('t1').approvals ?? []).toEqual([]);
+    expect(state('t1').pendingQuestions).toBeUndefined();
+    expect(state('t1').consumedAnswers).toEqual(['step:7#0']);
+    expect(launch('t1', NEXT).decision).toBe('deny');
+    expect(answerRows()).toHaveLength(1);
+  });
+
+  it('a once No given in an earlier turn is not applied: stale row, denied with the question', () => {
+    askedAndAnsweredLate('t2');
+    answerRow('No, proceed on flash');
+
+    const out = launch('t2', NEXT);
+    expect([out.decision, out.overwrite]).toEqual(['deny', undefined]);
+    expect(out.reason).toContain('[jev-elevate:pro]');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'stale', answer: 'no', scope: 'once' }]);
+    expect(state('t2').declines ?? []).toEqual([]);
+  });
+
+  it('a session Yes stays valid across turns', () => {
+    askedAndAnsweredLate('t3');
+    answerRow('Yes, for this session');
+
+    expect(launch('t3', NEXT).decision).toBe('allow');
+    expect(answerRows()).toMatchObject([{ recorded: true, answer: 'yes', scope: 'session' }]);
+    expect(launch('t3', 'yet another message').decision).toBe('allow');
+  });
+
+  it('the denial path keeps the turn too: a once Yes read at a launch of a later turn is stale', () => {
+    fs.writeFileSync(transcript, '');
+    expect(launch('t4').decision).toBe('deny');
+    askedAndAnsweredLate('t4', 1000);
+    expect(state('t4').answerTurns).toMatchObject({ pro: expect.any(String) });
+    answerRow('Yes, once');
+
+    expect(launch('t4', NEXT).decision).toBe('deny');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'stale', answer: 'yes', scope: 'once' }]);
+  });
+
+  it('a row still missing at the first launch is read at the second: the note survives the denial, and a once is claimed only in the same turn', () => {
+    askedAndAnsweredLate('t5');
+    expect(launch('t5').decision).toBe('deny'); // the row is not there yet: the question is asked, the note is kept
+    expect(state('t5').pendingQuestions).toMatchObject({ pro: { stepIdx: 7 } });
+    expect(answerRows()).toEqual([]);
+
+    answerRow('Yes, once');
+    expect(launch('t5').decision).toBe('allow');
+    expect(answerRows()).toMatchObject([{ recorded: true, answer: 'yes', scope: 'once' }]);
+    expect(state('t5').pendingQuestions).toBeUndefined();
+  });
+
+  it('the same, with a turn change before the second launch: the once answer is stale', () => {
+    askedAndAnsweredLate('t6');
+    expect(launch('t6').decision).toBe('deny');
+    answerRow('Yes, once');
+
+    expect(launch('t6', NEXT).decision).toBe('deny');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'stale', answer: 'yes', scope: 'once' }]);
+    expect(state('t6').pendingQuestions).toBeUndefined();
   });
 });

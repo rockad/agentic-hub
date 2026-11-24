@@ -84,7 +84,7 @@ export type AntigravityHookDecision = {
   /** The scope of the No that lowered this call (`declined-once` / `declined-session`). */
   declineScope?: ApprovalScope;
   /** An answer this call pulled from the transcript and recorded (the hook writes its `elevation_answer` row): what the user said, for which model key, and the effort the stored approval carries. */
-  pulledAnswer?: { answer: 'yes' | 'no'; scope: ApprovalScope; model: string; effort: CostEffort | null };
+  pulledAnswer?: { answer: 'yes' | 'no'; scope: ApprovalScope; model: string; effort: CostEffort | null; /** A once answer of an earlier turn: read and dropped, so its row says `recorded: false, reason: "stale"`. */ stale?: true };
   attemptCount?: number;
   clampedTo?: string;
   /** The effort the cost gate's clamp runs the call at (2.3.19). */
@@ -863,17 +863,18 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
   }
   const count = approvalStore?.attempt(sessionId, promptHash, signature, nowMs) ?? 1;
   let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
+  let stalePulled: AntigravityHookDecision['pulledAnswer'] | undefined;
   if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
     const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
-    // With no denial on record, a question-pending note (2.3.21: PostToolUse saw an unprompted question answered but its row was not in the
-    // transcript yet) stands in for it: the same row is read, at the step and question the note recorded. A note voided by a mode change is not found.
+    // A question-pending note (2.3.21: PostToolUse saw an unprompted question answered but its row was not in the transcript yet) stands in
+    // for the denial's own recorded answer row: the same row is read, at the step and question the note recorded. A note voided by a mode
+    // change is not found; a note outlives a denial for the model (the row may still land), and a row the denial itself recorded wins over it.
     let pending: PendingQuestion | null = null;
-    if (typeof deniedAtMs !== 'number') {
-      try {
-        pending = approvalStore.getPendingQuestion?.(sessionId, requestedModel, ctx.config) ?? null;
-      } catch {
-        pending = null;
-      }
+    try {
+      pending = approvalStore.getPendingQuestion?.(sessionId, requestedModel, ctx.config) ?? null;
+      if (pending && typeof deniedAtMs === 'number' && (approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null) !== null) pending = null;
+    } catch {
+      pending = null;
     }
     // The answer was read: the note is done (an answer row is consumed once, so it is not read again whatever happens to the note).
     const clearPending = (): void => {
@@ -884,7 +885,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
         // a stale note is harmless: the consumed answer row is not read twice
       }
     };
-    if (typeof deniedAtMs === 'number' && denialPredatesModeChange(deniedAtMs, ctx.config, 'antigravity')) {
+    if (!pending && typeof deniedAtMs === 'number' && denialPredatesModeChange(deniedAtMs, ctx.config, 'antigravity')) {
       // The mode changed after this denial (on, then on-demand or off, then on again): an answer to it may have been
       // given where nothing is recorded, so it is not read. The denial below is issued afresh, with a fresh question.
       pullFallback = 'mode_changed';
@@ -893,7 +894,10 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
       let answerStepIdx: number | null = null;
       let answerQuestionIdx: number | null = null;
       let consumedKeys: string[] = [];
+      // The turn the answer was given in: a pulled `once` answer belongs to it, not to the turn of the launch that pulls it.
+      let answerTurn: string | null = null;
       try {
+        answerTurn = pending ? (pending.turn ?? null) : (approvalStore.getAnswerTurn?.(sessionId, requestedModel, nowMs) ?? null);
         answerStepIdx = pending ? pending.stepIdx : (approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null);
         answerQuestionIdx = pending ? (pending.questionIdx ?? null) : (approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null);
         consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
@@ -907,12 +911,22 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
         ctx.transcriptPath,
         requestedModel,
         // A note has no denial time to bound the read by (the question may be older than anything Jev did); the recorded step pins the row.
-        typeof deniedAtMs === 'number' ? deniedAtMs : undefined,
+        pending ? undefined : typeof deniedAtMs === 'number' ? deniedAtMs : undefined,
         answerStepIdx,
         answerQuestionIdx,
         consumedKeys
       );
-      if (pull?.approved && pull.scope) {
+      if (pull && pull.scope === 'once' && (pull.approved || pull.declined) && answerTurn !== null && answerTurn !== promptHash) {
+        // A once answer given in an earlier turn than this launch's: it was dropped when that turn ended (a new user message), so it is read and
+        // consumed but never applied. Its one `elevation_answer` row says so, and the call goes on to the denial below with a fresh question.
+        try {
+          approvalStore.consumeAnswers?.(sessionId, pull.answerKey ? [pull.answerKey] : []);
+        } catch {
+          // the row may be read once more: it is stale again
+        }
+        clearPending();
+        stalePulled = { answer: pull.approved ? 'yes' : 'no', scope: 'once', model: requestedModel, effort: null, stale: true };
+      } else if (pull?.approved && pull.scope) {
         // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
         // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a
         // parallel pro call took the "once" approval, so this one is denied (one answer, one run). The record
@@ -1000,7 +1014,8 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
     elevation: 'denied',
     attemptCount: count,
     ...(clause ? { stored: clause.stored } : {}),
-    ...(pullFallback ? { pullFallback } : {})
+    ...(pullFallback ? { pullFallback } : {}),
+    ...(stalePulled ? { pulledAnswer: stalePulled } : {})
   };
 }
 

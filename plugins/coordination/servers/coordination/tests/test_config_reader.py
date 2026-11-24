@@ -581,9 +581,25 @@ def test_a_server_url_that_is_a_curl_option_is_not_followed_even_when_it_would_r
 
 
 @pytest.mark.parametrize("name", ["bin/a2a-register", "bin/a2a-pending", "bin/a2a-listen"])
-def test_an_ipv6_literal_server_url_is_refused_by_the_claude_scripts(stub, hook_env, name):
+def test_an_ipv6_literal_server_url_is_refused_by_the_claude_scripts(stub, hook_env, tmp_path, name):
+    """The URL points at port 8120, not at the stub, so the stub could never see a request whether or not
+    the guard exists (Opus review of PR #104). A fake `curl` first on PATH leaves a marker when it is
+    called at all: refused means curl never runs."""
+    marker = tmp_path / "curl-called"
+    fake = hh.fake_tool(tmp_path / "fakebin", "curl", f"echo called > '{marker}'\nexit 0\n")
     event = {"bin/a2a-register": "SessionStart", "bin/a2a-pending": "UserPromptSubmit", "bin/a2a-listen": "Stop"}[name]
     args = ["start"] if name == "bin/a2a-register" else []
-    r = hh.run_script(hh.plugin_file(name), args, stdin=hh.hook_json(event), env=hook_env(stub.url, A2A_SERVER_URL="http://[::1]:8120"), timeout=30)
+    env = hook_env(stub.url, A2A_SERVER_URL="http://[::1]:8120", PATH=hh.path_with(fake.parent))
+    r = hh.run_script(hh.plugin_file(name), args, stdin=hh.hook_json(event), env=env, timeout=30)
     assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
-    assert stub.requests("/sessions") == [] and stub.requests("/wake/pending") == [] and stub.requests("/wake/listen") == []
+    assert not marker.exists(), "curl was called for a URL the guard should have refused"
+
+
+def test_the_fake_curl_marker_does_fire_when_the_url_is_allowed(stub, hook_env, tmp_path):
+    """The control for the test above: with an allowed URL the same fake curl is called, so the marker
+    can only be absent because the guard refused."""
+    marker = tmp_path / "curl-called"
+    fake = hh.fake_tool(tmp_path / "fakebin", "curl", f"echo called > '{marker}'\nexit 0\n")
+    env = hook_env(stub.url, PATH=hh.path_with(fake.parent))
+    hh.run_script(hh.plugin_file("bin/a2a-pending"), [], stdin=hh.hook_json("UserPromptSubmit"), env=env, timeout=30)
+    assert marker.exists()

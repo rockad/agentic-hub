@@ -168,8 +168,9 @@ async function main(): Promise<void> {
       // which never loads a .mcp.json, finds nothing to warn about): validate that file like a .mcp.json.
       if (typeof parsed.mcpServers === 'string') {
         const target = path.resolve(path.dirname(path.dirname(filePath)), parsed.mcpServers);
-        if (!parsed.mcpServers.startsWith('./')) {
-          reportError(filePath, `"mcpServers" path "${parsed.mcpServers}" must start with "./"`);
+        const pluginRoot = path.dirname(path.dirname(filePath));
+        if (!parsed.mcpServers.startsWith('./') || path.relative(pluginRoot, target).startsWith('..')) {
+          reportError(filePath, `"mcpServers" path "${parsed.mcpServers}" must start with "./" and stay inside the plugin`);
         } else {
           const mcp = await readJson(target);
           if (mcp === null) {

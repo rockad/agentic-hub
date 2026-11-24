@@ -3,7 +3,7 @@
 A skill that walks a non-trivial design through its open decisions ("forks"), one question at a time. Each question gets a full write-up: context, argued options with pros and cons, and a recommendation. Each answer is taken through the harness's interactive question tool.
 
 - `/clarify`, `/grill-me` run Mode A, the standard architecture mode.
-- `/clarify:plain` and `/clarify:eli5` (`commands/`) in Claude Code, or `/clarify --plain` and `/clarify --eli5` in Antigravity, run Mode B, plain English with analogies. In Claude Code they are thin commands; in Antigravity they pass arguments to `/clarify`; the protocol lives in the skill. The old `/cplain` and `/celi5` standalone skills are gone.
+- `/clarify:plain` and `/clarify:eli5` (`claude/commands/`) in Claude Code, or `/clarify --plain` and `/clarify --eli5` in Antigravity, run Mode B, plain English with analogies. In Claude Code they are thin commands; in Antigravity they pass arguments to `/clarify`; the protocol lives in the skill. The old `/cplain` and `/celi5` standalone skills are gone.
 
 Works in Claude Code, Google Antigravity and OpenCode.
 
@@ -55,7 +55,7 @@ OpenCode needs no hook. Claude Code has its own hook, below.
 
 ## Claude Code: the ask hook (plugin install)
 
-Rules alone stopped holding in long sessions: after many turns or a compaction, forks 3 and later were asked with only the dialog and no write-up (issue #97). `hooks/clarify-ask-check.sh` is a `PreToolUse` hook on `AskUserQuestion`, registered by `hooks/hooks.json` through the plugin manifest. It is a **checkpoint**, not a check:
+Rules alone stopped holding in long sessions: after many turns or a compaction, forks 3 and later were asked with only the dialog and no write-up (issue #97). `hooks/clarify-ask-check.sh` is a `PreToolUse` hook on `AskUserQuestion`, registered by `claude/hooks.json` through the plugin manifest. It is a **checkpoint**, not a check:
 
 - It acts only on a clarify question, whose text starts with `[Question N of M]` or `[Fork N of M]`. Other questions pass untouched.
 - It denies each question number once per user prompt, with a message that is true either way: confirm that this reply already printed the full `## Question N` step; if it did, call again at once; if not, print it, then call again. The retry passes, so it cannot loop, and a second series in a long session is gated again (the key is the question number plus the last real user prompt).

@@ -14,5 +14,6 @@
     "antigravity",
     "opencode",
     "cross-harness"
-  ]
+  ],
+  "mcpServers": "./claude/mcp.json"
 }

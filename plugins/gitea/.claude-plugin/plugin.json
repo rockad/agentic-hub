@@ -13,5 +13,6 @@
     "repositories",
     "issues",
     "commits"
-  ]
+  ],
+  "mcpServers": "./claude/mcp.json"
 }

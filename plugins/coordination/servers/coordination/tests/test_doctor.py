@@ -1444,7 +1444,8 @@ def test_nothing_in_the_doctor_writes_runs_the_harnesses_or_evaluates_text():
 
 def test_every_key_holder_is_unset_before_it_is_assigned_and_no_secret_is_echoed():
     text = code()
-    assert "unset dr_ckey dr_atok dr_etok" in text
+    assert "unset dr_ckey dr_atok dr_etok dr_eauth pr_key" in text
+    assert text.index("set +x") < text.index("unset A2A_API_KEY"), "set +x comes before anything that handles a key"
     for line in text.splitlines():
         if re.match(r"\s*(info|ok|warn|fail)\b", line):
             assert not re.search(r"\$\{?(dr_ckey|dr_atok|dr_etok|pr_key|KEY)\b", line), line
@@ -1452,3 +1453,52 @@ def test_every_key_holder_is_unset_before_it_is_assigned_and_no_secret_is_echoed
 
 def test_the_doctor_output_is_ascii_only_in_the_source_too():
     assert doctor_path().read_bytes().isascii()
+
+
+# ---- review findings of PR #105 (Opus) ---------------------------------------------------------
+
+HOLDERS = ("dr_ckey", "dr_atok", "dr_etok", "dr_eauth", "pr_key")
+
+
+def test_no_imported_secret_holder_reaches_a_child_on_the_probe_path_either(world, stub, tmp_path_factory):
+    """The first fix unset three of the five holders and the test only imported two of them with
+    --no-network: `pr_key` (the raw key) and `dr_eauth` (the whole Bearer header value) stayed exported
+    when imported, and every curl, grep and jq child received the key. All five names are imported here
+    and the probe path runs against the stub."""
+    log = tmp_path_factory.mktemp("envlog3") / "env.log"
+    world.write_agy(stub.url)
+    ready(stub)
+    spies = world.tmp / "spies"
+    for name in ("curl", "grep", "jq", "sed"):
+        real = shutil.which(name)
+        if real:
+            fake_tool(spies, name, f'env >> "$A2A_TEST_LOG"\nexec {real} "$@"\n')
+    imported = {name: "imported-" + name for name in HOLDERS}
+    res = world.run(url=stub.url, snap=False, PATH=f"{spies}:{world.fakebin}:{os.environ['PATH']}", A2A_TEST_LOG=str(log), **imported)
+    text = log.read_text()
+    assert text, "the spies ran"
+    for name in HOLDERS:
+        assert f"{name}=" not in text, f"{name} reached a child"
+    assert world.claude_key not in text and world.agy_key not in text, "a key reached a child's environment"
+    assert res.count("OK") > 0
+
+
+@pytest.mark.parametrize("flag", ["-x"])
+def test_a_shell_trace_does_not_print_a_key(world, stub, flag):
+    """`sh -x a2a-doctor` is what a user runs when a script misbehaves, and pastes into an issue."""
+    world.write_agy(stub.url)
+    ready(stub)
+    res = world.run(url=stub.url, runner=[DASH, flag], snap=False)
+    assert world.claude_key not in res.proc.stderr and world.agy_key not in res.proc.stderr
+    assert world.claude_key not in res.out and world.agy_key not in res.out
+    res = world.run("--no-network", runner=[DASH, flag], snap=False)
+    assert world.claude_key not in res.proc.stderr and world.agy_key not in res.proc.stderr
+
+
+def test_a_trace_in_shellopts_does_not_print_a_key_under_bash(world, stub):
+    if BASH is None:
+        pytest.skip("bash is not installed")
+    world.write_agy(stub.url)
+    ready(stub)
+    res = world.run(url=stub.url, runner=[BASH, "--posix", "-x"], snap=False)
+    assert world.claude_key not in res.proc.stderr and world.agy_key not in res.proc.stderr

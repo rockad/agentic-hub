@@ -21,6 +21,7 @@
 # It reads settings the way the hooks do: LC_ALL=C, then bin/a2a-lib.sh (a2a_load_config), so it sees
 # the effective A2A_SERVER_URL, A2A_CARD, A2A_AGY_CARD, A2A_KEY_FILE and A2A_AGY_KEY_FILE.
 
+set +x # a trace (sh -x, or SHELLOPTS set by the caller) would print the keys: never trace this script
 # Whether the variable the Claude MCP header expands was exported to this shell. Only the fact is
 # kept, never the value; it is unset so that no child inherits it.
 ENV_KEY_SET=0
@@ -28,7 +29,7 @@ ENV_KEY_SET=0
 unset A2A_API_KEY
 # A secret holder must not have come in through the environment: an imported variable stays exported
 # when it is assigned, and would reach every child.
-unset dr_ckey dr_atok dr_etok
+unset dr_ckey dr_atok dr_etok dr_eauth pr_key
 LC_ALL=C
 export LC_ALL
 

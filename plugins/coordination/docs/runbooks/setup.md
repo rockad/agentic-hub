@@ -5,6 +5,7 @@ Stream S1-DOC of the master plan ([`../plans/master-plan.md`](../plans/master-pl
 Labels used in this guide:
 
 - **[verified 2026-11-24]** means the step was run in the dry walk-through of that date ([`../research/s1-doc-dry-walkthrough-2026-11-24.md`](../research/s1-doc-dry-walkthrough-2026-11-24.md)) on a throwaway stack and a temporary `HOME`, and the output was read.
+- **[verified, `tests/<file>`]** means a test in the repository pins the point (named in the label or in the spec it comes from). That stream of the plan ran it; this documentation stream did not run that test again unless the text says 2026-11-24.
 - **[unverified]** means it was not run, either because it needs a live harness, a real host or something not yet built, or because it was read from the code and the specs only.
 - Values in angle brackets are placeholders: `<machine>` is the short host name of the workstation, `<key id>` is the 8-hex-character id that `key list` prints.
 
@@ -24,7 +25,7 @@ Nothing here starts, drives or wraps `claude` or `agy`. Sessions talk to the ser
 The server has an exposure stage, `A2A_EXPOSURE_STAGE`. The default, and the only stage this guide sets up, is `s1`.
 
 - **`s1`**: development on one workstation. The server is reachable on `127.0.0.1:8120` only. Every request still needs a scoped API key, loopback included. No public listener, no Tailscale identity check, `A2A_PUBLIC_URL` may be `http://`.
-- **`s2`** and **`s3`**: production on the always-on host (tailnet, later a public HTTPS route). They add start-up checks (an `https://` public URL, trusted proxies, the public listener on 8121, the Tailscale identity check) and are **not usable with the shipped compose file and server today**; see [`operations.md`](operations.md) section 13. Do not set them to "try them out": the server refuses to start with an `s2` or `s3` configuration that fails its checks [verified, `tests/test_auth_startup.py`, by the code in `auth/startup.py`].
+- **`s2`** and **`s3`**: production on the always-on host (tailnet, later a public HTTPS route). They add start-up checks (an `https://` public URL, trusted proxies, the public listener on 8121, the Tailscale identity check) and are **not usable with the shipped compose file and server today**; see [`operations.md`](operations.md) section 13. Do not set them to "try them out": the server refuses to start with an `s2` or `s3` configuration that fails its checks [verified, `tests/test_auth_startup.py`].
 
 The compose file publishes the server on host loopback at every stage (`127.0.0.1:${A2A_PORT:-8120}:8120`). Nothing in this guide opens the service to the network.
 
@@ -112,7 +113,7 @@ cards:
 
 ## 7. Build and start
 
-From the plugin directory of your checkout:
+From the root of your checkout. After this block your working directory is `plugins/coordination`, and every later command in this guide and in [`operations.md`](operations.md) assumes it:
 
 ```sh
 cd plugins/coordination
@@ -124,7 +125,7 @@ docker compose up -d --build
 
 - Why `A2A_UID` and `A2A_GID`: compose bind-mounts a file secret as it is on the host and ignores the owner and mode set for it, so the server must run as the user that owns the 0600 file. The default `10001` is the image's own user and works only when the secret files are owned by that uid. A failure to read a secret names the path and the OS error, never the contents.
 - You can put `A2A_CONFIG_DIR`, `A2A_UID`, `A2A_GID` and other non-secret variables in an uncommitted `plugins/coordination/.env` file instead of exporting them (`.env` is git-ignored; compose reads it by itself) [unverified: Compose's own behaviour, not run here]. Secrets never go there.
-- The first build takes minutes: the image runs the whole test suite in its build stage, and a failing test fails the build [verified 2026-11-24]. The compose project name is `coordination`; the images are tagged `coordination:local` and `coordination-backup:local`.
+- The first build takes minutes: the image runs the whole test suite in its build stage, and a failing test fails the build [verified 2026-11-24]. The compose project name is `coordination`; the server image is tagged `coordination:local`. The sidecar image `coordination-backup:local` is built only when the `backup` profile is in play (for example `docker compose --profile backup build dump`); a plain `docker compose up -d --build` does not build it.
 - Do not change `A2A_PORT`. Port 8120 is what the plugin's hooks and MCP entries default to, and the compose file does not pass `A2A_ALLOWED_HOSTS` to the container, so a different host port makes every request fail with status 421 (the server checks the `Host` header against `127.0.0.1:8120,localhost:8120`) [verified 2026-11-24: the walk-through ran on another port and hit exactly this]. A second stack on the same machine needs a different project name (`-p`), a different port, an override file that sets `A2A_ALLOWED_HOSTS`, and its own image tags.
 
 Check that it is up:
@@ -141,11 +142,10 @@ If the server container does not become healthy, read its log: `docker compose l
 
 ## 8. Create the `dump_ro` role
 
-Needed once if you will run backups (sections 5 and 8 of [`operations.md`](operations.md) are the routine; do this now so the first dump works). The role is created by a host command, from the checkout, with the stack up:
+Needed once if you will run backups (sections 5 and 8 of [`operations.md`](operations.md) are the routine; do this now so the first dump works). The role is created by a host command, with the stack up and your working directory `plugins/coordination` (the subshell in the command moves into the Python project and back):
 
 ```sh
-cd plugins/coordination/servers/coordination
-uv run a2a-coord db init-dump-role -p coordination
+(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)
 ```
 
 - It reads `pg_dump_password` on the host and feeds `psql` in the Postgres container over stdin, so the value is in no argument, log or environment. It is idempotent: run it again after a rotation [verified 2026-11-24, run twice, both "role ready"].
@@ -234,11 +234,11 @@ A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
 
 ## 12. Verify with `a2a-doctor`
 
-`a2a-doctor` is a script you run by hand. It checks the install, prints what to do about each finding, edits nothing, and never prints a key. Run it in place, from the folder that holds `plugin.json` and `bin/` (a checkout: `plugins/coordination/bin/a2a-doctor`; an installed copy is at the harness's own path, which this guide does not fix [unverified]):
+`a2a-doctor` is a script you run by hand. It checks the install, prints what to do about each finding, edits nothing, and never prints a key. Run it in place, from the folder that holds `plugin.json` and `bin/` (a checkout: `bin/a2a-doctor` from `plugins/coordination`; an installed copy is at the harness's own path, which this guide does not fix [unverified]):
 
 ```sh
-plugins/coordination/bin/a2a-doctor              # every check
-plugins/coordination/bin/a2a-doctor --no-network # skip the server section
+bin/a2a-doctor              # every check
+bin/a2a-doctor --no-network # skip the server section
 ```
 
 It ends with `a2a-doctor: N FAIL, M WARN`. Exit status 0 when there is no FAIL, 1 when there is at least one, 2 for a usage error. A healthy install ends `0 FAIL, 0 WARN` [verified 2026-11-24: with a temporary `HOME` holding the key file, the settings file and an agy file, against the throwaway stack, plus `A2A_API_KEY` exported].
@@ -251,7 +251,7 @@ The server section registers a probe session per key (`doctor-<pid>`) and ends i
 | --- | --- | --- |
 | `FAIL a2a-lib.sh not found next to a2a-doctor` or `FAIL <script> missing / not executable` | The doctor was copied away from its folder, or the plugin is broken | Run it in place; reinstall the plugin from `main` |
 | `FAIL curl` missing | The hooks need curl | Install curl |
-| `WARN config directory ... mode 755 is wider than 700` | `~/.config/a2a-coord` is readable by others | `chmod 700 ~/.config/a2a-coord` [verified 2026-11-24] |
+| `WARN config directory ... mode 755 is wider than 700` | `~/.config/a2a-coord` is readable by others | `chmod 700 ~/.config/a2a-coord` [verified 2026-11-24 that this WARN appears for a mode-755 directory; the `chmod` fix itself was not run] |
 | `WARN settings file ... mode` | The settings file is wider than 0600, or you do not own it (the hooks ignore a file you do not own) | `chmod 600` it, or recreate it as yourself |
 | `FAIL settings ... is a directory` | A directory sits at the settings path | Remove it; the file is `settings`, not `config` |
 | `FAIL Claude key file ... is missing` | No `~/.config/a2a-coord/api-key` | Create it (section 10) [verified 2026-11-24] |

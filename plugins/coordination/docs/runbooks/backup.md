@@ -82,14 +82,14 @@ docker run -d --name a2a-restore-scratch --network none -e POSTGRES_USER=coordin
     -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE"
 # wait until the log shows "ready to accept connections" twice (the init run, then the real start)
 DUMP=a2a-<UTC timestamp>.dump
-docker exec -i a2a-restore-scratch pg_restore -U coordination -d coordination --exit-on-error < "$A2A_DUMP_DIR/$DUMP"
+docker exec -i a2a-restore-scratch pg_restore -U coordination -d coordination --exit-on-error < "${A2A_DUMP_DIR:-$HOME/.local/share/a2a-coord/dumps}/$DUMP"
 docker exec a2a-restore-scratch psql -U coordination -d coordination -c '\dt'   # the 14 tables of schema v4; compare counts, for example SELECT count(*) FROM api_keys
 docker rm -f a2a-restore-scratch
 ```
 
 `pg_restore` must exit 0 (`--exit-on-error` makes any error fatal). Compare row counts against the source only **after writers are stopped**: a dump is a snapshot of one moment, a live database has moved on since.
 
-To restore into the real stack after losing the volume: `docker compose down`, remove the `a2a-pgdata` volume, `docker compose up -d postgres` (a fresh, empty database), run the same `pg_restore` through `docker compose exec -T postgres sh -c 'PGPASSWORD="$(cat /run/secrets/a2a_db_password)" exec pg_restore -U coordination -d coordination --exit-on-error' < "$A2A_DUMP_DIR/$DUMP"`, run `a2a-coord db init-dump-role`, then `docker compose up -d`.
+To restore into the real stack after losing the volume: `docker compose down`, remove the `a2a-pgdata` volume, `docker compose up -d --wait postgres` (a fresh, empty database; wait until it is healthy before you restore), run the same `pg_restore` with `--single-transaction` (so a failure leaves nothing half-restored) through `docker compose exec -T postgres sh -c 'PGPASSWORD="$(cat /run/secrets/a2a_db_password)" exec pg_restore -U coordination -d coordination --single-transaction --exit-on-error' < "${A2A_DUMP_DIR:-$HOME/.local/share/a2a-coord/dumps}/$DUMP"`, run `a2a-coord db init-dump-role`, then `docker compose up -d`. The full numbered procedure is in [`operations.md`](operations.md) section 7.
 
 The restore test of this stream does the scratch restore end to end (`servers/backup/restore-test.sh`): it creates synthetic tables `sessions`, `tasks`, `task_index`, `wakes` with foreign keys in a schema of their own in a dev stack, runs a writer while the sidecar takes dump A, restores A into a scratch container (restore exits 0, no foreign-key violation, orphan-task count 0, one consistent snapshot), stops the writer, takes dump B and checks that the restored row counts equal the source counts taken after the writer stopped. Run it only against a dev project, never the live stack:
 
@@ -103,7 +103,7 @@ An upgrade is deliberate: take a dump, change the pinned image and the sidecar's
 
 ## Rotating the `dump_ro` secret
 
-1. Put a new value in `pg_dump_password` (mode 0600, different from `a2a_db_password`), for example `(umask 077; openssl rand -hex 32 | tr -d '\n' > "$A2A_SECRETS_DIR/pg_dump_password")`.
+1. Put a new value in `pg_dump_password` (mode 0600, different from `a2a_db_password`), for example `(umask 077; openssl rand -hex 32 | tr -d '\n' > "${A2A_SECRETS_DIR:-$HOME/.config/a2a-coord/secrets}/pg_dump_password")`, and check with `ls -l` that the file is 64 bytes, mode 0600 and just written: `init-dump-role` prints "role ready" for whatever the file holds.
 2. Run `a2a-coord db init-dump-role` again (it sets the role's password from the file; the old password stops working).
 3. Restart the sidecar so it reads the file again: `docker compose --profile backup restart dump` (a one-off `run --rm dump once` always reads the current file).
 

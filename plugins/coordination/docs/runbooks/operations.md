@@ -6,16 +6,17 @@ Labels:
 
 - **[verified 2026-11-24]** means the step was run in the dry walk-through ([`../research/s1-doc-dry-walkthrough-2026-11-24.md`](../research/s1-doc-dry-walkthrough-2026-11-24.md)) on a throwaway stack and the output was read.
 - **[unverified]** means it was not run (needs a real host, a live harness, a different Postgres image, or something not yet built), or it was read from code and specs only.
+- A bracket that says `by the spec` or `by the code` is a reading of the document or the source, not a run, and counts as unverified.
 - **[not built]** means the command or feature is named in the plan and does not exist yet. Where the plan or a spec says it works, this runbook says what the code does today.
 
 Placeholders: `<key id>` is the 8-hex id from `key list`; `<task id>` is a task id from `review`; `<UTC timestamp>` is like `20261112T020000Z`; `<storage-host>`, `<media-root>`, `<gdrive-remote>` are as in [`backup.md`](backup.md).
 
-All `docker compose` commands run from `plugins/coordination` (the directory with `docker-compose.yml`), with the same environment you started the stack with: `A2A_UID`, `A2A_GID`, `A2A_CONFIG_DIR` and any other variable of [`setup.md`](setup.md) section 7. A different value on a later command changes the container (a different `A2A_UID` can make the secret files unreadable).
+Every command in this runbook assumes your working directory is `plugins/coordination` (the directory with `docker-compose.yml`, `bin/` and `servers/`), so `bin/a2a-doctor` and `docker compose` resolve. Host commands that need the Python project are written as `(cd servers/coordination && uv run a2a-coord ...)`, which leaves you where you were. Run them with the same environment you started the stack with: `A2A_UID`, `A2A_GID`, `A2A_CONFIG_DIR` and any other variable of [`setup.md`](setup.md) section 7. A different value on a later command changes the container (a different `A2A_UID` can make the secret files unreadable).
 
 ## 1. Two kinds of command
 
 - **Admin commands** (`key`, `review`, `status`, `card check`) run inside the server container and talk to an unpublished Unix socket. Form: `docker compose exec -T coordination a2a-coord ...` for read-only ones, `docker compose exec -it coordination a2a-coord ...` for the ones that need a terminal (`key create`, `key rotate`, `review show|release|deny`). There is no admin HTTP endpoint.
-- **Host commands** run on the host from the checkout and use Docker: `a2a-coord db init-dump-role` (`cd servers/coordination; uv run a2a-coord db init-dump-role -p coordination`).
+- **Host commands** run on the host from the checkout and use Docker: `a2a-coord db init-dump-role` (`(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)`).
 - Exit codes of `a2a-coord`:
   - 0: done.
   - 1: refused or failed (the message says why).
@@ -28,12 +29,12 @@ docker compose ps                                  # postgres and coordination "
 curl -fsS http://127.0.0.1:8120/healthz            # {"ok":true}
 docker compose logs --tail 100 coordination        # no bodies and no keys are logged
 docker compose exec -T coordination a2a-coord status
-plugins/coordination/bin/a2a-doctor                # from the repo root: the install check
+bin/a2a-doctor                                    # the install check
 ```
 
 - Stop without losing anything: `docker compose stop` (or `docker compose down`, which keeps the named volumes). Start again with `docker compose up -d --no-build` (see section 4 for the image caveat). Tasks and sessions are in Postgres and survive.
 - **Never run `docker compose down -v` on a stack you care about.** `-v` removes the named volumes, including `a2a-pgdata`, which is the database.
-- Server log levels: `A2A_LOG_LEVEL` (`debug`, `info`, `warning`, `error`, `critical`); any other value stops the start.
+- **Settings the compose file does not pass.** The shipped `docker-compose.yml` hands the server only `A2A_PUBLIC_URL`, `A2A_DEPLOY_HOST`, `A2A_ENV`, `A2A_EXPOSURE_STAGE`, `A2A_ALLOW_WRITES` and the database and backup variables. Every other server variable of [`../specs/server-api.md`](../specs/server-api.md) 1.5 stays at its default in the container, however you export it on the host. That includes `A2A_LOG_LEVEL` (default `info`), `A2A_WAKE_BUDGET_PER_H` (20), `A2A_REOFFER_AFTER_S` and `A2A_REOFFER_MAX` (600 and 5), the TTLs such as `A2A_QUARANTINE_TTL_H` (72) and `A2A_ALLOWED_HOSTS`. To change one, add an `environment:` entry for the `coordination` service in an override file outside the repository and name both files on every compose command (or set `COMPOSE_FILE=docker-compose.yml:<override file>`), then recreate the server (section 4). [verified 2026-11-24: an override file that set `A2A_ALLOWED_HOSTS` took effect; the other variables were not tried.]
 
 ## 3. Reading `a2a-coord status`
 
@@ -56,8 +57,8 @@ backup:       last good dump 0.0 h ago (null = unknown)
 | `sessions` | Registered sessions, those active in the last 15 minutes, ended ones; `MCP sessions bound` is the in-memory Claude Code binding map | A session that should be live and shows `ended`: its hooks cannot reach the server (run `a2a-doctor`) |
 | `listeners` | Parked `/wake/listen` requests, one per idle Claude Code session | 0 while Claude sessions are idle: the wake hooks are not running |
 | `pending` | Submitted tasks, tasks queued at a card, tasks **held for review**, working tasks | `held` above 0: a remote peer waits for a human (section 12) |
-| `wake budgets` | Wakes per handle in the last hour against the limit (`A2A_WAKE_BUDGET_PER_H`) | A handle near its limit: something is looping |
-| `stale offers` | Submitted tasks offered `A2A_REOFFER_MAX` times and still unconfirmed, with up to 20 ids | Tasks nobody picks up; the recipient session may be gone |
+| `wake budgets` | Wakes per handle in the last hour against the limit (`A2A_WAKE_BUDGET_PER_H`, 20 in the shipped stack; see section 2 to change it) | A handle near its limit: something is looping |
+| `stale offers` | Submitted tasks offered `A2A_REOFFER_MAX` times (5 in the shipped stack) and still unconfirmed, with up to 20 ids | Tasks nobody picks up; the recipient session may be gone |
 | `schema` | The database schema version of this code and the SDK's migration revision | After an upgrade, to see what the database is at |
 | `backup` | Age in hours of the last good dump; `null` is unknown (no good dump yet), not fresh | See section 6: `null` after the first night, or a value above 36, means backups are not working |
 
@@ -72,18 +73,17 @@ Use this whenever the server container is recreated with a new environment value
 Always build first. A recreate with `--no-build` needs the image tag `coordination:local` in the image store, and the tag may be missing or stale: a container can stay healthy after its tag and image id have gone from the image store, and then `up --no-build --force-recreate` fails with "No such image: coordination:local" (seen on 2026-11-24 on a running stack). Building first makes the tag exist and makes it match the code in your checkout.
 
 ```sh
-cd plugins/coordination
 docker compose build coordination
 A2A_ALLOW_WRITES=1 docker compose up -d --no-build --no-deps --force-recreate coordination
 docker ps                                       # coordination "healthy", Postgres untouched
 curl -fsS http://127.0.0.1:8120/healthz
-plugins/coordination/bin/a2a-doctor            # from the repo root
+bin/a2a-doctor                                    # the install check
 ```
 
 - `--no-deps` leaves Postgres running; only the server container is recreated.
 - A flag set on one command line applies to that recreate only. The next `docker compose up` without it goes back to the default and recreates the container to do so [verified 2026-11-24: after a recreate with `A2A_ALLOW_WRITES=1`, a plain `up -d` put it back to 0]. To make it stay, put the variable in the uncommitted `plugins/coordination/.env` (non-secret values only) or export it in the shell that runs compose.
 - Keep `A2A_UID`, `A2A_GID` and `A2A_CONFIG_DIR` the same as when you started the stack.
-- **Outage:** the server is down from the stop of the old container to the new one's health check, about 10 seconds at most (3 seconds on an idle throwaway stack, [verified 2026-11-24]; the image health check allows a 10 s start period). Parked wake listeners get `503` with `Retry-After: 5` on shutdown and re-park on their own. Sessions and tasks survive: they are in Postgres. What does not survive is the in-memory map from a Claude Code MCP session to its handle; the next `a2a_` call answers "Not bound. Call a2a_hello." and the session recovers by calling `a2a_hello` [by the S1-MCP spec; not exercised here].
+- **Outage:** the server is down from the stop of the old container to the new one's health check, about 10 seconds at most (on an idle throwaway stack `/healthz` answered after 3 one-second polls, [verified 2026-11-24]; the image health check allows a 10 s start period). Parked wake listeners get `503` with `Retry-After: 5` on shutdown and re-park on their own. Sessions and tasks survive: they are in Postgres. What does not survive is the in-memory map from a Claude Code MCP session to its handle; the next `a2a_` call answers "Not bound. Call a2a_hello." and the session recovers by calling `a2a_hello` [by the S1-MCP spec; not exercised here].
 - Test the flag: `A2A_ALLOW_WRITES=1` registers the MCP write tools (`a2a_send`, `a2a_respond`, `a2a_cancel`); `docker inspect` shows the variable in the container environment [verified 2026-11-24].
 - **Upgrading the code:** take a dump first (`docker compose --profile backup run --rm dump once`), then `git pull`, then the same three steps. Migrations run at start and bring both streams (the service's and the SDK's) to head. A database migrated by a newer code or SDK is refused at start ("schema newer than the code"), so rolling the image back after a migration means restoring the dump (section 7) [by the code in `store/connect.py` and `store/sdk_migrations.py`; not exercised here].
 - Plugins on the harness side update with the harness's own command; the exact commands are [unverified]. A server upgrade does not require a plugin update unless the release notes say so.
@@ -93,7 +93,7 @@ plugins/coordination/bin/a2a-doctor            # from the repo root
 The nightly `pg_dump -Fc` of the whole `coordination` database is the backup. Full text: [`backup.md`](backup.md). The short form:
 
 - The sidecar service `dump` is in the compose profile `backup`. A plain `docker compose up` does not start it. **A mis-set profile means backups silently off**; it shows up only as `dump_age_h` null or growing (section 6).
-- Prerequisites: the secret file `pg_dump_password` (setup section 5), the role (`uv run a2a-coord db init-dump-role -p coordination`, setup section 8) and the dump directory (`A2A_DUMP_DIR`, default `~/.local/share/a2a-coord/dumps`, created by you).
+- Prerequisites: the secret file `pg_dump_password` (setup section 5), the role (`(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)`, setup section 8) and the dump directory (`A2A_DUMP_DIR`, default `~/.local/share/a2a-coord/dumps`, created by you).
 - Start the nightly loop (about 02:00 in `A2A_TZ`, default UTC; change the time with `A2A_BACKUP_AT`, `HH:MM`):
 
 ```sh
@@ -110,7 +110,7 @@ docker compose --profile backup run --rm dump once
 
   It wrote `a2a-<UTC timestamp>.dump` (mode 0600) into the dump directory, verified it with `pg_restore`, then updated `last_ok`, and `status` showed `last good dump 0.0 h ago` [verified 2026-11-24].
 - Loss window: up to about one day. A copy of the Postgres data directory or the `a2a-pgdata` volume is **not** a backup. The `a2a-data` volume is out of scope (go-live import artefacts only).
-- Retention (done by the sidecar after each good dump): the newest dump of each of the last 14 UTC days that have one, plus the first dump of each of the last 3 months; `pre-import-*.dump` files are never deleted by the sidecar.
+- Retention: done by the `loop` mode after each good dump (and by the `prune` mode on its own); the one-off `once` dump never prunes. Retention keeps the newest dump of each of the last 14 UTC days that have one, plus the first dump of each of the last 3 months; `pre-import-*.dump` files are never deleted by the sidecar.
 
 ## 6. `dump_age_h`, and the second check
 
@@ -152,11 +152,19 @@ docker rm -f a2a-restore-scratch
 - Use a different container name if `a2a-restore-scratch` exists. `docker rm -f` of the scratch container is the only removal this procedure does.
 - **Restoring into the real stack** after losing the volume (this removes the database volume: do it only when it is lost or you have decided to replace it) [unverified, procedure from [`backup.md`](backup.md); the scratch restore above is the part that was run]:
   1. `docker compose down`
-  2. Remove the `a2a-pgdata` volume of this project (`docker volume ls`, then `docker volume rm <project>_a2a-pgdata`).
-  3. `docker compose up -d postgres` (a fresh, empty database).
-  4. `docker compose exec -T postgres sh -c 'PGPASSWORD="$(cat /run/secrets/a2a_db_password)" exec pg_restore -U coordination -d coordination --exit-on-error' < "$A2A_DUMP_DIR/$DUMP"`
-  5. `uv run a2a-coord db init-dump-role -p coordination` (from `servers/coordination`).
-  6. `docker compose up -d --no-build` after `docker compose build coordination` (section 4).
+  2. Remove the `a2a-pgdata` volume of this project (`docker volume ls`, then `docker volume rm <project>_a2a-pgdata`). Docker cannot rename a volume, so removing it is final: do this only when the volume is lost, or after you have checked the dump with the scratch restore above.
+  3. `docker compose up -d --wait postgres` (a fresh, empty database). `--wait` returns when the service is healthy; if your Compose lacks it, run `docker compose up -d postgres` and wait until `docker compose ps` shows `postgres` healthy. Restoring before it is healthy fails. [unverified: `--wait` was not run]
+  4. Restore in one transaction, so a failure leaves nothing half-restored:
+
+     ```sh
+     DUMP=a2a-<UTC timestamp>.dump
+     docker compose exec -T postgres sh -c 'PGPASSWORD="$(cat /run/secrets/a2a_db_password)" exec pg_restore -U coordination -d coordination --single-transaction --exit-on-error' < "${A2A_DUMP_DIR:-$HOME/.local/share/a2a-coord/dumps}/$DUMP"
+     echo "pg_restore exit: $?"      # must be 0; on any other value the database is still empty, fix the cause and run it again
+     ```
+
+     [unverified: `--single-transaction` was not run here; the scratch restore above used `--exit-on-error` only.]
+  5. `(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)`. A `pg_dump` of one database does not carry roles, so `dump_ro` must be created again.
+  6. `docker compose build coordination`, then `docker compose up -d --no-build` (section 4).
 - Keys, sessions and tasks come back with the dump. Keys issued after the dump are gone; reissue them.
 - The restore test of the repository (`servers/backup/restore-test.sh`) runs only against a dev project, never the live stack.
 
@@ -164,8 +172,14 @@ docker rm -f a2a-restore-scratch
 
 - `a2a-coord db init-dump-role -p <project>` creates the read-only role `dump_ro` if absent, sets its password from `pg_dump_password`, and grants `pg_read_all_data`. Run it once after Postgres first starts, and again on every rotation. It is idempotent [verified 2026-11-24].
 - **Rotating the `dump_ro` secret:**
-  1. Put a new value in `pg_dump_password` (mode 0600, different from `a2a_db_password`): `(umask 077; openssl rand -hex 32 | tr -d '\n' > "$A2A_SECRETS_DIR/pg_dump_password")`.
-  2. `uv run a2a-coord db init-dump-role -p coordination` (the old password stops working).
+  1. Put a new value in `pg_dump_password` (mode 0600, different from `a2a_db_password`):
+
+     ```sh
+     SECRETS=${A2A_SECRETS_DIR:-$HOME/.config/a2a-coord/secrets}
+     (umask 077; openssl rand -hex 32 | tr -d '\n' > "$SECRETS/pg_dump_password")
+     ```
+
+  2. **Check the write before you go on.** `init-dump-role` prints "role ready" for whatever the file holds now, including a value that did not change or was cut short. Run `ls -l "$SECRETS/pg_dump_password"`: the size is 64 bytes, the mode is `-rw-------` and the modification time is now (`test -s` alone proves only that it is not empty). Then `(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)` (the old password stops working).
   3. `docker compose --profile backup restart dump` so the loop reads the file again. A one-off `run --rm dump once` always reads the current file.
 - The `pg_dump_password` file is mounted only into the sidecar; the server's `a2a_db_password` is never in the sidecar. Neither value is put in an argument, an environment variable or a log by these steps.
 - **The server's database password** (`a2a_db_password`): changing the file does not change the role in an existing database. A rotation needs `ALTER ROLE coordination PASSWORD ...` inside Postgres and then a restart of both services. The procedure is **[unverified]** and not written as a command here on purpose: do it from a dump, in a scratch copy first, and never put the value in an argument.
@@ -190,11 +204,19 @@ An upgrade is deliberate: the image is pinned by exact tag and digest in `docker
 1. Take a dump: `docker compose --profile backup run --rm dump once`. Confirm `status` shows a fresh `backup` line.
 2. Change the pinned `image:` of `postgres` in `docker-compose.yml` (exact tag plus digest) **and** the sidecar's `postgresql17-client` package in `servers/backup/Dockerfile` to the same major version.
 3. Restore the dump into a scratch container of the new image (section 7, with the new image). `pg_restore` must exit 0 and the tables and counts must match.
-4. Only then upgrade: `docker compose build` the images, stop the stack, and bring it up with the new image. Postgres cannot start a data directory written by another major version; a major upgrade therefore means the restore route of section 7 (new empty volume, `pg_restore`), not an in-place start [by Postgres's own rules; not run here]. A minor version of the same major starts on the existing volume.
-5. Finish with three checks, in this order:
-   - `uv run a2a-coord db init-dump-role -p coordination`
+4. **Decide minor or major before you bring anything up with the new image.**
+   - A new minor version of the same major starts on the existing volume: `docker compose build`, then the recreate of section 4 for `postgres`.
+   - A new **major** version cannot start a data directory written by another major version (Postgres refuses; it does not convert it). Never point the new image at the old volume. Use the restore route instead, into a **new volume**, and keep the old volume untouched until the new stack has run for a while, so that going back is switching the image and the volume name back [by Postgres's own rules; not run here].
+   - Postgres 18 and later images may keep the data directory in a different path than `/var/lib/postgresql/data` (the compose mount of `a2a-pgdata` may then need to change) [unverified: read the new image's documentation before you start].
+5. For a major upgrade, in this order:
+   - `docker compose down` (never `-v`).
+   - In an override file outside the repository, set the volume `a2a-pgdata` to a new name (`volumes:` then `a2a-pgdata:` then `name: <project>_pgdata_<major>`), and use it on every compose command (see the override-file note in section 2).
+   - `docker compose build`, then `docker compose up -d --wait postgres` (a fresh, empty database on the new volume).
+   - Restore the dump with `--single-transaction` as in section 7, step 4.
+6. Finish with three checks, in this order:
+   - `(cd servers/coordination && uv run a2a-coord db init-dump-role -p coordination)`
    - `docker compose --profile backup run --rm dump once`
-   - `a2a-doctor`
+   - `bin/a2a-doctor`
 
 The whole routine is **[unverified]**: only the scratch restore of step 3 was run (with the current image).
 
@@ -216,7 +238,7 @@ docker compose exec -T coordination a2a-coord key revoke <key id>
 - **Rotate** (needs `-it`): issues a replacement with the same scope, owner, allowlist and node, and prints its secret once. The old key keeps working until the grace ends (default 24 h; `--grace 0h` ends it now; the sooner of its own expiry and now plus the grace). Hand the new key over, then the old one lapses by itself:
   - Claude Code: put the new key in `~/.config/a2a-coord/api-key` (mode 0600), re-export `A2A_API_KEY` in the shell profile's shell, and restart `claude`.
   - agy: replace the token in the `Authorization` header of `~/.gemini/config/mcp_config.json` (mode 0600).
-  - Run `a2a-doctor`.
+  - Run `bin/a2a-doctor`.
   [verified 2026-11-24: `rotate --grace 1h` printed a new key; `key list` showed the old one expiring in 1 hour and the new one active.]
 - **Revoke:** ends a key at once. The next request with it gets 401, and its live `/mcp` sessions and parked `/wake/listen` requests are closed. `revoke` needs no terminal. Exit 1 if a revoke hook failed (the key is revoked anyway; run it again). [verified 2026-11-24: after revoking the old agy key the doctor's agy probe failed with 401 until the config held the new key; `closed: mcp 0, wake 0` was printed because nothing was open.]
 - A lost key cannot be shown again: create a new one and revoke the old one.
@@ -224,7 +246,7 @@ docker compose exec -T coordination a2a-coord key revoke <key id>
 
 ## 12. The review procedure for held remote tasks
 
-Tasks from a `remote-peer` key are held for a human. They never reach a session until you release them, one task at a time, on a terminal. There is no batch form, no `--yes` and no "release all"; the only automatic exit from a held state is expiry to `REJECTED` after `A2A_QUARANTINE_TTL_H` (72 h).
+Tasks from a `remote-peer` key are held for a human. They never reach a session until you release them, one task at a time, on a terminal. There is no batch form, no `--yes` and no "release all"; the only automatic exit from a held state is expiry to `REJECTED` after 72 hours (`A2A_QUARANTINE_TTL_H`, fixed at that default in the shipped stack, section 2).
 
 ```sh
 docker compose exec -T coordination a2a-coord review            # list: id, peer, card, received, size; no body
@@ -288,16 +310,18 @@ The server pins `a2a-sdk` to an exact version in `servers/coordination/pyproject
 4. Run the offline suite: `uv run pytest` there. Tests that need Docker and Postgres run against a pinned Postgres container; set `A2A_TEST_REQUIRE_DOCKER=1` so a missing Docker is a failure, not a skip. The suite includes the migration tests (twice-run, from the oldest SDK revision with data) and the `kill -9` durability test (no acknowledged write lost).
 5. Re-run the SP5 load driver on the new pin, as the `pyproject.toml` comment asks (the plan keeps the driver as an on-demand job, a [proposal]); the store regression test `tests/test_store_durability.py` is the part that runs in CI.
 6. Run the **A2A TCK** through the allowlist gate ([`../specs/a2a.md`](../specs/a2a.md) section 8): check out `a2aproject/a2a-tck` at the pinned commit, `uv sync --python 3.15` there, then `A2A_TCK_DIR=<checkout> A2A_TCK_REQUIRE=1 A2A_TEST_REQUIRE_DOCKER=1 uv run pytest tests/test_a2a_tck.py tests/test_a2a_tck_gate.py -s` in `servers/coordination` (about two minutes after the environment is built; the first build of the TCK environment compiles `grpcio` and takes much longer). A TCK failure that is not on `tests/tck/allowlist.yaml` blocks; so does an allowlist entry that no longer fails (the list must shrink when a deviation is fixed). New deviations need your review.
-7. Build, then the recreate of section 4, then `a2a-doctor` and a real task round trip between two live sessions.
+7. Build, then the recreate of section 4, then `bin/a2a-doctor` and a real task round trip between two live sessions.
 
 ## 16. Known limits
 
 - **Interactive CLI only.** Claude Code is woken only in an interactive terminal session. `claude -p`, IDE and desktop sessions are not woken [reported].
 - **The Esc gap.** `Stop` does not fire when Esc interrupts a turn, so a session whose turn was interrupted has no wake listener until its next turn ends or the next prompt. The plugin re-arms the listener from a `UserPromptSubmit` hook; whether Claude Code honours `asyncRewake` on that hook is **[unverified]** (a live check, L3 in [`../specs/claude-hooks.md`](../specs/claude-hooks.md) section 9). Tasks stay queued on the server in the meantime.
+- **The idle window of a Claude Code session is bounded.** The wake listener runs inside a hook whose timeout is 604800 seconds (7 days) and re-polls in rounds of 900 seconds. When the harness ends the hook at its timeout, nothing re-arms the listener until the session's next completed turn or its next `SessionStart`. A session left idle for longer than that stops being woken, and its tasks stay queued on the server [by the spec, server-api 7.6; plan decision BP2; not exercised over that long a time].
+- **Blocking tool calls are capped at 50 seconds.** `a2a_wait` (`timeout_seconds`) and `a2a_send` (`wait_seconds`) block inside one MCP tool call, and Claude Code's per-call limit is 60 seconds and agy's is 180 seconds. The server caps both to `A2A_MAX_WAIT_S` (default 50, not refused when you ask for more, and not changeable in the shipped stack without an override file, section 2). A longer wait means calling again [plan decision BP8, Z15; measured limits in server-api 4.5].
 - **agy has no idle wake.** A pending task shows at agy's next model call (the `PreInvocation` hook), at session start (the injected instruction) and on demand (`a2a_wait`). An agy session left idle is not woken. This asymmetry is accepted.
 - **Binding is an assertion by a key holder.** A session binds to a handle by presenting a key; the server cannot tell two sessions sharing one key apart other than by the handle they assert, and `a2a_hello(handle)` lets a key holder claim any handle of its card. It is not authentication of a session.
 - **Tasks are parked, never executed.** The server does not run, drive or message any harness.
-- **Wake budget.** At most 20 wakes per handle per hour (`A2A_WAKE_BUDGET_PER_H`); past that, tasks wait for the next turn.
+- **Wake budget.** At most 20 wakes per handle per hour (`A2A_WAKE_BUDGET_PER_H`, not changeable without an override file, section 2); past that, tasks wait for the next turn.
 - **One server process, one worker, one workstation at stage s1.** Sessions on two machines need stage `s2`, which is not built.
 - **The dump is a nightly snapshot.** Up to about a day of tasks can be lost on a total failure of the volume; there is no point-in-time restore.
 - **No public exposure is available.** The stage flip, the 8121 listener, `expose check` and Tailscale identity are not built (section 13).

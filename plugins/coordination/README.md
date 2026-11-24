@@ -209,7 +209,7 @@ The `memory` plugin (`plugin.json`, `docker-compose.yml`, `servers/lookup`) is t
 
 ## Documentation index
 
-All links are absolute `file://` links.
+Links to files in this repository are absolute `https://github.com/rockad/agentic-hub/blob/main/...` URLs in this README, and relative links inside `docs/`. There are no `file://` links: this repository is public and a `file://` link would carry a local path.
 
 ### Set up and run it
 

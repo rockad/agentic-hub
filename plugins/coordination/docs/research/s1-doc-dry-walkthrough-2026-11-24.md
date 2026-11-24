@@ -65,3 +65,13 @@ Each is already fixed in the guides.
 - The temporary directory (secrets, keys, dumps, cards, `HOME`, typescripts) was deleted.
 - After it, `docker ps -a`, `docker network ls` and `docker volume ls` listed no entry with the project name or the prefix `a2adoc`.
 - Left on purpose: the two images `a2adoc-coordination:walk` and `a2adoc-backup:walk` (no image was removed in this stream; remove them by their exact tags if the disk space matters), and the base images pulled for the build.
+
+## Corrections after the review of PR #110
+
+Not part of the run; documentation-only fixes made afterwards with no Docker beyond read-only commands, so none of them was re-run:
+
+- Restore into the real stack waits for a healthy Postgres, restores with `--single-transaction`, and sets `DUMP` and the dump directory default inside the steps (unverified: neither `--wait` nor `--single-transaction` was run).
+- Every command now assumes the working directory `plugins/coordination`; host commands use `(cd servers/coordination && uv run ...)` and the doctor is `bin/a2a-doctor`.
+- Server variables the compose file does not pass (`A2A_LOG_LEVEL`, `A2A_WAKE_BUDGET_PER_H`, `A2A_REOFFER_*`, the TTLs, `A2A_MAX_WAIT_S`, `A2A_ALLOWED_HOSTS`) are said to need an override file.
+- The Postgres upgrade puts the major-version warning first and restores into a new volume.
+- Known limits now include the Claude Code idle window (decision BP2) and the 50-second blocking-call cap (decision BP8).

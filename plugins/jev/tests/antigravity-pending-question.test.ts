@@ -397,9 +397,62 @@ describe('a late wrong-label answer (process)', () => {
 
     expect(launch('l2').decision).toBe('deny');
     expect(answerRows()).toMatchObject([{ recorded: false, reason: 'label', answer: null }]);
+    expect(notice('l2').split('exact labels').length - 1).toBe(1);
     expect(state('l2').consumedAnswers).toEqual(['step:7#0']);
     expect(notice('l2')).toContain('Not recorded: the answer was not one of the four exact labels');
     expect(launch('l2').decision).toBe('deny');
     expect(answerRows()).toHaveLength(1);
+  });
+});
+
+describe('a wrong label read at PostToolUse is consumed (process)', () => {
+  let home = '';
+  let transcript = '';
+  const config = () => path.join(home, '.config', 'jev', 'config.json');
+  const run = (event: string, input: object) =>
+    Bun.spawnSync(['bun', HOOK, event], {
+      stdin: new TextEncoder().encode(JSON.stringify(input)),
+      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: config(), JEV_DOWNGRADE: 'off', JEV_ELEVATION: '' }
+    });
+  const rows = (): Array<Record<string, any>> => {
+    const f = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+  };
+  const stamp = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const launch = (conv: string) =>
+    JSON.parse(
+      run('pre-tool-use', { conversationId: conv, transcriptPath: transcript, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } } }).stdout.toString()
+    );
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pq-postlabel-'));
+    fs.mkdirSync(path.join(home, '.config', 'jev'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.gemini', 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gemini', 'antigravity-cli', 'quota-state.json'), JSON.stringify({ active_model: 'Gemini 3.8 Flash (Medium)' }));
+    fs.writeFileSync(config(), JSON.stringify({ defaults: { mode: 'on' } }));
+    transcript = path.join(home, 'transcript_full.jsonl');
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  it('deny, a free-text answer whose row is present at PostToolUse, relaunch: exactly one label row and one line', () => {
+    fs.writeFileSync(transcript, '');
+    expect(launch('pl1').decision).toBe('deny');
+    fs.writeFileSync(
+      transcript,
+      [
+        JSON.stringify({ step_index: 5, type: 'PLANNER_RESPONSE', created_at: stamp(1000), source: 'MODEL', status: 'DONE', content: '', tool_calls: [ASK] }),
+        JSON.stringify({ step_index: 7, type: 'GENERIC', created_at: stamp(2000), source: 'MODEL', status: 'DONE', content: 'A1: Other: yes please' })
+      ].join('\n') + '\n'
+    );
+    expect(run('post-tool-use', { conversationId: 'pl1', transcriptPath: transcript, stepIdx: 7, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_ask', ...ASK } }).exitCode).toBe(0);
+    expect(rows().filter((r) => r.event === 'elevation_answer')).toMatchObject([{ recorded: false, reason: 'label' }]);
+
+    expect(launch('pl1').decision).toBe('deny');
+    expect(launch('pl1').decision).toBe('deny');
+    expect(rows().filter((r) => r.event === 'elevation_answer')).toHaveLength(1);
+    const notice = fs.readFileSync(path.join(home, '.config', 'jev', 'antigravity-sessions', 'pl1.answer-notice.json'), 'utf8');
+    expect(notice.split('exact labels').length - 1).toBe(1);
+    const state = JSON.parse(fs.readFileSync(path.join(home, '.config', 'jev', 'antigravity-sessions', 'pl1.approvals.json'), 'utf8'));
+    expect(state.consumedAnswers).toEqual(expect.arrayContaining(['step:7#0', 'call_ask#0']));
   });
 });

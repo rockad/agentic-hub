@@ -420,6 +420,19 @@ async function main() {
             if (m) elevateModel = m[1].toLowerCase();
           }
 
+          // Mark the row this call read (by step and by tool call id) as consumed when it produced no answer, so the pull never reads it again.
+          const consumeReadRow = (questionIdx: number): void => {
+            if (!decisions || !approvals || !conversationId) return;
+            const keys: string[] = [];
+            if (typeof input.stepIdx === 'number') keys.push(`step:${input.stepIdx}#${questionIdx}`);
+            if (typeof input.toolCall?.id === 'string' && input.toolCall.id) keys.push(`${input.toolCall.id}#${questionIdx}`);
+            try {
+              if (keys.length > 0) approvals.consumeAnswers?.(conversationId, keys);
+            } catch {
+              // best effort
+            }
+          };
+
           markerFound = typeof elevateModel === 'string';
           const malformed = !markerFound && prefixIndex >= 0;
 
@@ -472,9 +485,12 @@ async function main() {
           } else if (malformed) {
             // The question's marker does not parse: nothing can be stored, and the assistant is told how to ask it again.
             outcome = 'rejected';
+            consumeReadRow(prefixIndex);
             answerFacts = { reason: 'marker', answer: answered, scope: parsedResult.scope ?? null, effort: null, model: null };
           } else if (!answered || !parsedResult.scope) {
             outcome = 'rejected';
+            // The row was read and answered nothing: it is consumed, so a later PreToolUse pull skips it (one row, one line).
+            consumeReadRow(markerIndex);
             answerFacts = { reason: 'label', answer: null, scope: null, effort: null, model: elevateModel ?? null };
           } else if (!decisions) {
             outcome = 'mode';

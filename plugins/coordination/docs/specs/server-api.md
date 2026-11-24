@@ -179,7 +179,7 @@ Proposed tree (illustrative):
 plugins/coordination/
   plugin.json                      # name, version, description, skills if any
   docker-compose.yml               # three services (server, postgres, dump sidecar in the `backup` profile), two named volumes, two secrets, one host dump directory
-  hooks/hooks.json                 # Claude Code plugin hooks (section 11)
+  claude/hooks.json                # Claude Code plugin hooks (section 11; was hooks/hooks.json until the claude/ folder)
   bin/a2a-register  bin/a2a-listen # sh + curl; no other runtime
   servers/coordination/
     Dockerfile  pyproject.toml  uv.lock
@@ -1529,7 +1529,7 @@ Rules:
 
 ### 11.1 Claude Code
 
-Plugin hooks (`hooks/hooks.json`), sketch [derived from the t1b section 5.1 sketch and the switchboard config; the SessionStart, Stop and UserPromptSubmit-http shapes ran on Claude Code 2.1.318 and 2.1.319 in SP1 and SP2 with scratch equivalents, verified; the added UserPromptSubmit listener entry is design, unverified]:
+Plugin hooks (`claude/hooks.json`), sketch [derived from the t1b section 5.1 sketch and the switchboard config; the SessionStart, Stop and UserPromptSubmit-http shapes ran on Claude Code 2.1.318 and 2.1.319 in SP1 and SP2 with scratch equivalents, verified; the added UserPromptSubmit listener entry is design, unverified]:
 
 ```json
 {
@@ -1610,7 +1610,7 @@ The literal expansion above would store the key in Claude's config. Use a projec
   "headers": {"Authorization": "Bearer ${A2A_API_KEY}"}}}}
 ```
 
-- As built (S1-CLAUDE, 2026-11-21): `bin/a2a-register`, `bin/a2a-listen`, `bin/a2a-pending` and `hooks/hooks.json` exist and are described in [claude-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/claude-hooks.md). They differ from the sketch above in these ways, all [design] unless noted:
+- As built (S1-CLAUDE, 2026-11-21): `bin/a2a-register`, `bin/a2a-listen`, `bin/a2a-pending` and `claude/hooks.json` exist and are described in [claude-hooks.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/claude-hooks.md). They differ from the sketch above in these ways, all [design] unless noted:
   - the hook commands are `"${CLAUDE_PLUGIN_ROOT}/bin/<script>"`, not the `~/.local/share/a2a-coord/current/bin/` copy (that is the installer's, decision D28);
   - the `UserPromptSubmit` HTTP hook is replaced by the `a2a-pending` command hook (BP5): it reads the key from the key file, posts only `{"session_id": ...}` to `POST /wake/pending` with `curl --max-time 2`, builds the text itself from one validated integer and exits 0 on every failure; the `a2a-listen` re-arm entry follows it (BP2, BP3, D39);
   - the key is read from the key file only (`A2A_KEY_FILE`, default `~/.config/a2a-coord/api-key`) and handed to curl with `-K -`; the server URL is `A2A_SERVER_URL` (default `http://127.0.0.1:8120`) and the card is `A2A_CARD` (default `claude-code@<short hostname>`);

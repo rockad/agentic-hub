@@ -37,7 +37,7 @@ claude plugin marketplace add rockad/agentic-hub
 claude plugin install coordination@agentic-hub
 ```
 
-The plugin brings the hooks (`hooks/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`.mcp.json`, `http://127.0.0.1:8120/mcp`, header `Authorization: Bearer ${A2A_API_KEY}`).
+The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`claude/mcp.json`; the Claude manifest names both files, as Jev's does, so agy never sees a `hooks/hooks.json` or `.mcp.json` it would warn about; `http://127.0.0.1:8120/mcp`, header `Authorization: Bearer ${A2A_API_KEY}`).
 
 - Put the key in `~/.config/a2a-coord/api-key`: one line, the key, mode 0600 (`chmod 600`). The hooks read this file.
 - Export it for the MCP entry, which Claude Code expands from the environment. This line holds no secret, so it may live in a chezmoi-managed shell profile: `export A2A_API_KEY="$(cat "$HOME/.config/a2a-coord/api-key")"`. Start `claude` from a shell that has it; without it the `a2a_` tools answer 401 (the registration hook says so at session start).
@@ -48,7 +48,7 @@ The plugin brings the hooks (`hooks/hooks.json`: `a2a-register`, `a2a-listen`, `
 agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination
 ```
 
-**Unverified:** A8c ran `agy plugin install <path>` only. Installing from a GitHub tree URL, `agy plugin validate --strict` on this plugin, and whether agy also reads the Claude `hooks/hooks.json` have not been run; they are on the user's live-check list.
+**Unverified:** A8c ran `agy plugin install <path>` only. Installing from a GitHub tree URL has not been run (user's live-check list). `agy plugin validate --strict` exited 1 on three warnings before the Claude files moved into `claude/` (agy's own run, 2026-11-24, verified: `.mcp.json` never loaded, `hooks/hooks.json` ignored, `AGENTS.md` at the plugin root is not a rule); the first two are gone, and the third stays on purpose, because `AGENTS.md` is developer guidance for this folder. Re-run it to confirm.
 
 The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-session` on `SessionStart`, `./bin/a2a-agy-pending` on `PreInvocation`). It brings **no** MCP entry and no key: agy expands only its own placeholders in a plugin's MCP config, not environment variables, so agy's entry is a user-scope server in your global `~/.gemini/config/mcp_config.json`, with the key as a literal `Authorization` header. Add this entry once (merge it into the existing `mcpServers` object by hand or with `agy mcp add`; the plugin never edits the file) and keep the file private:
 
@@ -130,7 +130,7 @@ Notes on the diagram:
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
 - Admin commands (`key create|list|rotate|revoke`, `review`) run inside the container, on whichever host runs it (<storage-host> in production: `ssh <storage-host>`, then `docker compose exec -it coordination a2a-coord ...`), over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin API-key scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
-- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret shell line for the plugin's `.mcp.json` entry; agy's key is a literal `Authorization` header in a user-scope `a2a-coord` entry of the user's global `~/.gemini/config/mcp_config.json` (mode 0600, outside the plugin, Z20 and Z21), which the agy hooks also read. See [Install](#install). Chezmoi-managed files never hold keys.
+- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret shell line for the plugin's `claude/mcp.json` entry; agy's key is a literal `Authorization` header in a user-scope `a2a-coord` entry of the user's global `~/.gemini/config/mcp_config.json` (mode 0600, outside the plugin, Z20 and Z21), which the agy hooks also read. See [Install](#install). Chezmoi-managed files never hold keys.
 - Harness setup is the harness's own plugin install (decisions Z20 and Z21): `claude plugin install coordination@agentic-hub` and `agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination`, from the remote `main`. One shared `bin/` serves both: Claude's hooks call `"${CLAUDE_PLUGIN_ROOT}/bin/..."`, agy's call `./bin/...` (agy runs a plugin hook with the plugin folder as its working directory). The agy inbox instruction comes from `SessionStart` `injectSteps`: nothing writes any `AGENTS.md`, and nothing launches, drives or wraps agy.
 - Agent Cards: one path per card, `/agents/<card>/.well-known/agent-card.json`, plus a public, generic "front desk" card at the root. Member cards need a valid API key. `A2A-Version` is strict. Streaming and push are off until a peer needs them.
 
@@ -152,10 +152,10 @@ One plugin directory for both harnesses (decisions Z20 and Z21). The server tree
 ```
 plugins/coordination/
 ├── plugin.json                   # agy manifest (name, version, description)
-├── .claude-plugin/plugin.json    # Claude Code manifest; same name, version and description, no `hooks` field
+├── .claude-plugin/plugin.json    # Claude Code manifest; same name, version and description; `hooks` and `mcpServers` point into claude/
 ├── hooks.json                    # agy hooks: group a2a-coord, SessionStart and PreInvocation, commands ./bin/a2a-agy-*
-├── hooks/hooks.json              # Claude hooks (auto-loaded): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
-├── .mcp.json                     # Claude MCP entry a2a-coord (never loaded by agy; there is no mcp_config.json here)
+├── claude/hooks.json             # Claude hooks (named by the Claude manifest): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
+├── claude/mcp.json               # Claude MCP entry a2a-coord (agy never sees it; there is no mcp_config.json here)
 ├── bin/
 │   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/settings)
 │   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks

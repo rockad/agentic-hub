@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Manifest Validator & CI Guard for agentic-hub
- * Validates all .claude-plugin/plugin.json, plugin.json, and .mcp.json files across plugins/.
+ * Validates all .claude-plugin/plugin.json, plugin.json, and .mcp.json files across plugins/, and a file
+ * that a .claude-plugin/plugin.json names in its "mcpServers" field.
  *
  * Checks:
  *  1. Valid JSON formatting.
@@ -163,6 +164,23 @@ async function main(): Promise<void> {
 
     if (filePath.endsWith(path.join('.claude-plugin', 'plugin.json'))) {
       await validateClaudePluginJson(filePath, parsed);
+      // A manifest may point `mcpServers` at a file of any name (coordination: ./claude/mcp.json, so agy,
+      // which never loads a .mcp.json, finds nothing to warn about): validate that file like a .mcp.json.
+      if (typeof parsed.mcpServers === 'string') {
+        const target = path.resolve(path.dirname(path.dirname(filePath)), parsed.mcpServers);
+        const pluginRoot = path.dirname(path.dirname(filePath));
+        if (!parsed.mcpServers.startsWith('./') || path.relative(pluginRoot, target).startsWith('..')) {
+          reportError(filePath, `"mcpServers" path "${parsed.mcpServers}" must start with "./" and stay inside the plugin`);
+        } else {
+          const mcp = await readJson(target);
+          if (mcp === null) {
+            reportError(filePath, `"mcpServers" points at "${parsed.mcpServers}", which is missing or not valid JSON`);
+          } else {
+            fileCount++;
+            await validateMcpJson(target, mcp);
+          }
+        }
+      }
     }
 
     if (path.basename(filePath) === '.mcp.json') {

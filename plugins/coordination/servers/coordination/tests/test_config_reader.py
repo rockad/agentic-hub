@@ -559,3 +559,47 @@ def test_the_claude_scripts_refuse_a_server_url_that_could_become_a_curl_option(
     r = hh.run_script(script, args, stdin=hh.hook_json(event), env=hook_env(stub.url, A2A_SERVER_URL=url), timeout=30)
     assert (r.returncode, r.stdout, r.stderr) == (0, "", ""), (r.returncode, r.stdout, r.stderr)
     assert stub.requests("/sessions") == [] and stub.requests("/wake/pending") == [] and stub.requests("/wake/listen") == []
+
+
+@pytest.mark.parametrize("name", ["bin/a2a-register", "bin/a2a-pending"])
+def test_a_server_url_that_is_a_curl_option_is_not_followed_even_when_it_would_reach_the_stub(stub, hook_env, tmp_path, name):
+    """The bad-URL cases above all miss the stub whether or not the guard exists, so they prove little for
+    these two scripts. This one would have been followed: `-K<dir>/wake/pending` is the option `-K`
+    (read a curl config file) with the file `<dir>/wake/pending`, and that file sends the request to the
+    stub. Without the check the stub sees a request; with it, none."""
+    cfg_dir = tmp_path / "optdir"
+    (cfg_dir / "wake").mkdir(parents=True)
+    (cfg_dir / "wake" / "pending").write_text(f'url = "{stub.url}/wake/pending"\n')  # for a2a-pending
+    (cfg_dir / "sessions").write_text(f'url = "{stub.url}/sessions"\n')  # for a2a-register
+    script = hh.plugin_file(name)
+    event = "SessionStart" if name == "bin/a2a-register" else "UserPromptSubmit"
+    args = ["start"] if name == "bin/a2a-register" else []
+    url = f"-K{cfg_dir}"
+    r = hh.run_script(script, args, stdin=hh.hook_json(event), env=hook_env(stub.url, A2A_SERVER_URL=url), timeout=30)
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    assert stub.requests("/sessions") == [] and stub.requests("/wake/pending") == []
+
+
+@pytest.mark.parametrize("name", ["bin/a2a-register", "bin/a2a-pending", "bin/a2a-listen"])
+def test_an_ipv6_literal_server_url_is_refused_by_the_claude_scripts(stub, hook_env, tmp_path, name):
+    """The URL points at port 8120, not at the stub, so the stub could never see a request whether or not
+    the guard exists (Opus review of PR #104). A fake `curl` first on PATH leaves a marker when it is
+    called at all: refused means curl never runs."""
+    marker = tmp_path / "curl-called"
+    fake = hh.fake_tool(tmp_path / "fakebin", "curl", f"echo called > '{marker}'\nexit 0\n")
+    event = {"bin/a2a-register": "SessionStart", "bin/a2a-pending": "UserPromptSubmit", "bin/a2a-listen": "Stop"}[name]
+    args = ["start"] if name == "bin/a2a-register" else []
+    env = hook_env(stub.url, A2A_SERVER_URL="http://[::1]:8120", PATH=hh.path_with(fake.parent))
+    r = hh.run_script(hh.plugin_file(name), args, stdin=hh.hook_json(event), env=env, timeout=30)
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    assert not marker.exists(), "curl was called for a URL the guard should have refused"
+
+
+def test_the_fake_curl_marker_does_fire_when_the_url_is_allowed(stub, hook_env, tmp_path):
+    """The control for the test above: with an allowed URL the same fake curl is called, so the marker
+    can only be absent because the guard refused."""
+    marker = tmp_path / "curl-called"
+    fake = hh.fake_tool(tmp_path / "fakebin", "curl", f"echo called > '{marker}'\nexit 0\n")
+    env = hook_env(stub.url, PATH=hh.path_with(fake.parent))
+    hh.run_script(hh.plugin_file("bin/a2a-pending"), [], stdin=hh.hook_json("UserPromptSubmit"), env=env, timeout=30)
+    assert marker.exists()

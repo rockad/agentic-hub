@@ -185,7 +185,7 @@ reduce (inputs | fromjson? | select(type == "object")) as $e
        # The next user entry after a question call is its tool result: an answer, or the
        # clarify ask hook denying the call (which the model then retries with a write-up).
        ([ $e | items[] | select(type == "object" and .type == "tool_result") | (.content | tostring) ]
-        | any(test("PreToolUse:AskUserQuestion hook error: clarify:"))) as $denied
+        | any(test("PreToolUse:AskUserQuestion hook error: clarify"))) as $denied
        | settle($denied)
        # After a denial the retry follows the same write-up, so the text is kept.
        | (if $denied then . else .text = "" end)

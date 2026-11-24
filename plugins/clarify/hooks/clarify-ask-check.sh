@@ -33,12 +33,13 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 fail() { [ "${CLARIFY_HOOK_STRICT:-}" = 1 ] && exit 3; exit 0; }
 
-# The question number of a clarify question, nothing otherwise.
-n="$(printf '%s' "$payload" | jq -r '
+# The question number and the total of a clarify question, nothing otherwise.
+nm="$(printf '%s' "$payload" | jq -r '
   (.tool_input.questions // [])[0].question // "" | tostring
-  | capture("^\\s*\\[\\s*(?:Question|Fork)\\s+(?<n>[0-9]+)\\s+of\\s+[0-9]+\\s*\\]"; "i") | .n
+  | capture("^\\s*\\[\\s*(?:Question|Fork)\\s+(?<n>[0-9]+)\\s+of\\s+(?<m>[0-9]+)\\s*\\]"; "i") | "\(.n) \(.m)"
   ' 2>/dev/null)" || fail
-[ -n "$n" ] || exit 0
+[ -n "$nm" ] || exit 0
+n="${nm% *}"; m="${nm#* }"
 
 # Unit-separator joined: an empty field must not shift the others (tab would collapse).
 IFS=$'\x1f' read -r session transcript < <(printf '%s' "$payload" \
@@ -46,9 +47,11 @@ IFS=$'\x1f' read -r session transcript < <(printf '%s' "$payload" \
 
 # Verdict on what the transcript holds so far: the heading for N in the assistant text since
 # the last user entry (a prompt or a tool result), and the uuid of the last real prompt (not a
-# tool result, not isMeta). Only the tail is read.
+# tool result, not isMeta). Only the last 6 MB are read, with no line cap: most lines of a real
+# transcript are not messages, and a line cap loses the prompt in a long series, which would
+# make the gate key fall back to the session and skip numbers already used.
 [ -n "$transcript" ] && [ -r "$transcript" ] || exit 0
-out="$(tail -c 6000000 "$transcript" | tail -n 300 | jq -rRs --argjson n "$n" '
+out="$(tail -c 6000000 "$transcript" | jq -rRs --argjson n "$n" '
   [ split("\n")[] | fromjson? | select(type == "object") ] as $es
   | ([ $es | to_entries[] | select(.value.type == "user") | .key ] | last) as $u
   | ([ $es[] | select(.type == "user" and (.isMeta != true)
@@ -77,6 +80,6 @@ key="$n:${prompt:-$session}"
 if [ -r "$mark" ] && grep -qxF "$key" "$mark" 2>/dev/null; then exit 0; fi
 { mkdir -p "$dir" && printf '%s\n' "$key" >> "$mark"; } 2>/dev/null || exit 0
 
-reason="clarify checkpoint for Question $n: before asking, confirm this reply already printed the full step for Question $n (the '## Question $n (of Total)' heading, context, argued options with pros and cons, your reading and the recommendation). If it did, call AskUserQuestion again now with the same question, without repeating the step. If it did not, print it now, then call AskUserQuestion again with the same question. The dialog must not be the only explanation (clarify SKILL.md, Per-fork invariant)."
+reason="clarify checkpoint (routine, not an error) for Question $n. If the full '## Question $n (of $m)' step is already printed above in this reply, call AskUserQuestion again now with the identical question and print nothing else. If it is not, print it now (heading, context, argued options with pros and cons, your reading and the recommendation), then call AskUserQuestion again with the identical question. The dialog must not be the only explanation (clarify SKILL.md, Per-fork invariant)."
 jq -nc --arg r "$reason" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
 exit 0

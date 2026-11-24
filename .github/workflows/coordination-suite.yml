@@ -14,7 +14,9 @@
 #        - tests/test_a2a_tck.py     needs the TCK checkout (job "A2A TCK against the coordination server")
 #        - tests/test_backup_script.py  needs A2A_BACKUP_IMAGE (job "Build the coordination images ...")
 #        - tests/test_compose.py     needs a running stack (the same image job)
-#      A fourth skip, or fewer than three, fails the job: change the number here with the test.
+#      A fourth skip, or fewer than three, fails the job, and so does a skip in any other module: the
+#      fourth argument of check-pytest-skips.sh names the three modules (their pytest classnames).
+#      Change the number and the list here with the test.
 name: Coordination suite
 
 on:
@@ -62,7 +64,8 @@ jobs:
         run: |
           uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/hooks.xml" \
             tests/test_hooks_static.py tests/test_hooks_listen.py tests/test_hooks_register_pending.py \
-            tests/test_agy_hooks.py
+            tests/test_hooks_review_fixes.py tests/test_agy_hooks.py tests/test_skip_gate.py \
+            tests/test_mcp_agy_opening.py
           bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 300
 
       - name: The whole suite with Docker, only the three known skips
@@ -70,4 +73,5 @@ jobs:
           A2A_TEST_REQUIRE_DOCKER: "1"
         run: |
           uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/all.xml"
-          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1500
+          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1500 \
+            "tests.test_a2a_tck tests.test_backup_script tests.test_compose"

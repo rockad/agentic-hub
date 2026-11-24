@@ -9,7 +9,7 @@
 #   {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
 #                           "additionalContext": "[a2a] N pending. Call a2a_inbox."}}
 #
-# The text is built here from one integer (1 to 4 digits) read out of the server's answer; nothing
+# The text is built here from one count ([1-9][0-9]{0,3}: 1 to 4 digits, not 0, no leading zero) read out of the server's answer; nothing
 # else the server sends is ever copied. Nothing is printed when there is nothing to announce, and on
 # every failure. Exits 0 always, so a prompt is never held up (SP1 T11: the prompt proceeds on every
 # failure of a hook anyway).
@@ -20,6 +20,7 @@
 
 unset A2A_API_KEY
 umask 077
+exec 2>/dev/null # no shell error may reach the model (stderr of a hook does); this script exits 0 always
 
 URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
 URL=${URL%/}
@@ -57,9 +58,9 @@ code=$(printf '%s' "$resp" | tail -n 1)
 json=$(printf '%s' "$resp" | sed '$d' | tr '\n' ' ')
 
 # The server's text is "[a2a] N pending. Call a2a_inbox." in additionalContext; take N only.
-n=$(printf '%s' "$json" | sed -n 's/.*"additionalContext"[[:space:]]*:[[:space:]]*"\[a2a\] \([0-9]\{1,4\}\) pending\. Call a2a_inbox\."[[:space:]]*}.*/\1/p')
+n=$(printf '%s' "$json" | sed -n 's/.*"additionalContext"[[:space:]]*:[[:space:]]*"\[a2a\] \([1-9][0-9]\{0,3\}\) pending\. Call a2a_inbox\."[[:space:]]*}.*/\1/p')
 case $n in
-  ''|*[!0-9]*) exit 0 ;;
+  ''|*[!0-9]*|0*) exit 0 ;; # a count is [1-9][0-9]{0,3}: not 0, no leading zero
 esac
 printf '{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "[a2a] %s pending. Call a2a_inbox."}}\n' "$n"
 exit 0

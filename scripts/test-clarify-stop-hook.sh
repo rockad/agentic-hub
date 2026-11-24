@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-clarify-stop-hook.sh - regression tests for skills/clarify/hooks/clarify-stop-check.sh
+# test-clarify-stop-hook.sh - regression tests for plugins/clarify/hooks/clarify-stop-check.sh
 # and the matching Antigravity mode of scripts/check-clarify-transcript.sh.
 #
 # Requires: bash, jq, grep. Exits non-zero when any case fails.
@@ -8,7 +8,7 @@
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-hook="$root/skills/clarify/hooks/clarify-stop-check.sh"
+hook="$root/plugins/clarify/hooks/clarify-stop-check.sh"
 checker="$root/scripts/check-clarify-transcript.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -35,7 +35,7 @@ run_hook() {
   # CLARIFY_HOOK_STRICT makes a broken jq program exit 3 instead of failing open, so a
   # "silent" expectation cannot pass just because the hook crashed.
   out="$(jq -nc --arg p "$file" '{terminationReason: "NO_TOOL_CALL", transcriptPath: $p}' \
-    | jq -c "$extra" | CLARIFY_HOOK_STRICT=1 bash "$hook")"
+    | jq -c "$extra" | CLARIFY_HOOK_STRICT=1 bash "$hook" 2>/dev/null)"
   rc=$?
   if [ "$(printf '%s' "$out" | jq -r '.decision // ""')" = "continue" ]; then got="continue"; fi
   if [ "$rc" -eq 0 ] && [ "$got" = "$expect" ]; then record ok "PASS $name"
@@ -164,7 +164,80 @@ big fences '"```"' 40000
 big decision '"# decision \($i) table"' 40000
 big headings '"## Question \($i) (of 9) — x"' 20000
 
+# 27. abandoned series (issue #82). An ask_question answer arrives as a GENERIC event
+# ("A1: ..."), also a write-in; the hook's own earlier interventions arrive as SYSTEM_MESSAGE.
+answer() { jq -nc --arg c "$1" '{type: "GENERIC", content: ("Created At: 2026-01-01T00:00:00Z\nCompleted At: 2026-01-01T00:00:01Z\nA1: " + $c)}'; }
+block() { jq -nc '{type: "SYSTEM_MESSAGE", content: "<SYSTEM_MESSAGE>\nStop hook blocked termination: You emitted ## Question 1 prose without calling ask_question in this reply. Call ask_question now for Question 1 (with [Question 1 of 3] and matching Option A/B/C labels) before ending the turn.\n</SYSTEM_MESSAGE>"}'; }
+reply_tool() { jq -nc --arg c "$1" '{type: "PLANNER_RESPONSE", content: $c, tool_calls: [{name: "read_file", args: {}}]}'; }
+CANCEL="forget that. write me an interview FAQ with headings like ## Question 1 (of 5)"
+Q2T="$Q2"
+# E8 shape: clarify, one answered question, a cancel (as the write-in answer), then an FAQ.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "$CANCEL"; reply "$FAQ"; } \
+  | run_hook 27a-cancel-writein-then-faq silent
+# The same cancel typed at the prompt (a USER_INPUT), wrapped the way Antigravity wraps it.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"
+  user $'<USER_REQUEST>\nNever mind, write me an FAQ.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe /clarify skill is loaded.\n</ADDITIONAL_METADATA>'; reply "$FAQ"; } \
+  | run_hook 27b-cancel-user-input-then-faq silent
+# Positive control: the same shape with an ordinary answer is a real stall and must continue.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "Option B"; reply "$FAQ"; } \
+  | run_hook 27c-control-no-cancel-faq continue
+# A different slash command leaves the series.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; user "/jev status"; reply "$FAQ"; } \
+  | run_hook 27d-other-slash-command-disarms silent
+# Answers that merely contain a cancel word are still answers: an answered series that continues.
+for a in "never mind the cost, go with A" "stop using Redis, use sqlite" "Option A, cancel the migration later" "/home/user/notes is the path"; do
+  n=$((n + 1))
+  { user "/clarify storage"; reply_ask "$Q1"; answer "$a"; reply "$Q2T"; } | run_hook "27e.$n-answer-not-cancel" continue
+done
+# A series that continues normally is unaffected, and a later stall in it is still caught.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "Option B"; reply "$Q3"; } \
+  | run_hook 27f-answered-series-continues-then-stalls continue
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "Option B"; reply_ask "$Q3" "Question 3 of 3"; } \
+  | run_hook 27g-answered-series-continues-silent silent
+# A tool result that happens to contain "A1: forget that" is not an answer to a question.
+{ user "/clarify storage"; reply_tool "reading"; answer "$CANCEL"; reply "$Q1"; } | run_hook 27h-tool-result-not-an-answer continue
+# A cancel disarms only the series before it: a new /clarify re-arms.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "$CANCEL"; reply "$FAQ"; user "/clarify again"; reply "$Q1"; } \
+  | run_hook 27i-new-clarify-after-cancel continue
+# Review fixes from #84 (issue #89).
+# A step that calls ask_question together with another tool writes the other tool's result
+# first. That result carries no answer line, so it must not consume the wait for the answer.
+tool_result() { jq -nc '{type: "GENERIC", content: "Created At: 2026-01-01T00:00:00Z\nCompleted At: 2026-01-01T00:00:01Z\nfile contents"}'; }
+# A multi-tool step followed by an ordinary answer is still a stall to catch. Without the
+# answer gate the tool result eats the wait, the real answer is missed and the hook stays silent.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; tool_result; answer "Option B"; reply "$FAQ"; } \
+  | run_hook 28b-multi-tool-step-control continue
+# Esc on the picker returns an empty answer line: the series is abandoned.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer ""; reply "$FAQ"; } \
+  | run_hook 28c-empty-answer-disarms silent
+# A long user turn is middle-truncated in transcript.jsonl: the closing tag can be lost.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"
+  user $'<USER_REQUEST>\nNever mind, write me an FAQ.\n<truncated 5000 bytes>\nmore text'; reply "$FAQ"; } \
+  | run_hook 28d-truncated-user-request-cancel silent
+# The offline checker agrees (same shared region): the FAQ reply after a skipped picker is not flagged.
+{ user "/clarify storage"; reply_ask "$Q1"; answer ""; reply "$FAQ"; } | run_checker 28e-empty-answer-disarms 0
+# Safety net: at most 2 consecutive interventions without an ask_question call.
+{ user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; } | run_hook 27j-second-consecutive-intervention continue
+{ user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; block; reply "$Q1"; } | run_hook 27k-cap-stands-down silent
+# The same cap against the E8 loop when the cancel is not recognised (an ordinary-looking answer).
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option B"; reply "$FAQ"; block; reply "$FAQ"; block; reply "$FAQ"; block; reply "$FAQ"; } \
+  | run_hook 27l-faq-loop-stands-down silent
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option B"; reply "$FAQ"; block; reply "$FAQ"; } | run_hook 27m-faq-loop-second-intervention continue
+# The count resets on an ask_question call and on a user turn.
+{ user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; block; reply_ask "$Q1"; answer "A"; reply "$Q2T"; } \
+  | run_hook 27n-cap-resets-on-ask continue
+{ user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; block; user "A"; reply "$Q2T"; } \
+  | run_hook 27o-cap-resets-on-user-input continue
+# The stand-down is logged on stderr and still prints {}.
+{ user "/clarify storage"; reply "$Q1"; block; reply "$Q1"; block; reply "$Q1"; } > "$tmp/27p.jsonl"
+err="$(jq -nc --arg p "$tmp/27p.jsonl" '{terminationReason: "NO_TOOL_CALL", transcriptPath: $p}' | CLARIFY_HOOK_STRICT=1 bash "$hook" 2>&1 >/dev/null)"
+case "$err" in *"standing down after 2 consecutive interventions"*) record ok "PASS 27p-stand-down-logged";; *) record x "FAIL 27p-stand-down-logged: stderr was '$err'";; esac
+
 # The offline checker must agree on the same cases.
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "$CANCEL"; reply "$FAQ"; } \
+  | run_checker 27a-cancel-then-faq 0
+{ user "/clarify storage"; reply_ask "$Q1"; answer "Option A"; reply_ask "$Q2" "Question 2 of 3"; answer "Option B"; reply "$FAQ"; } \
+  | run_checker 27c-control-no-cancel-faq 1
 { user "write me an interview FAQ"; reply "$FAQ"; } | run_checker 3-no-clarify-faq 0
 { finished; reply "$TABLE"; user "unrelated"; reply "$SEP"; } | run_checker 4-after-decision-table 0
 { user "/clarify storage"; reply "$FENCED"; } | run_checker 5-fenced-heading 0

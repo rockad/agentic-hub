@@ -11,7 +11,9 @@
       "description": "System 1 pre-flight routing, free-tier offloading, thinking effort governance, and quality gates.",
       "version": "2.3.20",
       "path": "plugins/jev",
-      "skills": ["plugins/jev/skills/jev"]
+      "skills": [
+        "plugins/jev/skills/jev"
+      ]
     },
     {
       "id": "local-transcribe",
@@ -30,7 +32,9 @@
       "description": "DevTools MCP browser automation, Lighthouse audits, and a11y/performance debugging.",
       "version": "1.0.0",
       "path": "plugins/chrome-devtools",
-      "skills": ["plugins/chrome-devtools/skills/chrome-devtools"]
+      "skills": [
+        "plugins/chrome-devtools/skills/chrome-devtools"
+      ]
     },
     {
       "id": "memory",
@@ -51,7 +55,9 @@
       "description": "Gitea repository inspection, issue reading, and commit inspection.",
       "version": "1.0.0",
       "path": "plugins/gitea",
-      "skills": ["plugins/gitea/skills/gitea"]
+      "skills": [
+        "plugins/gitea/skills/gitea"
+      ]
     },
     {
       "id": "google-workspace",
@@ -59,7 +65,9 @@
       "description": "Google Workspace integration: Gmail (search, read, draft) and Calendar (events, freebusy).",
       "version": "1.0.0",
       "path": "plugins/google-workspace",
-      "skills": ["plugins/google-workspace/skills/google-workspace"]
+      "skills": [
+        "plugins/google-workspace/skills/google-workspace"
+      ]
     },
     {
       "id": "subagents",
@@ -67,23 +75,19 @@
       "description": "Specialized engineering, testing, and operations subagents",
       "version": "1.0.0",
       "path": "plugins/subagents"
-    }
-  ],
-  "standalone_skills": [
+    },
     {
       "id": "clarify",
       "name": "Architecture & Plain-English Clarifier",
-      "description": "Walk non-trivial designs through their forks one question at a time. Supports deep technical architecture (/clarify, /grill-me) and plain-English intuitive mental models (/cplain, /celi5).",
-      "path": "skills/clarify"
-    },
-    {
-      "id": "cplain",
-      "path": "skills/cplain"
-    },
-    {
-      "id": "celi5",
-      "path": "skills/celi5"
-    },
+      "description": "Walk non-trivial designs through their forks one question at a time. Deep technical architecture (/clarify, /grill-me) and plain-English mental models (/clarify:plain, /clarify:eli5).",
+      "version": "2.0.0",
+      "path": "plugins/clarify",
+      "skills": [
+        "plugins/clarify/skills/clarify"
+      ]
+    }
+  ],
+  "standalone_skills": [
     {
       "id": "markdown-convert",
       "path": "skills/markdown-convert"

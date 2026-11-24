@@ -82,10 +82,12 @@ agentic-hub/
   - **Fail-Soft Local Cache**: Operates seamlessly even if daemons are offline by falling back to local `.agents/memory.json` / `.agents/MEMORY.md`.
   - **CLI Tool**: Portable `scripts/memory.sh` supporting `status`, `get`, `set`, `mark-done`, `search`, `up`, and `down`.
 
+### `plugins/clarify`
+Walk non-trivial designs through their forks one question at a time, with trade-off analysis and structured option selection.
+- **Skill and commands**: the `clarify` skill (`/clarify`, `/grill-me`), plus `/clarify:plain` (plain English, no jargon) and `/clarify:eli5` ("explain like I'm five"), which run it in plain-English mode.
+- **Hooks**: a Claude Code `PreToolUse` hook that blocks a question asked without its write-up, and an Antigravity `Stop` hook that blocks a reply that skips `ask_question`.
+
 ### Standalone Skills
-- **`skills/clarify`**: Walk non-trivial designs through trade-off analysis and structured option selection.
-- **`skills/cplain`**: Plain-English variant of `clarify` (no jargon, intuitive mental models).
-- **`skills/celi5`**: "Explain like I'm five" variant of `clarify`.
 - **`skills/handoff`**: Keep a project's `HANDOFF.md` (state, decisions with what was rejected, deferred branches with triggers, next actions) so a new session can continue without the original conversation; the file can live outside the repository when `HANDOFF_DIR` is set (unset, it silently lands in the project root; see the skill's Gotchas); `/handoff switch` carries work across a change of login or subscription; optional SessionStart hook that reminds you when it falls behind the project's files. File-based, so it works without the memory daemons; complements `plugins/memory`'s `session-handoff`.
 - **`skills/markdown-convert`**: Convert PDFs, Office documents, and `.eml` emails to Markdown sidecar files with offline OCR fallback.
 - **`skills/md-to-pdf`**: Generate clean, professional PDFs from Markdown using HTML/CSS templates and WeasyPrint.

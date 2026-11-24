@@ -30,8 +30,14 @@ jobs:
           command -v rg >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y ripgrep; }
           bash scripts/check-public-leaks.sh
 
+      - name: Check Clarify Skill Guard
+        run: bash scripts/check-clarify-skill.sh
+
       - name: Test Clarify Stop Hook
         run: bash scripts/test-clarify-stop-hook.sh
+
+      - name: Test Clarify Ask Hook
+        run: bash scripts/test-clarify-ask-hook.sh
 
       - name: Test Jev Plugin
         run: |

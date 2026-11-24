@@ -116,6 +116,7 @@ function safelyPrune(dir: string): void {
  * the PostToolUse recorder writes them (no line for the assistant: the call it is deciding already reflects the answer).
  */
 function pulledAnswerFields(pa: NonNullable<AntigravityHookDecision['pulledAnswer']>): Record<string, unknown> {
+  if (pa.label) return elevationAnswerFields({ kind: 'model', model: pa.model, effort: null, answer: null, scope: null, recorded: false, reason: 'label' });
   if (pa.stale) return elevationAnswerFields({ kind: 'model', model: pa.model, effort: null, answer: pa.answer, scope: pa.scope, recorded: false, reason: 'stale' });
   return elevationAnswerFields({ kind: 'model', model: pa.model, effort: pa.effort, answer: pa.answer, scope: pa.scope, recorded: true });
 }
@@ -690,6 +691,10 @@ async function main() {
       trackTelemetry(
         logJevTelemetry(buildAntigravityTelemetryEvent({ mode, kind: 'elevation_answer', conversationId: input.conversationId, turn, callKey: input.toolCall?.id, fields }))
       );
+      // An answer that was read but not applied (a wrong label, or a once of an earlier turn) says so in the one line for the assistant.
+      if (pa.label || pa.stale) {
+        queueAnswerNotice(sessionsDir, input.conversationId, notRecordedLine(pa.label ? 'label' : 'stale', 'model', '[jev-elevate:<model>]', ELEVATION_LABELS.noOnce('<session ceiling>')), mode);
+      }
     };
 
     // The cost gate ships in shadow mode: the rank ceiling decides and the rows say what the gate would have done. JEV_COST_GATE wins.

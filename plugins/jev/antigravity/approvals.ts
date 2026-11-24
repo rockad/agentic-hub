@@ -352,6 +352,7 @@ export function recordApproval(
   // Consume the matching answer-row bookkeeping so a "once" answer in the transcript cannot be replayed on later calls.
   const remainingSteps = Object.fromEntries(Object.entries(state.answerSteps ?? {}).filter(([m]) => modelTierRank(m) < want));
   const remainingQuestions = Object.fromEntries(Object.entries(state.answerQuestions ?? {}).filter(([m]) => modelTierRank(m) < want));
+  const remainingTurns = Object.fromEntries(Object.entries(state.answerTurns ?? {}).filter(([m]) => modelTierRank(m) < want));
   const declines = (state.declines ?? []).filter((d) => !(modelTierRank(d.model) <= want && approvalKindCovers(stored.model, d.model)));
   const { declines: _d, ...base } = state;
   const next: ApprovalState = { ...addApproval({ ...base, ...(declines.length ? { declines } : {}) }, stored, nowMs) };
@@ -359,6 +360,8 @@ export function recordApproval(
   else delete next.answerSteps;
   if (Object.keys(remainingQuestions).length > 0) next.answerQuestions = remainingQuestions;
   else delete next.answerQuestions;
+  if (Object.keys(remainingTurns).length > 0) next.answerTurns = remainingTurns;
+  else delete next.answerTurns;
   const consumed = [...alreadyConsumed, ...consumedKeys.filter((k) => !alreadyConsumed.includes(k))];
   if (consumed.length > 0) next.consumedAnswers = consumed.slice(-CONSUMED_ANSWERS_CAP);
   return { state: next, approval: stored };

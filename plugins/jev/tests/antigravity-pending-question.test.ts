@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { evaluateAntigravitySubagentCall, type AntigravityHookInput } from '../antigravity/logic.ts';
-import { clearPendingQuestion, createAntigravityApprovalStore, getPendingQuestion, noteDenied, notePendingQuestion } from '../antigravity/approvals.ts';
+import { clearPendingQuestion, createAntigravityApprovalStore, getPendingQuestion, noteAnswerStep, noteDenied, notePendingQuestion, recordApproval } from '../antigravity/approvals.ts';
 import { ANSWER_PENDING_LINE } from '../src/core/elevation-answer.ts';
 
 const HOOK = path.join(import.meta.dir, '..', 'antigravity', 'hook.ts');
@@ -306,5 +306,100 @@ describe('a pending answer keeps its own turn, and its note outlives a denial (p
     expect(launch('t6', NEXT).decision).toBe('deny');
     expect(answerRows()).toMatchObject([{ recorded: false, reason: 'stale', answer: 'yes', scope: 'once' }]);
     expect(state('t6').pendingQuestions).toBeUndefined();
+  });
+});
+
+describe('answer-turn pruning (pure)', () => {
+  it('recordApproval prunes answerTurns with answerSteps and answerQuestions like answerSteps and answerQuestions', () => {
+    let state = noteDenied({ approvals: [] }, 'pro', 100);
+    state = noteAnswerStep(state, 'pro', 7, 200, 0, 'turn-a')!;
+    state = noteDenied(state, 'flash', 150);
+    state = noteAnswerStep(state, 'flash', 9, 250, 0, 'turn-b')!;
+    expect(state.answerTurns).toEqual({ pro: 'turn-a', flash: 'turn-b' });
+
+    const done = recordApproval(state, { model: 'pro', scope: 'session', created_at: 300 }, 300)!;
+    // The approval's model and stronger ones are pruned; the weaker model's bookkeeping stays, answerTurns like the other two.
+    expect(done.state.answerSteps).toEqual({ flash: 9 });
+    expect(done.state.answerQuestions).toEqual({ flash: 0 });
+    expect(done.state.answerTurns).toEqual({ flash: 'turn-b' });
+    // The three maps are pruned by the same rule (as answerSteps always was).
+    const flash = recordApproval(state, { model: 'flash', scope: 'session', created_at: 300 }, 300)!;
+    expect(Object.keys(flash.state.answerTurns ?? {})).toEqual(Object.keys(flash.state.answerSteps ?? {}));
+  });
+});
+
+describe('a late wrong-label answer (process)', () => {
+  let home = '';
+  let transcript = '';
+  const config = () => path.join(home, '.config', 'jev', 'config.json');
+  const run = (event: string, input: object) =>
+    Bun.spawnSync(['bun', HOOK, event], {
+      stdin: new TextEncoder().encode(JSON.stringify(input)),
+      env: { ...process.env, HOME: home, JEV_CONFIG_FILE: config(), JEV_DOWNGRADE: 'off', JEV_ELEVATION: '' }
+    });
+  const rows = (): Array<Record<string, any>> => {
+    const f = path.join(home, '.config', 'jev', 'antigravity_decisions.jsonl');
+    return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+  };
+  const answerRows = () => rows().filter((r) => r.event === 'elevation_answer');
+  const sessionsDir = () => path.join(home, '.config', 'jev', 'antigravity-sessions');
+  const state = (conv: string): Record<string, any> => {
+    const f = path.join(sessionsDir(), `${conv}.approvals.json`);
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  };
+  const notice = (conv: string): string => {
+    const f = path.join(sessionsDir(), `${conv}.answer-notice.json`);
+    return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+  };
+  const stamp = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const launch = (conv: string) =>
+    JSON.parse(
+      run('pre-tool-use', { conversationId: conv, transcriptPath: transcript, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_1', name: 'invoke_subagent', args: { TypeName: 'expert', Prompt: 'solve', Model: 'pro' } } }).stdout.toString()
+    );
+  const askedAndAnsweredLate = (conv: string, questionAtMs = -60_000) => {
+    fs.writeFileSync(transcript, JSON.stringify({ step_index: 5, type: 'PLANNER_RESPONSE', created_at: stamp(questionAtMs), source: 'MODEL', status: 'DONE', content: '', tool_calls: [ASK] }) + '\n');
+    expect(run('post-tool-use', { conversationId: conv, transcriptPath: transcript, stepIdx: 7, lastUserInput: PROMPT, modelName: SESSION, toolCall: { id: 'call_ask', ...ASK } }).exitCode).toBe(0);
+  };
+  const answerRow = (text: string) =>
+    fs.appendFileSync(transcript, JSON.stringify({ step_index: 7, type: 'GENERIC', created_at: stamp(0), source: 'MODEL', status: 'DONE', content: `A1: ${text}` }) + '\n');
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pq-label-'));
+    fs.mkdirSync(path.join(home, '.config', 'jev'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.gemini', 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gemini', 'antigravity-cli', 'quota-state.json'), JSON.stringify({ active_model: 'Gemini 3.8 Flash (Medium)' }));
+    fs.writeFileSync(config(), JSON.stringify({ defaults: { mode: 'on' } }));
+    transcript = path.join(home, 'transcript_full.jsonl');
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  it('via the pending note: one label row, the bad row consumed, the note cleared, the exact-labels line queued, denied with the question', () => {
+    askedAndAnsweredLate('l1');
+    answerRow('please just run it on pro');
+
+    const out = launch('l1');
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toContain('[jev-elevate:pro]');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'label', answer: null, scope: null, model: 'pro' }]);
+    expect(state('l1').pendingQuestions).toBeUndefined();
+    expect(state('l1').consumedAnswers).toEqual(['step:7#0']);
+    expect(notice('l1')).toContain('Not recorded: the answer was not one of the four exact labels');
+    // Not read again.
+    expect(launch('l1').decision).toBe('deny');
+    expect(answerRows()).toHaveLength(1);
+  });
+
+  it('via the denial path (answer step recorded against a denial): the same, one row', () => {
+    fs.writeFileSync(transcript, '');
+    expect(launch('l2').decision).toBe('deny');
+    askedAndAnsweredLate('l2', 1000);
+    answerRow('Other: yes please');
+
+    expect(launch('l2').decision).toBe('deny');
+    expect(answerRows()).toMatchObject([{ recorded: false, reason: 'label', answer: null }]);
+    expect(state('l2').consumedAnswers).toEqual(['step:7#0']);
+    expect(notice('l2')).toContain('Not recorded: the answer was not one of the four exact labels');
+    expect(launch('l2').decision).toBe('deny');
+    expect(answerRows()).toHaveLength(1);
   });
 });

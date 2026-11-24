@@ -84,7 +84,16 @@ export type AntigravityHookDecision = {
   /** The scope of the No that lowered this call (`declined-once` / `declined-session`). */
   declineScope?: ApprovalScope;
   /** An answer this call pulled from the transcript and recorded (the hook writes its `elevation_answer` row): what the user said, for which model key, and the effort the stored approval carries. */
-  pulledAnswer?: { answer: 'yes' | 'no'; scope: ApprovalScope; model: string; effort: CostEffort | null; /** A once answer of an earlier turn: read and dropped, so its row says `recorded: false, reason: "stale"`. */ stale?: true };
+  pulledAnswer?: {
+    answer: 'yes' | 'no' | null;
+    scope: ApprovalScope | null;
+    model: string;
+    effort: CostEffort | null;
+    /** A once answer of an earlier turn: read and dropped, so its row says `recorded: false, reason: "stale"`. */
+    stale?: true;
+    /** An answer line that is not one of the four labels (free text): read and dropped, so its row says `recorded: false, reason: "label"`. */
+    label?: true;
+  };
   attemptCount?: number;
   clampedTo?: string;
   /** The effort the cost gate's clamp runs the call at (2.3.19). */
@@ -475,7 +484,7 @@ export function pullElevationAnswerDetailed(
   answerStepIdx?: number | null,
   answerQuestionIdx?: number | null,
   consumedKeys: readonly string[] = []
-): { approved: boolean; declined?: boolean; scope?: ApprovalScope; answerKey?: string } | null {
+): { approved: boolean; declined?: boolean; scope?: ApprovalScope; answerKey?: string; /** The answer line as read, when there is one (a row with an answer line that is not one of the four labels has no scope). */ raw?: string } | null {
   const pulled = pullAskAnswerFromTranscript(transcriptPath, `${ELEVATE_MARKER_PREFIX}${requestedModel.toLowerCase()}]`, {
     deniedAtMs,
     answerStepIdx,
@@ -484,7 +493,7 @@ export function pullElevationAnswerDetailed(
   });
   if (!pulled) return null;
   const answerKey = askAnswerKey(pulled.toolCallId, pulled.questionIndex ?? 0, pulled.answerStep);
-  return { ...parseElevationAnswer(pulled.raw), ...(answerKey ? { answerKey } : {}) };
+  return { ...parseElevationAnswer(pulled.raw), ...(answerKey ? { answerKey } : {}), ...(typeof pulled.raw === 'string' && pulled.raw.trim() ? { raw: pulled.raw } : {}) };
 }
 
 /** Bounds for `pullAskAnswerFromTranscript`: an older question never answers a newer denial. */
@@ -926,6 +935,16 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
         }
         clearPending();
         stalePulled = { answer: pull.approved ? 'yes' : 'no', scope: 'once', model: requestedModel, effort: null, stale: true };
+      } else if (pull && pull.raw && !pull.approved && !pull.declined) {
+        // The row holds an answer that is not one of the four labels (free text via Other): it is read and consumed (never read again), the
+        // note is cleared, and its one `elevation_answer` row says `recorded: false, reason: "label"`. The call goes on to the denial below.
+        try {
+          approvalStore.consumeAnswers?.(sessionId, pull.answerKey ? [pull.answerKey] : []);
+        } catch {
+          // the row may be read once more: it is a wrong label again
+        }
+        clearPending();
+        stalePulled = { answer: null, scope: null, model: requestedModel, effort: null, label: true };
       } else if (pull?.approved && pull.scope) {
         // Allow only when the approval was really stored AND claimed by this call: a failed record (a lock timeout
         // throws) would leave the denial in place and let the same answer be pulled again, and a lost claim means a

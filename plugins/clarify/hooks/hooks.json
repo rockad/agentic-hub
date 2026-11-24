@@ -1,12 +1,12 @@
 {
   "hooks": {
-    "PreToolUse": [
+    "PostToolUse": [
       {
         "matcher": "AskUserQuestion",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/clarify-ask-check.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/clarify-next-reminder.sh\"",
             "timeout": 5
           }
         ]

@@ -58,6 +58,7 @@ import { readRegularFileTail } from '../claude/safe-read.js';
 import { antigravityTurnKey, createAntigravityApprovalStore, createAntigravityDowngradeStore, type ApprovalScope } from './approvals.js';
 import { queueAnswerNotice } from './answer-notice.js';
 import {
+  ANSWER_PENDING_LINE,
   ELEVATION_LABELS,
   elevationAnswerFields,
   notRecordedLine,
@@ -451,10 +452,21 @@ async function main() {
             if (!decisions) {
               // On-demand (nothing decides, nothing is read back later): the one row says why nothing was recorded, whether or not the answer was read.
               answerFacts = { reason: 'mode', answer: null, scope: null, effort: null, model: elevateModel ?? null };
+            } else if (!answerStepRecorded && markerFound && approvals && conversationId && elevateModel && typeof input.stepIdx === 'number') {
+              // No denial is on record for this model (an unprompted question: nothing to read the answer against later), so the question is
+              // noted as pending, where its row will be. The next launch of the model pulls the answer from there, records it and writes the one row.
+              try {
+                if (approvals.notePendingQuestion?.(conversationId, elevateModel, input.stepIdx, Date.now(), markerIndex) === true) {
+                  queueAnswerNotice(sessionsDir, conversationId, ANSWER_PENDING_LINE, mode);
+                }
+              } catch {
+                // best effort: without the note the answer is simply not read at a later launch
+              }
             }
-            // Otherwise the answer row is not in the transcript yet: no `elevation_answer` row and no line here. A later PreToolUse pulls
-            // the answer (a Yes allows, a No clamps) and writes the one row for it; this call's `ask_answer` row (`no_row`) is the trace
-            // until then. One row per answer: an "unread" row here would be followed by the recorded row of the pull.
+            // The answer row is not in the transcript yet: no `elevation_answer` row here. A later PreToolUse pulls the answer (a Yes allows,
+            // a No clamps) and writes the one row for it (with a denial on record: from the step recorded above; without one: from the pending
+            // note); this call's `ask_answer` row (`no_row`) is the trace until then. One row per answer: an "unread" row here would be
+            // followed by the recorded row of the pull.
           } else if (malformed) {
             // The question's marker does not parse: nothing can be stored, and the assistant is told how to ask it again.
             outcome = 'rejected';

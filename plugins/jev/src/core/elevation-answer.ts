@@ -171,6 +171,9 @@ const REASON_TEXT: Record<NotRecordedReason, (kind: AnswerKind, markerHint: stri
   write: () => 'the state file could not be written. Ask the question again; if it keeps failing, launch on the session model'
 };
 
+/** Queued for the assistant when an answer's row was not readable yet and the question was not prescribed by Jev (Antigravity): the next launch reads it. */
+export const ANSWER_PENDING_LINE = '[jev] Answer not read yet; it is recorded at the next launch.';
+
 /** `[jev] Not recorded: <reason>. <what to do>.` `noLabel` is the harness's own No label (`No, proceed on <alias>`, `No, run at <level>`). */
 export function notRecordedLine(reason: NotRecordedReason, kind: AnswerKind, markerHint: string, noLabel: string): string {
   return `[jev] Not recorded: ${REASON_TEXT[reason](kind, markerHint, noLabel)}.`;

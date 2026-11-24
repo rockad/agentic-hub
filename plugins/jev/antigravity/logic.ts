@@ -38,7 +38,7 @@ import {
 } from '../src/core/cost-gate.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelExpected, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
-import { antigravityTurnKey, storedClauseFor, type Approval, type ApprovalStore, type ApprovalScope, type ElevationCtx } from './approvals.js';
+import { antigravityTurnKey, storedClauseFor, type PendingQuestion, type Approval, type ApprovalStore, type ApprovalScope, type ElevationCtx } from './approvals.js';
 import {
   ELEVATION_LABELS,
   elevationLabelList,
@@ -865,18 +865,37 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
   let pullFallback: 'record_failed' | 'claim_lost' | 'mode_changed' | undefined;
   if (approvalStore && ctx.transcriptPath && typeof approvalStore.wasDeniedRecently === 'function') {
     const deniedAtMs = approvalStore.wasDeniedRecently(sessionId, requestedModel, nowMs);
+    // With no denial on record, a question-pending note (2.3.21: PostToolUse saw an unprompted question answered but its row was not in the
+    // transcript yet) stands in for it: the same row is read, at the step and question the note recorded. A note voided by a mode change is not found.
+    let pending: PendingQuestion | null = null;
+    if (typeof deniedAtMs !== 'number') {
+      try {
+        pending = approvalStore.getPendingQuestion?.(sessionId, requestedModel, ctx.config) ?? null;
+      } catch {
+        pending = null;
+      }
+    }
+    // The answer was read: the note is done (an answer row is consumed once, so it is not read again whatever happens to the note).
+    const clearPending = (): void => {
+      if (!pending) return;
+      try {
+        approvalStore.clearPendingQuestion?.(sessionId, requestedModel);
+      } catch {
+        // a stale note is harmless: the consumed answer row is not read twice
+      }
+    };
     if (typeof deniedAtMs === 'number' && denialPredatesModeChange(deniedAtMs, ctx.config, 'antigravity')) {
       // The mode changed after this denial (on, then on-demand or off, then on again): an answer to it may have been
       // given where nothing is recorded, so it is not read. The denial below is issued afresh, with a fresh question.
       pullFallback = 'mode_changed';
-    } else if (typeof deniedAtMs === 'number') {
+    } else if (typeof deniedAtMs === 'number' || pending) {
       // The answer row PostToolUse recorded for the question; without it only a lone ask_question can be read.
       let answerStepIdx: number | null = null;
       let answerQuestionIdx: number | null = null;
       let consumedKeys: string[] = [];
       try {
-        answerStepIdx = approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null;
-        answerQuestionIdx = approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null;
+        answerStepIdx = pending ? pending.stepIdx : (approvalStore.getAnswerStep?.(sessionId, requestedModel, nowMs) ?? null);
+        answerQuestionIdx = pending ? (pending.questionIdx ?? null) : (approvalStore.getAnswerQuestion?.(sessionId, requestedModel, nowMs) ?? null);
         consumedKeys = approvalStore.getConsumedAnswers?.(sessionId) ?? [];
       } catch {
         // An unreadable store: record() below re-checks the consumed answers under its lock and throws too.
@@ -887,7 +906,8 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
       const pull = pullElevationAnswerDetailed(
         ctx.transcriptPath,
         requestedModel,
-        deniedAtMs,
+        // A note has no denial time to bound the read by (the question may be older than anything Jev did); the recorded step pins the row.
+        typeof deniedAtMs === 'number' ? deniedAtMs : undefined,
         answerStepIdx,
         answerQuestionIdx,
         consumedKeys
@@ -918,6 +938,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
           stored = false;
           claimed = false;
         }
+        if (stored) clearPending();
         if (claimed) {
           return {
             decision: 'allow',
@@ -943,6 +964,7 @@ export function resolveChoiceElevation(ctx: ChoiceElevationContext): Antigravity
         } catch {
           applied = false;
         }
+        if (applied) clearPending();
         if (applied) return declinedDecision(ctx, pull.scope, { pullFallback: true, pulledAnswer: { answer: 'no', scope: pull.scope, model: requestedModel, effort: null } });
         pullFallback = 'record_failed';
       }

@@ -92,6 +92,7 @@ import {
   CHOICE_OPTIONS,
   ELEVATE_MARKER_PREFIX,
   detectAntigravityAutoApprove,
+  claimUnlessDeclined,
   resolveChoiceElevation,
   type AntigravityHookDecision,
   type AntigravityHookInput
@@ -1136,7 +1137,8 @@ export function evaluateAntigravityWorkflowCall(input: AntigravityHookInput, dep
     const costGate = (state: CostGateState): Record<string, unknown> => gateField(gated.length > 0 ? state : gateIdle);
     const promptHash = antigravityTurnKey(input.lastUserInput);
     const ectx: ElevationCtx = { turn: promptHash, config: deps.config ?? null };
-    const claimed = approvals?.claim(sessionId, markerModel, nowMs, maxEffort, ectx) ?? null;
+    // A live No is looked at before the approvals: a once No wins over a session Yes within its turn (resolveChoiceElevation applies it).
+    const claimed = claimUnlessDeclined(approvals, sessionId, markerModel, nowMs, maxEffort, ectx);
     if (claimed) {
       pin('allow');
       return finish('allow', { decision: 'allow', elevation: 'approved', approvalScope: claimed.scope }, { workflow_highest: top.tier, ...costGate('approved') });

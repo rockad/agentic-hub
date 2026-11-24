@@ -447,10 +447,14 @@ async function main() {
           if (!markerFound && !malformed) {
             outcome = 'not_elevation';
           } else if (!rowFound) {
-            // The answer row is not in the transcript yet: a later PreToolUse may still pull it (and writes the recorded row then), but when
-            // none does the answer must not leave no trace, so this one says it was not read.
             outcome = 'no_row';
-            answerFacts = { reason: 'unread', answer: null, scope: null, effort: null, model: elevateModel ?? null };
+            if (!decisions) {
+              // On-demand (nothing decides, nothing is read back later): the one row says why nothing was recorded, whether or not the answer was read.
+              answerFacts = { reason: 'mode', answer: null, scope: null, effort: null, model: elevateModel ?? null };
+            }
+            // Otherwise the answer row is not in the transcript yet: no `elevation_answer` row and no line here. A later PreToolUse pulls
+            // the answer (a Yes allows, a No clamps) and writes the one row for it; this call's `ask_answer` row (`no_row`) is the trace
+            // until then. One row per answer: an "unread" row here would be followed by the recorded row of the pull.
           } else if (malformed) {
             // The question's marker does not parse: nothing can be stored, and the assistant is told how to ask it again.
             outcome = 'rejected';

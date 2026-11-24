@@ -38,7 +38,7 @@ import {
 } from '../src/core/cost-gate.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE, quotaPoolOfModel, servedModelExpected, servedModelGuidance, servedQuestionPhrase, servedQuotaPool, subagentEnumOf, type QuotaPoolName } from '../src/core/served-model.js';
 import { readRegularFile, readRegularFileHead, readRegularFileTail } from '../claude/safe-read.js';
-import { antigravityTurnKey, storedClauseFor, type ApprovalStore, type ApprovalScope, type ElevationCtx } from './approvals.js';
+import { antigravityTurnKey, storedClauseFor, type Approval, type ApprovalStore, type ApprovalScope, type ElevationCtx } from './approvals.js';
 import {
   ELEVATION_LABELS,
   elevationLabelList,
@@ -818,6 +818,32 @@ export function declinedDecision(
 }
 
 /**
+ * The approval covering `requested`, claimed, unless a No the user gave (2.3.21) covers it too: within its turn a live once No wins over
+ * a standing "Yes, for this session" (the Yes is kept, not spent, and applies again in later turns), so the No is applied by
+ * `resolveChoiceElevation`'s own `claimDecline` and the approval is left alone. Only the choice flow reads a No; in the other modes
+ * (`dialog`, `clamp`) this is a plain `claim`. An unreadable store reads as no No.
+ */
+export function claimUnlessDeclined(
+  store: ApprovalStore | undefined,
+  sessionId: string,
+  requested: string,
+  nowMs: number,
+  effort: CostEffort | undefined,
+  ectx: ElevationCtx,
+  elevationMode: string = 'choice'
+): Approval | null {
+  if (!store) return null;
+  if (elevationMode === 'choice') {
+    try {
+      if (store.peekDecline?.(sessionId, requested, nowMs, ectx)) return null;
+    } catch {
+      // read as no No
+    }
+  }
+  return store.claim(sessionId, requested, nowMs, effort, ectx);
+}
+
+/**
  * The choice flow's tail, used by choice mode: a No the user already gave (2.3.21) runs the call on the session model, no
  * question; otherwise count the attempt, pull a late answer from the transcript on every attempt (a Yes allows, a No clamps), otherwise
  * deny with what is stored. It never returns `ask`: under auto-approve a dialog is approved without being shown, so a repeated attempt
@@ -1104,7 +1130,9 @@ export function evaluateAntigravitySubagentCall(
   const promptHash = antigravityTurnKey(input.lastUserInput);
   const ectx: ElevationCtx = { turn: promptHash, config: deps.config ?? null };
   const callEffort = subagentEnumOf(requestedModel) === null ? markerGate?.callEffort : undefined;
-  const approval = approvalStore?.claim(sessionId, markerModel, nowMs, callEffort, ectx);
+  const elevationMode = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
+  // In choice mode a live No (2.3.21) is looked at before the approvals: a once No wins over a session Yes within its turn.
+  const approval = claimUnlessDeclined(approvalStore, sessionId, markerModel, nowMs, callEffort, ectx, elevationMode);
   if (approval) {
     return {
       decision: 'allow',
@@ -1112,8 +1140,6 @@ export function evaluateAntigravitySubagentCall(
       approvalScope: approval.scope
     };
   }
-
-  const elevationMode = deps.elevationMode || (process.env.JEV_ELEVATION === 'dialog' || process.env.JEV_ELEVATION === 'clamp' ? process.env.JEV_ELEVATION : 'choice');
 
   if (elevationMode === 'dialog') {
     // The decision stays `ask`; when Antigravity auto-approves, that ask is approved without a dialog, so say so.

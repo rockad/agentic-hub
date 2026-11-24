@@ -945,23 +945,25 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
     const nowMs = (deps.now ?? Date.now)();
     // With the cost gate the approval must also cover the call's effort (an approval from before 2.3.19 stands for at most `high`).
     const needEffort = modelGate?.callEffort;
-    const hit = sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, elevation.requested, nowMs, rankCtx, needEffort, ectx)) ?? null) : null;
-    if (hit) {
-      // Found, not spent: it is consumed below, once the call is allowed (a once is spent by a call that runs).
-      elevationState = 'approved';
-      pendingModel = { requested: elevation.requested, ...(needEffort ? { effort: needEffort } : {}) };
+    // A No the user already gave for this model (2.3.21): this delegation (the next launch of the turn) or the rest of the session.
+    // It is looked at BEFORE the approvals: within its turn a live once No wins over a standing "Yes, for this session" (the Yes is
+    // kept, not deleted, and applies again in later turns). The call runs on the session model, no question and no deny; a `once` No
+    // is spent at the commit below. An alias the environment remaps cannot be clamped to (see the clamp mode below), so a No is not
+    // applied to it and the approvals decide as before.
+    const declineHit = sessionId ? (safely(() => deps.approvals?.peekDecline?.(sessionId, elevation.requested, rankCtx, ectx)) ?? null) : null;
+    if (declineHit && !aliasRemapped(elevation.sessionAlias, deps.env)) {
+      const c = clampDeclinedModel(call as Record<string, unknown>, elevation, declineHit.scope, modelGate);
+      clamp = c;
+      clampInfo = { from: elevation.requested, to: elevation.sessionAlias, ...(c.effort ? { effort: c.effort } : {}) };
+      elevationState = declineHit.scope === 'session' ? 'declined-session' : 'declined-once';
+      declinedScope = declineHit.scope;
+      pendingDecline = { requested: elevation.requested };
     } else {
-      // A No the user already gave for this model (2.3.21): this delegation (the next launch of the turn) or the rest of the session.
-      // The call runs on the session model, no question and no deny; a `once` No is spent at the commit below. An alias the
-      // environment remaps cannot be clamped to (see the clamp mode below), so it is asked as before.
-      const declineHit = sessionId ? (safely(() => deps.approvals?.peekDecline?.(sessionId, elevation.requested, rankCtx, ectx)) ?? null) : null;
-      if (declineHit && !aliasRemapped(elevation.sessionAlias, deps.env)) {
-        const c = clampDeclinedModel(call as Record<string, unknown>, elevation, declineHit.scope, modelGate);
-        clamp = c;
-        clampInfo = { from: elevation.requested, to: elevation.sessionAlias, ...(c.effort ? { effort: c.effort } : {}) };
-        elevationState = declineHit.scope === 'session' ? 'declined-session' : 'declined-once';
-        declinedScope = declineHit.scope;
-        pendingDecline = { requested: elevation.requested };
+      const hit = sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, elevation.requested, nowMs, rankCtx, needEffort, ectx)) ?? null) : null;
+      if (hit) {
+        // Found, not spent: it is consumed below, once the call is allowed (a once is spent by a call that runs).
+        elevationState = 'approved';
+        pendingModel = { requested: elevation.requested, ...(needEffort ? { effort: needEffort } : {}) };
       } else {
         // Counted per delegation: several different workstreams, each answered, are not repeated attempts of one call.
         denyModelChoice(elevation, nowMs);
@@ -1059,25 +1061,26 @@ export async function onPreToolUse(input: HookInput, deps: HookDeps): Promise<Ho
         const effortModel = effortGate
           ? (modelAlias(String(effortGate.callModel)) ?? undefined)
           : (modelAlias(resolved.model ?? sessionModel ?? '') ?? undefined);
-        const hit = sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, level, nowMs, effortModel, ectx)) ?? null) : null;
         effortFound = finding;
-        if (hit) {
-          // Found, not spent: consumed below, once the call is allowed.
-          pendingEffort = { level, ...(effortModel ? { model: effortModel } : {}) };
+        // A No the user already gave for this effort (2.3.21) is looked at BEFORE the approvals: within its turn a live once No wins
+        // over a standing "Yes, for this session" (kept, and back in force in later turns). The call runs at the No level, no question and no deny.
+        const declineHit = sessionId ? (safely(() => deps.approvals?.peekEffortDecline?.(sessionId, level, ectx)) ?? null) : null;
+        if (declineHit) {
+          // Built on the model clamp's input when the model was declined too, so the call runs on the session model at the lower effort.
+          const base = (clamp?.hookSpecificOutput.updatedInput as Record<string, unknown> | undefined) ?? (call as Record<string, unknown>);
+          clamp = clampDeclinedEffort(base, declineHit);
+          const modelLabel = effortModel ?? 'inherit';
+          clampInfo = clampInfo ? { ...clampInfo, effort: declineHit.noEffort } : { from: modelLabel, to: modelLabel, effort: declineHit.noEffort };
+          clampedEffortFrom = level;
+          elevationState = declineHit.scope === 'session' ? 'declined-session' : 'declined-once';
+          declinedScope = declineHit.scope;
+          pendingEffortDecline = { level };
+          effortLog = { effort_level: level, effort_decision: 'declined' };
         } else {
-          // A No the user already gave for this effort (2.3.21): the call runs at the No level, no question and no deny.
-          const declineHit = sessionId ? (safely(() => deps.approvals?.peekEffortDecline?.(sessionId, level, ectx)) ?? null) : null;
-          if (declineHit) {
-            // Built on the model clamp's input when the model was declined too, so the call runs on the session model at the lower effort.
-            const base = (clamp?.hookSpecificOutput.updatedInput as Record<string, unknown> | undefined) ?? (call as Record<string, unknown>);
-            clamp = clampDeclinedEffort(base, declineHit);
-            const modelLabel = effortModel ?? 'inherit';
-            clampInfo = clampInfo ? { ...clampInfo, effort: declineHit.noEffort } : { from: modelLabel, to: modelLabel, effort: declineHit.noEffort };
-            clampedEffortFrom = level;
-            elevationState = declineHit.scope === 'session' ? 'declined-session' : 'declined-once';
-            declinedScope = declineHit.scope;
-            pendingEffortDecline = { level };
-            effortLog = { effort_level: level, effort_decision: 'declined' };
+          const hit = sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, level, nowMs, effortModel, ectx)) ?? null) : null;
+          if (hit) {
+            // Found, not spent: consumed below, once the call is allowed.
+            pendingEffort = { level, ...(effortModel ? { model: effortModel } : {}) };
           } else {
             denyEffortChoice(finding, nowMs);
           }
@@ -1483,14 +1486,17 @@ function evaluateWorkflowCall(a: {
     };
     const peekModel = (): Approval | null =>
       top && sessionId ? (safely(() => deps.approvals?.peek?.(sessionId, top.requested, nowMs, a.rankCtx, needEffort, a.ectx)) ?? null) : null;
-    if (top && !peekModel()) {
+    // The No is looked at before the approvals (as for an Agent call): within its turn a live once No wins over a "Yes, for this session".
+    if (top) {
       const no = sessionId ? (safely(() => deps.approvals?.peekDecline?.(sessionId, top.requested, a.rankCtx, a.ectx)) ?? null) : null;
-      return no ? declined(modelAlias(top.requested) ?? top.requested, no.scope, { decline: { requested: top.requested, ctx: a.rankCtx } }, () => denyModel(top)) : denyModel(top);
+      if (no) return declined(modelAlias(top.requested) ?? top.requested, no.scope, { decline: { requested: top.requested, ctx: a.rankCtx } }, () => denyModel(top));
+      if (!peekModel()) return denyModel(top);
     }
-    const effortHit = topEffort && sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs, effortModel, a.ectx)) ?? null) : null;
-    if (topEffort && !effortHit) {
+    if (topEffort) {
       const no = sessionId ? (safely(() => deps.approvals?.peekEffortDecline?.(sessionId, topEffort, a.ectx)) ?? null) : null;
-      return no ? declined(`effort ${topEffort}`, no.scope, { effortDecline: { level: topEffort } }, () => denyEffort(topEffort)) : denyEffort(topEffort);
+      if (no) return declined(`effort ${topEffort}`, no.scope, { effortDecline: { level: topEffort } }, () => denyEffort(topEffort));
+      const effortHit = sessionId ? (safely(() => deps.approvals?.peekEffort?.(sessionId, topEffort, nowMs, effortModel, a.ectx)) ?? null) : null;
+      if (!effortHit) return denyEffort(topEffort);
     }
     const wants = {
       ...(top ? { model: { requested: top.requested, ctx: a.rankCtx, ...(needEffort ? { effort: needEffort } : {}) } } : {}),

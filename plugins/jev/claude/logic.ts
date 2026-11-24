@@ -1358,8 +1358,10 @@ export function recordDecline(state: ApprovalState, decline: Decline): ApprovalS
 
 /**
  * Pure: the No that covers `requested` (a decline of a model covers itself and anything stronger), a session one before a `once` of
- * this turn, and consume the once. An approval of the same call is never looked at here: a Yes drops the declines it contradicts and
- * a No the approvals, so the two never overlap.
+ * this turn, and consume the once. An approval is never looked at here, and the two CAN overlap: a Yes drops the declines it
+ * contradicts and a session No the approvals it contradicts, but a once No keeps a standing "Yes, for this session". The callers
+ * therefore look at the declines BEFORE the approvals: within its turn a live once No wins over the session Yes (the Yes is kept and
+ * applies again in later turns, when the once No has been spent or is no longer live).
  */
 export function claimDecline(
   state: ApprovalState,

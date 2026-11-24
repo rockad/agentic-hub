@@ -290,8 +290,8 @@ describe('review 7 (Antigravity): a script launch spends a once No', () => {
   });
 });
 
-describe('review 6 (Antigravity): an answer whose row is not read in time leaves a trace', () => {
-  it('no_row: an elevation_answer row with recorded false and reason unread, and the line is queued', () => {
+describe('review 6 (Antigravity): an answer whose row is not read in time writes no row yet', () => {
+  it('no_row: no elevation_answer row and no queued line at PostToolUse (the PreToolUse pull writes the one row; see review2-2321)', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-r2321-home-'));
     try {
       fs.mkdirSync(path.join(home, '.config', 'jev'), { recursive: true });
@@ -319,7 +319,7 @@ describe('review 6 (Antigravity): an answer whose row is not read in time leaves
         .split('\n')
         .map((l) => JSON.parse(l));
       expect(rows.find((r) => r.event === 'ask_answer').outcome).toBe('no_row');
-      expect(rows.find((r) => r.event === 'elevation_answer')).toMatchObject({ kind: 'model', model: 'pro', answer: null, scope: null, recorded: false, reason: 'unread', callKey: 'call_ask', mode: 'on' });
+      expect(rows.filter((r) => r.event === 'elevation_answer')).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

@@ -144,8 +144,7 @@ export function cappedEffort(marker: CostEffort | undefined, prescribed: CostEff
 
 // ── What the assistant is told, and what the log row says ─────────────────────────────────────────────────────────
 
-/** `unread` (Antigravity): the answer row was not in the transcript within the bounded wait; a later PreToolUse reads it and writes the recorded row then. */
-export type NotRecordedReason = 'label' | 'marker' | 'mode' | 'write' | 'unread';
+export type NotRecordedReason = 'label' | 'marker' | 'mode' | 'write';
 
 const scopeWords = (scope: AnswerScope): string => (scope === 'once' ? 'once (this turn)' : 'for this session');
 
@@ -169,8 +168,7 @@ const REASON_TEXT: Record<NotRecordedReason, (kind: AnswerKind, markerHint: stri
   marker: (_k, markerHint) =>
     `the question's marker is malformed or names an unknown model. Ask again with a question that starts with ${markerHint}`,
   mode: () => 'Jev is not on, so nothing is stored. Launch on the session model, or have the user run /jev on and ask again',
-  write: () => 'the state file could not be written. Ask the question again; if it keeps failing, launch on the session model',
-  unread: () => 'the answer could not be read yet. Relaunch the delegation: Jev reads the answer then. If it is still denied, ask the question again'
+  write: () => 'the state file could not be written. Ask the question again; if it keeps failing, launch on the session model'
 };
 
 /** `[jev] Not recorded: <reason>. <what to do>.` `noLabel` is the harness's own No label (`No, proceed on <alias>`, `No, run at <level>`). */

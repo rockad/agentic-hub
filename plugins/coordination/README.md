@@ -56,6 +56,7 @@ The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-ses
 {
   "mcpServers": {
     "a2a-coord": {
+      "type": "http",
       "url": "http://127.0.0.1:8120/mcp",
       "headers": {
         "Authorization": "Bearer a2ak_<env>_<keyid>_<secret>"
@@ -87,8 +88,39 @@ A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
 - Only these five names are read. Anything else, a comment (`#`), a blank line and a line without `=` is ignored.
 - The file is read line by line and never sourced or evaluated. A value is literal text: `$HOME`, `~`, a backtick or `$(...)` are not expanded, so write absolute paths. One pair of surrounding single or double quotes is removed; a value over 512 bytes or with a control character is dropped.
 - An environment variable that is set and not empty wins over the file; the first occurrence of a name in the file wins over a later one.
-- A missing or unreadable file, a directory of that name, or a file you do not own (`test -O`) is ignored silently: another local user must not be able to point the hooks at their own listener. Keep the file mode 0600; `a2a-doctor` will report a wider mode. The name is `settings`, not `config`: `~/.config/a2a-coord/config/` is where a hand-run server keeps its cards.
+- A missing or unreadable file, a directory of that name, or a file you do not own (`test -O`) is ignored silently: another local user must not be able to point the hooks at their own listener. Keep the file mode 0600; [`a2a-doctor`](#doctor) reports a wider mode. The name is `settings`, not `config`: `~/.config/a2a-coord/config/` is where a hand-run server keeps its cards.
 - `A2A_SERVER_URL` must be `http://` or `https://` with plain URL characters in every script (the Claude scripts check it now as the agy ones did), and curl is called with `--proto =http,https`, so a settings value can never become a curl option.
+
+### Doctor
+
+`bin/a2a-doctor` checks the install and says what to do. You run it by hand; it is not a hook and nothing calls it. Details, and what each check is tested by, are in [`docs/specs/doctor.md`](docs/specs/doctor.md).
+
+```sh
+<plugin folder>/bin/a2a-doctor              # every check
+<plugin folder>/bin/a2a-doctor --no-network # skip the server section: no request at all
+```
+
+`<plugin folder>` is where the harness installed the plugin (the path is the harness's own and is not fixed here; it is the folder that holds `plugin.json` and `bin/`). The script finds `a2a-lib.sh` and the other scripts next to itself, so run it in place, not from a copy of the one file.
+
+- It checks, in sections: the plugin files next to it and the plugin version; the settings file and the config directory (mode, owner, a directory of that name); the Claude key file (exists, mode, looks like a key) and whether `A2A_API_KEY` is set in your shell; the agy file (entry, url, `Authorization` header, key, mode, orphans: the old pre-Z20 `~/.gemini/config/plugins/coordination/mcp_config.json` and any other `a2a-` server in the global file); and the server (`GET /healthz`, then a probe session registered and ended again for each key it can use).
+- It prints the two Claude install commands, the agy one and the agy MCP snippet, so the fix for each finding is on the screen.
+- It edits **nothing**: no harness config, no settings file, no key file, no file at all. It never prints a key or any part of one, never puts a key in a command line or a child's environment (curl reads it on stdin), and never starts `claude` or `agy`. Every request has a 2 s connect and 5 s total limit.
+- Output is plain ASCII, one line per check, prefixed `OK`, `WARN`, `FAIL` or `INFO`, and ends with `a2a-doctor: N FAIL, M WARN`. Exit status: 0 when there is no `FAIL`, 1 when there is at least one, 2 for a usage error.
+
+```text
+== Claude key ==
+OK    Claude key file /home/user/.config/a2a-coord/api-key mode 600
+OK    Claude key file first line looks like an a2a key
+WARN  A2A_API_KEY is not set in this shell: Claude Code's MCP header needs it; export it from the key file in your shell rc, then restart Claude Code
+
+== Server ==
+INFO  effective server URL http://127.0.0.1:8120
+OK    GET http://127.0.0.1:8120/healthz answered 200
+OK    Claude key accepted: registered as claude-code@box/doctor-4242~3f2a9c1d
+INFO  Claude probe session ended
+
+a2a-doctor: 0 FAIL, 1 WARN
+```
 
 ## Architecture
 
@@ -159,7 +191,8 @@ plugins/coordination/
 ├── bin/
 │   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/settings)
 │   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks
-│   └── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
+│   ├── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
+│   └── a2a-doctor                # run by hand: checks the install, edits nothing (no hook)
 ├── docker-compose.yml            # the server stack (port 8120)
 ├── servers/coordination/         # the server: uv project, Dockerfile, src, tests
 ├── config/cards.yaml
@@ -194,6 +227,7 @@ All links are absolute `file://` links.
 ### Specs
 
 - [`docs/specs/server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md): endpoints, handles, trust states, wake, auth.
+- [`docs/specs/doctor.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/doctor.md): `bin/a2a-doctor`, the install check: checks, output, exit codes, what is verified.
 - [`docs/specs/status-client.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md): cognitive-engine status contract.
 - [`docs/specs/spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md): S0 spikes and the S1 gate.
 - [`docs/specs/buildslot-spec.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/buildslot-spec.md): Docker and GPU contention (cognitive-engine PR #13). Still in force.

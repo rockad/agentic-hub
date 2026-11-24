@@ -603,3 +603,67 @@ def test_the_fake_curl_marker_does_fire_when_the_url_is_allowed(stub, hook_env, 
     env = hook_env(stub.url, PATH=hh.path_with(fake.parent))
     hh.run_script(hh.plugin_file("bin/a2a-pending"), [], stdin=hh.hook_json("UserPromptSubmit"), env=env, timeout=30)
     assert marker.exists()
+
+
+def test_resolve_keyfile_logic(tmp_path):
+    cfg = tmp_path / "home" / ".config" / "a2a-coord"
+    keys = cfg / "keys"
+    keys.mkdir(parents=True)
+    
+    # 1. Fallback when canonical missing
+    fb = cfg / "api-key"
+    fb.write_text("fb-key")
+    driver = """
+    . "$1"
+    a2a_resolve_keyfile claude-code
+    echo "resolved=$A2A_RESOLVED_KEYFILE"
+    """
+    out, _, _, _ = run_lib(tmp_path, None, driver=driver)
+    assert "resolved=" in out and str(fb) in out
+
+    # 2. Canonical wins over fallback when canonical present
+    can = keys / "claude-code.key"
+    can.write_text("can-key")
+    out, _, _, _ = run_lib(tmp_path, None, driver=driver)
+    assert str(can) in out
+
+    # 3. Override wins over canonical
+    ov = tmp_path / "override.key"
+    ov.write_text("ov-key")
+    driver_ov = """
+    . "$1"
+    A2A_KEY_FILE="%s"
+    a2a_resolve_keyfile claude-code
+    echo "resolved=$A2A_RESOLVED_KEYFILE"
+    """ % ov
+    out, _, _, _ = run_lib(tmp_path, None, driver=driver_ov)
+    assert str(ov) in out
+
+
+def test_resolve_keyfile_antigravity(tmp_path):
+    cfg = tmp_path / "home" / ".config" / "a2a-coord"
+    keys = cfg / "keys"
+    keys.mkdir(parents=True)
+    
+    gemini_cfg = tmp_path / "home" / ".gemini" / "config"
+    gemini_cfg.mkdir(parents=True)
+    mcp = gemini_cfg / "mcp_config.json"
+    mcp.write_text('{"mcpServers":{}}')
+
+    can = keys / "antigravity.key"
+    can.write_text("agy-can-key")
+
+    driver = """
+    . "$1"
+    export HOME="%s"
+    a2a_resolve_keyfile antigravity
+    echo "resolved=$A2A_RESOLVED_KEYFILE"
+    """ % (tmp_path / "home")
+    
+    out, _, _, _ = run_lib(tmp_path, None, driver=driver, env={"HOME": str(tmp_path / "home")})
+    assert str(can) in out
+
+    # Remove canonical, falls back to mcp_config.json
+    can.unlink()
+    out, _, _, _ = run_lib(tmp_path, None, driver=driver, env={"HOME": str(tmp_path / "home")})
+    assert str(mcp) in out

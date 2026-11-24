@@ -53,7 +53,9 @@ case $URL in
   *[!A-Za-z0-9._~:/@%-]*) exit 0 ;;
 esac
 STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
-KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
+KEYFILE=""
+a2a_resolve_keyfile claude-code && KEYFILE="$A2A_RESOLVED_KEYFILE"
+unset A2A_RESOLVED_KEYFILE
 
 input=''
 if [ ! -t 0 ]; then input=$(head -c 1048576 2>/dev/null | tr '\n\r' '  '); fi

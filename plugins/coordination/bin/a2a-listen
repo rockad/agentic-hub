@@ -84,7 +84,9 @@ BMAX=$(num "${A2A_BACKOFF_MAX_S:-}" 60 1 3600)
 RESET=$(num "${A2A_BACKOFF_RESET_S:-}" 10 1 3600)
 RETRY410=$(num "${A2A_410_RETRY_S:-}" 15 0 3600)
 STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
-KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
+KEYFILE=""
+a2a_resolve_keyfile claude-code && KEYFILE="$A2A_RESOLVED_KEYFILE"
+unset A2A_RESOLVED_KEYFILE
 
 mkdir -p "$STATE" 2>/dev/null || exit 0
 [ -d "$STATE" ] && [ -w "$STATE" ] || exit 0

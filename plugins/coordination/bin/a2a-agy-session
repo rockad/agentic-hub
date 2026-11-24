@@ -51,7 +51,9 @@ export LC_ALL
 if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
 SERVER_URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
-KEY_FILE=${A2A_AGY_KEY_FILE:-${HOME:-/nonexistent}/.gemini/config/mcp_config.json}
+KEY_FILE=""
+a2a_resolve_keyfile antigravity && KEY_FILE="$A2A_RESOLVED_KEYFILE"
+unset A2A_RESOLVED_KEYFILE
 CONNECT_T=${A2A_AGY_CONNECT_TIMEOUT:-1}
 MAX_T=${A2A_AGY_MAX_TIME:-2}
 

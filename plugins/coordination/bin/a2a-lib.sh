@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # a2a-lib.sh: the settings reader of the coordination plugin's hook scripts (decision Z21 item 5;
 # docs/specs/claude-hooks.md and agy-hooks.md). POSIX sh, sourced (`.`), never run. No shebang.
 #
@@ -68,5 +69,55 @@ a2a_load_config() {
     done 2>/dev/null < "$a2a_cfg_file"
   fi
   unset a2a_cfg_file a2a_cfg_cr a2a_cfg_line a2a_cfg_name a2a_cfg_val
+  return 0
+}
+
+# Per-harness key table and resolver helper (Z22, docs/specs/harness-keys.md):
+# | Harness id   | Card prefix      | Canonical key file                   | Settings override | One-release fallback source              |
+# | claude-code  | claude-code@     | $CFGDIR/keys/claude-code.key         | A2A_KEY_FILE      | $CFGDIR/api-key                          |
+# | antigravity  | antigravity@     | $CFGDIR/keys/antigravity.key         | A2A_AGY_KEY_FILE  | ~/.gemini/config/mcp_config.json         |
+#
+#   a2a_resolve_keyfile <harness_id>
+# Sets A2A_RESOLVED_KEYFILE to the resolved key file path with canonical-wins precedence,
+# override support, and one-release fallback.
+# No eval, no backticks, no extra subshell.
+a2a_resolve_keyfile() {
+  a2a_rk_harness=$1
+  [ -n "$a2a_rk_harness" ] || return 1
+
+  a2a_rk_cfgdir=${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/a2a-coord
+  A2A_RESOLVED_KEYFILE=""
+
+  case $a2a_rk_harness in
+    claude-code)
+      if [ -n "${A2A_KEY_FILE:-}" ]; then
+        A2A_RESOLVED_KEYFILE="${A2A_KEY_FILE}"
+      elif [ -r "$a2a_rk_cfgdir/keys/claude-code.key" ]; then
+        A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/keys/claude-code.key"
+      elif [ -r "$a2a_rk_cfgdir/api-key" ]; then
+        A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/api-key"
+      else
+        A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/keys/claude-code.key"
+      fi
+      ;;
+    antigravity)
+      if [ -n "${A2A_AGY_KEY_FILE:-}" ]; then
+        A2A_RESOLVED_KEYFILE="${A2A_AGY_KEY_FILE}"
+      elif [ -r "$a2a_rk_cfgdir/keys/antigravity.key" ]; then
+        A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/keys/antigravity.key"
+      elif [ -r "${HOME:-/nonexistent}/.gemini/config/mcp_config.json" ]; then
+        A2A_RESOLVED_KEYFILE="${HOME:-/nonexistent}/.gemini/config/mcp_config.json"
+      else
+        A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/keys/antigravity.key"
+      fi
+      ;;
+    *)
+      unset a2a_rk_harness a2a_rk_cfgdir
+      return 1
+      ;;
+  esac
+
+  export A2A_RESOLVED_KEYFILE
+  unset a2a_rk_harness a2a_rk_cfgdir
   return 0
 }

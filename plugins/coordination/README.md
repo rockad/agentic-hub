@@ -5,7 +5,7 @@ An A2A (Agent2Agent 1.0.1) coordination server that lets live, side-by-side codi
 ## Status
 
 - **S1 has started; planning-only is lifted for S1** (the user's go, 2026-11-11). The S0 spikes are done and the S1 entry gate is satisfied.
-- **S1-SCAF is delivered:** `plugin.json`, `docker-compose.yml` (service `coordination` only), and `servers/coordination/` with the Dockerfile, `pyproject.toml`, `uv.lock`, the module skeleton (config, typed protocols, `/healthz`, an `a2a-coord` entry point) and tests. The Postgres service, the dump sidecar and every endpoint beyond `/healthz` are later S1 streams. No hook script exists yet.
+- **S1-SCAF is delivered:** `plugin.json`, `docker-compose.yml` (service `coordination` only), and `servers/coordination/` with the Dockerfile, `pyproject.toml`, `uv.lock`, the module skeleton (config, typed protocols, `/healthz`, an `a2a-coord` entry point) and tests. The Postgres service, the dump sidecar and every endpoint beyond `/healthz` are later S1 streams. The hook scripts, the plugin layout and the install commands came later (see Install and Layout).
 - Branch: `feat/coordination` in the `agentic-hub` repository.
 - Decisions of 2026-11-04 and 2026-11-05 are recorded in the master plan, [`docs/plans/master-plan.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/plans/master-plan.md) (section 11), and in full in the archived consolidated plan. Start with the doc map, [`docs/README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/README.md).
   - 13 binding decisions from the `/clarify` session.
@@ -25,6 +25,70 @@ One server process, one SQLite database, several doors.
 - Sessions use MCP tools served by the same process at `/mcp` (streamable HTTP). Write tools are behind an opt-in flag.
 - Claude Code idle sessions are woken by an `asyncRewake` hook that long-polls `/wake/listen`. agy sessions are not woken while idle; they see pending tasks at the next model call (accepted asymmetry).
 - Inbound tasks are parked, never auto-executed. A session takes a task with a tool call.
+
+## Install
+
+This directory is one plugin that both harnesses install with their own command (decisions Z20 and Z21). Each installs from the remote `main` of `rockad/agentic-hub`, never from a copied or symlinked folder, and neither install command edits a shared user-level file. The server must be running (`docker compose up`, port 8120) and you need a `local-harness` API key (`a2a-coord key create`, run on a TTY inside the container; the key is shown once).
+
+### Claude Code
+
+```sh
+claude plugin marketplace add rockad/agentic-hub
+claude plugin install coordination@agentic-hub
+```
+
+The plugin brings the hooks (`hooks/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`.mcp.json`, `http://127.0.0.1:8120/mcp`, header `Authorization: Bearer ${A2A_API_KEY}`).
+
+- Put the key in `~/.config/a2a-coord/api-key`: one line, the key, mode 0600 (`chmod 600`). The hooks read this file.
+- Export it for the MCP entry, which Claude Code expands from the environment. This line holds no secret, so it may live in a chezmoi-managed shell profile: `export A2A_API_KEY="$(cat "$HOME/.config/a2a-coord/api-key")"`. Start `claude` from a shell that has it; without it the `a2a_` tools answer 401 (the registration hook says so at session start).
+
+### Antigravity (agy)
+
+```sh
+agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination
+```
+
+**Unverified:** A8c ran `agy plugin install <path>` only. Installing from a GitHub tree URL, `agy plugin validate --strict` on this plugin, and whether agy also reads the Claude `hooks/hooks.json` have not been run; they are on the user's live-check list.
+
+The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-session` on `SessionStart`, `./bin/a2a-agy-pending` on `PreInvocation`). It brings **no** MCP entry and no key: agy expands only its own placeholders in a plugin's MCP config, not environment variables, so agy's entry is a user-scope server in your global `~/.gemini/config/mcp_config.json`, with the key as a literal `Authorization` header. Add this entry once (merge it into the existing `mcpServers` object by hand or with `agy mcp add`; the plugin never edits the file) and keep the file private:
+
+```json
+{
+  "mcpServers": {
+    "a2a-coord": {
+      "url": "http://127.0.0.1:8120/mcp",
+      "headers": {
+        "Authorization": "Bearer a2ak_<env>_<keyid>_<secret>"
+      }
+    }
+  }
+}
+```
+
+```sh
+chmod 600 ~/.gemini/config/mcp_config.json
+```
+
+The agy hooks read the key from the same file: the first `a2ak_` token in it (`A2A_AGY_KEY_FILE`, default `~/.gemini/config/mcp_config.json`). Keep that file out of any dotfiles repository and out of chezmoi (decision D24). Because the entry lives outside the plugin, `agy plugin uninstall` does not remove it.
+
+### Settings file
+
+Both harnesses read the machine's settings from `${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings` (`A2A_SETTINGS_FILE` names another file), plain `KEY=value` lines. The file is outside the plugin, so installing, updating or reinstalling the plugin loses nothing. Every setting is optional.
+
+```sh
+# ~/.config/a2a-coord/settings
+A2A_SERVER_URL=http://127.0.0.1:8120
+A2A_CARD=claude-code@mybox
+A2A_AGY_CARD=antigravity@mybox
+A2A_KEY_FILE=/home/user/.config/a2a-coord/api-key
+A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
+```
+
+- Only these five names are read. Anything else, a comment (`#`), a blank line and a line without `=` is ignored.
+- The file is read line by line and never sourced or evaluated. A value is literal text: `$HOME`, `~`, a backtick or `$(...)` are not expanded, so write absolute paths. One pair of surrounding single or double quotes is removed; a value over 512 bytes or with a control character is dropped.
+- An environment variable that is set and not empty wins over the file; the first occurrence of a name in the file wins over a later one.
+- A missing or unreadable file, a directory of that name, or a file you do not own (`test -O`) is ignored silently: another local user must not be able to point the hooks at their own listener. Keep the file mode 0600; `a2a-doctor` will report a wider mode. The name is `settings`, not `config`: `~/.config/a2a-coord/config/` is where a hand-run server keeps its cards.
+- `A2A_SERVER_URL` must be `http://` or `https://` with plain URL characters in every script (the Claude scripts check it now as the agy ones did), and curl is called with `--proto =http,https`, so a settings value can never become a curl option.
 
 ## Architecture
 
@@ -66,8 +130,8 @@ Notes on the diagram:
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
 - Admin commands (`key create|list|rotate|revoke`, `review`) run inside the container, on whichever host runs it (<storage-host> in production: `ssh <storage-host>`, then `docker compose exec -it coordination a2a-coord ...`), over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin API-key scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
-- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret chezmoi-managed shell line (with a `~/.claude.json` fallback if Claude Code does not expand env vars in MCP headers); agy's key is a literal in an unmanaged, mode-0600, user-level plugin file `~/.gemini/config/plugins/<name>/mcp_config.json` (verified in SP2 A8b; the plugin name must be unique across user and workspace scopes). Chezmoi-managed files never hold keys.
-- Harness setup is one installer, `a2a-coord install --claude --agy`. It configures the non-secret parts through chezmoi where the files are chezmoi-managed, never writing the targets. Hook scripts are copied to `~/.local/share/a2a-coord/<version>/bin/` with a `current` symlink. agy hooks go in the user-level `~/.gemini/config/hooks.json`, and the agy inbox instruction comes from `SessionStart` `injectSteps`: the installer never writes any `AGENTS.md`. Nothing in it launches, drives or wraps agy.
+- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret shell line for the plugin's `.mcp.json` entry; agy's key is a literal `Authorization` header in a user-scope `a2a-coord` entry of the user's global `~/.gemini/config/mcp_config.json` (mode 0600, outside the plugin, Z20 and Z21), which the agy hooks also read. See [Install](#install). Chezmoi-managed files never hold keys.
+- Harness setup is the harness's own plugin install (decisions Z20 and Z21): `claude plugin install coordination@agentic-hub` and `agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination`, from the remote `main`. One shared `bin/` serves both: Claude's hooks call `"${CLAUDE_PLUGIN_ROOT}/bin/..."`, agy's call `./bin/...` (agy runs a plugin hook with the plugin folder as its working directory). The agy inbox instruction comes from `SessionStart` `injectSteps`: nothing writes any `AGENTS.md`, and nothing launches, drives or wraps agy.
 - Agent Cards: one path per card, `/agents/<card>/.well-known/agent-card.json`, plus a public, generic "front desk" card at the root. Member cards need a valid API key. `A2A-Version` is strict. Streaming and push are off until a peer needs them.
 
 ### Exposure stages
@@ -81,28 +145,30 @@ Notes on the diagram:
 
 `tailscale`, `cloudflared` and `caddy` are not installed on <workstation> today. The user's Cloudflare Tunnel runs on <storage-host> (reported by the user).
 
-## Planned layout
+## Layout
 
-Illustrative. Since S1-SCAF the real server tree is `servers/coordination/` (package `coordination`), not the `servers/a2a-coord/` sketched below; hooks and `bin/` do not exist yet. The single illustrative layout is the tree in [`docs/specs/server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md) section 1.4 (`servers/coordination`, `bin/a2a-register`, `bin/a2a-listen`, `hooks/hooks.json`); the tree below is a rough sketch and does not override it. The final layout is settled when S1 starts (plan section 7, design details).
+One plugin directory for both harnesses (decisions Z20 and Z21). The server tree is `servers/coordination/` (package `coordination`).
 
 ```
 plugins/coordination/
-├── plugin.json
-├── docker-compose.yml            # services server, postgres and dump (profile backup); a2a-data for import artefacts; ports 8120 and 8121
+├── plugin.json                   # agy manifest (name, version, description)
+├── .claude-plugin/plugin.json    # Claude Code manifest; same name, version and description, no `hooks` field
+├── hooks.json                    # agy hooks: group a2a-coord, SessionStart and PreInvocation, commands ./bin/a2a-agy-*
+├── hooks/hooks.json              # Claude hooks (auto-loaded): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
+├── .mcp.json                     # Claude MCP entry a2a-coord (never loaded by agy; there is no mcp_config.json here)
+├── bin/
+│   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/settings)
+│   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks
+│   └── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
+├── docker-compose.yml            # the server stack (port 8120)
+├── servers/coordination/         # the server: uv project, Dockerfile, src, tests
+├── config/cards.yaml
 ├── README.md
 ├── AGENTS.md
-├── servers/
-│   └── a2a-coord/
-│       ├── pyproject.toml        # uv project, a2a-python >=1.3.0
-│       ├── Dockerfile
-│       └── src/
-│           └── a2a_coord/        # server, MCP tools, wake, auth, store, CLI (a2a-coord)
-├── hooks/
-│   ├── claude/
-│   │   └── a2a-listen            # sh + curl long-poll script
-│   └── agy/                      # SessionStart and PreInvocation hook scripts
-└── docs/                         # plans, specs, research (exists now)
+└── docs/                         # plans, specs, research
 ```
+
+The version in `plugin.json`, `.claude-plugin/plugin.json` and the plugin's entries in `.claude-plugin/marketplace.json` and the root `marketplace.json` must be equal: `bun scripts/validate-manifests.ts` and `tests/test_plugin_layout.py` check it.
 
 The `memory` plugin (`plugin.json`, `docker-compose.yml`, `servers/lookup`) is the structural reference only. This plugin does not depend on it.
 

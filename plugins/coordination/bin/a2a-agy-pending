@@ -19,9 +19,11 @@
 # Environment (all optional)
 #   A2A_SERVER_URL              server base URL, default http://127.0.0.1:8120 [design: name]
 #   A2A_AGY_KEY_FILE            file that holds the local-harness API key as a literal, default
-#                               $HOME/.gemini/config/plugins/coordination/mcp_config.json (the
-#                               unmanaged mode-0600 plugin file of D24 and D34; the first a2ak_ token in it
-#                               is the key) [design: plugin name]
+#                               $HOME/.gemini/config/mcp_config.json (the user's global agy MCP file,
+#                               mode 0600, outside the plugin, decisions Z20 and Z21; the first a2ak_
+#                               token in it is the key)
+#   A2A_SERVER_URL and A2A_AGY_KEY_FILE may also be set in ${XDG_CONFIG_HOME:-$HOME/.config}/a2a-coord/settings
+#   as plain KEY=value lines, read by bin/a2a-lib.sh; an environment variable wins over the file.
 #   A2A_AGY_CONNECT_TIMEOUT     curl connect timeout in seconds, default 0.2 (Y6)
 #   A2A_AGY_MAX_TIME            curl total time limit in seconds, default 2 (plan 4.2)
 #
@@ -35,8 +37,14 @@ exec 2>/dev/null
 LC_ALL=C
 export LC_ALL
 
+# The settings file (docs/specs/agy-hooks.md): silent, never fails; the -r test because `.` of a
+# missing file would end a POSIX shell with status 2. agy runs this script with the plugin folder as
+# its working directory, as `./bin/a2a-agy-pending`, so ${0%/*} is `./bin`.
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
+
 SERVER_URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
-KEY_FILE=${A2A_AGY_KEY_FILE:-${HOME:-/nonexistent}/.gemini/config/plugins/coordination/mcp_config.json}
+KEY_FILE=${A2A_AGY_KEY_FILE:-${HOME:-/nonexistent}/.gemini/config/mcp_config.json}
 CONNECT_T=${A2A_AGY_CONNECT_TIMEOUT:-0.2}
 MAX_T=${A2A_AGY_MAX_TIME:-2}
 

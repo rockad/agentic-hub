@@ -15,15 +15,30 @@
 # failure of a hook anyway).
 #
 # Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
-# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key). The key goes to curl on stdin (`curl -K -`),
+# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key); both may also be set in
+# ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/settings (KEY=value lines, bin/a2a-lib.sh; the environment wins). The key goes to curl on stdin (`curl -K -`),
 # never in argv; A2A_API_KEY is never read, and is unset so curl does not inherit it.
 
 unset A2A_API_KEY
 umask 077
 exec 2>/dev/null # no shell error may reach the model (stderr of a hook does); this script exits 0 always
+# The settings file (docs/specs/claude-hooks.md): silent, never fails; the -r test because `.` of a
+# missing file would end a POSIX shell with status 2.
+LC_ALL=C # a plain assignment, not passed on to children: the shell's own 512-byte limit and the control-character test of the lib count bytes
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 
 URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
 URL=${URL%/}
+# The URL can come from the settings file now: only http(s) and plain URL characters, as in the agy
+# scripts, so a value can never turn into a curl option (Opus review of PR #102).
+case $URL in
+  http://* | https://*) ;;
+  *) exit 0 ;;
+esac
+case $URL in
+  *[!A-Za-z0-9._~:/@%-]*) exit 0 ;;
+esac
 KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
 
 input=''
@@ -47,7 +62,7 @@ case $KEY in
   ''|*[!A-Za-z0-9._~+/=-]*) exit 0 ;; # empty, or a character that could break out of the curl config line
 esac
 
-resp=$(curl -q -sS --noproxy '*' --connect-timeout 1 --max-time 2 -K - -X POST \
+resp=$(curl -q -sS --proto '=http,https' --noproxy '*' --connect-timeout 1 --max-time 2 -K - -X POST \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data "{\"session_id\":\"$sid\"}" -w '\n%{http_code}' "$URL/wake/pending" 2>/dev/null <<EOF
 header = "Authorization: Bearer $KEY"

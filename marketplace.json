@@ -77,6 +77,13 @@
       "path": "plugins/subagents"
     },
     {
+      "id": "coordination",
+      "name": "A2A Coordination",
+      "description": "A2A coordination for side-by-side Claude Code and Antigravity sessions: session registration, idle wake and pending counts.",
+      "version": "0.1.0",
+      "path": "plugins/coordination"
+    },
+    {
       "id": "clarify",
       "name": "Architecture & Plain-English Clarifier",
       "description": "Walk non-trivial designs through their forks one question at a time. Deep technical architecture (/clarify, /grill-me) and plain-English mental models (/clarify:plain, /clarify:eli5).",

@@ -8,6 +8,11 @@
 #     (synthetic ids that start with 00000000- are fine)
 #   - the owner's subscription plan tier ("Google AI Pro/Ultra", "Claude Pro/Max")
 #   - the owner's personal email handle and surname
+#   - an A2A API key of the real shape a2ak_<env>_<8 hex>_<43 base64url> (auth/keys.py). The finding is
+#     printed redacted (a2ak_dev_xxxx_<redacted>), never the key. A secret that starts with FAKE- is a
+#     placeholder by construction and passes; short placeholders (a2ak_<hidden>, a2ak_dev_k1_SECRET)
+#     are not the real shape and never match. This rule is never satisfied by an allowlist entry (an
+#     entry would have to contain the key): use the FAKE- marker. .gitleaks.toml mirrors the rule.
 # Justified exceptions go in scripts/public-leaks-allow.txt, one "path:matched-text"
 # entry per line (see that file). Requires: rg (ripgrep). Portable across macOS and Linux.
 # An rg runtime or regex error fails the guard (it never passes silently).
@@ -32,6 +37,13 @@ TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 errors=0
+REDACT=0 # 1 while the key rule runs: report() then prints a redacted form, never the match
+
+# a2ak_dev_3f9c01ab_<43 chars> -> a2ak_dev_xxxx_<redacted> (keeps the env, drops the id and the secret)
+redact_key() {
+  local env="${1#a2ak_}"
+  echo "a2ak_${env%%_*}_xxxx_<redacted>"
+}
 
 is_allowed() { # file match
   [ -f "$ALLOW" ] || return 1
@@ -39,8 +51,13 @@ is_allowed() { # file match
 }
 
 report() { # file line match reason
-  if is_allowed "$1" "$3"; then return 0; fi
-  echo "LEAK: $1:$2: '$3' ($4)" >&2
+  local shown="$3"
+  if [ "$REDACT" = 1 ]; then
+    shown="$(redact_key "$3")" # the key rule is never excused by an allowlist entry
+  elif is_allowed "$1" "$3"; then
+    return 0
+  fi
+  echo "LEAK: $1:$2: '$shown' ($4)" >&2
   errors=$((errors + 1))
 }
 
@@ -100,6 +117,18 @@ scan "real conversation id; use 00000000-0000-4000-8000-... style ids" skip_synt
 # 4. Owner's plan tier.
 scan "plan tier; say 'Google AI subscription' or 'Claude subscription' instead" "" \
   -i -e 'google ai (pro|ultra)' -e 'claude (pro|max)( plan| account| subscription)?\b'
+
+# 4b. A2A API keys of the real shape (auth/keys.py: a2ak_<env a-z 1-8>_<key id 8 hex>_<secret 43 base64url>).
+#     A secret that starts with FAKE- is a placeholder; no allowlist entry can excuse a key (see the header).
+skip_fake_key() { # matched text: a2ak_<env>_<8 hex>_<secret>
+  local secret="${1#a2ak_*_????????_}"
+  case "$secret" in FAKE-*) return 0 ;; esac
+  return 1
+}
+REDACT=1
+scan "A2A API key (real shape); use a2ak_REPLACE_WITH_YOUR_KEY or a FAKE- secret in examples" skip_fake_key \
+  -e 'a2ak_[a-z]{1,8}_[0-9a-f]{8}_[A-Za-z0-9_-]{43}'
+REDACT=0
 
 # 5. Personal identifiers that must not themselves be published in this script:
 #    one regex per line in a local, untracked file (absent in CI, so this check is skipped there).

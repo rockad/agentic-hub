@@ -8,7 +8,8 @@
 # when a run skips what it should have run (scripts/check-pytest-skips.sh).
 #
 # Two steps:
-#   1. the hook tests of both harnesses (static, listener, register and pending, agy): no skip allowed
+#   1. the hook tests of both harnesses (static, listener, register and pending, agy), the settings reader
+#      and the doctor (jq is installed for it): no skip allowed
 #   2. the whole suite with Docker (A2A_TEST_REQUIRE_DOCKER=1 turns a missing Docker into a failure):
 #      exactly three skips are expected, each covered by another job:
 #        - tests/test_a2a_tck.py     needs the TCK checkout (job "A2A TCK against the coordination server")
@@ -55,8 +56,8 @@ jobs:
         working-directory: .
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dash curl shellcheck
-          dash -c 'echo dash ok'; curl --version | head -n 1; shellcheck --version | head -n 2
+          sudo apt-get install -y --no-install-recommends dash curl shellcheck jq
+          dash -c 'echo dash ok'; curl --version | head -n 1; shellcheck --version | head -n 2; jq --version
 
       - name: Hook tests of both harnesses, no skip allowed
         env:
@@ -65,7 +66,7 @@ jobs:
           uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/hooks.xml" \
             tests/test_hooks_static.py tests/test_hooks_listen.py tests/test_hooks_register_pending.py \
             tests/test_hooks_review_fixes.py tests/test_agy_hooks.py tests/test_skip_gate.py \
-            tests/test_mcp_agy_opening.py
+            tests/test_mcp_agy_opening.py tests/test_config_reader.py tests/test_doctor.py
           bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 300
 
       - name: The whole suite with Docker, only the three known skips

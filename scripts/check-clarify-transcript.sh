@@ -71,7 +71,7 @@ ask_question without "## Question N" prose in the same reply.
 
 Output: one line per checked question ("PASS ..." or "FAIL ...: reasons"),
 each followed by any "WARN ..." lines, then a summary line
-"checked=X failed=Y warned=Z". Warnings never change the exit code.
+"checked=X failed=Y warned=Z denied=D". Warnings never change the exit code.
 
 Exit codes: 0 all pass, 1 any failure, 2 no clarify questions found, 3 usage/input/jq error.
 EOF

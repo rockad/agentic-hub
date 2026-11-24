@@ -82,34 +82,23 @@ printf 'not json\n' | run garbage-transcript allow "$Q3"
 # Other heading levels count: ### Question N is a write-up too.
 { user "h3"; text '### Question 3 (of 8) — The store'; ask "$Q3"; } | run h3-heading allow "$Q3"
 
-# Transcript lag (found in a live run: every fork that did have its write-up was denied once,
-# because the text printed in the same turn was not in the transcript yet). With the payload's
-# tool_use_id the hook judges only once the transcript holds this call's tool_use entry.
-tu_ask() { jq -nc --arg q "$2" --arg id "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "tool_use", id: $id, name: "AskUserQuestion", input: {questions: [{question: $q}]}}]}}'; }
-# run_id <name> <expect> <tool_use_id> <polls> <nap> [late-append-file] < transcript
-run_id() {
-  local name="$1" expect="$2" id="$3" file="$tmp/$1.jsonl" out got=allow
-  cat > "$file"
-  [ -n "${6:-}" ] && { (sleep 0.4; cat "$6" >> "$file") & }
-  out="$(jq -nc --arg p "$file" --arg q "$Q3" --arg i "$id" --arg s "s-$name" \
-      '{session_id: $s, transcript_path: $p, tool_use_id: $i, tool_input: {questions: [{question: $q}]}}' \
-    | CLARIFY_HOOK_STRICT=1 CLARIFY_ASK_POLLS="$4" CLARIFY_ASK_NAP="$5" TMPDIR="$tmp" bash "$hook" 2>/dev/null)" || { bad "$name: hook exited non-zero"; return; }
-  wait
-  [ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // ""' 2>/dev/null)" = deny ] && got=deny
-  if [ "$got" = "$expect" ]; then ok "$name"; else bad "$name: expected $expect, got $got"; fi
-}
-# Caught up (the call's tool_use is in the transcript) and no write-up: a real miss.
-{ user "lag a"; tu_ask tu-1 "$Q3"; } | run_id lag-caught-up-miss deny tu-1 3 0.05
-# Caught up with the write-up: fine.
-{ user "lag b"; text '## Question 3 (of 8) — x'; tu_ask tu-2 "$Q3"; } | run_id lag-caught-up-present allow tu-2 3 0.05
-# Not caught up (the text and the tool_use are not written yet): unknown, so fail open.
-{ user "lag c"; } | run_id lag-not-caught-up allow tu-3 3 0.05
-# The tool_use lands 0.4s late and the write-up is missing: the hook waits, then denies.
-{ user "lag d"; } > "$tmp/late-d.add"; tu_ask tu-4 "$Q3" > "$tmp/late-d.add"
-{ user "lag d"; } | run_id lag-late-flush-miss deny tu-4 8 0.1 "$tmp/late-d.add"
-# The tool_use lands late and the write-up is there: allowed.
-{ text '## Question 3 (of 8) — x'; tu_ask tu-5 "$Q3"; } > "$tmp/late-e.add"
-{ user "lag e"; } | run_id lag-late-flush-present allow tu-5 8 0.1 "$tmp/late-e.add"
+# The checkpoint does not depend on the transcript holding the current turn (found live: Claude
+# Code writes the current turn to the transcript only after the PreToolUse hooks finish, so the
+# hook cannot see the reply it guards, however long it waits). The transcript below ends at the
+# last flushed entry, the previous user prompt or tool result, as it does at hook time.
+# Nothing of the current turn flushed yet: the gate asks once, then lets the retry through.
+{ user "cp a"; } | run cp-unflushed-first deny "$Q3" s-cp
+{ user "cp a"; } | run cp-unflushed-retry allow "$Q3" s-cp
+# The same after an earlier answer in the series (a tool result is the last flushed entry).
+{ user "cp b"; result; } | run cp-after-answer-first deny "$Q3" s-cp2
+{ user "cp b"; result; } | run cp-after-answer-retry allow "$Q3" s-cp2
+# A heading that did flush lets the call through at once.
+{ user "cp c"; text '## Question 3 (of 8) — x'; } | run cp-flushed-heading allow "$Q3" s-cp3
+# The message is true either way: it names the question and covers both cases.
+{ user "cp d"; } > "$tmp/cp-msg.jsonl"
+out="$(jq -nc --arg p "$tmp/cp-msg.jsonl" --arg q "$Q3" '{session_id: "s-msg", transcript_path: $p, tool_input: {questions: [{question: $q}]}}' | TMPDIR="$tmp" bash "$hook")"
+if printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecisionReason | (test("Question 3") and test("If it did, call") and test("If it did not, print"))' >/dev/null 2>&1; then
+  ok cp-message-covers-both-cases; else bad cp-message-covers-both-cases; fi
 
 # Missing transcript path and an empty payload fail open.
 silent no-transcript-path '{"tool_input":{"questions":[{"question":"[Question 3 of 8] x"}]}}'

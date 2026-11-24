@@ -55,12 +55,12 @@ OpenCode needs no hook. Claude Code has its own hook, below.
 
 ## Claude Code: the ask hook (plugin install)
 
-Rules alone stopped holding in long sessions: after many turns or a compaction, forks 3 and later were asked with only the dialog and no write-up (issue #97). `hooks/clarify-ask-check.sh` is a `PreToolUse` hook on `AskUserQuestion`, registered by `hooks/hooks.json` through the plugin manifest.
+Rules alone stopped holding in long sessions: after many turns or a compaction, forks 3 and later were asked with only the dialog and no write-up (issue #97). `hooks/clarify-ask-check.sh` is a `PreToolUse` hook on `AskUserQuestion`, registered by `hooks/hooks.json` through the plugin manifest. It is a **checkpoint**, not a check:
 
 - It acts only on a clarify question, whose text starts with `[Question N of M]` or `[Fork N of M]`. Other questions pass untouched.
-- It looks at the assistant text since the last user entry (a prompt or a tool result). With no `## Question N` heading there, it denies the call and tells the model to print the full step and ask again.
-- **Transcript lag.** Claude Code writes the transcript asynchronously, so when the hook fires, the write-up the model just printed may not be in it yet. A live run showed this: every fork that had its write-up was denied once. The hook therefore judges only once the transcript already holds the `tool_use` entry of this very call (the payload's `tool_use_id`); it polls up to about 2 seconds for it, and if it never appears the call passes (fail open).
-- It denies each question number once per user prompt, not once per session, so a second series in a long session is checked again. The retry passes, so a wrong verdict can still cost at most one round trip and cannot loop.
+- It denies each question number once per user prompt, with a message that is true either way: confirm that this reply already printed the full `## Question N` step; if it did, call again at once; if not, print it, then call again. The retry passes, so it cannot loop, and a second series in a long session is gated again (the key is the question number plus the last real user prompt).
+- **Cost:** one extra, short model round trip per question. In a live 13-fork run the model usually just called again, and sometimes printed the step a second time.
+- **Why not check the transcript?** The hook cannot see the reply it guards. Claude Code writes the current turn to the transcript only after the `PreToolUse` hooks finish, and the payload carries no assistant text. Measured live: the call's `tool_use` never appeared in the transcript, even after the hook waited 6 seconds. A hook that judged the transcript either denied every fork, including those that had a write-up (first version), or, when it waited for the transcript, silently allowed everything (second version). If the heading for N is already visible in the transcript, the call passes at once.
 - It fails open if `jq` or the transcript is missing. It needs `bash` and `jq`.
 - Tests: `scripts/test-clarify-ask-hook.sh`. It only runs when the skill is installed as the plugin; a plain `npx skills` copy has no Claude Code hook.
 
@@ -84,7 +84,7 @@ scripts/check-clarify-transcript.sh --format antigravity \
 - It fails a question that has no `## Question N` write-up before it, a Claude Code description under 120 characters, an empty preview, or a fork count that changes without a `Fork map revised` notice.
 - In Antigravity, it also fails a question heading with no `ask_question` call in the same reply.
 - It warns on a Claude Code preview without the `→ next:` line.
-- In Claude Code transcripts, a question call that the ask hook denied is reported as `DENIED` and counted in `denied=N` at the end of the summary line, not as a result; the retry after it counts the write-up printed before the denied attempt. So `failed` describes what the user saw, and `denied` shows how often the hook had to step in (a high count on a session where every write-up exists points at transcript lag, a high count with missing write-ups at a skill that is not being followed).
+- In Claude Code transcripts, a question call that the ask hook denied is reported as `DENIED` and counted in `denied=N` at the end of the summary line, not as a result; the retry after it counts the write-up printed before the denied attempt. So `failed` describes what the user saw, and `denied` shows how often the hook had to step in (one denial per question is expected, because the checkpoint gates every question once; more than that points at a model that ignores the gate).
 - Exit codes: `0` all pass, `1` a failure, `2` no clarify questions found, `3` usage error.
 
 Background and test history: `docs/plans/clarify-claude-code-option-explanations.md` and issue #79.

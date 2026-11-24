@@ -1,4 +1,4 @@
-"""S1-CLAUDE, static checks of the shipped files: `hooks/hooks.json` (the Claude Code plugin hooks
+"""S1-CLAUDE, static checks of the shipped files: `claude/hooks.json` (the Claude Code plugin hooks
 format, scripts referenced through `${CLAUDE_PLUGIN_ROOT}`) and the three scripts (`shellcheck` clean,
 `dash -n` clean, executable, POSIX sh). No Docker, no network.
 
@@ -23,7 +23,7 @@ TIMEOUT_WEEK = 604800
 
 @pytest.fixture(scope="module")
 def hooks():
-    return json.loads(plugin_file("hooks/hooks.json").read_text())
+    return json.loads(plugin_file("claude/hooks.json").read_text())
 
 
 def entries(hooks, event):

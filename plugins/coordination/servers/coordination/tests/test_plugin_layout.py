@@ -2,13 +2,14 @@
 Antigravity (agy) each install with their own command. These tests pin the layout:
 
 - the two manifests parse and agree on name, version and description;
-- neither manifest carries a `hooks` field (Claude loads `hooks/hooks.json` by itself, and an explicit
-  pointer to it is a known duplicate-hooks error; agy reads the root `hooks.json`);
+- Claude's files live in `claude/` and its manifest points at them (`hooks`: `./claude/hooks.json`,
+  `mcpServers`: `./claude/mcp.json`), as Jev does, so agy, which reads only the root `hooks.json`, never
+  sees a `hooks/hooks.json` or a `.mcp.json` it would warn about; the agy manifest has no such field;
 - the agy `hooks.json` runs `./bin/<script>` (agy runs a plugin hook with the plugin folder as its
-  working directory, A8c part 3) and the Claude `hooks/hooks.json` runs
+  working directory, A8c part 3) and the Claude `claude/hooks.json` runs
   `"${CLAUDE_PLUGIN_ROOT}/bin/<script>"`; every script they name exists and is executable;
 - the agy-only scripts are in the agy hooks only;
-- `.mcp.json` is the Claude MCP entry and the plugin ships no `mcp_config.json` (agy's entry lives in
+- `claude/mcp.json` is the Claude MCP entry and the plugin ships no `mcp_config.json` (agy's entry lives in
   the user's global file and holds a key);
 - the plugin is listed in both marketplace files with the same version.
 
@@ -64,7 +65,7 @@ def agy_commands() -> list[tuple[str, str, int]]:
 
 
 def claude_commands() -> list[tuple[str, str]]:
-    data = load(PLUGIN_DIR / "hooks" / "hooks.json")["hooks"]
+    data = load(PLUGIN_DIR / "claude" / "hooks.json")["hooks"]
     return [(event, hook["command"]) for event, groups in data.items() for group in groups for hook in group["hooks"]]
 
 
@@ -80,10 +81,24 @@ def test_both_manifests_parse_and_agree_on_name_version_and_description():
     assert agy["description"] == claude["description"]
 
 
-def test_no_manifest_points_at_a_hooks_file():
-    """A `hooks` field naming `./hooks/hooks.json` makes Claude load the file twice (a known error)."""
-    for rel in ("plugin.json", ".claude-plugin/plugin.json"):
-        assert "hooks" not in load(PLUGIN_DIR / rel), f"{rel} must not carry a `hooks` field"
+def test_claude_manifest_points_at_the_claude_folder_and_agy_manifest_at_nothing():
+    """Claude's manifest names its two files (Jev does the same); the agy manifest has no such field.
+    A `hooks` field naming `./hooks/hooks.json` would make Claude load the file twice (a known error), so
+    the file is not in that folder at all."""
+    claude = load(PLUGIN_DIR / ".claude-plugin" / "plugin.json")
+    assert claude["hooks"] == "./claude/hooks.json" and claude["mcpServers"] == "./claude/mcp.json"
+    for rel in (claude["hooks"], claude["mcpServers"]):
+        assert (PLUGIN_DIR / rel).is_file(), rel
+    agy = load(PLUGIN_DIR / "plugin.json")
+    assert "hooks" not in agy and "mcpServers" not in agy
+
+
+def test_the_plugin_root_holds_none_of_the_files_agy_warns_about():
+    """agy's validator warns about a `.mcp.json` (never loaded) and a `hooks/hooks.json` (ignored) at the
+    plugin root; both moved into claude/. (AGENTS.md is the one remaining warning: it is developer
+    guidance for this folder, not a rule to ship.)"""
+    assert not (PLUGIN_DIR / ".mcp.json").exists()
+    assert not (PLUGIN_DIR / "hooks").exists()
 
 
 def test_the_old_agy_fragment_directory_is_gone():
@@ -117,7 +132,7 @@ def test_every_agy_hook_command_is_a_relative_bin_path_to_an_executable_script()
 
 def test_every_claude_hook_command_names_an_existing_executable_script_under_the_plugin_root():
     commands = claude_commands()
-    assert commands, "hooks/hooks.json holds no command"
+    assert commands, "claude/hooks.json holds no command"
     for _event, command in commands:
         match = re.fullmatch(r'"\$\{CLAUDE_PLUGIN_ROOT\}/bin/([a-z0-9-]+)"( (?:start|end))?', command)
         assert match, f"unexpected command shape: {command}"
@@ -134,7 +149,7 @@ def test_the_claude_hooks_cover_the_claude_scripts_and_only_those():
 
 def test_the_agy_only_scripts_are_listed_in_the_agy_hooks_only():
     agy_names = {Path(c).name for _e, c, _t in agy_commands()}
-    claude_text = (PLUGIN_DIR / "hooks" / "hooks.json").read_text()
+    claude_text = (PLUGIN_DIR / "claude" / "hooks.json").read_text()
     assert agy_names == AGY_ONLY
     for name in AGY_ONLY:
         assert name not in claude_text, f"{name} is agy-only and must not be a Claude hook"
@@ -162,7 +177,7 @@ def test_every_script_that_reads_a_setting_sources_the_lib_before_it_reads_one()
 
 
 def test_the_claude_mcp_entry_is_one_http_server_with_the_key_from_the_environment():
-    data = load(PLUGIN_DIR / ".mcp.json")
+    data = load(PLUGIN_DIR / "claude" / "mcp.json")
     assert list(data) == ["mcpServers"]
     assert data["mcpServers"] == {
         "a2a-coord": {
@@ -171,7 +186,7 @@ def test_the_claude_mcp_entry_is_one_http_server_with_the_key_from_the_environme
             "headers": {"Authorization": "Bearer ${A2A_API_KEY}"},
         }
     }
-    assert "a2ak_" not in (PLUGIN_DIR / ".mcp.json").read_text(), "a key never goes into the plugin"
+    assert "a2ak_" not in (PLUGIN_DIR / "claude" / "mcp.json").read_text(), "a key never goes into the plugin"
 
 
 def test_the_plugin_ships_no_agy_mcp_config():

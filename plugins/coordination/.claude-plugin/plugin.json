@@ -11,5 +11,7 @@
     "mcp",
     "claude-code",
     "antigravity"
-  ]
+  ],
+  "hooks": "./claude/hooks.json",
+  "mcpServers": "./claude/mcp.json"
 }

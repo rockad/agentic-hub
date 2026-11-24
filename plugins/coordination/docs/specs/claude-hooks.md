@@ -9,9 +9,9 @@ Labels: **spec** is written in `server-api.md`. **[design]** is a choice made wh
 - `bin/a2a-register`: `start` (SessionStart hook) and `end` (SessionEnd hook).
 - `bin/a2a-listen`: the `asyncRewake` listener (SessionStart, Stop, UserPromptSubmit).
 - `bin/a2a-pending`: the UserPromptSubmit command hook (BP5).
-- `hooks/hooks.json`: the Claude Code plugin hooks file; every command goes through `${CLAUDE_PLUGIN_ROOT}`. Claude Code loads `hooks/hooks.json` by itself, so `.claude-plugin/plugin.json` carries no `hooks` field (an explicit pointer to it is a known duplicate-hooks error).
+- `claude/hooks.json`: the Claude Code plugin hooks file; every command goes through `${CLAUDE_PLUGIN_ROOT}`. `.claude-plugin/plugin.json` names it in its `hooks` field (`./claude/hooks.json`), as Jev does: a file at the auto-load path `hooks/hooks.json` would be seen by agy's validator and warned about, and an explicit `hooks` pointer to that auto-load path is a known duplicate-hooks error. Verified 2026-11-24 with a headless `claude -p --plugin-dir`: the plugin adds exactly its two `SessionStart` hooks.
 - `bin/a2a-lib.sh`: the settings reader (section 2), sourced by the three scripts and by the two agy scripts; never run.
-- `.claude-plugin/plugin.json`, `.mcp.json` (the `a2a-coord` MCP entry: `type: http`, `http://127.0.0.1:8120/mcp`, `Authorization: Bearer ${A2A_API_KEY}`, SP2 C9), and the entry `coordination` in `.claude-plugin/marketplace.json`: the plugin installs with `claude plugin marketplace add rockad/agentic-hub` and `claude plugin install coordination@agentic-hub` (decisions Z20 and Z21; README, Install). The shapes are [verified] by `tests/test_plugin_layout.py`; that `claude plugin validate .` and `claude plugin validate plugins/coordination` accept them was run by hand on 2026-11-24, not by a test. That Claude Code loads the plugin from the marketplace and expands `${CLAUDE_PLUGIN_ROOT}` in it is **[unverified]** (live check L1).
+- `.claude-plugin/plugin.json`, `claude/mcp.json` (named by its `mcpServers` field; the `a2a-coord` MCP entry, loaded in that headless run as `plugin:coordination:a2a-coord`: `type: http`, `http://127.0.0.1:8120/mcp`, `Authorization: Bearer ${A2A_API_KEY}`, SP2 C9), and the entry `coordination` in `.claude-plugin/marketplace.json`: the plugin installs with `claude plugin marketplace add rockad/agentic-hub` and `claude plugin install coordination@agentic-hub` (decisions Z20 and Z21; README, Install). The shapes are [verified] by `tests/test_plugin_layout.py`; that `claude plugin validate .` and `claude plugin validate plugins/coordination` accept them was run by hand on 2026-11-24, not by a test. That Claude Code loads the plugin from the marketplace and expands `${CLAUDE_PLUGIN_ROOT}` in it is **[unverified]** (live check L1).
 
 All three scripts are POSIX `sh` plus `curl`, nothing else (no `jq`, no Python). Since WS1 each also sources the one shared `a2a-lib.sh` from its own folder, so the folder is copied whole, never one file at a time (decisions Z20 and Z21; D28's installer copy is gone). [verified] `shellcheck` 0.11 is clean, `dash -n` parses them, they run under `dash`, they are mode 755, and a test scans their code for bashisms and for any other runtime (`tests/test_hooks_static.py`).
 
@@ -19,7 +19,7 @@ All three scripts are POSIX `sh` plus `curl`, nothing else (no `jq`, no Python).
 
 | variable | default | meaning |
 | --- | --- | --- |
-| `A2A_SERVER_URL` | `http://127.0.0.1:8120` | server base URL **[design: the name]** |
+| `A2A_SERVER_URL` | `http://127.0.0.1:8120` | server base URL **[design: the name]**. Must be `http://` or `https://` with only `A-Za-z0-9._~:/@%-` after it, else the script exits 0 without a request (the listener does not start); curl runs with `--proto =http,https`. An IPv6 literal such as `http://[::1]:8120` is refused (use `localhost` or the IPv4 address) [verified, `tests/test_config_reader.py`] |
 | `A2A_KEY_FILE` | `~/.config/a2a-coord/api-key` | the key file, first line (decision D34); overridable for tests |
 | `A2A_CARD` | `claude-code@<short hostname>` | this machine's card **[design]** |
 | `A2A_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/a2a-coord` | markers and `listen.log` |
@@ -124,7 +124,7 @@ The UserPromptSubmit command hook, timeout 5 in `hooks.json`, curl `--connect-ti
 - It runs with `exec 2>/dev/null` at the top, like `a2a-register`, so no shell error can reach the model; it exits 0 always [verified: corrupt and binary input and a closed stdout (a `printf` error before the fix) give exit 0 and empty stderr]. Nothing is printed for `{}`, any other status, a stall (gives up at 2 s) or a down server; exit 0 always.
 - Against the real server [verified]: nothing pending prints nothing; two pending print `[a2a] 2 pending...` once; a second prompt with the same count prints nothing (the server's announce dedupe); a changed count prints again; an unregistered session and a bad key print nothing.
 
-## 7. `hooks/hooks.json`
+## 7. `claude/hooks.json`
 
 Differences from the api 11.1 sketch, all deliberate:
 

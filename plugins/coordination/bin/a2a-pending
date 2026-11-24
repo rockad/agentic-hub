@@ -24,7 +24,7 @@ umask 077
 exec 2>/dev/null # no shell error may reach the model (stderr of a hook does); this script exits 0 always
 # The settings file (docs/specs/claude-hooks.md): silent, never fails; the -r test because `.` of a
 # missing file would end a POSIX shell with status 2.
-LC_ALL=C # a plain assignment, not passed on to children: the shell's own 512-byte limit and the control-character test of the lib count bytes
+LC_ALL=C # a plain assignment (children only see it if the caller already exported LC_ALL): the shell's own 512-byte limit and the control-character test of the lib count bytes
 # shellcheck source=/dev/null
 if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
 

@@ -21,6 +21,20 @@ import { compareModels, parseModelId, resolveAlias, type Catalogue, type ModelOv
 import { EFFORT_LEVELS, effortCovers, type EffortLevel } from './agent-definitions.js';
 import { approvalEffortOf, costComparison, effortIndex, effortWithin, type CostGate, type CostGateFacts } from '../src/core/cost-gate.js';
 import { costEffortOf } from '../src/core/cost-estimate.js';
+import {
+  ELEVATION_LABELS,
+  cappedEffort,
+  elevationLabelList,
+  markOnceUsed,
+  onceLive,
+  parseAnswerLabel,
+  storedClause,
+  type AnswerKind,
+  type AnswerScope,
+  type OnceUsed,
+  type ParsedAnswer,
+  type StoredClause
+} from '../src/core/elevation-answer.js';
 
 import { STAGE_RUBRIC_TEXT, TIER_CRITERIA, type ClaudeModelAlias, type JevTier } from '../src/stage-rubric.js';
 
@@ -906,12 +920,15 @@ export function isAutoApprovePermissionMode(permissionMode: unknown): boolean {
 /** The marker the choice question starts with, and the PostToolUse recorder's pattern for it. */
 export const ELEVATE_MARKER_RE = /^\s*\[jev-elevate:(sonnet|opus|haiku|fable)(?::(low|medium|high|xhigh|max))?\]/;
 
-/** Option labels of the choice question, in order. The last one names the session model's alias. */
+/**
+ * Option labels of the choice question, in order (2.3.21: exactly four, no timed scope). `no` names the session model's alias and
+ * stands for this delegation only; `noSession` is the No for the rest of the session. The shared rules: src/core/elevation-answer.ts.
+ */
 export const CHOICE_LABELS = {
-  once: 'Yes, once',
-  fiveMin: 'Yes, for the next 5 minutes',
-  session: 'Yes, for this session',
-  no: (sessionAlias: string): string => `No, proceed on ${sessionAlias}`
+  once: ELEVATION_LABELS.yesOnce,
+  session: ELEVATION_LABELS.yesSession,
+  no: (sessionAlias: string): string => ELEVATION_LABELS.noOnce(sessionAlias),
+  noSession: ELEVATION_LABELS.noSession
 } as const;
 
 /** A subagent type is model-supplied text that reaches the deny reason: keep only safe characters. */
@@ -929,7 +946,7 @@ export function safeTypeName(type: unknown): string {
  * from the third attempt of the same delegation (`attempt`) the reason also says to stop retrying (the text Antigravity
  * shares, see `stopRetryingText`).
  */
-export function elevationChoiceReason(e: Elevation, subagentType?: unknown, attempt?: number | null, gate?: OverGate): string {
+export function elevationChoiceReason(e: Elevation, subagentType?: unknown, attempt?: number | null, gate?: OverGate, stored?: StoredClause | null): string {
   const alias = modelAlias(e.requested) ?? e.requested;
   const l = CHOICE_LABELS;
   const stop = stopRetryingText(attempt, alias, e.sessionAlias, 'AskUserQuestion');
@@ -942,10 +959,11 @@ export function elevationChoiceReason(e: Elevation, subagentType?: unknown, atte
     `[jev] "${alias}"${e.sourceNote ?? ''} is stronger than the session model "${e.sessionModel}" and the user has not approved it${why}. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker ${marker} followed by a short question ` +
     `naming the subagent_type (${safeTypeName(subagentType)}), the requested model${gate ? ' and effort' : ''}, the session model and a 10-word task summary; ` +
-    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
-    `If the user picks a Yes, launch the delegation again with the same model${gate ? ' and effort' : ''}; if No, launch it on ${e.sessionAlias}${lowered} (or do the work directly); ` +
+    `exactly four options in this order and with these labels: ${elevationLabelList(l.no(e.sessionAlias))}. ` +
+    `If the user picks a Yes, launch the delegation again with the same model${gate ? ' and effort' : ''}; if a No, launch it on ${e.sessionAlias}${lowered} (or do the work directly); ` +
     `If AskUserQuestion is not available, launch the delegation on ${e.sessionAlias}${lowered} now and do not stop; ` +
     `do not ask in any other form.` +
+    (stored ? ` ${stored.text}` : '') +
     (stop ? ` ${stop}` : '')
   );
 }
@@ -961,135 +979,188 @@ export function elevationChoiceDirective(model: string, sessionModel: string | n
   return (
     `ask the user before delegating on ${alias}, with AskUserQuestion: one question whose text STARTS with [jev-elevate:${alias}] followed by a short ` +
     `question naming the subagent_type, the model, the session model${sessionModel ? ` "${sessionModel}"` : ''} and a 10-word task summary; ` +
-    `exactly four options in this order: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(no)}'. ` +
-    `On a Yes launch it on ${alias}; on No launch it on ${no} (or do the work directly)`
+    `exactly four options in this order: ${elevationLabelList(l.no(no))}. ` +
+    `On a Yes launch it on ${alias}; on a No launch it on ${no} (or do the work directly)`
   );
 }
 
-export type ApprovalScope = 'once' | '5min' | 'session';
+export type ApprovalScope = AnswerScope;
 
-/** What the user approved: a model, for one launch, five minutes or the session. `expires_at` is epoch ms; a session approval has none. */
+/**
+ * What the user approved: a model, for the turn it was answered in (`once`, bound to `turn`) or the session. There is no clock (2.3.21).
+ * A record from before 2.3.21 with the `5min` scope is dropped when read; its `expires_at` is ignored.
+ */
 export type Approval = {
   model: ClaudeModelAlias;
   scope: ApprovalScope;
   created_at: number;
-  expires_at?: number;
-  /** The effort the approval was given at (2.3.19): it covers that model at this effort or lower. Absent (a record from before 2.3.19): at most `high`. */
+  /** The effort the approval was given at (2.3.19): it covers that model at this effort or lower, never above what Jev prescribed. Absent: at most `high`. */
   effort?: EffortLevel;
+  /** A `once` approval's turn: the prompt id (else the stored turn and its time) it was answered in. It is live only in that turn. */
+  turn?: string;
 };
+
+/** A No: this delegation only (`once`, bound to `turn`: the next launch of that model or a stronger one runs on the session model) or the rest of the session. */
+export type Decline = { model: ClaudeModelAlias; scope: ApprovalScope; created_at: number; turn?: string };
+
+/** A No to the effort question: launches at `level` run at `noEffort`, once (this turn) or for the session. */
+export type EffortDecline = { level: EffortLevel; noEffort: EffortLevel; scope: ApprovalScope; created_at: number; turn?: string };
 
 /**
  * The per-session approvals file: the approvals, and the denied-attempt counter of one prompt. `count` is every
  * denied attempt of the prompt, `counts` the same per delegation signature (`callSignature`), `at` the epoch ms of
  * the last one. A file written before `counts` and `at` existed has neither.
  * `denied` maps a model alias to the epoch ms Jev last prescribed the choice question for it (a deny, or the turn
- * directive); a file written before it existed has none, so no answer records an approval until the next denial.
+ * directive). Since 2.3.21 it has no expiry: it is the record of what Jev prescribed (with `deniedEffort`, the effort cap), not a
+ * gate on the answer.
  */
 export type ApprovalState = {
   approvals: Approval[];
   /** Effort approvals (`[jev-elevate-effort:<level>]`), apart from the model approvals; same scopes, same lock, same file. */
   effortApprovals?: EffortApproval[];
-  /** An effort level to the epoch ms Jev last prescribed the effort question for it. */
+  /** An effort level to the epoch ms Jev last prescribed the effort question for it (no expiry). */
   effortDenied?: Record<string, number>;
   /** The model the effort question named, per effort level (the marker's `:<model>`): a bare answer is recorded for that model, never for any model. Absent: the question named none. */
   effortDeniedModel?: Record<string, ClaudeModelAlias>;
+  /** The level the effort question's own No ran at, per effort level (`No, run at <level>`: the cost gate's, else `high`). A session No ("don't ask again") names no level, so it lowers to this one. */
+  effortDeniedNo?: Record<string, EffortLevel>;
   denied?: Record<string, number>;
-  /** The effort the model question was prescribed with, per model alias (2.3.19): an answer cannot approve a higher effort than the question named. */
+  /** The effort the model question was prescribed with, per model alias (2.3.19, no expiry): an answer cannot approve a higher effort than the question named. */
   deniedEffort?: Record<string, EffortLevel>;
   attempts?: { prompt: string; count: number; counts?: Record<string, number>; at?: number };
+  /** The No answers to the model question (2.3.21). */
+  declines?: Decline[];
+  /** The No answers to the effort question (2.3.21). */
+  effortDeclines?: EffortDecline[];
+  /** The once approvals a launch used in the turn (model alias), so a later deny can say so. Only the current turn's marks are kept. */
+  onceUsed?: OnceUsed[];
+  /** The same for the effort once approvals (key: the level). */
+  effortOnceUsed?: OnceUsed[];
 };
 
-/** What the user approved for the effort of a delegation: a level (`xhigh` or `max`; `max` covers both), for one launch, five minutes or the session. */
+/**
+ * What an approval is read against: the turn a `once` must belong to, and the config for the `modeChangedAt` stamp (an approval,
+ * a decline or a prescription older than the last mode change counts for nothing).
+ */
+export type ElevationCtx = { turn?: string; config?: ModeChangeConfigLike | null };
+
+/** What the user approved for the effort of a delegation: a level (`xhigh` or `max`; `max` covers both), for one turn or the session. */
 export type EffortApproval = {
   level: EffortLevel;
   scope: ApprovalScope;
   created_at: number;
-  expires_at?: number;
   /** The model the effort was approved for (2.3.19): it covers that model, and a weaker one, at this level or lower. Absent: any model. */
   model?: ClaudeModelAlias;
+  /** A `once` approval's turn, as for {@link Approval}. */
+  turn?: string;
 };
 
-export const ONCE_TTL_MS = 10 * 60 * 1000;
-export const FIVE_MIN_TTL_MS = 5 * 60 * 1000;
+/** Most approvals (and declines) one file keeps. */
+const ANSWERS_CAP = 24;
 
-/** The marker question of a PostToolUse payload for AskUserQuestion and its answer: `tool_response.answers[question]` and nothing else (`tool_input` is what the assistant sent, so it never counts). */
-function readElevationAnswer(input: unknown): { model: ClaudeModelAlias; label: string; effort?: EffortLevel } | null {
+const voided = (createdAt: number, ectx?: ElevationCtx | null): boolean => denialPredatesModeChange(createdAt, ectx?.config, 'claude-code');
+/** A stored answer that counts now: a session one, or a once of this turn; and not from before the last mode change. */
+const usable = (a: { scope: ApprovalScope; turn?: string; created_at: number }, ectx?: ElevationCtx | null): boolean =>
+  onceLive(a, ectx?.turn) && !voided(a.created_at, ectx);
+
+/** The marker question of a PostToolUse payload for AskUserQuestion, read as far as it goes: which question it is, whether its marker parses, and the user's label. */
+export type MarkerRead =
+  | { kind: AnswerKind; marker: 'bad'; label: string | null }
+  | { kind: 'model'; marker: 'ok'; model: ClaudeModelAlias; effort?: EffortLevel; label: string | null }
+  | { kind: 'effort'; marker: 'ok'; level: EffortLevel; model?: ClaudeModelAlias; label: string | null };
+
+const ANY_MARKER_RE = /^\s*\[jev-elevate(-effort)?:/i;
+
+/**
+ * Pure: the elevation or effort question of a PostToolUse payload for AskUserQuestion, or null when it is no such question. The
+ * answer is `tool_response.answers[question]` and nothing else (`tool_input` is what the assistant sent, so it never counts);
+ * `label` is null when there is no answer. Any question that starts with the marker prefix is one (the marker is not a secret);
+ * `marker: 'bad'` says its marker names no known model or level.
+ */
+export function readMarkerAnswer(input: unknown): MarkerRead | null {
   try {
     const i = input as { tool_name?: unknown; tool_input?: any; tool_response?: any } | null;
     if (!i || typeof i !== 'object') return null;
     if (i.tool_name !== undefined && i.tool_name !== 'AskUserQuestion') return null;
     const question = i.tool_input?.questions?.[0]?.question;
     if (typeof question !== 'string') return null;
-    const m = ELEVATE_MARKER_RE.exec(question);
-    if (!m) return null;
+    const any = ANY_MARKER_RE.exec(question);
+    if (!any) return null;
     const answer = i.tool_response?.answers?.[question];
-    if (typeof answer !== 'string') return null;
-    return { model: m[1] as ClaudeModelAlias, label: answer.trim(), ...(m[2] ? { effort: m[2] as EffortLevel } : {}) };
+    const label = typeof answer === 'string' ? answer.trim() : null;
+    const kind: AnswerKind = any[1] ? 'effort' : 'model';
+    if (kind === 'model') {
+      const m = ELEVATE_MARKER_RE.exec(question);
+      return m ? { kind, marker: 'ok', model: m[1] as ClaudeModelAlias, ...(m[2] ? { effort: m[2] as EffortLevel } : {}), label } : { kind, marker: 'bad', label };
+    }
+    const m = EFFORT_MARKER_RE.exec(question);
+    return m ? { kind, marker: 'ok', level: m[1] as EffortLevel, ...(m[2] ? { model: m[2] as ClaudeModelAlias } : {}), label } : { kind, marker: 'bad', label };
   } catch {
     return null;
   }
 }
 
+/** The model question of a PostToolUse payload with a well-formed marker and an answer. */
+function readElevationAnswer(input: unknown): { model: ClaudeModelAlias; label: string; effort?: EffortLevel } | null {
+  const r = readMarkerAnswer(input);
+  if (!r || r.kind !== 'model' || r.marker !== 'ok' || r.label === null) return null;
+  return { model: r.model, label: r.label, ...(r.effort ? { effort: r.effort } : {}) };
+}
+
 /**
- * Pure: true when a PostToolUse payload for AskUserQuestion is the elevation question (the marker) answered with its
- * No option (`No, proceed on <alias>`). Only that label: another label, a missing answer and malformed input give false.
+ * Pure: true when a PostToolUse payload for AskUserQuestion is the elevation question (the marker) answered with one of its No
+ * options (`No, proceed on <alias>`, `No, don't ask again this session`). Another label, a missing answer and malformed input give false.
  * It lets the hook treat the user's decision to stay on the session model as final for the downgrade question too.
  */
 export function parseElevationDecline(input: unknown): boolean {
   return elevationDeclinedModel(input) !== null;
 }
 
-/** Pure: the model alias of the elevation question that was answered with its No option, or null (see `parseElevationDecline`). */
+/** Pure: the model alias of the elevation question that was answered with one of its No options, or null (see `parseElevationDecline`). */
 export function elevationDeclinedModel(input: unknown): ClaudeModelAlias | null {
   const answer = readElevationAnswer(input);
-  return answer && answer.label.startsWith(CHOICE_LABELS.no('')) ? answer.model : null;
+  const parsed = answer ? parseAnswerLabel(answer.label, 'model') : null;
+  return answer && parsed?.answer === 'no' ? answer.model : null;
 }
 
 /**
  * Pure: the approval a PostToolUse payload for AskUserQuestion carries, or null. Only a question that starts with
- * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and nothing else.
- * A "No", another label, a missing answer and malformed input give null.
+ * the marker counts (any such question, whoever wrote it); the answer is `tool_response.answers[question]` and nothing else,
+ * and must be one of the exact Yes labels. A once is bound to `turn`. A No, another label, a missing answer and malformed input give null.
+ * The effort is the marker's; `recordApproval` holds it to what Jev prescribed.
  */
-export function parseElevationAnswer(input: unknown, nowMs: number): Approval | null {
+export function parseElevationAnswer(input: unknown, nowMs: number, turn?: string): Approval | null {
   try {
     const read = readElevationAnswer(input);
     if (!read) return null;
-    const { model, label } = read;
-    const effort = read.effort ? { effort: read.effort } : {};
-    if (label.startsWith(CHOICE_LABELS.once)) return { model, scope: 'once', created_at: nowMs, expires_at: nowMs + ONCE_TTL_MS, ...effort };
-    if (label.startsWith(CHOICE_LABELS.fiveMin)) return { model, scope: '5min', created_at: nowMs, expires_at: nowMs + FIVE_MIN_TTL_MS, ...effort };
-    if (label.startsWith(CHOICE_LABELS.session)) return { model, scope: 'session', created_at: nowMs, ...effort };
-    return null;
+    const parsed = parseAnswerLabel(read.label, 'model');
+    if (!parsed || parsed.answer !== 'yes') return null;
+    return {
+      model: read.model,
+      scope: parsed.scope,
+      created_at: nowMs,
+      ...(parsed.scope === 'once' && turn !== undefined ? { turn } : {}),
+      ...(read.effort ? { effort: read.effort } : {})
+    };
   } catch {
     return null;
   }
 }
 
-const SCOPE_PREFERENCE: Readonly<Record<ApprovalScope, number>> = { session: 0, '5min': 1, once: 2 };
+const SCOPE_PREFERENCE: Readonly<Record<ApprovalScope, number>> = { session: 0, once: 1 };
 
-/** Pure: an approval is valid while it has no expiry or the expiry is ahead. */
-export function approvalValid(a: Pick<Approval, 'expires_at'>, nowMs: number): boolean {
-  return a.expires_at === undefined || a.expires_at > nowMs;
-}
-
-/** Pure: read a state object of unknown shape into a clean one (a corrupt file gives an empty state). */
+/** Pure: read a state object of unknown shape into a clean one (a corrupt file gives an empty state). A `5min` record from before 2.3.21 is dropped. */
 export function normalizeApprovalState(raw: unknown): ApprovalState {
   const r = raw as { approvals?: unknown; attempts?: unknown; denied?: unknown } | null;
+  const scopeOk = (s: unknown): s is ApprovalScope => s === 'once' || s === 'session';
+  const turnOf = (x: { turn?: unknown }): { turn?: string } => (typeof x.turn === 'string' && x.turn ? { turn: x.turn } : {});
   const approvals = Array.isArray(r?.approvals)
     ? (r!.approvals as unknown[]).filter((a): a is Approval => {
         const x = a as Partial<Approval> | null;
-        return (
-          !!x &&
-          typeof x.model === 'string' &&
-          modelRank(x.model) !== null &&
-          (x.scope === 'once' || x.scope === '5min' || x.scope === 'session') &&
-          typeof x.created_at === 'number' &&
-          (x.expires_at === undefined || typeof x.expires_at === 'number')
-        );
+        return !!x && typeof x.model === 'string' && modelRank(x.model) !== null && scopeOk(x.scope) && typeof x.created_at === 'number';
       }).map((a) => {
         const effort = costEffortOf((a as { effort?: unknown }).effort);
-        const { effort: _drop, ...rest } = a as Approval;
-        return effort ? { ...rest, effort } : rest;
+        return { model: a.model, scope: a.scope, created_at: a.created_at, ...turnOf(a), ...(effort ? { effort } : {}) } as Approval;
       })
     : [];
   const at = (r as { attempts?: { prompt?: unknown; count?: unknown; counts?: unknown; at?: unknown } } | null)?.attempts;
@@ -1113,19 +1184,34 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
   const effortApprovals = Array.isArray((r as { effortApprovals?: unknown } | null)?.effortApprovals)
     ? ((r as { effortApprovals: unknown[] }).effortApprovals).filter((a): a is EffortApproval => {
         const x = a as Partial<EffortApproval> | null;
-        return (
-          !!x &&
-          EFFORT_LEVELS.includes(x.level as EffortLevel) &&
-          (x.scope === 'once' || x.scope === '5min' || x.scope === 'session') &&
-          typeof x.created_at === 'number' &&
-          (x.expires_at === undefined || typeof x.expires_at === 'number')
-        );
+        return !!x && EFFORT_LEVELS.includes(x.level as EffortLevel) && scopeOk(x.scope) && typeof x.created_at === 'number';
       }).map((a) => {
         const model = (a as { model?: unknown }).model;
-        const { model: _drop, ...rest } = a as EffortApproval;
-        return typeof model === 'string' && modelRank(model) !== null ? { ...rest, model: model as ClaudeModelAlias } : rest;
+        return {
+          level: a.level,
+          scope: a.scope,
+          created_at: a.created_at,
+          ...turnOf(a),
+          ...(typeof model === 'string' && modelRank(model) !== null ? { model: model as ClaudeModelAlias } : {})
+        } as EffortApproval;
       })
     : [];
+  const declines = Array.isArray((r as { declines?: unknown } | null)?.declines)
+    ? ((r as { declines: unknown[] }).declines).filter((d): d is Decline => {
+        const x = d as Partial<Decline> | null;
+        return !!x && typeof x.model === 'string' && modelRank(x.model) !== null && scopeOk(x.scope) && typeof x.created_at === 'number';
+      }).map((d) => ({ model: d.model, scope: d.scope, created_at: d.created_at, ...turnOf(d) }) as Decline)
+    : [];
+  const effortDeclines = Array.isArray((r as { effortDeclines?: unknown } | null)?.effortDeclines)
+    ? ((r as { effortDeclines: unknown[] }).effortDeclines).filter((d): d is EffortDecline => {
+        const x = d as Partial<EffortDecline> | null;
+        return !!x && EFFORT_LEVELS.includes(x.level as EffortLevel) && EFFORT_LEVELS.includes(x.noEffort as EffortLevel) && scopeOk(x.scope) && typeof x.created_at === 'number';
+      }).map((d) => ({ level: d.level, noEffort: d.noEffort, scope: d.scope, created_at: d.created_at, ...turnOf(d) }) as EffortDecline)
+    : [];
+  const usedOf = (v: unknown): OnceUsed[] =>
+    Array.isArray(v) ? v.filter((u): u is OnceUsed => !!u && typeof (u as OnceUsed).key === 'string' && typeof (u as OnceUsed).turn === 'string').map((u) => ({ key: u.key, turn: u.turn })) : [];
+  const onceUsed = usedOf((r as { onceUsed?: unknown } | null)?.onceUsed);
+  const effortOnceUsed = usedOf((r as { effortOnceUsed?: unknown } | null)?.effortOnceUsed);
   const rawEffortDenied = (r as { effortDenied?: unknown } | null)?.effortDenied;
   const effortDenied =
     rawEffortDenied && typeof rawEffortDenied === 'object' && !Array.isArray(rawEffortDenied)
@@ -1135,6 +1221,11 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
   const effortDeniedModel =
     rawEffortDeniedModel && typeof rawEffortDeniedModel === 'object' && !Array.isArray(rawEffortDeniedModel)
       ? Object.fromEntries(Object.entries(rawEffortDeniedModel).filter(([l, m]) => EFFORT_LEVELS.includes(l as EffortLevel) && typeof m === 'string' && modelRank(m) !== null))
+      : undefined;
+  const rawEffortDeniedNo = (r as { effortDeniedNo?: unknown } | null)?.effortDeniedNo;
+  const effortDeniedNo =
+    rawEffortDeniedNo && typeof rawEffortDeniedNo === 'object' && !Array.isArray(rawEffortDeniedNo)
+      ? Object.fromEntries(Object.entries(rawEffortDeniedNo).filter(([l, n]) => EFFORT_LEVELS.includes(l as EffortLevel) && EFFORT_LEVELS.includes(n as EffortLevel)))
       : undefined;
   const rawDeniedEffort = (r as { deniedEffort?: unknown } | null)?.deniedEffort;
   const deniedEffort =
@@ -1147,36 +1238,41 @@ export function normalizeApprovalState(raw: unknown): ApprovalState {
     ...(effortApprovals.length ? { effortApprovals } : {}),
     ...(effortDenied && Object.keys(effortDenied).length ? { effortDenied: effortDenied as Record<string, number> } : {}),
     ...(effortDeniedModel && Object.keys(effortDeniedModel).length ? { effortDeniedModel: effortDeniedModel as Record<string, ClaudeModelAlias> } : {}),
+    ...(effortDeniedNo && Object.keys(effortDeniedNo).length ? { effortDeniedNo: effortDeniedNo as Record<string, EffortLevel> } : {}),
+    ...(declines.length ? { declines } : {}),
+    ...(effortDeclines.length ? { effortDeclines } : {}),
+    ...(onceUsed.length ? { onceUsed } : {}),
+    ...(effortOnceUsed.length ? { effortOnceUsed } : {}),
     ...(attempts ? { attempts } : {}),
     ...(denied && Object.keys(denied).length ? { denied: denied as Record<string, number> } : {})
   };
 }
 
-/** Pure: add an approval and drop the expired ones. */
-export function addApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState {
-  return { ...state, approvals: [...state.approvals.filter((a) => approvalValid(a, nowMs)), approval] };
+/**
+ * Pure: add an approval. A new `once` replaces the once approvals of other turns (they are never live again); the file keeps
+ * at most {@link ANSWERS_CAP} approvals.
+ */
+export function addApproval(state: ApprovalState, approval: Approval, _nowMs?: number): ApprovalState {
+  const keep = state.approvals.filter((a) => !(approval.scope === 'once' && a.scope === 'once' && a.turn !== approval.turn));
+  return { ...state, approvals: [...keep, approval].slice(-ANSWERS_CAP) };
 }
 
-/** How long after Jev prescribed the choice question for a model an answer to it can still record an approval. */
-export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
-
 /**
- * Pure: note that the choice question was prescribed for `model` now, and drop the notes older than the window. With `effort`
- * (2.3.19: the question named an effort) the effort is noted too, so an answer cannot approve a higher one.
+ * Pure: note that the choice question was prescribed for `model` now. There is no expiry (2.3.21): the note is the record of what
+ * Jev prescribed, and with `effort` (2.3.19: the question named an effort) the effort is noted too, so an answer cannot approve a
+ * higher one. A later prescription for the same model replaces the earlier one.
  */
 export function noteDenied(state: ApprovalState, model: string, nowMs: number, effort?: EffortLevel): ApprovalState {
-  const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
   const key = modelAlias(model) ?? model;
-  const keptSet = new Set(kept.map(([m]) => m));
   const { [key]: _old, ...otherEfforts } = state.deniedEffort ?? {};
-  const deniedEffort = { ...Object.fromEntries(Object.entries(otherEfforts).filter(([m]) => keptSet.has(m))), ...(effort ? { [key]: effort } : {}) };
+  const deniedEffort = { ...otherEfforts, ...(effort ? { [key]: effort } : {}) };
   const { deniedEffort: _drop, ...rest } = state;
-  return { ...rest, denied: { ...Object.fromEntries(kept), [key]: nowMs }, ...(Object.keys(deniedEffort).length ? { deniedEffort } : {}) };
+  return { ...rest, denied: { ...(state.denied ?? {}), [key]: nowMs }, ...(Object.keys(deniedEffort).length ? { deniedEffort } : {}) };
 }
 
 /**
- * Pure: when Jev last prescribed the choice question for `model` or a stronger one (epoch ms), whatever the window, or
- * null when it has no note of one. It lets a caller tell an answer to a question from before the last mode change.
+ * Pure: when Jev last prescribed the choice question for `model` or a stronger one (epoch ms), or null when it has no note of one.
+ * It lets a caller tell an answer to a question from before the last mode change.
  */
 export function lastDeniedAtMs(state: ApprovalState, model: string): number | null {
   const want = modelRank(model);
@@ -1187,41 +1283,40 @@ export function lastDeniedAtMs(state: ApprovalState, model: string): number | nu
   return times.length ? Math.max(...times) : null;
 }
 
-/**
- * Pure: was the question prescribed for `model`, or a stronger one, within the window before `nowMs`? With `config`, a denial
- * older than the last mode change (its `modeChangedAt` stamp) does not count: an answer to it must not approve it.
- */
-export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: number, config?: ModeChangeConfigLike | null): boolean {
-  const want = modelRank(model);
-  if (want === null) return false;
-  return Object.entries(state.denied ?? {}).some(
-    ([m, t]) => (modelRank(m) ?? -1) >= want && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code')
-  );
+/** Pure: the effort Jev prescribed for `model` (its own question's, kept without expiry), unless the prescription predates the last mode change. */
+export function prescribedEffort(state: ApprovalState, model: string, config?: ModeChangeConfigLike | null): EffortLevel | undefined {
+  const key = modelAlias(model) ?? model;
+  const at = state.denied?.[key];
+  if (at === undefined || voided(at, { config })) return undefined;
+  return state.deniedEffort?.[key];
 }
 
 /**
- * Pure: the state with the approval added, or null when no recent denial asked for it (the answer is then ignored). With
- * `config`, a denial from before the last mode change asks for nothing (see `wasDeniedRecently`).
+ * Pure: the state with the user's Yes added (2.3.21: no window, no denial needed). The effort an approval carries is the one its
+ * marker named, held to the effort Jev prescribed for the model; with none on record (a question asked before any denial, or a
+ * prescription from before the last mode change) it carries none, which stands for at most `high`. A Yes for a model also drops
+ * the declines it contradicts (a decline of that model or a weaker one). `approval` is what was stored.
  */
-export function recordApproval(state: ApprovalState, approval: Approval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
-  if (!wasDeniedRecently(state, approval.model, nowMs, config)) return null;
-  // An approval names the effort its question named, never a higher one than Jev prescribed: with no effort on record for the
-  // model (an old denial, or a question that named none) it keeps no effort, which stands for at most `high`.
-  let stored = approval;
-  if (approval.effort) {
-    // Only the denial of the SAME model counts: a stronger model's question (prescribed at a higher effort) must not raise what an
-    // answer for this one can approve.
-    const prescribed = state.deniedEffort?.[modelAlias(approval.model) ?? approval.model];
-    const { effort: _drop, ...rest } = approval;
-    stored = prescribed ? { ...rest, effort: effortIndex(approval.effort) <= effortIndex(prescribed) ? approval.effort : prescribed } : rest;
-  }
-  return addApproval(state, stored, nowMs);
+export function recordApproval(
+  state: ApprovalState,
+  approval: Approval,
+  nowMs: number,
+  config?: ModeChangeConfigLike | null
+): { state: ApprovalState; approval: Approval } {
+  const { effort: _marker, ...rest } = approval;
+  const effort = cappedEffort(approval.effort, prescribedEffort(state, approval.model, config));
+  const stored: Approval = effort ? { ...rest, effort } : rest;
+  const rank = modelRank(stored.model) ?? 0;
+  const declines = (state.declines ?? []).filter((d) => (modelRank(d.model) ?? Infinity) > rank);
+  const { declines: _d, ...base } = state;
+  return { state: addApproval({ ...base, ...(declines.length ? { declines } : {}) }, stored, nowMs), approval: stored };
 }
 
 /**
  * Pure: find the approval that covers `requested` (an approved model covers itself and anything below it) and
- * consume it when it is a `once`. A standing approval (session, then 5 minutes) is preferred over a `once`,
- * so a once is not spent when something wider already covers the call. Expired approvals are dropped.
+ * consume it when it is a `once` (marking it used in this turn). A session approval is preferred over a `once`, so a once is not
+ * spent when something wider already covers the call. An approval that is not live is ignored: a `once` of another turn, and
+ * anything from before the last mode change (`ectx`).
  *
  * With `effort` (2.3.19) the approval must also cover that effort: it was given at that effort or a higher one (an approval
  * with no effort stands for `high`). A call at an effort above the approval's is not covered, whatever its model.
@@ -1231,143 +1326,305 @@ export function claimApproval(
   requested: string,
   nowMs: number,
   ctx?: RankContext | null,
-  effort?: EffortLevel
+  effort?: EffortLevel,
+  ectx?: ElevationCtx | null
 ): { state: ApprovalState; approval: Approval | null } {
+  void nowMs;
   const want = modelRank(requested);
-  const live = state.approvals.filter((a) => approvalValid(a, nowMs));
   const hit =
     want === null
       ? null
-      : live
+      : state.approvals
+          .filter((a) => usable(a, ectx))
           .filter((a) => (compareFamilyFirst(a.model, requested, ctx) ?? -1) >= 0)
           .filter((a) => effort === undefined || effortWithin(approvalEffortOf(a), effort))
           .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
-  const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
-  return { state: { ...state, approvals }, approval: hit };
+  if (!hit) return { state, approval: null };
+  if (hit.scope !== 'once') return { state, approval: hit };
+  return { state: { ...state, approvals: state.approvals.filter((a) => a !== hit), onceUsed: markOnceUsed(state.onceUsed, hit.model, ectx?.turn) }, approval: hit };
 }
 
-// ── Effort approvals: the same question, scopes and window as an elevation, for a level above the interim threshold ──
+/**
+ * Pure: the state with a No to the model question added. A session No drops the approvals it contradicts (of that model or a stronger
+ * one) and replaces earlier declines of the same model. A once No ("this delegation only") never withdraws the user's standing
+ * "Yes, for this session": it drops only the unused once approvals it contradicts, so the session Yes is back in force at the next prompt.
+ */
+export function recordDecline(state: ApprovalState, decline: Decline): ApprovalState {
+  const rank = modelRank(decline.model) ?? 0;
+  const approvals = state.approvals.filter((a) => (modelRank(a.model) ?? -1) < rank || (decline.scope === 'once' && a.scope === 'session'));
+  const declines = (state.declines ?? []).filter((d) => !(decline.scope === 'session' && d.model === decline.model) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn));
+  return { ...state, approvals, declines: [...declines, decline].slice(-ANSWERS_CAP) };
+}
+
+/**
+ * Pure: the No that covers `requested` (a decline of a model covers itself and anything stronger), a session one before a `once` of
+ * this turn, and consume the once. An approval is never looked at here, and the two CAN overlap: a Yes drops the declines it
+ * contradicts and a session No the approvals it contradicts, but a once No keeps a standing "Yes, for this session". The callers
+ * therefore look at the declines BEFORE the approvals: within its turn a live once No wins over the session Yes (the Yes is kept and
+ * applies again in later turns, when the once No has been spent or is no longer live).
+ */
+export function claimDecline(
+  state: ApprovalState,
+  requested: string,
+  ctx?: RankContext | null,
+  ectx?: ElevationCtx | null
+): { state: ApprovalState; decline: Decline | null } {
+  const want = modelRank(requested);
+  const hit =
+    want === null
+      ? null
+      : (state.declines ?? [])
+          .filter((d) => usable(d, ectx))
+          .filter((d) => (compareFamilyFirst(requested, d.model, ctx) ?? -1) >= 0)
+          .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  if (!hit) return { state, decline: null };
+  if (hit.scope !== 'once') return { state, decline: hit };
+  const declines = (state.declines ?? []).filter((d) => d !== hit);
+  const { declines: _d, ...rest } = state;
+  return { state: { ...rest, ...(declines.length ? { declines } : {}) }, decline: hit };
+}
+
+/** The clause a model deny reason adds: what Jev has stored for `requested` (see `storedClause`). Pure. */
+export function elevationStoredClause(
+  state: ApprovalState,
+  requested: string,
+  ctx?: RankContext | null,
+  needEffort?: EffortLevel,
+  ectx?: ElevationCtx | null
+): StoredClause {
+  const covering = state.approvals
+    .filter((a) => !voided(a.created_at, ectx) && (compareFamilyFirst(a.model, requested, ctx) ?? -1) >= 0)
+    .map((a) => ({ scope: a.scope, ...(a.turn !== undefined ? { turn: a.turn } : {}), effort: approvalEffortOf(a) }));
+  const onceUsedThisTurn = (state.onceUsed ?? []).some((u) => ectx?.turn !== undefined && u.turn === ectx.turn && (compareFamilyFirst(u.key, requested, ctx) ?? -1) >= 0);
+  return storedClause({
+    kind: 'model',
+    subject: modelAlias(requested) ?? requested,
+    covering,
+    turn: ectx?.turn,
+    ...(needEffort ? { neededEffort: needEffort } : {}),
+    onceUsedThisTurn
+  });
+}
+
+// ── Effort approvals: the same question, scopes and rules as an elevation, for a level above the interim threshold ──
 
 /** The marker the effort question starts with, and the PostToolUse recorder's pattern for it. */
 export const EFFORT_MARKER_RE = /^\s*\[jev-elevate-effort:(low|medium|high|xhigh|max)(?::(sonnet|opus|haiku|fable))?\]/;
 
-/** The last option of the effort question: it re-invokes the delegation at `high`, an effort that passes. */
-export const EFFORT_NO_LABEL = 'No, run at high';
+/** The last option of the effort question when no cost gate names a level: it re-invokes the delegation at `high`, an effort that passes. */
+export const EFFORT_NO_LABEL = ELEVATION_LABELS.noEffort('high');
 /** The effort a No re-invokes at. */
 export const EFFORT_FALLBACK = 'high';
 
-/** The marker question of a PostToolUse payload for AskUserQuestion and its answer, for the effort question. */
+/** The effort question of a PostToolUse payload with a well-formed marker and an answer. */
 function readEffortAnswer(input: unknown): { level: EffortLevel; label: string; model?: ClaudeModelAlias } | null {
-  try {
-    const i = input as { tool_name?: unknown; tool_input?: any; tool_response?: any } | null;
-    if (!i || typeof i !== 'object') return null;
-    if (i.tool_name !== undefined && i.tool_name !== 'AskUserQuestion') return null;
-    const question = i.tool_input?.questions?.[0]?.question;
-    if (typeof question !== 'string') return null;
-    const m = EFFORT_MARKER_RE.exec(question);
-    if (!m) return null;
-    const answer = i.tool_response?.answers?.[question];
-    return typeof answer === 'string' ? { level: m[1] as EffortLevel, label: answer.trim(), ...(m[2] ? { model: m[2] as ClaudeModelAlias } : {}) } : null;
-  } catch {
-    return null;
-  }
+  const r = readMarkerAnswer(input);
+  if (!r || r.kind !== 'effort' || r.marker !== 'ok' || r.label === null) return null;
+  return { level: r.level, label: r.label, ...(r.model ? { model: r.model } : {}) };
 }
 
-/** Pure: the effort approval a PostToolUse payload carries (a Yes to the effort question), or null; a No and anything else give null. */
-export function parseEffortAnswer(input: unknown, nowMs: number): EffortApproval | null {
+/** Pure: the effort approval a PostToolUse payload carries (a Yes to the effort question), or null; a No, any other label and anything else give null. A once is bound to `turn`. */
+export function parseEffortAnswer(input: unknown, nowMs: number, turn?: string): EffortApproval | null {
   const read = readEffortAnswer(input);
   if (!read) return null;
-  const { level, label } = read;
-  const model = read.model ? { model: read.model } : {};
-  if (label.startsWith(CHOICE_LABELS.once)) return { level, scope: 'once', created_at: nowMs, expires_at: nowMs + ONCE_TTL_MS, ...model };
-  if (label.startsWith(CHOICE_LABELS.fiveMin)) return { level, scope: '5min', created_at: nowMs, expires_at: nowMs + FIVE_MIN_TTL_MS, ...model };
-  if (label.startsWith(CHOICE_LABELS.session)) return { level, scope: 'session', created_at: nowMs, ...model };
-  return null;
+  const parsed = parseAnswerLabel(read.label, 'effort');
+  if (!parsed || parsed.answer !== 'yes') return null;
+  return {
+    level: read.level,
+    scope: parsed.scope,
+    created_at: nowMs,
+    ...(parsed.scope === 'once' && turn !== undefined ? { turn } : {}),
+    ...(read.model ? { model: read.model } : {})
+  };
 }
 
-/** Pure: note that the effort question was prescribed for `level` now, and drop the notes older than the window. */
-export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string): ApprovalState {
-  const kept = Object.entries(state.effortDenied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
-  const keptLevels = new Set(kept.map(([l]) => l));
+/** Pure: the No a PostToolUse payload for the effort question carries (`No, run at <level>`, or the session No, which names the level the question's own No would have), or null. */
+export function parseEffortDecline(input: unknown, nowMs: number, turn?: string): EffortDecline | null {
+  const read = readEffortAnswer(input);
+  if (!read) return null;
+  const parsed: ParsedAnswer | null = parseAnswerLabel(read.label, 'effort');
+  if (!parsed || parsed.answer !== 'no') return null;
+  const named = parsed.noTarget ? costEffortOf(parsed.noTarget) : null;
+  // The session No names no level: lowering goes to `high`, the level every No of the effort question stands for at most.
+  const noEffort = (parsed.scope === 'once' ? named : (named ?? (EFFORT_FALLBACK as EffortLevel))) as EffortLevel | null;
+  if (!noEffort) return null;
+  return { level: read.level, noEffort, scope: parsed.scope, created_at: nowMs, ...(parsed.scope === 'once' && turn !== undefined ? { turn } : {}) };
+}
+
+/**
+ * Pure: note that the effort question was prescribed for `level` now (no expiry), with the model its marker named and the level its own No
+ * runs at (`noEffort`: a session No, which names no level, lowers to it).
+ */
+export function noteEffortDenied(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string, noEffort?: EffortLevel): ApprovalState {
   const alias = model !== undefined ? modelAlias(model) : null;
-  // The model the question named, per level: kept for the levels still on record, replaced for this one (none when the question named none).
-  const models = Object.fromEntries(Object.entries(state.effortDeniedModel ?? {}).filter(([l]) => keptLevels.has(l) && l !== level));
+  // The model the question named, per level: replaced for this one (none when the question named none).
+  const models = Object.fromEntries(Object.entries(state.effortDeniedModel ?? {}).filter(([l]) => l !== level));
   const { effortDeniedModel: _drop, ...rest } = state;
   const effortDeniedModel = { ...models, ...(alias ? { [level]: alias } : {}) };
-  return { ...rest, effortDenied: { ...Object.fromEntries(kept), [level]: nowMs }, ...(Object.keys(effortDeniedModel).length ? { effortDeniedModel } : {}) };
+  const { effortDeniedNo: _no, ...restNo } = rest;
+  const nos = { ...Object.fromEntries(Object.entries(state.effortDeniedNo ?? {}).filter(([l]) => l !== level)), ...(noEffort ? { [level]: noEffort } : {}) };
+  return {
+    ...restNo,
+    effortDenied: { ...(state.effortDenied ?? {}), [level]: nowMs },
+    ...(Object.keys(effortDeniedModel).length ? { effortDeniedModel } : {}),
+    ...(Object.keys(nos).length ? { effortDeniedNo: nos as Record<string, EffortLevel> } : {})
+  };
 }
 
-/** Pure: was the effort question prescribed for `level`, or a higher one, within the window? A denial older than the last mode change does not count. */
-export function wasEffortDeniedRecently(state: ApprovalState, level: EffortLevel, nowMs: number, config?: ModeChangeConfigLike | null): boolean {
-  return Object.entries(state.effortDenied ?? {}).some(
-    ([l, t]) => effortCovers(l, level) && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code')
-  );
-}
-
-/** Pure: the state with the effort approval added, or null when no recent denial asked for it (the answer is then ignored). */
-export function recordEffortApproval(state: ApprovalState, approval: EffortApproval, nowMs: number, config?: ModeChangeConfigLike | null): ApprovalState | null {
-  if (!wasEffortDeniedRecently(state, approval.level, nowMs, config)) return null;
-  const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
-  // When the question that was prescribed named a model, an answer is recorded for THAT model: a bare marker never becomes an
-  // approval for any model, and a marker naming a stronger one is held to the prescribed one. A denial that named none (a record
-  // from before 2.3.19, or the interim rule) leaves the answer as it is.
-  const latest = Object.entries(state.effortDenied ?? {})
-    .filter(([l, t]) => effortCovers(l, approval.level) && nowMs - t <= DENIAL_WINDOW_MS && !denialPredatesModeChange(t, config, 'claude-code'))
-    .sort((a, b) => b[1] - a[1])[0];
+/**
+ * Pure: the state with the user's Yes to the effort question added (2.3.21: no window, no denial needed). The level is held to the
+ * highest level Jev prescribed the effort question for (no expiry; a prescription from before the last mode change does not
+ * count); with none on record it is held to `high`. When the prescribed question named a model, an answer is recorded for THAT model:
+ * a bare marker never becomes an approval for any model, and a marker naming a stronger one is held to the prescribed one. A question
+ * that named none (a record from before 2.3.19, or the interim rule) leaves the answer as it is.
+ */
+export function recordEffortApproval(
+  state: ApprovalState,
+  approval: EffortApproval,
+  nowMs: number,
+  config?: ModeChangeConfigLike | null
+): { state: ApprovalState; approval: EffortApproval } {
+  void nowMs;
+  const prescriptions = Object.entries(state.effortDenied ?? {}).filter(([, t]) => !voided(t, { config }));
+  const highest = prescriptions.map(([l]) => l as EffortLevel).sort((a, b) => effortIndex(b) - effortIndex(a))[0];
+  const cap: EffortLevel = highest ?? (EFFORT_FALLBACK as EffortLevel);
+  const level = effortIndex(approval.level) <= effortIndex(cap) ? approval.level : cap;
+  // Looked up with the CAPPED level: a marker naming a higher level than any prescription must still find the prescription the cap
+  // came from, or the stored approval would keep a bare marker's "no model" and cover every model.
+  const latest = prescriptions.filter(([l]) => effortCovers(l, level)).sort((a, b) => b[1] - a[1])[0];
   const prescribed = latest ? state.effortDeniedModel?.[latest[0]] : undefined;
-  let stored = approval;
-  if (prescribed) {
-    const { model: _m, ...rest } = approval;
-    stored = { ...rest, model: approval.model && (modelRank(approval.model) ?? Infinity) <= (modelRank(prescribed) ?? -1) ? approval.model : prescribed };
-  }
-  return { ...state, effortApprovals: [...live, stored] };
+  const { model: _m, ...rest } = approval;
+  const model = prescribed
+    ? approval.model && (modelRank(approval.model) ?? Infinity) <= (modelRank(prescribed) ?? -1) ? approval.model : prescribed
+    : approval.model;
+  const stored: EffortApproval = { ...rest, level, ...(model ? { model } : {}) };
+  const keep = (state.effortApprovals ?? []).filter((a) => !(stored.scope === 'once' && a.scope === 'once' && a.turn !== stored.turn));
+  const declines = (state.effortDeclines ?? []).filter((d) => !(effortCovers(stored.level, d.level)));
+  const { effortDeclines: _ed, ...base } = state;
+  return { state: { ...base, effortApprovals: [...keep, stored].slice(-ANSWERS_CAP), ...(declines.length ? { effortDeclines: declines } : {}) }, approval: stored };
 }
 
 /**
  * Pure: the effort approval that covers `level` (a higher approved level covers a lower one), a standing one before a `once`,
- * which is consumed. Expired ones are dropped. With `model` (2.3.19) an approval that names a model must be for that model or
- * a stronger one; an approval that names none (a record from before 2.3.19) covers any model. The caller always passes the call's
- * model alias: without one (or one that cannot be ranked) an approval that names a model does not cover the call.
+ * which is consumed (and marked used in this turn). An approval that is not live is ignored (see `claimApproval`). With `model`
+ * (2.3.19) an approval that names a model must be for that model or a stronger one; an approval that names none (a record from
+ * before 2.3.19) covers any model. The caller always passes the call's model alias: without one (or one that cannot be ranked) an
+ * approval that names a model does not cover the call.
  */
-export function claimEffortApproval(state: ApprovalState, level: EffortLevel, nowMs: number, model?: string): { state: ApprovalState; approval: EffortApproval | null } {
-  const live = (state.effortApprovals ?? []).filter((a) => approvalValid(a, nowMs));
+export function claimEffortApproval(
+  state: ApprovalState,
+  level: EffortLevel,
+  nowMs: number,
+  model?: string,
+  ectx?: ElevationCtx | null
+): { state: ApprovalState; approval: EffortApproval | null } {
+  void nowMs;
   const wantRank = model === undefined ? null : modelRank(model);
   // A model-scoped approval covers only a model it can be compared with: a call whose model is not known (or not passed) is not covered by one.
-  const hit = live
+  const hit = (state.effortApprovals ?? [])
+    .filter((a) => usable(a, ectx))
     .filter((a) => effortCovers(a.level, level))
-    .filter((a) => !a.model || (wantRank !== null && (modelRank(a.model) ?? -1) >= wantRank)).sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
-  const effortApprovals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
+    .filter((a) => !a.model || (wantRank !== null && (modelRank(a.model) ?? -1) >= wantRank))
+    .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  if (!hit) return { state, approval: null };
+  if (hit.scope !== 'once') return { state, approval: hit };
+  const effortApprovals = (state.effortApprovals ?? []).filter((a) => a !== hit);
   const { effortApprovals: _drop, ...rest } = state;
-  return { state: { ...rest, ...(effortApprovals.length ? { effortApprovals } : {}) }, approval: hit };
+  return { state: { ...rest, ...(effortApprovals.length ? { effortApprovals } : {}), effortOnceUsed: markOnceUsed(state.effortOnceUsed, hit.level, ectx?.turn) }, approval: hit };
+}
+
+/**
+ * Pure: the decline as it is stored. A session No ("don't ask again") names no level, so it lowers to the level the question's own No
+ * ran at (the cost gate's `No, run at <level>`, which can be below `high`), as noted when Jev prescribed the question; with none on
+ * record (or from before the last mode change) it is `high`. A once No names its level in its label and is kept as it is.
+ */
+export function resolveEffortDecline(state: ApprovalState, decline: EffortDecline, config?: ModeChangeConfigLike | null): EffortDecline {
+  if (decline.scope !== 'session') return decline;
+  const at = state.effortDenied?.[decline.level];
+  const noted = at !== undefined && !voided(at, { config }) ? state.effortDeniedNo?.[decline.level] : undefined;
+  return noted ? { ...decline, noEffort: noted } : decline;
+}
+
+/** Pure: the state with a No to the effort question added; a session No replaces earlier declines of the same level and drops that level's approvals, a once No only the unused once approvals (see `recordDecline`). */
+export function recordEffortDecline(state: ApprovalState, decline: EffortDecline): ApprovalState {
+  const approvals = (state.effortApprovals ?? []).filter((a) => a.level !== decline.level || (decline.scope === 'once' && a.scope === 'session'));
+  const declines = (state.effortDeclines ?? []).filter((d) => !(decline.scope === 'session' && d.level === decline.level) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn));
+  const { effortApprovals: _a, ...rest } = state;
+  return { ...rest, ...(approvals.length ? { effortApprovals: approvals } : {}), effortDeclines: [...declines, decline].slice(-ANSWERS_CAP) };
+}
+
+/** Pure: the No that covers `level` exactly (a session one before a `once` of this turn), consuming the once. */
+export function claimEffortDecline(state: ApprovalState, level: EffortLevel, ectx?: ElevationCtx | null): { state: ApprovalState; decline: EffortDecline | null } {
+  const hit = (state.effortDeclines ?? [])
+    .filter((d) => usable(d, ectx))
+    .filter((d) => d.level === level)
+    .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  if (!hit) return { state, decline: null };
+  if (hit.scope !== 'once') return { state, decline: hit };
+  const effortDeclines = (state.effortDeclines ?? []).filter((d) => d !== hit);
+  const { effortDeclines: _d, ...rest } = state;
+  return { state: { ...rest, ...(effortDeclines.length ? { effortDeclines } : {}) }, decline: hit };
+}
+
+/** The clause an effort deny reason adds: what Jev has stored for the effort `level` (and `model`, when the call names one). Pure. */
+export function effortStoredClause(state: ApprovalState, level: EffortLevel, model?: string, ectx?: ElevationCtx | null): StoredClause {
+  const wantRank = model === undefined ? null : modelRank(model);
+  const matches = (a: EffortApproval): boolean => !a.model || (wantRank !== null && (modelRank(a.model) ?? -1) >= wantRank);
+  const covering = (state.effortApprovals ?? [])
+    .filter((a) => !voided(a.created_at, ectx) && matches(a))
+    .map((a) => ({ scope: a.scope, ...(a.turn !== undefined ? { turn: a.turn } : {}), effort: a.level as EffortLevel }));
+  const onceUsedThisTurn = (state.effortOnceUsed ?? []).some((u) => ectx?.turn !== undefined && u.turn === ectx.turn && effortCovers(u.key, level));
+  return storedClause({ kind: 'effort', subject: level, covering, turn: ectx?.turn, neededEffort: level, onceUsedThisTurn });
 }
 
 /**
  * Pure: consume, in one step, every approval a call needs (`model`: the covering model approval, `effort`: the covering effort
- * approval), or none of them. A `once` is spent only when everything wanted is still there, so a call that cannot go ahead
- * never spends one of its approvals (one answer, one run). Null when any wanted approval is gone (a parallel call spent it,
- * or it expired between the peek and now): nothing is consumed then.
+ * approval; `decline` / `effortDecline`: the No that lowers the call), or none of them. A `once` is spent only when everything wanted
+ * is still there, so a call that cannot go ahead never spends one of its answers (one answer, one run). Null when any wanted answer
+ * is gone (a parallel call spent it, or it is not live any more): nothing is consumed then.
  */
 export function consumeApprovals(
   state: ApprovalState,
-  wants: { model?: { requested: string; ctx?: RankContext | null; effort?: EffortLevel }; effort?: EffortLevel; effortModel?: string },
-  nowMs: number
-): { state: ApprovalState; model: Approval | null; effort: EffortApproval | null } | null {
+  wants: {
+    model?: { requested: string; ctx?: RankContext | null; effort?: EffortLevel };
+    effort?: EffortLevel;
+    effortModel?: string;
+    decline?: { requested: string; ctx?: RankContext | null };
+    effortDecline?: { level: EffortLevel };
+  },
+  nowMs: number,
+  ectx?: ElevationCtx | null
+): { state: ApprovalState; model: Approval | null; effort: EffortApproval | null; decline: Decline | null; effortDecline: EffortDecline | null } | null {
   let next = state;
   let model: Approval | null = null;
   let effort: EffortApproval | null = null;
+  let decline: Decline | null = null;
+  let effortDecline: EffortDecline | null = null;
   if (wants.model) {
-    const c = claimApproval(next, wants.model.requested, nowMs, wants.model.ctx, wants.model.effort);
+    const c = claimApproval(next, wants.model.requested, nowMs, wants.model.ctx, wants.model.effort, ectx);
     if (!c.approval) return null;
     next = c.state;
     model = c.approval;
   }
+  if (wants.decline) {
+    const c = claimDecline(next, wants.decline.requested, wants.decline.ctx, ectx);
+    if (!c.decline) return null;
+    next = c.state;
+    decline = c.decline;
+  }
   if (wants.effort) {
-    const c = claimEffortApproval(next, wants.effort, nowMs, wants.effortModel);
+    const c = claimEffortApproval(next, wants.effort, nowMs, wants.effortModel, ectx);
     if (!c.approval) return null;
     next = c.state;
     effort = c.approval;
   }
-  return { state: next, model, effort };
+  if (wants.effortDecline) {
+    const c = claimEffortDecline(next, wants.effortDecline.level, ectx);
+    if (!c.decline) return null;
+    next = c.state;
+    effortDecline = c.decline;
+  }
+  return { state: next, model, effort, decline, effortDecline };
 }
 
 /** The cost gate verdict that needs approval (the `over` arm of `CostGate`). */
@@ -1390,10 +1647,9 @@ export const gateMarkerEffort = (g: Pick<CostGateFacts, 'callEffort'>): EffortLe
  * highest effort that keeps the cost within the session's (at most `high`). From the third attempt of the same delegation it
  * also says to stop retrying (`stopRetryingText`).
  */
-export function effortChoiceReason(level: EffortLevel, interim: string, subagentType?: unknown, attempt?: number | null, gate?: OverGate): string {
-  const l = CHOICE_LABELS;
+export function effortChoiceReason(level: EffortLevel, interim: string, subagentType?: unknown, attempt?: number | null, gate?: OverGate, stored?: StoredClause | null): string {
   const fallback = gate ? gate.noEffort : EFFORT_FALLBACK;
-  const no = gate ? `No, run at ${gate.noEffort}` : EFFORT_NO_LABEL;
+  const no = gate ? ELEVATION_LABELS.noEffort(gate.noEffort) : EFFORT_NO_LABEL;
   const stop = stopRetryingText(attempt, level, fallback, 'AskUserQuestion', 'effort');
   const alias = gate ? modelAlias(typeof gate.callModel === 'string' ? gate.callModel : null) : null;
   const marker = `[jev-elevate-effort:${level}${alias ? `:${alias}` : ''}]`;
@@ -1402,10 +1658,11 @@ export function effortChoiceReason(level: EffortLevel, interim: string, subagent
     `[jev] ${head} The user has not approved it. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker ${marker} followed by a short question ` +
     `naming the subagent_type (${safeTypeName(subagentType)}), the requested effort, and a 10-word task summary; ` +
-    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${no}'. ` +
-    `If the user picks a Yes, launch the delegation again with the same effort; if No, launch it with effort: "${fallback}" (or do the work directly); ` +
+    `exactly four options in this order and with these labels: ${elevationLabelList(no)}. ` +
+    `If the user picks a Yes, launch the delegation again with the same effort; if a No, launch it with effort: "${fallback}" (or do the work directly); ` +
     `If AskUserQuestion is not available, launch the delegation with effort: "${fallback}" now and do not stop; ` +
     `do not ask in any other form.` +
+    (stored ? ` ${stored.text}` : '') +
     (stop ? ` ${stop}` : '')
   );
 }
@@ -1502,6 +1759,61 @@ export function clampOverGate(
         `Do not call it again on your own. Report the result, and if ${callLabel} at ${gate.callEffort} is really needed, ask the user in chat; a reply naming it passes without another prompt.`
     }
   };
+}
+
+/**
+ * The PreToolUse output of a call the user declined (2.3.21): the model question's No (`scope` `once`: the next launch of this turn;
+ * `session`: every later launch, silently) runs the delegation on the session model with no question and no deny. Same shape as the
+ * clamp (`allow` plus the whole original input with `model` replaced, and the effort lowered when the enforced cost gate holds the
+ * call, see {@link clampOverGate}), with its own note for the assistant.
+ */
+export function clampDeclinedModel(
+  call: Record<string, unknown>,
+  e: Elevation,
+  scope: ApprovalScope,
+  gate?: OverGate | null
+): { hookSpecificOutput: Record<string, unknown>; effort?: EffortLevel } {
+  const base = gate ? clampOverGate(call, gate, e.sessionAlias) : clampElevation(call, e);
+  const effort = gate ? (base as ReturnType<typeof clampOverGate>).effort : undefined;
+  const when = scope === 'session' ? 'for this session' : 'for this delegation';
+  return {
+    ...(effort ? { effort } : {}),
+    hookSpecificOutput: {
+      ...base.hookSpecificOutput,
+      permissionDecisionReason: `[jev] The user declined ${e.requested} ${when}: ran on ${e.sessionAlias} (the session model).`,
+      additionalContext:
+        `[jev] Jev ran this delegation on ${e.sessionAlias} instead of ${e.requested}, because the user declined ${e.requested} ${when}. ` +
+        `Do not ask the user about ${e.requested} again${scope === 'session' ? ' in this session' : ' for this delegation'}; report the result.`
+    }
+  };
+}
+
+/** The PreToolUse output of a call whose effort the user declined (2.3.21): `allow` plus the whole original input with `effort` lowered to the No level. */
+export function clampDeclinedEffort(
+  call: Record<string, unknown>,
+  decline: Pick<EffortDecline, 'level' | 'noEffort' | 'scope'>
+): { hookSpecificOutput: Record<string, unknown> } {
+  const when = decline.scope === 'session' ? 'for this session' : 'for this delegation';
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: `[jev] The user declined effort ${decline.level} ${when}: ran at ${decline.noEffort}.`,
+      updatedInput: { ...call, effort: decline.noEffort },
+      additionalContext:
+        `[jev] Jev ran this delegation at effort ${decline.noEffort} instead of ${decline.level}, because the user declined ${decline.level} ${when}. ` +
+        `Do not ask the user about it again${decline.scope === 'session' ? ' in this session' : ' for this delegation'}; report the result.`
+    }
+  };
+}
+
+/**
+ * The deny reason of a Workflow whose script holds a model (or an effort) the user declined (2.3.21): a script cannot be run on
+ * another model, so it is denied, but without the question: the user already said No, so the reason says to edit the script.
+ */
+export function workflowDeclinedReason(what: string, sessionAlias: string, scope: ApprovalScope): string {
+  const when = scope === 'session' ? 'for this session' : 'for this delegation';
+  return `[jev] The user declined ${what} ${when}. Do not ask again: edit the workflow script so no agent() call uses it (use ${sessionAlias} or a weaker model, or omit it), then run it.`;
 }
 
 /**

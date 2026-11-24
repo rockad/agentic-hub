@@ -9,8 +9,8 @@ import { createAntigravityApprovalStore, type ApprovalStore } from '../antigravi
  * The live failure (Antigravity, real transcript): one PLANNER_RESPONSE step called run_command and ask_question in
  * parallel. Real transcripts carry NO tool call id (tool_calls[] entries have only `args` and `name`, GENERIC steps
  * have no toolCallId), so the row of the question can only be found by the step_index PostToolUse reports. The
- * command's output row (step 6) came first and ended in "A1: Yes, for the next 5 minutes"; the question's own row
- * (step 7) said "A1: Yes, once". The pull took step 6 and approved a broader scope than the user gave.
+ * command's output row (step 6) came first and ended in "A1: Yes, for this session"; the question's own row
+ * (step 7) said "A1: Yes, once". The pull took step 6 and approved a broader scope than the user gave (and the 5 minute label no longer exists, 2.3.21).
  */
 const DENIED_AT = Date.parse('2026-11-18T10:00:00.000Z');
 const HEADER = 'Created At: 2026-11-18T10:00:05+02:00\nCompleted At: 2026-11-18T10:00:09+02:00\n';
@@ -40,7 +40,7 @@ const ASK = {
   name: 'ask_question',
   args: { questions: [{ question: "[jev-elevate:pro] Allow subagent 'expert' to run on pro (session ceiling: flash)?" }] }
 };
-const CMD_OUTPUT = generic(6, `${HEADER}Command output:\nA1: Yes, for the next 5 minutes`);
+const CMD_OUTPUT = generic(6, `${HEADER}Command output:\nA1: Yes, for this session`);
 const ASK_ROW = generic(7, `${HEADER}A1: Yes, once`);
 
 describe('answer row: the live failure (id-less real-shaped transcript)', () => {
@@ -54,7 +54,7 @@ describe('answer row: the live failure (id-less real-shaped transcript)', () => 
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  it('with the recorded stepIdx 7 the answer is the question\'s own row: scope once, not 5min', () => {
+  it('with the recorded stepIdx 7 the answer is the question\'s own row: scope once, not session', () => {
     write(planner(5, [RUN_COMMAND, ASK]), CMD_OUTPUT, ASK_ROW);
     expect(pullElevationAnswerFromTranscript(file, 'pro', DENIED_AT, 7)).toEqual({ approved: true, scope: 'once' });
   });
@@ -76,7 +76,7 @@ describe('answer row: the live failure (id-less real-shaped transcript)', () => 
 
   it('a recorded stepIdx never reads another row, even one that says Yes', () => {
     write(planner(5, [RUN_COMMAND, ASK]), CMD_OUTPUT, generic(7, `${HEADER}A1: No, proceed on flash`));
-    expect(pullElevationAnswerFromTranscript(file, 'pro', DENIED_AT, 7)).toEqual({ approved: false });
+    expect(pullElevationAnswerFromTranscript(file, 'pro', DENIED_AT, 7)).toEqual({ approved: false, declined: true, scope: 'once' });
   });
 
   it('a recorded stepIdx must point at a GENERIC row after the question', () => {
@@ -242,6 +242,7 @@ describe('answer row: through the real hook process', () => {
     conversationId: CONV,
     transcriptPath,
     stepIdx: 7,
+    lastUserInput: 'Invoke expert on pro',
     modelName: 'gemini-3.8-flash-low',
     toolCall: { name: 'ask_question', args: ASK.args }
   });
@@ -267,7 +268,7 @@ describe('answer row: through the real hook process', () => {
     // Row 7 not there yet: still denied (the user is asked again), and nothing approved from step 6.
     expect(JSON.parse(run('pre-tool-use', elevate(transcript)).stdout.toString()).decision).toBe('deny');
 
-    // The row arrives: now the pull reads it, and the scope is once, not the 5 minutes from step 6.
+    // The row arrives: now the pull reads it, and the scope is once, not the session scope from step 6.
     fs.appendFileSync(transcript, ASK_ROW + '\n');
     // The previous denial reset the recorded step (a fresh question), so the hook records it again.
     run('post-tool-use', askDone(transcript));
@@ -365,8 +366,8 @@ describe('answer row: one answer approves one run (F2)', () => {
 
   it('the store refuses to record a second approval for an answer key it already consumed', () => {
     store.deny(SID, 'pro', 1000);
-    expect(store.record(SID, { model: 'pro', scope: 'once', created_at: 2000 }, ['step:7#0'])).toBe(true);
-    expect(store.claim(SID, 'pro', 2001)?.scope).toBe('once');
+    expect(store.record(SID, { model: 'pro', scope: 'once', created_at: 2000, turn: 't1' }, ['step:7#0'])).toBe(true);
+    expect(store.claim(SID, 'pro', 2001, undefined, { turn: 't1' })?.scope).toBe('once');
     store.deny(SID, 'pro', 3000);
     expect(store.record(SID, { model: 'pro', scope: 'once', created_at: 4000 }, ['step:7#0'])).toBe(false);
     expect(store.claim(SID, 'pro', 4001)).toBeNull();
@@ -386,7 +387,7 @@ describe('answer row: the question index comes from the recorded question (F3)',
 
   const askA = { name: 'ask_question', args: { questions: [{ question: 'Deploy now?' }, { question: '[jev-elevate:pro] A?' }] } };
   const askB = { name: 'ask_question', args: { questions: [{ question: '[jev-elevate:pro] B?' }] } };
-  const rowA = generic(6, `${HEADER}A1: Yes, for the next 5 minutes\nA2: Yes, once`);
+  const rowA = generic(6, `${HEADER}A1: Yes, for this session\nA2: Yes, once`);
   const rowB = generic(7, `${HEADER}A1: Yes, once`);
 
   it('reads the recorded question line, not the matched call\'s (last match)', () => {
@@ -396,7 +397,7 @@ describe('answer row: the question index comes from the recorded question (F3)',
   });
 
   it('reads the recorded question line when the matched call is the first one', () => {
-    const rowAFirst = generic(7, `${HEADER}A1: Yes, for the next 5 minutes\nA2: Yes, once`);
+    const rowAFirst = generic(7, `${HEADER}A1: Yes, for this session\nA2: Yes, once`);
     fs.writeFileSync(file, [planner(5, [askB, askA]), generic(6, `${HEADER}A1: Yes, once`), rowAFirst].join('\n') + '\n');
     expect(pullElevationAnswerFromTranscript(file, 'pro', DENIED_AT, 7, 1)).toEqual({ approved: true, scope: 'once' });
   });
@@ -470,7 +471,7 @@ describe('answer row: the hook process records the question index and consumes t
       transcript,
       [
         planner(5, [askA, askB]),
-        generic(6, `${HEADER}A1: Yes, for the next 5 minutes\nA2: Yes, once`),
+        generic(6, `${HEADER}A1: Yes, for this session\nA2: Yes, once`),
         generic(7, `${HEADER}A1: Yes, once`)
       ].join('\n') + '\n'
     );
@@ -485,7 +486,7 @@ describe('answer row: the hook process records the question index and consumes t
   it('a late second PostToolUse for the same answer row cannot approve a later denial', () => {
     const transcript = path.join(home, 'transcript_full.jsonl');
     fs.writeFileSync(transcript, [planner(5, [ASK]), generic(6, `${HEADER}A1: Yes, once`)].join('\n') + '\n');
-    const post = { conversationId: CONV, transcriptPath: transcript, stepIdx: 6, modelName: 'gemini-3.8-flash-low', toolCall: { name: 'ask_question', args: ASK.args } };
+    const post = { conversationId: CONV, transcriptPath: transcript, stepIdx: 6, lastUserInput: 'Invoke expert on pro', modelName: 'gemini-3.8-flash-low', toolCall: { name: 'ask_question', args: ASK.args } };
     run('pre-tool-use', elevate(transcript));
     run('post-tool-use', post);
     expect(JSON.parse(run('pre-tool-use', elevate(transcript)).stdout.toString()).decision).toBe('allow');

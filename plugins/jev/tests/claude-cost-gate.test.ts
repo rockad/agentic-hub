@@ -86,7 +86,7 @@ describe('choice (default): one question per held call, the existing markers', (
 
   it('an approval of opus at xhigh covers opus at xhigh, high and medium, not opus at max, and is spent only by a call that runs', async () => {
     r = rig({ costGateMode: () => 'enforce' }, 'claude-sonnet-5-5');
-    approve({ approvals: [{ model: 'opus', scope: 'once', created_at: 0, expires_at: 9e15, effort: 'xhigh' }] });
+    approve({ approvals: [{ model: 'opus', scope: 'once', created_at: 0, turn: 'p1', effort: 'xhigh' }] });
 
     const max = out(await onPreToolUse(call({ description: 'd', model: 'opus', effort: 'max' }), r.d));
     expect(max.permissionDecision).toBe('deny'); // not covered, and nothing was spent

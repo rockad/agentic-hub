@@ -55,6 +55,7 @@ const pre = (args: object, id = 'call_wf', conv = 'conv-wf-proc') => ({
 const post = (args: object, id = 'call_wf', conv = 'conv-wf-proc') => ({ conversationId: conv, toolCall: { id, name: 'run_workflow', args }, content: 'done' });
 const answer = (conv = 'conv-wf-proc') => ({
   conversationId: conv,
+  lastUserInput: 'run the review workflow',
   toolCall: { id: 'call_ask', name: 'ask_question', args: { questions: [{ question: '[jev-elevate:pro] Allow run_workflow to launch pro agents?', options: ['(Recommended) Yes, once', 'No'] }] } },
   content: 'A1: (Recommended) Yes, once'
 });

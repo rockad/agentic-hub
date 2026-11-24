@@ -30,6 +30,7 @@ import { withTimeout } from '../src/core/with-timeout.js';
 import { isModeOff, lowQuotaNotice, modeBehaviour, quotaPoolLabel } from '../src/core/mode-policy.js';
 import { ARGON_HOW_SENTENCE, PRO_SERVED_SENTENCE } from '../src/core/served-model.js';
 import { queueServedNotice, servedNoticeSteps, takeServedNotices } from './served-notice.js';
+import { takeAnswerNotices } from './answer-notice.js';
 import { DEFAULT_ANTIGRAVITY_SESSION_MODEL } from '../src/core/session-defaults.js';
 import {
   cleanUserInput,
@@ -385,6 +386,10 @@ export async function runPreflight(inputJson?: string, deps: PreflightDeps = {})
 
         // The "served below requested" lines queued for this conversation (mode on only): delivered now, once.
         if (!emitted) servedNotices = takeServedNotices(sessionsDir, conversationId, mode);
+
+        // The one-line confirmation of an elevation answer (2.3.21; mode on): delivered now, once, for the model, so the assistant
+        // reads what was recorded (or why not) before it relaunches. The PostToolUse output of Antigravity is `{}` only, so this is the channel.
+        if (!emitted) parts.push(...takeAnswerNotices(sessionsDir, conversationId, mode));
 
         // 4. Read quota view with conversationId
         const quota: QuotaView = await readQuotaView({ conversationId });

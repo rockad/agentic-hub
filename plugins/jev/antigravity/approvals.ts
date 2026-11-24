@@ -1,10 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { privateDir, privateFile, PRIVATE_FILE_MODE } from '../src/shared.js';
 import { modelTierRank, safeSessionId } from '../src/core/governance.js';
 import { withDirLock } from '../src/core/dir-lock.js';
 import { DEFAULT_COST_EFFORT, effortFromModelId, type CostEffort } from '../src/core/cost-estimate.js';
-import { LEGACY_APPROVAL_EFFORT, effortWithin } from '../src/core/cost-gate.js';
+import { LEGACY_APPROVAL_EFFORT, effortIndex, effortWithin, stripEffortSuffix } from '../src/core/cost-gate.js';
+import { denialPredatesModeChange, type ModeChangeConfigLike } from '../src/core/mode-change.js';
+import { markOnceUsed, onceLive, storedClause, type AnswerScope, type OnceUsed, type StoredClause } from '../src/core/elevation-answer.js';
 import { subagentEnumOf } from '../src/core/served-model.js';
 import {
   DOWNGRADE_TTL_MS,
@@ -23,17 +26,42 @@ import {
   type TierRating
 } from '../src/core/downgrade-state.js';
 
-export type ApprovalScope = 'once' | '5min' | 'session';
+/** `once`: bound to the turn it was answered in (no clock); `session`. A `5min` record from before 2.3.21 is read as expired (dropped). */
+export type ApprovalScope = AnswerScope;
 
 export type Approval = {
   model: string;
   scope: ApprovalScope;
   created_at: number;
+  /** A `once` approval's turn: the hash of the user input of the turn it was answered in (`antigravityTurnKey`). It is live only in that turn. */
+  turn?: string;
 };
+
+/** A No (2.3.21): this delegation only (`once`: the next launch of the turn) or the rest of the session; `model` is the marker's model key. */
+export type Decline = { model: string; scope: ApprovalScope; created_at: number; turn?: string };
+
+/** What a stored answer is read against: the turn a `once` belongs to, and the config for the `modeChangedAt` stamp (anything older no longer counts). */
+export type ElevationCtx = { turn?: string; config?: ModeChangeConfigLike | null };
+
+/**
+ * The key of the user turn a call belongs to, which is also the turn a `Yes, once` answer is bound to (2.3.21): the first 16 hex of the
+ * sha256 of the hook input's `lastUserInput`, the same per-prompt key the attempt counter uses; `no-prompt` when the input carries none.
+ * A new user message changes it, so a once given in an earlier turn is not live. (Two user messages with identical text share a key.)
+ */
+export function antigravityTurnKey(lastUserInput: unknown): string {
+  return typeof lastUserInput === 'string' && lastUserInput ? createHash('sha256').update(lastUserInput).digest('hex').slice(0, 16) : 'no-prompt';
+}
+
+/** A question-pending note (see `ApprovalState.pendingQuestions`): the answer row's step_index and question index, when PostToolUse saw the question answered, and the user turn it was answered in (a once answer belongs to that turn). */
+export type PendingQuestion = { stepIdx: number; questionIdx?: number; asked_at: number; turn?: string };
 
 export type ApprovalState = {
   approvals: Approval[];
   attempts?: Record<string, { count: number; updated_at: number }>;
+  /**
+   * The elevation questions Jev prescribed, per model key (lower-case), with the time. No expiry (2.3.21): with the effort suffix of the
+   * key it is the record of what Jev prescribed, and an answer approves at most that effort.
+   */
   denied?: Record<string, number>;
   /**
    * The step_index of the ask_question answer row, per elevation model (lower-case), recorded by PostToolUse against
@@ -43,21 +71,37 @@ export type ApprovalState = {
   answerSteps?: Record<string, number>;
   /** The question index (0 = A1) inside that answer row, per elevation model, recorded together with the step. */
   answerQuestions?: Record<string, number>;
+  /** The user turn (`antigravityTurnKey`) the answer was given in, per elevation model, recorded with the step: a pulled `once` answer is bound to it, not to the launch's turn. */
+  answerTurns?: Record<string, string>;
   /**
-   * Answers that already produced an approval: `step:<step_index>#<questionIndex>` or `<toolCallId>#<questionIndex>`.
+   * Answers that already produced an approval (or a decline): `step:<step_index>#<questionIndex>` or `<toolCallId>#<questionIndex>`.
    * A denial that arrives later must not be approved again from the same answer row (one answer, one approval).
    */
   consumedAnswers?: string[];
+  /**
+   * Question-pending notes (2.3.21): an elevation question PostToolUse saw answered but whose answer row was not in the transcript yet, with
+   * no denial on record for its model (the question was not prescribed by Jev). Per marker model (lower-case): where the answer row will be.
+   * No expiry; voided by a mode change (like the prescriptions); dropped only when its answer is read. A denial for the model does not drop it:
+   * the next pull still reads the note's row.
+   */
+  pendingQuestions?: Record<string, PendingQuestion>;
+  /** The No answers (2.3.21). */
+  declines?: Decline[];
+  /** The once approvals a launch used in the turn (the approval's model key), so a later deny can say so. Only the current turn's marks are kept. */
+  onceUsed?: OnceUsed[];
 };
 
 export type ApprovalStore = {
   /**
-   * Store an approval for a pending denial. `consumedKeys` name the answer rows it came from: when any of them is
-   * already consumed nothing is stored (false), otherwise they are remembered as consumed.
+   * Store an approval (2.3.21: whether or not Jev denied anything first, no window). `consumedKeys` name the answer rows it came from: when any of them is
+   * already consumed nothing is stored (false), otherwise they are remembered as consumed. The model key keeps the effort the marker
+   * named, held to the effort Jev prescribed for it (none on record: `high`). `config`: the `modeChangedAt` stamp, which voids earlier prescriptions.
    */
-  record: (sessionId: string, approval: Approval, consumedKeys?: string[]) => boolean;
+  record: (sessionId: string, approval: Approval, consumedKeys?: string[], config?: ModeChangeConfigLike | null) => boolean;
+  /** `record`, returning what was stored (the capped model key), or null when nothing was (an answer already consumed). */
+  recordWithResult?: (sessionId: string, approval: Approval, consumedKeys?: string[], config?: ModeChangeConfigLike | null) => Approval | null;
   /**
-   * `record` and `claim` as ONE locked operation: the approval is stored for the pending denial and, in the same
+   * `record` and `claim` as ONE locked operation: the approval is stored and, in the same
    * lock, claimed for `approval.model`. No other call can claim a "once" approval in between, so one answer allows
    * one run even when two pro calls evaluate in parallel. `stored: false` (nothing recorded, `approval: null`) when
    * `record` would refuse; a stored approval is always claimed, so `approval` is null only when `stored` is false.
@@ -65,19 +109,41 @@ export type ApprovalStore = {
   recordAndClaim?: (
     sessionId: string,
     approval: Approval,
-    consumedKeys?: string[]
+    consumedKeys?: string[],
+    ectx?: ElevationCtx | null
   ) => { stored: boolean; approval: Approval | null };
   deny: (sessionId: string, model: string, nowMs: number) => void;
-  /** Find the approval covering `requested` and consume it when it is a `once`. `effort` (2.3.19) is the effort the call runs at when its model id names none (the cost gate's call effort). */
-  claim: (sessionId: string, requested: string, nowMs: number, effort?: CostEffort) => Approval | null;
+  /** Find the approval covering `requested` and consume it when it is a `once`. `effort` (2.3.19) is the effort the call runs at when its model id names none (the cost gate's call effort). `ectx`: the turn and the mode-change config. */
+  claim: (sessionId: string, requested: string, nowMs: number, effort?: CostEffort, ectx?: ElevationCtx | null) => Approval | null;
+  /** Record a No for the marker's model (this delegation or the session); false when the answer row was already consumed. */
+  recordDecline?: (sessionId: string, decline: Decline, consumedKeys?: string[]) => boolean;
+  /** `recordDecline` and `claimDecline` as one locked operation (a pulled answer): the No applies to this call at once. */
+  recordDeclineAndClaim?: (sessionId: string, decline: Decline, consumedKeys?: string[], ectx?: ElevationCtx | null) => { stored: boolean; decline: Decline | null };
+  /** The No covering `requested` (a No for a model covers that model and stronger ones of the same kind), a session No before a `once` of this turn; a `once` No is consumed. */
+  claimDecline?: (sessionId: string, requested: string, nowMs: number, ectx?: ElevationCtx | null) => Decline | null;
+  /** The same without consuming (a script that cannot be clamped is denied while the No stands). */
+  peekDecline?: (sessionId: string, requested: string, nowMs: number, ectx?: ElevationCtx | null) => Decline | null;
+  /** The stored state, read-only (for the clause a deny reason adds about what is stored). */
+  snapshot?: (sessionId: string) => ApprovalState;
   attempt: (sessionId: string, promptKey: string, signature: string, nowMs: number, windowMs?: number) => number;
+  /** When Jev last prescribed the question for `model` or a stronger one (epoch ms; no expiry), or null. */
   wasDeniedRecently: (sessionId: string, model: string, nowMs: number) => number | null;
   /** Record the answer row's step_index against the pending denial for `model`. False when no denial is pending. */
-  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number) => boolean;
+  noteAnswerStep?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number, turn?: string) => boolean;
+  /** The user turn the recorded answer row was given in, or null when none is recorded for a pending denial. */
+  getAnswerTurn?: (sessionId: string, model: string, nowMs: number) => string | null;
+  /** Mark answer keys consumed without storing an answer (a stale once answer: read, not applied, never read again). */
+  consumeAnswers?: (sessionId: string, keys: string[]) => void;
   /** The recorded answer row step_index for `model`, or null when none is recorded for a pending denial. */
   getAnswerStep?: (sessionId: string, model: string, nowMs: number) => number | null;
   /** The recorded question index inside that row, or null when none is recorded for a pending denial. */
   getAnswerQuestion?: (sessionId: string, model: string, nowMs: number) => number | null;
+  /** Note a question PostToolUse saw answered but whose row was not in the transcript yet, when no denial for `model` is on record (2.3.21). False when none was stored. */
+  notePendingQuestion?: (sessionId: string, model: string, stepIdx: number, nowMs: number, markerIndex?: number, turn?: string) => boolean;
+  /** The question-pending note standing for `model` (that model or a stronger one), not voided by a mode change; null when none. */
+  getPendingQuestion?: (sessionId: string, model: string, config?: ModeChangeConfigLike | null) => PendingQuestion | null;
+  /** Drop the question-pending notes standing for `model` (its answer was read). */
+  clearPendingQuestion?: (sessionId: string, model: string) => void;
   /** The answer keys already consumed by an approval in this session. */
   getConsumedAnswers?: (sessionId: string) => string[];
 };
@@ -93,34 +159,76 @@ export const CONSUMED_ANSWERS_CAP = 100;
  */
 export const approvalKindCovers = (approved: string, requested: string): boolean => subagentEnumOf(requested) !== null || subagentEnumOf(approved) === null;
 
-export const DENIAL_WINDOW_MS = 15 * 60 * 1000;
+/** A No covers a request of the same kind (enum or full id) at its tier or above. */
+const declineKindMatches = (declined: string, requested: string): boolean => (subagentEnumOf(declined) === null) === (subagentEnumOf(requested) === null);
+
 export const ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 export const ATTEMPT_TOTAL_CAP = 20;
 
+/** Most approvals (and declines) one file keeps. */
+const ANSWERS_CAP = 24;
+
 const SCOPE_PREFERENCE: Record<ApprovalScope, number> = {
   session: 0,
-  '5min': 1,
-  once: 2
+  once: 1
 };
 
-export function approvalValid(a: Approval, nowMs: number): boolean {
-  if (a.scope === 'session') return true;
-  if (a.scope === '5min') return nowMs - a.created_at <= 5 * 60 * 1000;
-  if (a.scope === 'once') return nowMs - a.created_at <= 10 * 60 * 1000;
-  return false;
-}
+const voided = (createdAt: number, ectx?: ElevationCtx | null): boolean => denialPredatesModeChange(createdAt, ectx?.config, 'antigravity');
+/** A stored answer that counts now: a session one, or a once of this turn; and not from before the last mode change. */
+const usable = (a: { scope: ApprovalScope; turn?: string; created_at: number }, ectx?: ElevationCtx | null): boolean => onceLive(a, ectx?.turn) && !voided(a.created_at, ectx);
 
 export function noteDenied(state: ApprovalState, model: string, nowMs: number): ApprovalState {
-  const kept = Object.entries(state.denied ?? {}).filter(([, t]) => nowMs - t <= DENIAL_WINDOW_MS);
   // A fresh denial starts a fresh question: an answer row recorded for an earlier denial must not be read for it.
   const { [model.toLowerCase()]: _stale, ...answerSteps } = state.answerSteps ?? {};
   const { [model.toLowerCase()]: _staleQ, ...answerQuestions } = state.answerQuestions ?? {};
-  const next: ApprovalState = { ...state, denied: { ...Object.fromEntries(kept), [model.toLowerCase()]: nowMs } };
+  // A standing question-pending note is kept: its answer row is still to be read at the next pull.
+  const { [model.toLowerCase()]: _staleT, ...answerTurns } = state.answerTurns ?? {};
+  const next: ApprovalState = { ...state, denied: { ...(state.denied ?? {}), [model.toLowerCase()]: nowMs } };
   if (Object.keys(answerSteps).length > 0) next.answerSteps = answerSteps;
   else delete next.answerSteps;
   if (Object.keys(answerQuestions).length > 0) next.answerQuestions = answerQuestions;
   else delete next.answerQuestions;
+  if (Object.keys(answerTurns).length > 0) next.answerTurns = answerTurns;
+  else delete next.answerTurns;
   return next;
+}
+
+/** The model keys of `pendingQuestions` that stand for `model`: that model or a stronger one of the same kind, at an effort that covers it (the denial check's rule). */
+const pendingKeysCovering = (state: ApprovalState, model: string): string[] => {
+  const want = modelTierRank(model);
+  return Object.keys(state.pendingQuestions ?? {}).filter(
+    (m) => modelTierRank(m) >= want && approvalKindCovers(m, model) && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT)
+  );
+};
+
+/** Pure: the state without the question-pending notes that stand for `model` (null when there were none). */
+export function clearPendingQuestion(state: ApprovalState, model: string): ApprovalState | null {
+  const keys = pendingKeysCovering(state, model);
+  if (keys.length === 0) return null;
+  const rest = Object.fromEntries(Object.entries(state.pendingQuestions ?? {}).filter(([m]) => !keys.includes(m)));
+  const { pendingQuestions: _p, ...base } = state;
+  return Object.keys(rest).length > 0 ? { ...base, pendingQuestions: rest } : base;
+}
+
+/**
+ * Pure: the state with a question-pending note for `model`, or null when a denial for it is on record (the existing denial path reads that answer
+ * with `noteAnswerStep`) or the indexes are not plain non-negative integers. A later note for the same model replaces the earlier one.
+ */
+export function notePendingQuestion(state: ApprovalState, model: string, stepIdx: number, nowMs: number, markerIndex = 0, turn?: string): ApprovalState | null {
+  if (!Number.isInteger(stepIdx) || stepIdx < 0 || !Number.isInteger(markerIndex) || markerIndex < 0) return null;
+  if (wasDeniedRecently(state, model, nowMs)) return null;
+  return { ...state, pendingQuestions: { ...(state.pendingQuestions ?? {}), [model.toLowerCase()]: { stepIdx, questionIdx: markerIndex, asked_at: nowMs, ...(turn ? { turn } : {}) } } };
+}
+
+/** The question-pending note standing for `model` (the latest of those that cover it), not voided by a mode change; null when none. */
+export function getPendingQuestion(state: ApprovalState, model: string, config?: ModeChangeConfigLike | null): PendingQuestion | null {
+  let best: PendingQuestion | null = null;
+  for (const key of pendingKeysCovering(state, model)) {
+    const note = (state.pendingQuestions ?? {})[key];
+    if (voided(note.asked_at, { config })) continue;
+    if (best === null || note.asked_at > best.asked_at) best = note;
+  }
+  return best;
 }
 
 export function noteAnswerStep(
@@ -128,7 +236,8 @@ export function noteAnswerStep(
   model: string,
   stepIdx: number,
   nowMs: number,
-  markerIndex = 0
+  markerIndex = 0,
+  turn?: string
 ): ApprovalState | null {
   if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
   if (!Number.isInteger(markerIndex) || markerIndex < 0) return null;
@@ -136,8 +245,22 @@ export function noteAnswerStep(
   return {
     ...state,
     answerSteps: { ...(state.answerSteps ?? {}), [model.toLowerCase()]: stepIdx },
-    answerQuestions: { ...(state.answerQuestions ?? {}), [model.toLowerCase()]: markerIndex }
+    answerQuestions: { ...(state.answerQuestions ?? {}), [model.toLowerCase()]: markerIndex },
+    ...(turn ? { answerTurns: { ...(state.answerTurns ?? {}), [model.toLowerCase()]: turn } } : {})
   };
+}
+
+/** The user turn the recorded answer row was given in (recorded with the step), or null when none is recorded for a pending denial. */
+export function getAnswerTurn(state: ApprovalState, model: string, nowMs: number): string | null {
+  if (!wasDeniedRecently(state, model, nowMs)) return null;
+  const v = state.answerTurns?.[model.toLowerCase()];
+  return typeof v === 'string' && v ? v : null;
+}
+
+/** Pure: the state with `keys` marked as consumed answers (the row was read but produced no approval, so it is never read again). */
+export function markAnswersConsumed(state: ApprovalState, keys: string[]): ApprovalState {
+  const consumed = [...(state.consumedAnswers ?? []), ...keys.filter((k) => !(state.consumedAnswers ?? []).includes(k))];
+  return consumed.length > 0 ? { ...state, consumedAnswers: consumed.slice(-CONSUMED_ANSWERS_CAP) } : state;
 }
 
 export function getAnswerQuestion(state: ApprovalState, model: string, nowMs: number): number | null {
@@ -152,12 +275,19 @@ export function getAnswerStep(state: ApprovalState, model: string, nowMs: number
   return typeof v === 'number' ? v : null;
 }
 
-export function getRecentDenialTimestamp(state: ApprovalState, model: string, nowMs: number): number | null {
+/** The effort a prescription (a denial key) stands for: its suffix; a key with none was a bare question, which stands for at most `high`. */
+const prescriptionEffort = (key: string): CostEffort => effortFromModelId(key) ?? LEGACY_APPROVAL_EFFORT;
+
+/**
+ * The latest time Jev prescribed the question for `model` or a stronger one of the same kind (epoch ms), or null. No expiry (2.3.21).
+ * The prescription must also cover the effort the answer would name (the id's suffix, else medium): an answer cannot approve a higher
+ * effort than the question asked about.
+ */
+export function getRecentDenialTimestamp(state: ApprovalState, model: string, _nowMs?: number): number | null {
   const want = modelTierRank(model);
   let latest: number | null = null;
   for (const [m, t] of Object.entries(state.denied ?? {})) {
-    // The denial must also cover the effort the approval would name (the id's suffix, else medium): an answer cannot approve a higher effort than the question asked about.
-    if (modelTierRank(m) >= want && approvalKindCovers(m, model) && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT) && nowMs - t <= DENIAL_WINDOW_MS) {
+    if (modelTierRank(m) >= want && approvalKindCovers(m, model) && effortWithin(effortFromModelId(m) ?? DEFAULT_COST_EFFORT, effortFromModelId(model) ?? DEFAULT_COST_EFFORT)) {
       if (latest === null || t > latest) {
         latest = t;
       }
@@ -170,60 +300,154 @@ export function wasDeniedRecently(state: ApprovalState, model: string, nowMs: nu
   return getRecentDenialTimestamp(state, model, nowMs) !== null;
 }
 
-export function addApproval(state: ApprovalState, approval: Approval, nowMs: number): ApprovalState {
-  return { ...state, approvals: [...state.approvals.filter((a) => approvalValid(a, nowMs)), approval] };
+/**
+ * The effort Jev prescribed for the model an answer names: the highest effort among the questions it prescribed for that model's own
+ * tier (same kind), unless the prescription predates the last mode change; null when there is none on record. As in Claude Code, only
+ * the model's own prescription counts: a stronger tier's question never raises the cap of a weaker one's answer.
+ */
+export function prescribedEffortFor(state: ApprovalState, model: string, config?: ModeChangeConfigLike | null): CostEffort | null {
+  const want = modelTierRank(model);
+  let best: CostEffort | null = null;
+  for (const [m, t] of Object.entries(state.denied ?? {})) {
+    if (voided(t, { config })) continue;
+    if (modelTierRank(m) !== want || !approvalKindCovers(m, model)) continue;
+    const e = prescriptionEffort(m);
+    if (best === null || effortIndex(e) > effortIndex(best)) best = e;
+  }
+  return best;
 }
 
+/** The marker model key held to the effort Jev prescribed: an effort suffix above the cap is lowered to it (none prescribed: `high`); a key with no suffix is left as it is. */
+export function cappedModelKey(model: string, prescribed: CostEffort | null): string {
+  const named = effortFromModelId(model);
+  if (named === null) return model;
+  const cap = prescribed ?? LEGACY_APPROVAL_EFFORT;
+  return effortIndex(named) <= effortIndex(cap) ? model : `${stripEffortSuffix(model)}-${cap}`;
+}
+
+export function addApproval(state: ApprovalState, approval: Approval, _nowMs?: number): ApprovalState {
+  // A new `once` replaces the once approvals of other turns (never live again); the file keeps at most ANSWERS_CAP.
+  const keep = state.approvals.filter((a) => !(approval.scope === 'once' && a.scope === 'once' && a.turn !== approval.turn));
+  return { ...state, approvals: [...keep, approval].slice(-ANSWERS_CAP) };
+}
+
+/**
+ * Pure: the state with the user's Yes added (2.3.21), and the approval as stored. No denial is needed and there is no window. The model
+ * key keeps the effort the marker named, held to the effort Jev prescribed for it (`cappedModelKey`). One answer, one approval: an
+ * answer row that already produced one cannot produce another (null). A Yes also drops the declines it contradicts (that model or a
+ * weaker one of the same kind). The prescription (`denied`) stays: it is the record of what Jev asked.
+ */
 export function recordApproval(
   state: ApprovalState,
   approval: Approval,
   nowMs: number,
-  consumedKeys: string[] = []
-): ApprovalState | null {
-  if (!wasDeniedRecently(state, approval.model, nowMs)) return null;
-  // One answer, one approval: an answer row that already produced an approval cannot produce another.
+  consumedKeys: string[] = [],
+  config?: ModeChangeConfigLike | null
+): { state: ApprovalState; approval: Approval } | null {
   const alreadyConsumed = state.consumedAnswers ?? [];
   if (consumedKeys.some((k) => alreadyConsumed.includes(k))) return null;
-  const want = modelTierRank(approval.model);
-  // Consume the matching denial(s) so a "once" answer in the transcript cannot be replayed on later calls.
-  const remainingDenied = Object.fromEntries(
-    Object.entries(state.denied ?? {}).filter(([m]) => modelTierRank(m) < want)
-  );
-  const remainingSteps = Object.fromEntries(
-    Object.entries(state.answerSteps ?? {}).filter(([m]) => modelTierRank(m) < want)
-  );
-  const remainingQuestions = Object.fromEntries(
-    Object.entries(state.answerQuestions ?? {}).filter(([m]) => modelTierRank(m) < want)
-  );
-  const next: ApprovalState = { ...addApproval(state, approval, nowMs), denied: remainingDenied };
+  const model = cappedModelKey(approval.model, prescribedEffortFor(state, approval.model, config));
+  const stored: Approval = { ...approval, model };
+  const want = modelTierRank(stored.model);
+  // Consume the matching answer-row bookkeeping so a "once" answer in the transcript cannot be replayed on later calls.
+  const remainingSteps = Object.fromEntries(Object.entries(state.answerSteps ?? {}).filter(([m]) => modelTierRank(m) < want));
+  const remainingQuestions = Object.fromEntries(Object.entries(state.answerQuestions ?? {}).filter(([m]) => modelTierRank(m) < want));
+  const remainingTurns = Object.fromEntries(Object.entries(state.answerTurns ?? {}).filter(([m]) => modelTierRank(m) < want));
+  const declines = (state.declines ?? []).filter((d) => !(modelTierRank(d.model) <= want && approvalKindCovers(stored.model, d.model)));
+  const { declines: _d, ...base } = state;
+  const next: ApprovalState = { ...addApproval({ ...base, ...(declines.length ? { declines } : {}) }, stored, nowMs) };
   if (Object.keys(remainingSteps).length > 0) next.answerSteps = remainingSteps;
   else delete next.answerSteps;
   if (Object.keys(remainingQuestions).length > 0) next.answerQuestions = remainingQuestions;
   else delete next.answerQuestions;
+  if (Object.keys(remainingTurns).length > 0) next.answerTurns = remainingTurns;
+  else delete next.answerTurns;
   const consumed = [...alreadyConsumed, ...consumedKeys.filter((k) => !alreadyConsumed.includes(k))];
   if (consumed.length > 0) next.consumedAnswers = consumed.slice(-CONSUMED_ANSWERS_CAP);
-  return next;
+  return { state: next, approval: stored };
 }
 
+/**
+ * Pure: the approval that covers `requested` (a tier at or above it, of a kind that covers it, at an effort that covers it), a session
+ * one before a `once`, which is consumed and marked used in this turn. An approval that is not live is ignored: a `once` of another turn,
+ * and anything from before the last mode change (`ectx`).
+ */
 export function claimApproval(
   state: ApprovalState,
   requested: string,
   nowMs: number,
-  effort?: CostEffort
+  effort?: CostEffort,
+  ectx?: ElevationCtx | null
 ): { state: ApprovalState; approval: Approval | null } {
+  void nowMs;
   const wantRank = modelTierRank(requested);
-  const live = state.approvals.filter((a) => approvalValid(a, nowMs));
   const hit =
-    live
+    state.approvals
+      .filter((a) => usable(a, ectx))
       .filter((a) => modelTierRank(a.model) >= wantRank)
       // An enum approval never covers a full id (see `approvalKindCovers`).
       .filter((a) => approvalKindCovers(a.model, requested))
       // The approval must cover the call's effort too (2.3.19): the suffix of its model id, else `high` for a record that names none, against the call's suffix, else `medium`.
       .filter((a) => effortWithin(effortFromModelId(a.model) ?? LEGACY_APPROVAL_EFFORT, effortFromModelId(requested) ?? effort ?? DEFAULT_COST_EFFORT))
       .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  if (!hit) return { state, approval: null };
+  if (hit.scope !== 'once') return { state, approval: hit };
+  return { state: { ...state, approvals: state.approvals.filter((a) => a !== hit), onceUsed: markOnceUsed(state.onceUsed, hit.model, ectx?.turn) }, approval: hit };
+}
 
-  const approvals = hit?.scope === 'once' ? live.filter((a) => a !== hit) : live;
-  return { state: { ...state, approvals }, approval: hit };
+/** Pure: the state with a No added, or null when its answer row was already consumed. A session No drops the approvals it contradicts (that model or a stronger one of the same kind) and replaces earlier declines of the same model; a once No drops only the unused once approvals, never a session Yes. */
+export function recordDecline(
+  state: ApprovalState,
+  decline: Decline,
+  consumedKeys: string[] = []
+): { state: ApprovalState; decline: Decline } | null {
+  const alreadyConsumed = state.consumedAnswers ?? [];
+  if (consumedKeys.some((k) => alreadyConsumed.includes(k))) return null;
+  const rank = modelTierRank(decline.model);
+  // A once No never withdraws the user's standing "Yes, for this session": it drops only the unused once approvals it contradicts.
+  const approvals = state.approvals.filter(
+    (a) => !(modelTierRank(a.model) >= rank && approvalKindCovers(a.model, decline.model) && (decline.scope === 'session' || a.scope === 'once'))
+  );
+  const declines = (state.declines ?? []).filter(
+    (d) => !(decline.scope === 'session' && d.model === decline.model) && !(decline.scope === 'once' && d.scope === 'once' && d.turn !== decline.turn)
+  );
+  const next: ApprovalState = { ...state, approvals, declines: [...declines, decline].slice(-ANSWERS_CAP) };
+  const consumed = [...alreadyConsumed, ...consumedKeys.filter((k) => !alreadyConsumed.includes(k))];
+  if (consumed.length > 0) next.consumedAnswers = consumed.slice(-CONSUMED_ANSWERS_CAP);
+  return { state: next, decline };
+}
+
+/** Pure: the No covering `requested` (a session one before a `once` of this turn), consuming the `once` when `consume` is set. Not live: ignored (see `claimApproval`). */
+export function claimDecline(
+  state: ApprovalState,
+  requested: string,
+  ectx?: ElevationCtx | null,
+  consume = true
+): { state: ApprovalState; decline: Decline | null } {
+  const rank = modelTierRank(requested);
+  const hit =
+    (state.declines ?? [])
+      .filter((d) => usable(d, ectx))
+      .filter((d) => rank >= modelTierRank(d.model) && declineKindMatches(d.model, requested))
+      .sort((a, b) => SCOPE_PREFERENCE[a.scope] - SCOPE_PREFERENCE[b.scope])[0] ?? null;
+  if (!hit) return { state, decline: null };
+  if (hit.scope !== 'once' || !consume) return { state, decline: hit };
+  const declines = (state.declines ?? []).filter((d) => d !== hit);
+  const { declines: _d, ...rest } = state;
+  return { state: { ...rest, ...(declines.length ? { declines } : {}) }, decline: hit };
+}
+
+/** The clause a deny reason adds: what Jev has stored for `requested` (see `storedClause`). Pure. */
+export function storedClauseFor(state: ApprovalState, requested: string, effort?: CostEffort, ectx?: ElevationCtx | null): StoredClause {
+  const wantRank = modelTierRank(requested);
+  const covering = state.approvals
+    .filter((a) => !voided(a.created_at, ectx) && modelTierRank(a.model) >= wantRank && approvalKindCovers(a.model, requested))
+    .map((a) => ({ scope: a.scope, ...(a.turn !== undefined ? { turn: a.turn } : {}), effort: effortFromModelId(a.model) ?? LEGACY_APPROVAL_EFFORT }));
+  const onceUsedThisTurn = (state.onceUsed ?? []).some(
+    (u) => ectx?.turn !== undefined && u.turn === ectx.turn && modelTierRank(u.key) >= wantRank && approvalKindCovers(u.key, requested)
+  );
+  const needed = effortFromModelId(requested) ?? effort;
+  return storedClause({ kind: 'model', subject: requested, covering, turn: ectx?.turn, ...(needed ? { neededEffort: needed } : {}), onceUsedThisTurn });
 }
 
 export function bumpAttempts(
@@ -256,20 +480,28 @@ export function bumpAttempts(
 
 function normalizeApprovalState(raw: unknown): ApprovalState {
   const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const scopeOk = (s: unknown): s is ApprovalScope => s === 'once' || s === 'session';
+  const turnOf = (x: { turn?: unknown }): { turn?: string } => (typeof x.turn === 'string' && x.turn ? { turn: x.turn } : {});
+  // A record from before 2.3.21 with the `5min` scope is read as expired: dropped.
   const approvals: Approval[] = [];
   if (Array.isArray(r.approvals)) {
     for (const a of r.approvals) {
-      if (
-        a &&
-        typeof a === 'object' &&
-        typeof a.model === 'string' &&
-        (a.scope === 'once' || a.scope === '5min' || a.scope === 'session') &&
-        typeof a.created_at === 'number'
-      ) {
-        approvals.push({ model: a.model, scope: a.scope, created_at: a.created_at });
+      if (a && typeof a === 'object' && typeof a.model === 'string' && scopeOk(a.scope) && typeof a.created_at === 'number') {
+        approvals.push({ model: a.model, scope: a.scope, created_at: a.created_at, ...turnOf(a) });
       }
     }
   }
+  const declines: Decline[] = [];
+  if (Array.isArray(r.declines)) {
+    for (const d of r.declines) {
+      if (d && typeof d === 'object' && typeof d.model === 'string' && scopeOk(d.scope) && typeof d.created_at === 'number') {
+        declines.push({ model: d.model, scope: d.scope, created_at: d.created_at, ...turnOf(d) });
+      }
+    }
+  }
+  const onceUsed: OnceUsed[] = Array.isArray(r.onceUsed)
+    ? r.onceUsed.filter((u): u is OnceUsed => !!u && typeof u.key === 'string' && typeof u.turn === 'string').map((u) => ({ key: u.key, turn: u.turn }))
+    : [];
   const attempts =
     r.attempts && typeof r.attempts === 'object' && !Array.isArray(r.attempts)
       ? (r.attempts as Record<string, { count: number; updated_at: number }>)
@@ -294,6 +526,26 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
           )
         )
       : undefined;
+  const pendingQuestions =
+    r.pendingQuestions && typeof r.pendingQuestions === 'object' && !Array.isArray(r.pendingQuestions)
+      ? Object.fromEntries(
+          Object.entries(r.pendingQuestions as Record<string, any>)
+            .filter(([, p]) => !!p && typeof p === 'object' && Number.isInteger(p.stepIdx) && p.stepIdx >= 0 && typeof p.asked_at === 'number')
+            .map(([m, p]): [string, PendingQuestion] => [
+              m,
+              {
+                stepIdx: p.stepIdx,
+                ...(Number.isInteger(p.questionIdx) && p.questionIdx >= 0 ? { questionIdx: p.questionIdx } : {}),
+                asked_at: p.asked_at,
+                ...(typeof p.turn === 'string' && p.turn ? { turn: p.turn } : {})
+              }
+            ])
+        )
+      : undefined;
+  const answerTurns =
+    r.answerTurns && typeof r.answerTurns === 'object' && !Array.isArray(r.answerTurns)
+      ? Object.fromEntries(Object.entries(r.answerTurns as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''))
+      : undefined;
   const consumedAnswers = Array.isArray(r.consumedAnswers)
     ? r.consumedAnswers.filter((k): k is string => typeof k === 'string').slice(-CONSUMED_ANSWERS_CAP)
     : undefined;
@@ -303,7 +555,11 @@ function normalizeApprovalState(raw: unknown): ApprovalState {
     ...(denied ? { denied } : {}),
     ...(answerSteps && Object.keys(answerSteps).length > 0 ? { answerSteps } : {}),
     ...(answerQuestions && Object.keys(answerQuestions).length > 0 ? { answerQuestions } : {}),
-    ...(consumedAnswers && consumedAnswers.length > 0 ? { consumedAnswers } : {})
+    ...(answerTurns && Object.keys(answerTurns).length > 0 ? { answerTurns } : {}),
+    ...(consumedAnswers && consumedAnswers.length > 0 ? { consumedAnswers } : {}),
+    ...(pendingQuestions && Object.keys(pendingQuestions).length > 0 ? { pendingQuestions } : {}),
+    ...(declines.length ? { declines } : {}),
+    ...(onceUsed.length ? { onceUsed } : {})
   };
 }
 
@@ -348,26 +604,27 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
     privateFile(file);
   }
 
+  const recordWithResult = (rawId: string, approval: Approval, consumedKeys?: string[], config?: ModeChangeConfigLike | null): Approval | null => {
+    const sessionId = safeSessionId(rawId);
+    if (!sessionId) return null;
+    return withLock(sessionId, () => {
+      const done = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys, config);
+      if (!done) return null;
+      writeState(sessionId, done.state);
+      return done.approval;
+    });
+  };
+
   return {
-    record: (rawId, approval, consumedKeys) => {
-      const sessionId = safeSessionId(rawId);
-      if (!sessionId) return false;
-      return withLock(sessionId, () => {
-        const next = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys);
-        if (next) {
-          writeState(sessionId, next);
-          return true;
-        }
-        return false;
-      });
-    },
-    recordAndClaim: (rawId, approval, consumedKeys) => {
+    record: (rawId, approval, consumedKeys, config) => recordWithResult(rawId, approval, consumedKeys, config) !== null,
+    recordWithResult,
+    recordAndClaim: (rawId, approval, consumedKeys, ectx) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return { stored: false, approval: null };
       return withLock(sessionId, () => {
-        const recorded = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys);
+        const recorded = recordApproval(readState(sessionId), approval, approval.created_at, consumedKeys, ectx?.config);
         if (!recorded) return { stored: false, approval: null };
-        const { state, approval: claimed } = claimApproval(recorded, approval.model, approval.created_at);
+        const { state, approval: claimed } = claimApproval(recorded.state, recorded.approval.model, approval.created_at, undefined, ectx);
         writeState(sessionId, state);
         return { stored: true, approval: claimed };
       });
@@ -379,16 +636,54 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         writeState(sessionId, noteDenied(readState(sessionId), model, nowMs));
       });
     },
-    claim: (rawId, requested, nowMs, effort) => {
+    claim: (rawId, requested, nowMs, effort, ectx) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return null;
       return withLockIfState(sessionId, () => {
-        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs, effort);
-        if (approval?.scope === 'once' || state.approvals.length !== readState(sessionId).approvals.length) {
-          writeState(sessionId, state);
-        }
+        const { state, approval } = claimApproval(readState(sessionId), requested, nowMs, effort, ectx);
+        if (approval?.scope === 'once') writeState(sessionId, state);
         return approval;
       });
+    },
+    recordDecline: (rawId, decline, consumedKeys) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return false;
+      return withLock(sessionId, () => {
+        const done = recordDecline(readState(sessionId), decline, consumedKeys);
+        if (!done) return false;
+        writeState(sessionId, done.state);
+        return true;
+      });
+    },
+    recordDeclineAndClaim: (rawId, decline, consumedKeys, ectx) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return { stored: false, decline: null };
+      return withLock(sessionId, () => {
+        const done = recordDecline(readState(sessionId), decline, consumedKeys);
+        if (!done) return { stored: false, decline: null };
+        const claimed = claimDecline(done.state, decline.model, ectx);
+        writeState(sessionId, claimed.state);
+        return { stored: true, decline: claimed.decline };
+      });
+    },
+    claimDecline: (rawId, requested, _nowMs, ectx) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLockIfState(sessionId, () => {
+        const { state, decline } = claimDecline(readState(sessionId), requested, ectx);
+        if (decline?.scope === 'once') writeState(sessionId, state);
+        return decline;
+      });
+    },
+    peekDecline: (rawId, requested, _nowMs, ectx) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLockIfState(sessionId, () => claimDecline(readState(sessionId), requested, ectx, false).decline);
+    },
+    snapshot: (rawId) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return { approvals: [] };
+      return withLockIfState(sessionId, () => readState(sessionId));
     },
     attempt: (rawId, promptKey, signature, nowMs, windowMs) => {
       const sessionId = safeSessionId(rawId);
@@ -406,15 +701,48 @@ export function createAntigravityApprovalStore(sessionsDir: string): ApprovalSto
         return getRecentDenialTimestamp(readState(sessionId), model, nowMs);
       });
     },
-    noteAnswerStep: (rawId, model, stepIdx, nowMs, markerIndex) => {
+    noteAnswerStep: (rawId, model, stepIdx, nowMs, markerIndex, turn) => {
       const sessionId = safeSessionId(rawId);
       if (!sessionId) return false;
       return withLock(sessionId, () => {
-        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs, markerIndex);
+        const next = noteAnswerStep(readState(sessionId), model, stepIdx, nowMs, markerIndex, turn);
         if (!next) return false;
         writeState(sessionId, next);
         return true;
       });
+    },
+    notePendingQuestion: (rawId, model, stepIdx, nowMs, markerIndex, turn) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return false;
+      return withLock(sessionId, () => {
+        const next = notePendingQuestion(readState(sessionId), model, stepIdx, nowMs, markerIndex, turn);
+        if (!next) return false;
+        writeState(sessionId, next);
+        return true;
+      });
+    },
+    getPendingQuestion: (rawId, model, config) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLockIfState(sessionId, () => getPendingQuestion(readState(sessionId), model, config));
+    },
+    clearPendingQuestion: (rawId, model) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return;
+      withLockIfState(sessionId, () => {
+        const next = clearPendingQuestion(readState(sessionId), model);
+        if (next) writeState(sessionId, next);
+      });
+    },
+    getAnswerTurn: (rawId, model, nowMs) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId) return null;
+      return withLockIfState(sessionId, () => getAnswerTurn(readState(sessionId), model, nowMs));
+    },
+    consumeAnswers: (rawId, keys) => {
+      const sessionId = safeSessionId(rawId);
+      if (!sessionId || keys.length === 0) return;
+      withLock(sessionId, () => writeState(sessionId, markAnswersConsumed(readState(sessionId), keys)));
     },
     getAnswerStep: (rawId, model, nowMs) => {
       const sessionId = safeSessionId(rawId);

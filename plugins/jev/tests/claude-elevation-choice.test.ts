@@ -41,7 +41,8 @@ function answered(question: string, label: string, extra: Record<string, unknown
     part.questions[0].question = question;
     part.answers = { [question]: label };
   }
-  return { ...s, ...extra };
+  // The prompt the question was asked in (the call() helper's prompt): a once answer is bound to it.
+  return { ...s, prompt_id: 'p1', ...extra };
 }
 const MARKED = (model: string) => `[jev-elevate:${model}] Run the code-engineer delegation on ${model} (session sonnet): refactor the parser module?`;
 
@@ -94,9 +95,9 @@ describe('the deny reason', () => {
     expect(r).toContain('Ask the user with AskUserQuestion, one question');
     expect(r).toContain('STARTS with the marker [jev-elevate:opus]');
     expect(r).toContain('naming the subagent_type (code-engineer), the requested model, the session model and a 10-word task summary');
-    expect(r).toContain("exactly four options in this order and with these labels: 'Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, proceed on sonnet'");
+    expect(r).toContain("exactly four options in this order and with these labels: 'Yes, once', 'Yes, for this session', 'No, proceed on sonnet', \"No, don't ask again this session\"");
     expect(r).toContain('If the user picks a Yes, launch the delegation again with the same model');
-    expect(r).toContain('if No, launch it on sonnet (or do the work directly)');
+    expect(r).toContain('if a No, launch it on sonnet (or do the work directly)');
     expect(r).toContain('If AskUserQuestion is not available, launch the delegation on sonnet now and do not stop');
     expect(r).toContain('do not ask in any other form');
   });
@@ -228,17 +229,12 @@ describe('the PostToolUse parser on the recorded sample', () => {
     expect(parseElevationAnswer(answered(MARKED(model), 'Yes, once'), T0)?.model).toBe(model);
   });
 
-  it('"Yes, once": scope once, expires in 10 minutes', () => {
-    expect(parseElevationAnswer(answered(MARKED('opus'), 'Yes, once'), T0)).toEqual({ model: 'opus', scope: 'once', created_at: T0, expires_at: T0 + 10 * MIN });
+  it('"Yes, once": scope once, bound to the turn it was answered in, no clock', () => {
+    expect(parseElevationAnswer(answered(MARKED('opus'), 'Yes, once'), T0, 'p1')).toEqual({ model: 'opus', scope: 'once', created_at: T0, turn: 'p1' });
   });
 
-  it('"Yes, for the next 5 minutes": scope 5min, expires in 5 minutes', () => {
-    expect(parseElevationAnswer(answered(MARKED('opus'), 'Yes, for the next 5 minutes'), T0)).toEqual({
-      model: 'opus',
-      scope: '5min',
-      created_at: T0,
-      expires_at: T0 + 5 * MIN
-    });
+  it('"Yes, for the next 5 minutes" is no longer a label (2.3.21): it records nothing', () => {
+    expect(parseElevationAnswer(answered(MARKED('opus'), 'Yes, for the next 5 minutes'), T0)).toBeNull();
   });
 
   it('"Yes, for this session": scope session, no expiry', () => {
@@ -304,41 +300,47 @@ describe('approvals: record, then PreToolUse consumes', () => {
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
   });
 
-  it('"Yes, once" is valid for 10 minutes and not after', async () => {
-    const early = setup();
-    await answer(early.d, 'Yes, once');
-    early.advance(10 * MIN - 1);
-    const late = setup();
-    await answer(late.d, 'Yes, once');
-    late.advance(10 * MIN);
+  it('"Yes, once" has no clock: it is live for the whole turn, however long the turn takes, and dropped at the next prompt', async () => {
+    const { d, advance } = setup();
+    await answer(d, 'Yes, once');
+    advance(3 * 60 * MIN);
 
-    expect(await onPreToolUse(call(), early.d)).toBeNull();
-    expect(out(await onPreToolUse(call(), late.d)).permissionDecision).toBe('deny');
+    expect(await onPreToolUse(call(), d)).toBeNull();
+    await answer(d, 'Yes, once');
+    advance(3 * 60 * MIN);
+    // A new user prompt: the once of the earlier turn is not live.
+    const next = out(await onPreToolUse(call(INPUT, { prompt_id: 'p2' }), d));
+
+    expect(next.permissionDecision).toBe('deny');
+    expect(next.permissionDecisionReason).toContain('Stored: a once approval from an earlier turn was dropped.');
   });
 
-  it('"Yes, for the next 5 minutes" covers every call inside the window and none after (injected clock)', async () => {
-    const { d, advance, logs } = setup();
+  it('"Yes, for the next 5 minutes" is not a label any more: the answer records nothing', async () => {
+    const { d } = setup();
     await answer(d, 'Yes, for the next 5 minutes');
 
-    expect(await onPreToolUse(call(), d)).toBeNull();
-    advance(4 * MIN);
-    expect(await onPreToolUse(call(), d)).toBeNull();
-    expect(logs.at(-1)).toMatchObject({ elevation: 'approved', approval_scope: '5min' });
-    advance(MIN);
     expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+    expect(d.approvals!.states.get('s1')?.approvals ?? []).toEqual([]);
   });
 
-  it('"Yes, for this session" never expires, and a "No" records nothing', async () => {
+  it('"Yes, for this session" never expires', async () => {
     const yes = setup();
     await answer(yes.d, 'Yes, for this session');
     yes.advance(48 * 60 * MIN);
-    const no = setup();
-    await answer(no.d, 'No, proceed on sonnet');
 
     expect(await onPreToolUse(call(), yes.d)).toBeNull();
     expect(await onPreToolUse(call(), yes.d)).toBeNull();
-    expect(out(await onPreToolUse(call(), no.d)).permissionDecision).toBe('deny');
+  });
+
+  it('a "No" stores no approval, and the next launch of the turn runs on the session model instead of asking again', async () => {
+    const no = setup();
+    await answer(no.d, 'No, proceed on sonnet');
+
+    const o = out(await onPreToolUse(call(), no.d));
+
     expect(no.approvals.states.get('s1')?.approvals ?? []).toEqual([]);
+    expect([o.permissionDecision, o.updatedInput.model]).toEqual(['allow', 'sonnet']);
+    expect(no.logs.at(-1)).toMatchObject({ elevation: 'declined-once', decline_scope: 'once' });
   });
 
   it('an approval for a model covers that model and anything below it above the session model, not above', async () => {
@@ -463,7 +465,7 @@ describe('the turn directive prescribes the same question', () => {
     expect(text).toContain('rule: per the Jev guard');
     expect(text).toContain('ask the user before delegating on opus, with AskUserQuestion');
     expect(text).toContain('STARTS with [jev-elevate:opus]');
-    expect(text).toContain("'Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, proceed on sonnet'");
+    expect(text).toContain("'Yes, once', 'Yes, for this session', 'No, proceed on sonnet', \"No, don't ask again this session\"");
   });
 
   it('a paid delegation above the session model gets it too, naming that model', () => {
@@ -537,7 +539,11 @@ describe('the live hook process', () => {
     const again = JSON.parse(run('pre-tool-use', agent()).stdout.toString()).hookSpecificOutput;
 
     expect(denied.permissionDecision).toBe('deny');
-    expect([rec.exitCode, rec.stdout.toString()]).toEqual([0, '']);
+    expect(rec.exitCode).toBe(0);
+    expect(JSON.parse(rec.stdout.toString()).hookSpecificOutput).toEqual({
+      hookEventName: 'PostToolUse',
+      additionalContext: '[jev] Recorded: opus, once (this turn) up to high. Relaunch now.'
+    });
     expect([allowed.exitCode, allowed.stdout.toString()]).toEqual([0, '']);
     expect(again.permissionDecision).toBe('deny');
     expect(mode(file)).toBe(0o600);
@@ -545,18 +551,20 @@ describe('the live hook process', () => {
     expect(fs.readdirSync(sessions()).filter((n) => n.endsWith('.tmp') || n.endsWith('.lock'))).toEqual([]);
   });
 
-  it('writes a session approval with no expiry and a 5 minute approval with one', () => {
+  it('writes a session approval with no turn and a once approval bound to its turn; the 5 minute label records nothing', () => {
     start();
-    run('pre-tool-use', agent()); // a denial prescribes the question; without one the answers record nothing
+    // No denial first: the answers count whether or not Jev prescribed the question (2.3.21).
     run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, for this session'), session_id: 'sx' });
-    run('post-tool-use', { ...answered(MARKED('sonnet'), 'Yes, for the next 5 minutes'), session_id: 'sx' });
+    run('post-tool-use', { ...answered(MARKED('sonnet'), 'Yes, once'), session_id: 'sx' });
+    const old = run('post-tool-use', { ...answered(MARKED('haiku'), 'Yes, for the next 5 minutes'), session_id: 'sx' });
 
     const state = JSON.parse(fs.readFileSync(path.join(sessions(), 'sx.approvals.json'), 'utf8'));
 
-    expect(state.approvals.map((a: any) => [a.model, a.scope, 'expires_at' in a])).toEqual([
-      ['opus', 'session', false],
-      ['sonnet', '5min', true]
+    expect(state.approvals.map((a: any) => [a.model, a.scope, a.turn ?? null, 'expires_at' in a])).toEqual([
+      ['opus', 'session', null, false],
+      ['sonnet', 'once', 'p1', false]
     ]);
+    expect(JSON.parse(old.stdout.toString()).hookSpecificOutput.additionalContext).toContain('[jev] Not recorded: the answer was not one of the four exact labels');
   });
 
   it('is isolated between sessions in the real store', () => {
@@ -601,8 +609,7 @@ describe('the live hook process', () => {
     ['JSON null', 'null'],
     ['a JSON array', '[]'],
     ['an unmarked question', JSON.stringify(SAMPLE)],
-    ['a malformed tool_input', JSON.stringify({ session_id: 'sx', tool_name: 'AskUserQuestion', tool_input: { questions: 5 } })],
-    ['a marker with no session id', JSON.stringify({ ...answered(MARKED('opus'), 'Yes, once'), session_id: undefined })]
+    ['a malformed tool_input', JSON.stringify({ session_id: 'sx', tool_name: 'AskUserQuestion', tool_input: { questions: 5 } })]
   ])('the recorder exits 0 and prints nothing on %s', (_n, input) => {
     const p = run('post-tool-use', input);
 
@@ -610,13 +617,21 @@ describe('the live hook process', () => {
     expect(fs.existsSync(path.join(sessions(), 'sx.approvals.json'))).toBe(false);
   });
 
-  it('the recorder exits 0 and prints nothing when the state directory cannot be written', () => {
+  it('the recorder exits 0 and says "Not recorded: ... could not be written" when the state directory cannot be written', () => {
     fs.mkdirSync(path.join(home, '.config'), { recursive: true });
     fs.writeFileSync(path.join(home, '.config', 'jev'), 'a file where the directory should be');
 
     const p = run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, once'), session_id: 'sx' });
 
-    expect([p.exitCode, p.stdout.toString()]).toEqual([0, '']);
+    expect(p.exitCode).toBe(0);
+    expect(p.stdout.toString()).toContain('[jev] Not recorded: the state file could not be written.');
+  });
+
+  it('a marker answer with no session id exits 0 and says it could not be recorded', () => {
+    const p = run('post-tool-use', { ...answered(MARKED('opus'), 'Yes, once'), session_id: undefined });
+
+    expect([p.exitCode, p.stderr.toString()]).toEqual([0, '']);
+    expect(p.stdout.toString()).toContain('[jev] Not recorded: the state file could not be written.');
   });
 
   it('JEV_ELEVATION=dialog in the process asks', () => {
@@ -758,19 +773,19 @@ describe('the attempt counter is per delegation, and its fallback key is safe', 
   });
 });
 
-describe('an approval needs a recent denial of that model', () => {
+describe('an answer counts as given: no window, no denial needed (2.3.21)', () => {
   const rawAnswer = (d: HookDeps, label = 'Yes, for this session', model = 'opus') =>
     onPostToolUse({ ...answered(MARKED(model), label), session_id: 's1' } as HookInput, d);
 
-  it('an answer with no denial before it records nothing', async () => {
+  it('an answer asked before any denial is recorded and approves the launch that follows', async () => {
     const { d } = setup();
     await rawAnswer(d);
 
-    expect(d.approvals!.states.get('s1')?.approvals ?? []).toEqual([]);
-    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+    expect(d.approvals!.states.get('s1')!.approvals.map((a) => [a.model, a.scope])).toEqual([['opus', 'session']]);
+    expect(await onPreToolUse(call(), d)).toBeNull();
   });
 
-  it('the hook denial records it, and the answer after that approves', async () => {
+  it('the hook denial records what was prescribed, and the answer after that approves', async () => {
     const { d } = setup();
     await onPreToolUse(call(), d);
     expect(d.approvals!.states.get('s1')!.denied).toEqual({ opus: T0 });
@@ -780,46 +795,57 @@ describe('an approval needs a recent denial of that model', () => {
     expect(await onPreToolUse(call(), d)).toBeNull();
   });
 
-  it('a question prescribed by the turn directive counts as a denial', async () => {
+  it('a question prescribed by the turn directive is recorded as prescribed, and its answer approves', async () => {
     const { d } = setup({ dispatch: async () => proRec });
     await onUserPromptSubmit({ session_id: 's1', prompt: 'Refactor the whole parser and review it', prompt_id: 'p1' } as HookInput, d);
     await rawAnswer(d);
 
+    expect(d.approvals!.states.get('s1')!.denied).toEqual({ opus: T0 });
     expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['opus']);
   });
 
-  it('a denial older than 15 minutes does not count', async () => {
+  it.each([[20], [90]])('an answer %i minutes after the denial is recorded (no window)', async (minutes) => {
     const { d, advance } = setup();
     await onPreToolUse(call(), d);
-    advance(15 * MIN + 1);
+    advance(minutes * MIN);
     await rawAnswer(d);
 
-    expect(d.approvals!.states.get('s1')!.approvals).toEqual([]);
+    expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['opus']);
+    expect(await onPreToolUse(call(), d)).toBeNull();
   });
 
-  it('a denial of a lower model does not cover an approval of a higher one; a higher denial covers a lower one', async () => {
+  it('the prescription of what Jev asked has no expiry either', () => {
+    expect(noteDenied({ approvals: [], denied: { sonnet: T0 - 16 * MIN } }, 'opus', T0).denied).toEqual({ sonnet: T0 - 16 * MIN, opus: T0 });
+  });
+
+  it('a denial of a lower model and a denial of a higher one do not change what the answer approves: the model the marker names', async () => {
     const { d } = setup();
     d.approvals!.deny('s1', 'sonnet', T0);
     await rawAnswer(d, 'Yes, once', 'opus');
-    expect(d.approvals!.states.get('s1')!.approvals).toEqual([]);
-
-    d.approvals!.deny('s1', 'opus', T0);
-    await rawAnswer(d, 'Yes, once', 'sonnet');
-    expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['sonnet']);
+    expect(d.approvals!.states.get('s1')!.approvals.map((a) => a.model)).toEqual(['opus']);
   });
 
-  it('another session has no denial', async () => {
+  it('another session has its own answers', async () => {
     const { d } = setup();
     d.approvals!.deny('s2', 'opus', T0);
     await rawAnswer(d);
 
-    expect(d.approvals!.states.get('s1')?.approvals ?? []).toEqual([]);
+    expect(d.approvals!.states.get('s2')?.approvals ?? []).toEqual([]);
   });
 
-  it('a state file from before this change (no denied map) loads, and old entries are pruned', () => {
+  it('a state file from before this change (no denied map) loads; a 5min record is dropped and a once with no turn is never live', () => {
     expect(normalizeApprovalState({ approvals: [] }).denied).toBeUndefined();
     expect(normalizeApprovalState({ approvals: [], denied: { opus: 5, bad: 7, sonnet: 'x' } }).denied).toEqual({ opus: 5 });
-    expect(noteDenied({ approvals: [], denied: { sonnet: T0 - 16 * MIN } }, 'opus', T0).denied).toEqual({ opus: T0 });
+    const old = normalizeApprovalState({
+      approvals: [
+        { model: 'opus', scope: '5min', created_at: T0, expires_at: T0 + 5 * MIN },
+        { model: 'opus', scope: 'once', created_at: T0, expires_at: T0 + 10 * MIN },
+        { model: 'sonnet', scope: 'session', created_at: T0 }
+      ]
+    });
+
+    expect(old.approvals.map((a) => [a.model, a.scope])).toEqual([['opus', 'once'], ['sonnet', 'session']]);
+    expect(old.approvals.some((a) => 'expires_at' in a)).toBe(false);
   });
 });
 

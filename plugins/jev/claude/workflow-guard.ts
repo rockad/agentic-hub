@@ -101,6 +101,7 @@ import type * as AcornTypes from 'acorn';
 import { readRegularFile } from './safe-read.js';
 import { MAX_SCRIPT_BYTES, type ScriptFact } from '../src/core/workflow-pin.js';
 import { stopRetryingText } from '../src/core/elevation-text.js';
+import { ELEVATION_LABELS, elevationLabelList, type StoredClause } from '../src/core/elevation-answer.js';
 import {
   clip,
   definitionOrBuiltin,
@@ -1399,7 +1400,7 @@ export function workflowSignature(scripts: readonly ScriptFact[]): string {
  * workflow by its script hash. A PreToolUse `deny` does not stop the turn: the assistant receives this text and is
  * told to ask the user the one prescribed question. The PostToolUse recorder reads the user's real answer.
  */
-export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[], attempt?: number | null, gate?: { gate: OverGate; effort?: EffortLevel }): string {
+export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[], attempt?: number | null, gate?: { gate: OverGate; effort?: EffortLevel }, stored?: StoredClause | null): string {
   const alias = modelAlias(e.requested) ?? e.requested;
   const stop = stopRetryingText(attempt, alias, e.sessionAlias, 'AskUserQuestion');
   const l = CHOICE_LABELS;
@@ -1411,10 +1412,11 @@ export function workflowChoiceReason(e: Elevation, scripts: readonly ScriptFact[
     `[jev] This Workflow has agent() calls on "${alias}", stronger than the session model "${e.sessionModel}", and the user has not approved it${why}. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate:${alias}${markerEffort}] followed by a short question ` +
     `naming the Workflow (${ids}), the strongest requested model${gate ? ' and effort' : ''}, the session model and a 10-word summary of what the workflow does; ` +
-    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${l.no(e.sessionAlias)}'. ` +
-    `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() calls to inherit the session model (or ${e.sessionAlias}) and call it again, or do the work directly; ` +
+    `exactly four options in this order and with these labels: ${elevationLabelList(l.no(e.sessionAlias))}. ` +
+    `If the user picks a Yes, call the Workflow again unchanged; if a No, change the agent() calls to inherit the session model (or ${e.sessionAlias}) and call it again, or do the work directly; ` +
     `If AskUserQuestion is not available, edit the workflow to run on ${e.sessionAlias} and call it again now; ` +
     `do not ask in any other form.` +
+    (stored ? ` ${stored.text}` : '') +
     (stop ? ` ${stop}` : '')
   );
 }
@@ -1432,11 +1434,11 @@ export function workflowEffortChoiceReason(
   scripts: readonly ScriptFact[],
   attempt?: number | null,
   counts?: Partial<Record<EffortLevel, number>>,
-  gate?: { gate: OverGate; model?: string }
+  gate?: { gate: OverGate; model?: string },
+  stored?: StoredClause | null
 ): string {
-  const l = CHOICE_LABELS;
   const fallback = gate ? gate.gate.noEffort : EFFORT_FALLBACK;
-  const no = gate ? `No, run at ${gate.gate.noEffort}` : EFFORT_NO_LABEL;
+  const no = gate ? ELEVATION_LABELS.noEffort(gate.gate.noEffort) : EFFORT_NO_LABEL;
   const stop = stopRetryingText(attempt, level, fallback, 'AskUserQuestion', 'effort');
   const ids = scripts.slice(0, 3).map((s) => `sha256:${s.sha256.slice(0, 12)}`).join(', ') || 'unhashed';
   const head = gate ? `its most costly agent ${gateCostSentence(gate.gate)}, because of its effort.` : interim;
@@ -1444,10 +1446,11 @@ export function workflowEffortChoiceReason(
     `[jev] This Workflow: ${head} The user has not approved it. ` +
     `Ask the user with AskUserQuestion, one question, whose text STARTS with the marker [jev-elevate-effort:${level}${gate?.model ? `:${gate.model}` : ''}] followed by a short question ` +
     `naming the Workflow (${ids}), the held agents (${effortCountsText(counts, level)}; one answer covers the whole script), and a 10-word summary of what the workflow does; ` +
-    `exactly four options in this order and with these labels: '${l.once}', '${l.fiveMin}', '${l.session}', '${no}'. ` +
-    `If the user picks a Yes, call the Workflow again unchanged; if No, change the agent() efforts to "${fallback}" (or leave them out) and call it again, or do the work directly; ` +
+    `exactly four options in this order and with these labels: ${elevationLabelList(no)}. ` +
+    `If the user picks a Yes, call the Workflow again unchanged; if a No, change the agent() efforts to "${fallback}" (or leave them out) and call it again, or do the work directly; ` +
     `If AskUserQuestion is not available, edit the workflow to use effort "${fallback}" and call it again now and do not stop; ` +
     `do not ask in any other form.` +
+    (stored ? ` ${stored.text}` : '') +
     (stop ? ` ${stop}` : '')
   );
 }

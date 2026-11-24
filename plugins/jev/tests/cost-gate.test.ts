@@ -168,8 +168,8 @@ describe('what an approval covers (Claude Code)', () => {
   });
 
   it('a once is consumed by the claim, a session approval is not', () => {
-    const s = state([{ model: 'opus', scope: 'once', created_at: now, expires_at: now + 1000, effort: 'xhigh' }]);
-    const c = claimApproval(s, 'opus', now, null, 'high');
+    const s = state([{ model: 'opus', scope: 'once', created_at: now, turn: 't1', effort: 'xhigh' }]);
+    const c = claimApproval(s, 'opus', now, null, 'high', { turn: 't1' });
     expect(c.approval?.scope).toBe('once');
     expect(c.state.approvals).toHaveLength(0);
   });
@@ -186,11 +186,11 @@ describe('what an approval covers (Claude Code)', () => {
   });
 
   it('consumeApprovals spends the model and the effort approval together or neither', () => {
-    const s = state([{ model: 'opus', scope: 'once', created_at: now, expires_at: now + 1000, effort: 'xhigh' }], {
-      effortApprovals: [{ level: 'high', scope: 'once', created_at: now, expires_at: now + 1000 }]
+    const s = state([{ model: 'opus', scope: 'once', created_at: now, turn: 't1', effort: 'xhigh' }], {
+      effortApprovals: [{ level: 'high', scope: 'once', created_at: now, turn: 't1' }]
     });
-    expect(consumeApprovals(s, { model: { requested: 'opus', effort: 'xhigh' }, effort: 'xhigh' }, now)).toBeNull(); // the effort one does not cover xhigh
-    const ok = consumeApprovals(s, { model: { requested: 'opus', effort: 'high' }, effort: 'high' }, now);
+    expect(consumeApprovals(s, { model: { requested: 'opus', effort: 'xhigh' }, effort: 'xhigh' }, now, { turn: 't1' })).toBeNull(); // the effort one does not cover xhigh
+    const ok = consumeApprovals(s, { model: { requested: 'opus', effort: 'high' }, effort: 'high' }, now, { turn: 't1' });
     expect(ok?.state.approvals).toHaveLength(0);
     expect(ok?.state.effortApprovals ?? []).toHaveLength(0);
   });
@@ -217,16 +217,18 @@ describe('the markers and what the recorder stores', () => {
   it('an answer cannot approve a higher effort than the question that was prescribed named', () => {
     const asked = noteDenied({ approvals: [] }, 'opus', 1, 'xhigh');
     const rec = recordApproval(asked, { model: 'opus', scope: 'session', created_at: 2, effort: 'max' }, 2);
-    expect(rec?.approvals[0].effort).toBe('xhigh');
+    expect(rec.state.approvals[0].effort).toBe('xhigh');
     // a question that named no effort (an old denial): the effort is dropped, which stands for at most high
     const bare = recordApproval(noteDenied({ approvals: [] }, 'opus', 1), { model: 'opus', scope: 'session', created_at: 2, effort: 'max' }, 2);
-    expect(bare?.approvals[0]).not.toHaveProperty('effort');
+    expect(bare.state.approvals[0]).not.toHaveProperty('effort');
   });
 
-  it('an effort answer needs a prescribed effort question of that level or higher', () => {
+  it('an effort answer is held to the effort level Jev prescribed (none prescribed: high)', () => {
     const asked = noteEffortDenied({ approvals: [] }, 'xhigh', 1);
-    expect(recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
-    expect(recordEffortApproval(asked, { level: 'max', scope: 'session', created_at: 2 }, 2)).toBeNull();
+    expect(recordEffortApproval(asked, { level: 'xhigh', scope: 'session', created_at: 2 }, 2).approval.level).toBe('xhigh');
+    // 2.3.21: an answer for max is held to the highest level Jev prescribed (xhigh); with none prescribed it is held to high
+    expect(recordEffortApproval(asked, { level: 'max', scope: 'session', created_at: 2 }, 2).approval.level).toBe('xhigh');
+    expect(recordEffortApproval({ approvals: [] }, { level: 'max', scope: 'session', created_at: 2 }, 2).approval.level).toBe('high');
   });
 
   it('a stored state keeps the effort of an approval and the model of an effort approval; garbage is dropped', () => {
@@ -292,12 +294,12 @@ describe('Antigravity: the effort is the suffix of the model id', () => {
     expect(agyClaim(state(['pro-high']), 'flash', 1).approval).not.toBeNull();
     expect(agyClaim(state(['flash-high']), 'pro', 1).approval).toBeNull();
     expect(agyClaim(state(['pro']), 'flash', 1).approval).not.toBeNull();
-    // a denial stands for the answer the same way: an answer for a full id is not recorded against the enum value's question
+    // an answer is recorded whether or not a denial came first (2.3.21), under the key its marker names: the kinds stay apart
     const askedEnum = agyNoteDenied({ approvals: [] }, 'pro', 1);
-    expect(agyRecord(askedEnum, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)).toBeNull();
-    expect(agyRecord(askedEnum, { model: 'pro', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
+    expect(agyRecord(askedEnum, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-high');
+    expect(agyRecord(askedEnum, { model: 'pro', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro');
     const askedFull = agyNoteDenied({ approvals: [] }, 'pro-high', 1);
-    expect(agyRecord(askedFull, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
+    expect(agyRecord(askedFull, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-high');
   });
 
   it('the clamp of a full id is the most expensive served option within the limit: flash_lite when flash costs more, else the ceiling alias', () => {
@@ -328,9 +330,12 @@ describe('Antigravity: the effort is the suffix of the model id', () => {
     // a weaker model is covered at or below the approved effort
     expect(agyClaim(state(['pro-xhigh']), 'flash', 1).approval).not.toBeNull();
 
+    // 2.3.21: the answer is held to the effort Jev prescribed (the suffix of the denied key); with none prescribed, to high
     const asked = agyNoteDenied({ approvals: [] }, 'pro-high', 1);
-    expect(agyRecord(asked, { model: 'pro-xhigh', scope: 'session', created_at: 2 }, 2)).toBeNull();
-    expect(agyRecord(asked, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)).not.toBeNull();
+    expect(agyRecord(asked, { model: 'pro-xhigh', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-high');
+    expect(agyRecord(asked, { model: 'pro-high', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-high');
+    expect(agyRecord({ approvals: [] }, { model: 'pro-xhigh', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-high');
+    expect(agyRecord(agyNoteDenied({ approvals: [] }, 'pro-max', 1), { model: 'pro-xhigh', scope: 'session', created_at: 2 }, 2)?.approval.model).toBe('pro-xhigh');
   });
 
   it('the file store passes the effort to the claim', () => {

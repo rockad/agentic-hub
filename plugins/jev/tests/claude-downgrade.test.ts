@@ -64,7 +64,7 @@ const turnWith = (extra: Record<string, unknown> = {}) => ({
 
 /** The real recorded PostToolUse payload with the question and the chosen label replaced. */
 function answered(question: string, label: string, extra: Record<string, unknown> = {}): Record<string, any> {
-  const s = structuredClone(SAMPLE);
+  const s = { ...structuredClone(SAMPLE), prompt_id: 'p1' }; // the prompt the question was asked in (the calls' prompt_id)
   for (const part of [s.tool_input, s.tool_response]) {
     part.questions[0].question = question;
     part.answers = { [question]: label };
@@ -256,9 +256,9 @@ describe('deny, answer, relaunch: the whole flow through the hooks', () => {
 
   it('the recorder prints nothing, never throws and ignores malformed input', async () => {
     const { d } = setup();
-    await expect(answer(d, 'Yes, haiku')).resolves.toBeUndefined();
+    await expect(answer(d, 'Yes, haiku')).resolves.toBeNull();
     for (const bad of [null, undefined, {}, { session_id: 's1' }, { session_id: 's1', tool_input: 7 }]) {
-      await expect(onPostToolUse(bad as any, d)).resolves.toBeUndefined();
+      await expect(onPostToolUse(bad as any, d)).resolves.toBeNull();
     }
     const broken: DowngradeStore = {
       ...memoryDowngrades(),
@@ -266,7 +266,7 @@ describe('deny, answer, relaunch: the whole flow through the hooks', () => {
         throw new Error('disk full');
       }
     };
-    await expect(onPostToolUse({ ...answered(QUESTION(), 'Yes, haiku'), session_id: 's1' } as HookInput, { ...d, downgrades: broken })).resolves.toBeUndefined();
+    await expect(onPostToolUse({ ...answered(QUESTION(), 'Yes, haiku'), session_id: 's1' } as HookInput, { ...d, downgrades: broken })).resolves.toBeNull();
   });
 
   it('a downgrade answer never grants an elevation, and an elevation approval never answers a downgrade', async () => {
@@ -770,8 +770,9 @@ describe('the elevation guard decides first', () => {
     d.approvals!.deny('s1', 'opus', T0);
     await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'Yes, for this session'), session_id: 's1' } as HookInput, d);
     expect(await onPreToolUse(call(), d)).toBeNull();
-    expect(logs[0].elevation).toBe('approved');
-    expect(logs[0].downgrade).toBeUndefined();
+    const calls = logs.filter((l) => l.event === 'agent_call');
+    expect(calls[0].elevation).toBe('approved');
+    expect(calls[0].downgrade).toBeUndefined();
     expect(rated).toHaveLength(0);
   });
 
@@ -781,7 +782,7 @@ describe('the elevation guard decides first', () => {
     expect(first.permissionDecisionReason).toContain('[jev-elevate:opus]');
     await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus (session sonnet)?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
     expect(await onPreToolUse(call({ ...INPUT, model: 'sonnet' }), d)).toBeNull();
-    expect(logs.map((l) => [l.elevation ?? null, l.downgrade ?? null])).toEqual([['denied', null], [null, 'answered']]);
+    expect(logs.filter((l) => l.event === 'agent_call').map((l) => [l.elevation ?? null, l.downgrade ?? null])).toEqual([['denied', null], [null, 'answered']]);
     expect(rated).toHaveLength(0);
   });
 
@@ -799,11 +800,11 @@ describe('the elevation guard decides first', () => {
     expect(downgrades.states.size).toBe(0);
   });
 
-  it('the No grants no elevation and its answer lasts the window only', async () => {
+  it('the No grants no elevation (its launch runs on the session model); its downgrade answer lasts the window only', async () => {
     const { d, approvals, advance } = setup(sonnetSession);
     await onPostToolUse({ ...answered('[jev-elevate:opus] Run it on opus?', 'No, proceed on sonnet'), session_id: 's1' } as HookInput, d);
-    expect(approvals.states.size).toBe(0);
-    expect(out(await onPreToolUse(call(), d)).permissionDecision).toBe('deny');
+    expect(approvals.states.get('s1')?.approvals ?? []).toEqual([]);
+    expect(out(await onPreToolUse(call(), d)).updatedInput.model).toBe('sonnet'); // this delegation's No: clamped, not asked again
     advance(DOWNGRADE_TTL_MS + 1000);
     expect(out(await onPreToolUse(call({ ...INPUT, model: 'sonnet' }), d)).permissionDecision).toBe('deny');
   });

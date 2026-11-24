@@ -19,7 +19,7 @@ const SAMPLE = JSON.parse(fs.readFileSync(path.join(import.meta.dir, 'fixtures',
 const EFFORT_Q = (level: string) => `[jev-elevate-effort:${level}] Run the deep delegation at ${level} effort (session high): refactor the parser module?`;
 const MODEL_Q = (model: string) => `[jev-elevate:${model}] Run the deep delegation on ${model} (session sonnet): refactor the parser module?`;
 function answered(question: string, label: string): HookInput {
-  const s = structuredClone(SAMPLE);
+  const s = { ...structuredClone(SAMPLE), prompt_id: 'p1' }; // the prompt the question was asked in (the calls' prompt_id)
   for (const part of [s.tool_input, s.tool_response]) {
     part.questions[0].question = question;
     part.answers = { [question]: label };
@@ -49,7 +49,10 @@ describe('call effort', () => {
     expect(o.permissionDecisionReason).toContain(`effort "${effort}"`);
     expect(o.permissionDecisionReason).toContain('interim');
     expect(o.permissionDecisionReason).toContain(`STARTS with the marker [jev-elevate-effort:${effort}]`);
-    for (const label of ['Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, run at high']) expect(o.permissionDecisionReason).toContain(`'${label}'`);
+    for (const label of ["'Yes, once'", "'Yes, for this session'", "'No, run at high'", '"No, don\'t ask again this session"']) expect(o.permissionDecisionReason).toContain(label);
+    expect(o.permissionDecisionReason).not.toContain('5 minutes');
+    expect(r.logs[0]).toMatchObject({ stored: 'none' });
+    expect(o.permissionDecisionReason).toContain('Stored: no approval for effort ' + effort + ' in this session.');
     expect(r.logs[0]).toMatchObject({ decision: 'deny', elevation: 'denied', effort_level: effort, effort_decision: 'denied', elevation_attempt: 1 });
     expect(r.logs[0]).not.toHaveProperty('effort_ask');
   });
@@ -176,7 +179,6 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
 
   it.each([
     ['Yes, once', 'once'],
-    ['Yes, for the next 5 minutes', '5min'],
     ['Yes, for this session', 'session']
   ])('deny, then "%s" is recorded, then the next attempt passes (scope %s)', async (label, scope) => {
     setup();
@@ -200,16 +202,22 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
     for (let i = 0; i < 3; i++) expect(await onPreToolUse(call(MAX), r.d)).toBeNull();
   });
 
-  it('a 5-minute approval expires', async () => {
+  it('a once has no clock: it is still live hours later in the same turn, and gone at the next prompt; the 5 minute label is not an answer', async () => {
     let now = 1_800_000_000_000;
     setup({ now: () => now });
     await onPreToolUse(call(MAX), r.d);
     await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for the next 5 minutes'), r.d);
+    expect(r.approvals.states.get('s1')?.effortApprovals ?? []).toEqual([]);
 
-    now += 4 * 60_000;
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    now += 5 * 60 * 60_000;
     expect(await onPreToolUse(call(MAX), r.d)).toBeNull();
-    now += 2 * 60_000;
-    expect(out(await onPreToolUse(call(MAX), r.d)).permissionDecision).toBe('deny');
+
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
+    const next = out(await onPreToolUse({ ...call(MAX), prompt_id: 'p2' }, r.d));
+    expect(next.permissionDecision).toBe('deny');
+    expect(next.permissionDecisionReason).toContain('Stored: a once approval from an earlier turn was dropped.');
+    expect(r.logs.at(-1)).toMatchObject({ stored: 'once-stale' });
   });
 
   it('an approval of max covers xhigh, an approval of xhigh does not cover max', async () => {
@@ -226,7 +234,7 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
     expect(out(await onPreToolUse(call({ description: 'd', effort: 'max' }), r.d)).permissionDecision).toBe('deny');
   });
 
-  it('"No, run at high" is not an approval, and the re-invoke at effort high passes (a call effort overrides a definition that says max)', async () => {
+  it('"No, run at high" is not an approval: the next launch of the turn is lowered to high (allow + updatedInput), without another deny', async () => {
     setup();
     writeAgent('deep.md', '---\nname: deep\neffort: max\n---\nbody\n');
     const first = out(await onPreToolUse(call({ description: 'd', subagent_type: 'deep' }), r.d));
@@ -234,11 +242,29 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
     expect(first.permissionDecisionReason).toContain('agent definition "deep"');
 
     await onPostToolUse(answered(EFFORT_Q('max'), 'No, run at high'), r.d);
-    expect(out(await onPreToolUse(call({ description: 'd', subagent_type: 'deep' }), r.d)).permissionDecision).toBe('deny'); // nothing was approved
+    const lowered = out(await onPreToolUse(call({ description: 'd', subagent_type: 'deep' }), r.d));
 
+    expect(r.approvals.states.get('s1')?.effortApprovals ?? []).toEqual([]);
+    expect([lowered.permissionDecision, lowered.updatedInput.effort]).toEqual(['allow', 'high']);
+    expect(r.logs.at(-1)).toMatchObject({ elevation: 'declined-once', decline_scope: 'once', effort_decision: 'declined', clamped_effort: 'high' });
+    // That No was this delegation's: the next launch asks again (the once No is spent).
+    expect(out(await onPreToolUse(call({ description: 'd', subagent_type: 'deep' }), r.d)).permissionDecision).toBe('deny');
+    // A call that names its own effort high passes as before.
     expect(await onPreToolUse(call({ description: 'd', subagent_type: 'deep', effort: 'high' }), r.d)).toBeNull();
-    expect(r.logs.at(-1)).toMatchObject({ decision: 'pass' });
-    expect(r.logs.at(-1)).not.toHaveProperty('effort_decision');
+  });
+
+  it('"No, don\'t ask again this session" lowers every later launch at that level to high, silently', async () => {
+    setup();
+    await onPreToolUse(call(MAX), r.d);
+    await onPostToolUse(answered(EFFORT_Q('max'), "No, don't ask again this session"), r.d);
+
+    for (let i = 0; i < 3; i++) {
+      const o = out(await onPreToolUse({ ...call(MAX), prompt_id: `p${i + 2}` }, r.d));
+      expect([o.permissionDecision, o.updatedInput.effort]).toEqual(['allow', 'high']);
+      expect(r.logs.at(-1)).toMatchObject({ elevation: 'declined-session', decline_scope: 'session', effort_decision: 'declined' });
+    }
+    // Only that level: xhigh is not covered by a No for max.
+    expect(out(await onPreToolUse(call({ description: 'd', effort: 'xhigh' }), r.d)).permissionDecision).toBe('deny');
   });
 
   it('a "higher" that reaches xhigh takes the same flow', async () => {
@@ -250,12 +276,26 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
     expect(await onPreToolUse(withSession(), r.d)).toBeNull();
   });
 
-  it('an answer with no recent denial for that level records nothing (the marker is not a secret)', async () => {
+  it('an answer with no prescription on record is recorded, held to high: it does not cover max, and the deny says what is stored', async () => {
     setup();
 
     await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
 
-    expect(r.approvals.states.get('s1')?.effortApprovals ?? []).toEqual([]);
+    expect(r.approvals.states.get('s1')?.effortApprovals?.map((a) => [a.level, a.scope])).toEqual([['high', 'session']]);
+    const o = out(await onPreToolUse(call(MAX), r.d));
+    expect(o.permissionDecision).toBe('deny');
+    expect(o.permissionDecisionReason).toContain('Stored: the session approval covers effort up to high; this call asks max.');
+    expect(r.logs.at(-1)).toMatchObject({ stored: 'effort-below' });
+  });
+
+  it('Jev\'s prescription caps the answer even when the marker names a higher effort', async () => {
+    setup();
+    await onPreToolUse(call({ description: 'd', effort: 'xhigh' }), r.d);
+
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
+
+    expect(r.approvals.states.get('s1')?.effortApprovals?.map((a) => a.level)).toEqual(['xhigh']);
+    expect(await onPreToolUse(call({ description: 'd', effort: 'xhigh' }), r.d)).toBeNull();
     expect(out(await onPreToolUse(call(MAX), r.d)).permissionDecision).toBe('deny');
   });
 
@@ -272,20 +312,23 @@ describe('the effort approval, end to end (deny, answer, retry)', () => {
     expect(r.approvals.states.get('s1')?.approvals).toHaveLength(1);
   });
 
-  it('the recorder respects the mode: an answer given in on-demand records nothing, and neither does one after a mode change', async () => {
+  it('the recorder respects the mode: an answer given in on-demand records nothing (and says so), and a mode change voids what was recorded before it', async () => {
     setup();
     await onPreToolUse(call(MAX), r.d);
 
     r.mode.value = 'on-demand';
-    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
+    const told = await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
     r.mode.value = 'on';
     expect(r.approvals.states.get('s1')?.effortApprovals ?? []).toEqual([]);
+    expect((told?.hookSpecificOutput as any).additionalContext).toContain('[jev] Not recorded: Jev is not on');
     expect(out(await onPreToolUse(call(MAX), r.d)).permissionDecision).toBe('deny');
 
-    // the denial just recorded predates a mode change stamped after it
+    // An approval recorded before a mode change is stamped after it counts for nothing.
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
+    expect(await onPreToolUse(call(MAX), r.d)).toBeNull();
     const stamped = new Date(1_800_000_000_000 + 1000).toISOString();
-    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), { ...r.d, readConfig: () => ({ defaults: { modeChangedAt: stamped } }) });
-    expect(r.approvals.states.get('s1')?.effortApprovals ?? []).toEqual([]);
+    const voided = out(await onPreToolUse(call(MAX), { ...r.d, readConfig: () => ({ defaults: { modeChangedAt: stamped } }) }));
+    expect(voided.permissionDecision).toBe('deny');
   });
 });
 
@@ -566,9 +609,9 @@ describe('one answer, one run: an approval is consumed only by a call that actua
     await onPreToolUse(call(MAX_ONLY), r.d);
     await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
     const peekEffort = r.approvals.peekEffort!;
-    r.approvals.peekEffort = (s, level, nowMs) => {
-      const hit = peekEffort(s, level, nowMs);
-      r.approvals.consume!(s, { effort: level }, nowMs); // the other call goes ahead first
+    r.approvals.peekEffort = (s, level, nowMs, model, ectx) => {
+      const hit = peekEffort(s, level, nowMs, model, ectx);
+      r.approvals.consume!(s, { effort: level }, nowMs, { turn: 'p1' }); // the other call goes ahead first
       return hit;
     };
 
@@ -608,7 +651,10 @@ describe('Workflow effort follows the Agent rule (instructed passes, otherwise t
     expect(o.permissionDecisionReason).toContain('STARTS with the marker [jev-elevate-effort:max]');
     expect(o.permissionDecisionReason).toContain('2 agents at max, 1 agent at xhigh');
     expect(o.permissionDecisionReason).toContain('covers the whole script');
-    for (const label of ['Yes, once', 'Yes, for the next 5 minutes', 'Yes, for this session', 'No, run at high']) expect(o.permissionDecisionReason).toContain(`'${label}'`);
+    for (const label of ["'Yes, once'", "'Yes, for this session'", "'No, run at high'", '"No, don\'t ask again this session"']) expect(o.permissionDecisionReason).toContain(label);
+    expect(o.permissionDecisionReason).not.toContain('5 minutes');
+    expect(r.logs[0]).toMatchObject({ stored: 'none' });
+    expect(o.permissionDecisionReason).toContain('Stored: no approval for effort max in this session.');
     expect(r.logs[0]).toMatchObject({ decision: 'deny', workflow_guard: 'denied', effort_level: 'max', effort_decision: 'denied', workflow_effort_sites: 3, elevation_attempt: 1 });
   });
 
@@ -653,9 +699,9 @@ describe('Workflow effort follows the Agent rule (instructed passes, otherwise t
     await onPreToolUse(wfCall(SCRIPT), r.d);
     await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, once'), r.d);
     const peekEffort = r.approvals.peekEffort!;
-    r.approvals.peekEffort = (s, level, nowMs) => {
-      const hit = peekEffort(s, level, nowMs);
-      r.approvals.consume!(s, { effort: level }, nowMs);
+    r.approvals.peekEffort = (s, level, nowMs, model, ectx) => {
+      const hit = peekEffort(s, level, nowMs, model, ectx);
+      r.approvals.consume!(s, { effort: level }, nowMs, { turn: 'p1' });
       return hit;
     };
 
@@ -668,9 +714,9 @@ describe('Workflow effort follows the Agent rule (instructed passes, otherwise t
     const o = out(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d));
     expect(o.permissionDecisionReason).toContain('[jev-elevate-effort:xhigh]');
 
-    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d); // no denial for max: ignored
-    expect(out(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d)).permissionDecision).toBe('deny');
-    await onPostToolUse(answered(EFFORT_Q('xhigh'), 'Yes, for this session'), r.d);
+    // An answer for max is held to what Jev prescribed (xhigh) and so covers the xhigh script; no denial for max is needed.
+    await onPostToolUse(answered(EFFORT_Q('max'), 'Yes, for this session'), r.d);
+    expect(states()?.effortApprovals?.map((a) => a.level)).toEqual(['xhigh']);
     expect(await onPreToolUse(wfCall(`await agent('p', {agentType: 'deep'})`), r.d)).toBeNull();
   });
 
@@ -716,9 +762,9 @@ describe('a lost approval race never turns into an allow (JEV_DOWNGRADE=auto)', 
     autoRig();
     await approveEffortOnce();
     const peekEffort = r.approvals.peekEffort!;
-    r.approvals.peekEffort = (s, level, nowMs) => {
-      const hit = peekEffort(s, level, nowMs);
-      r.approvals.consume!(s, { effort: level }, nowMs); // the other call goes ahead first
+    r.approvals.peekEffort = (s, level, nowMs, model, ectx) => {
+      const hit = peekEffort(s, level, nowMs, model, ectx);
+      r.approvals.consume!(s, { effort: level }, nowMs, { turn: 'p1' }); // the other call goes ahead first
       return hit;
     };
 

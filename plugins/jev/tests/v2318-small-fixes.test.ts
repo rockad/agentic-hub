@@ -168,12 +168,13 @@ describe('processes under a temporary HOME', () => {
       expect(decisionRows().find((r) => r.event === 'ask_answer')).toMatchObject({ marker_found: true, outcome: 'recorded' });
     });
 
-    it('a middle answer of "No" approves nothing even when the neighbours say Yes', () => {
+    it('a middle answer of "No" approves nothing even when the neighbours say Yes (it is recorded as a decline)', () => {
       setMode('on');
       run('pre-tool-use', elevate());
       run('post-tool-use', askPost(['Deploy now?', MARK, 'Tag it?'], 'A1: Yes, for this session\nA2: No, proceed on flash\nA3: Yes, for this session'));
       expect(stateScopes()).toEqual([]);
-      expect(decisionRows().find((r) => r.event === 'ask_answer')?.outcome).toBe('rejected');
+      expect(decisionRows().find((r) => r.event === 'ask_answer')?.outcome).toBe('recorded');
+      expect(decisionRows().find((r) => r.event === 'elevation_answer')).toMatchObject({ answer: 'no', scope: 'once', recorded: true });
     });
 
     it('a bare string answer for a three-question ask is nobody\'s answer: nothing is approved', () => {
@@ -255,8 +256,8 @@ describe('3. answer extraction, unit', () => {
     ['objects, with a tool call id', [{ question: 'a' }, { question: MARK }, { question: 'c' }], 'ask_1'],
     ['plain strings, with a tool call id', ['a', MARK, 'c'], 'ask_1']
   ])('the transcript pull reads line A2 of the middle question (%s)', (_l, questions, id) => {
-    write(questions, 'A1: Yes, for this session\nA2: Yes, for the next 5 minutes\nA3: Yes, once', id);
-    expect(pullElevationAnswerDetailed(f(), 'pro')).toMatchObject({ approved: true, scope: '5min', answerKey: id ? 'ask_1#1' : 'step:6#1' });
+    write(questions, 'A1: Yes, once\nA2: Yes, for this session\nA3: Yes, once', id);
+    expect(pullElevationAnswerDetailed(f(), 'pro')).toMatchObject({ approved: true, scope: 'session', answerKey: id ? 'ask_1#1' : 'step:6#1' });
     write(questions, 'A1: Yes, once\nA2: User Skipped\nA3: Yes, once', id);
     expect(pullElevationAnswerDetailed(f(), 'pro')).toMatchObject({ approved: false });
   });

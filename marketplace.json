@@ -40,7 +40,7 @@
       "id": "memory",
       "name": "Unified Session Memory & Context Bridge",
       "description": "Unified session memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100).",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "path": "plugins/memory",
       "skills": [
         "plugins/memory/skills/memory",

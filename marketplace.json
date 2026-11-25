@@ -7,7 +7,8 @@
   "plugins": [
     {
       "id": "jev",
-      "name": "TypeSafe Jev Decision Engine",
+      "name": "jev",
+      "displayName": "TypeSafe Jev Decision Engine",
       "description": "System 1 pre-flight routing, free-tier offloading, thinking effort governance, and quality gates.",
       "version": "2.3.21",
       "path": "plugins/jev",
@@ -17,7 +18,8 @@
     },
     {
       "id": "local-transcribe",
-      "name": "Local Transcription & Call Recording",
+      "name": "local-transcribe",
+      "displayName": "Local Transcription & Call Recording",
       "description": "Local audio/video transcription and screen/call recording with OBS and whisper.",
       "version": "1.1.0",
       "path": "plugins/local-transcribe",
@@ -28,7 +30,8 @@
     },
     {
       "id": "chrome-devtools",
-      "name": "Chrome DevTools Browser Automation",
+      "name": "chrome-devtools",
+      "displayName": "Chrome DevTools Browser Automation",
       "description": "DevTools MCP browser automation, Lighthouse audits, and a11y/performance debugging.",
       "version": "1.0.0",
       "path": "plugins/chrome-devtools",
@@ -38,7 +41,8 @@
     },
     {
       "id": "memory",
-      "name": "Unified Session Memory & Context Bridge",
+      "name": "memory",
+      "displayName": "Unified Session Memory & Context Bridge",
       "description": "Unified session memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100).",
       "version": "1.0.0",
       "path": "plugins/memory",
@@ -51,7 +55,8 @@
     },
     {
       "id": "gitea",
-      "name": "Gitea Repositories",
+      "name": "gitea",
+      "displayName": "Gitea Repositories",
       "description": "Gitea repository inspection, issue reading, and commit inspection.",
       "version": "1.0.0",
       "path": "plugins/gitea",
@@ -61,7 +66,8 @@
     },
     {
       "id": "google-workspace",
-      "name": "Google Workspace",
+      "name": "google-workspace",
+      "displayName": "Google Workspace",
       "description": "Google Workspace integration: Gmail (search, read, draft) and Calendar (events, freebusy).",
       "version": "1.0.0",
       "path": "plugins/google-workspace",
@@ -71,21 +77,24 @@
     },
     {
       "id": "subagents",
-      "name": "Specialized Subagents",
+      "name": "subagents",
+      "displayName": "Specialized Subagents",
       "description": "Specialized engineering, testing, and operations subagents",
       "version": "1.0.0",
       "path": "plugins/subagents"
     },
     {
       "id": "coordination",
-      "name": "A2A Coordination",
+      "name": "coordination",
+      "displayName": "A2A Coordination",
       "description": "A2A coordination for side-by-side Claude Code and Antigravity sessions: session registration, idle wake and pending counts.",
       "version": "0.1.0",
       "path": "plugins/coordination"
     },
     {
       "id": "clarify",
-      "name": "Architecture & Plain-English Clarifier",
+      "name": "clarify",
+      "displayName": "Architecture & Plain-English Clarifier",
       "description": "Walk non-trivial designs through their forks one question at a time. Deep technical architecture (/clarify, /grill-me) and plain-English mental models (/clarify:plain, /clarify:eli5).",
       "version": "2.0.0",
       "path": "plugins/clarify",

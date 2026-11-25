@@ -30,12 +30,13 @@ run() {
   ctx="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null)"
   if [ "$want" = none ]; then
     if [ -z "$out" ]; then ok "$name"; else bad "$name: expected no output, got $out"; fi
-  elif printf '%s' "$ctx" | rg -q -- "$want"; then ok "$name"; else bad "$name: expected /$want/, got '$ctx'"; fi
+  elif printf '%s' "$ctx" | grep -Eq -- "$want"; then ok "$name"; else bad "$name: expected /$want/, got '$ctx'"; fi
 }
 
 run mid-series '[Question 3 of 8] Which store?' 'Question 3 of 8 is answered.*Question 4 \(of 8\)'
 run fork-prefix '[Fork 2 of 5] Which store?' 'Question 3 \(of 5\)'
 run first-question '[Question 1 of 4] x' 'Question 2 \(of 4\)'
+run zero-padded-number '[Question 08 of 10] x' 'Question 9 \(of 10\)'
 run last-question '[Question 8 of 8] x' 'last question \(8 of 8\).*decision table'
 run leading-space-and-case '  [question 3 of 8] x' 'Question 4 \(of 8\)'
 run not-a-clarify-question 'Which store should we use?' none

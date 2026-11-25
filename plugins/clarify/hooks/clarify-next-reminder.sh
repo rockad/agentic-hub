@@ -27,7 +27,7 @@ nm="$(printf '%s' "$payload" | jq -r '
   | capture("^\\s*\\[\\s*(?:Question|Fork)\\s+(?<n>[0-9]+)\\s+of\\s+(?<m>[0-9]+)\\s*\\]"; "i") | "\(.n) \(.m)"
   ' 2>/dev/null)" || { [ "${CLARIFY_HOOK_STRICT:-}" = 1 ] && exit 3; exit 0; }
 [ -n "$nm" ] || exit 0
-n="${nm% *}"; m="${nm#* }"
+n=$((10#${nm% *})); m=$((10#${nm#* }))
 
 if [ "$n" -lt "$m" ]; then
   next=$((n + 1))

@@ -10,6 +10,8 @@
  *  3. In .mcp.json, remote servers (having "url") declare "type": "http".
  *  4. Per plugins/<dir>, the name and version of plugin.json, .claude-plugin/plugin.json and the
  *     plugin's entries in .claude-plugin/marketplace.json and marketplace.json are equal.
+ *  5. Root marketplace.json schema invariants: kebab-case plugins[].name (matching id and plugins/<dir>),
+ *     non-empty displayName/description/version, existing plugins/<dir> and standalone_skills paths on disk.
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -96,6 +98,142 @@ async function readJson(filePath: string): Promise<any | null> {
   }
 }
 
+const KEBAB_CASE_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isDirectory(targetPath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(targetPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate root marketplace.json invariants for Antigravity + repo tooling without requiring the `agy` binary:
+ * - plugins[].name must be unique lowercase kebab-case matching plugins[].id and `plugins/<name>`
+ * - plugins[].displayName, description, and version must be non-empty strings
+ * - plugins[].path (and optional skills[]) and standalone_skills[].path must exist on disk
+ */
+async function validateRootMarketplace(): Promise<void> {
+  const marketPath = path.join(REPO_ROOT, 'marketplace.json');
+  fileCount++;
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(marketPath, 'utf8');
+  } catch (err: any) {
+    reportError(marketPath, `Failed to read root marketplace.json: ${err.message}`);
+    return;
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(raw);
+  } catch (err: any) {
+    reportError(marketPath, `Invalid JSON syntax: ${err.message}`);
+    return;
+  }
+
+  if (!Array.isArray(data?.plugins) || data.plugins.length === 0) {
+    reportError(marketPath, `"plugins" must be a non-empty array`);
+  } else {
+    const seenNames = new Set<string>();
+    for (let i = 0; i < data.plugins.length; i++) {
+      const entry = data.plugins[i];
+      const label = entry?.name || entry?.id || `plugins[${i}]`;
+
+      if (typeof entry?.name !== 'string' || !KEBAB_CASE_RE.test(entry.name)) {
+        reportError(marketPath, `plugins[${i}] ("${label}"): "name" must be lowercase kebab-case (${KEBAB_CASE_RE})`);
+      } else {
+        if (seenNames.has(entry.name)) {
+          reportError(marketPath, `plugins[${i}] ("${entry.name}"): duplicate plugin name`);
+        }
+        seenNames.add(entry.name);
+      }
+
+      if (typeof entry?.id !== 'string' || entry.id.trim().length === 0) {
+        reportError(marketPath, `plugins[${i}] ("${label}"): "id" must be a non-empty string`);
+      } else if (typeof entry?.name === 'string' && entry.id !== entry.name) {
+        reportError(marketPath, `plugins[${i}] ("${entry.name}"): "id" ("${entry.id}") must match "name" ("${entry.name}")`);
+      }
+
+      for (const field of ['displayName', 'description', 'version'] as const) {
+        if (typeof entry?.[field] !== 'string' || entry[field].trim().length === 0) {
+          reportError(marketPath, `plugins[${i}] ("${label}"): "${field}" must be a non-empty string`);
+        }
+      }
+
+      if (typeof entry?.path !== 'string' || entry.path.trim().length === 0) {
+        reportError(marketPath, `plugins[${i}] ("${label}"): "path" must be a non-empty string`);
+      } else {
+        const expectedPath = typeof entry?.name === 'string' ? `plugins/${entry.name}` : null;
+        if (expectedPath && entry.path !== expectedPath) {
+          reportError(marketPath, `plugins[${i}] ("${entry.name}"): "path" ("${entry.path}") must equal "${expectedPath}"`);
+        }
+        const resolvedPluginDir = path.resolve(REPO_ROOT, entry.path);
+        const relToPlugins = path.relative(PLUGINS_DIR, resolvedPluginDir);
+        if (relToPlugins.startsWith('..') || path.isAbsolute(relToPlugins)) {
+          reportError(marketPath, `plugins[${i}] ("${label}"): "path" ("${entry.path}") must reside under plugins/`);
+        } else if (!(await isDirectory(resolvedPluginDir))) {
+          reportError(marketPath, `plugins[${i}] ("${label}"): plugin directory "${entry.path}" does not exist on disk`);
+        }
+      }
+
+      if (entry?.skills !== undefined) {
+        if (!Array.isArray(entry.skills)) {
+          reportError(marketPath, `plugins[${i}] ("${label}"): "skills" must be an array of paths when present`);
+        } else {
+          for (const skillPath of entry.skills) {
+            if (typeof skillPath !== 'string' || !(await pathExists(path.resolve(REPO_ROOT, skillPath, 'SKILL.md')))) {
+              reportError(marketPath, `plugins[${i}] ("${label}"): skill path "${skillPath}" is missing SKILL.md on disk`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!Array.isArray(data?.standalone_skills)) {
+    reportError(marketPath, `"standalone_skills" must be an array`);
+  } else {
+    const seenStandalone = new Set<string>();
+    for (let i = 0; i < data.standalone_skills.length; i++) {
+      const entry = data.standalone_skills[i];
+      const label = entry?.id || `standalone_skills[${i}]`;
+      if (typeof entry?.id !== 'string' || !KEBAB_CASE_RE.test(entry.id)) {
+        reportError(marketPath, `standalone_skills[${i}] ("${label}"): "id" must be lowercase kebab-case`);
+      } else {
+        if (seenStandalone.has(entry.id)) {
+          reportError(marketPath, `standalone_skills[${i}] ("${entry.id}"): duplicate standalone skill id`);
+        }
+        seenStandalone.add(entry.id);
+      }
+
+      if (typeof entry?.path !== 'string' || entry.path.trim().length === 0) {
+        reportError(marketPath, `standalone_skills[${i}] ("${label}"): "path" must be a non-empty string`);
+      } else {
+        const expectedPath = typeof entry?.id === 'string' ? `skills/${entry.id}` : null;
+        if (expectedPath && entry.path !== expectedPath) {
+          reportError(marketPath, `standalone_skills[${i}] ("${entry.id}"): "path" ("${entry.path}") must equal "${expectedPath}"`);
+        }
+        const resolvedSkillDir = path.resolve(REPO_ROOT, entry.path);
+        if (!(await isDirectory(resolvedSkillDir)) || !(await pathExists(path.join(resolvedSkillDir, 'SKILL.md')))) {
+          reportError(marketPath, `standalone_skills[${i}] ("${label}"): "${entry.path}/SKILL.md" does not exist on disk`);
+        }
+      }
+    }
+  }
+}
+
 /**
  * Version drift guard: for every plugins/<dir> the version (and name) of plugin.json (agy),
  * .claude-plugin/plugin.json (Claude Code), its entry in .claude-plugin/marketplace.json (source
@@ -123,7 +261,7 @@ async function validateVersionDrift(): Promise<void> {
     }
     const rm = (rootMarket?.plugins ?? []).find((p: any) => p.path === `plugins/${dir.name}`);
     if (rm) {
-      found.push({ where: 'marketplace.json', file: path.join(REPO_ROOT, 'marketplace.json'), name: rm.id, version: rm.version });
+      found.push({ where: 'marketplace.json', file: path.join(REPO_ROOT, 'marketplace.json'), name: rm.name ?? rm.id, version: rm.version });
     }
     if (found.length < 2) continue;
 
@@ -188,6 +326,7 @@ async function main(): Promise<void> {
     }
   }
 
+  await validateRootMarketplace();
   await validateVersionDrift();
 
   console.log(`\n📋 Validation Summary:`);

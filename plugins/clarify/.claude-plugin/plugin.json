@@ -10,5 +10,7 @@
     "design",
     "grill-me",
     "trade-offs"
-  ]
+  ],
+  "commands": "./claude/commands",
+  "hooks": "./claude/hooks.json"
 }

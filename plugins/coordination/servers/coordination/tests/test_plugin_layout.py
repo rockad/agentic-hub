@@ -38,6 +38,8 @@ AGY_ONLY = {"a2a-agy-session", "a2a-agy-pending"}
 CLAUDE_ONLY = {"a2a-register", "a2a-listen", "a2a-pending"}
 # The doctor is run by hand, never as a hook: it is in neither hooks file (docs/specs/doctor.md).
 DOCTOR = "a2a-doctor"
+# The Claude Code MCP headersHelper is run by Claude Code via claude/mcp.json, never as a hook.
+MCP_HELPER = "a2a-mcp-headers"
 CLAUDE_ROOT_PREFIX = "${CLAUDE_PLUGIN_ROOT}/bin/"
 
 
@@ -161,23 +163,26 @@ def test_the_agy_only_scripts_are_listed_in_the_agy_hooks_only():
 
 def test_the_bin_directory_holds_exactly_the_known_scripts_the_doctor_and_the_settings_lib():
     bin_dir = PLUGIN_DIR / "bin"
-    assert {p.name for p in bin_dir.iterdir()} == AGY_ONLY | CLAUDE_ONLY | {DOCTOR, "a2a-lib.sh"}
+    assert {p.name for p in bin_dir.iterdir()} == AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER, "a2a-lib.sh"}
     assert not is_executable(bin_dir / "a2a-lib.sh"), "the lib is sourced, never run"
     assert is_executable(bin_dir / DOCTOR), "the doctor is run by hand: it must be executable"
+    assert is_executable(bin_dir / MCP_HELPER), "the MCP headers helper is run by Claude Code: it must be executable"
 
 
-def test_neither_hooks_file_names_the_doctor():
+def test_neither_hooks_file_names_the_doctor_or_mcp_helper():
     """`a2a-doctor` is a command the user runs by hand (it may print and exit non-zero, which a hook
-    must not): a hook that ran it would be a bug."""
+    must not): a hook that ran it would be a bug. `a2a-mcp-headers` is run by Claude Code's MCP client."""
     for path in (PLUGIN_DIR / "hooks.json", PLUGIN_DIR / "claude" / "hooks.json"):
-        assert DOCTOR not in path.read_text(), f"{path.name} names the doctor"
+        text = path.read_text()
+        assert DOCTOR not in text, f"{path.name} names the doctor"
+        assert MCP_HELPER not in text, f"{path.name} names the MCP helper"
     assert DOCTOR not in {Path(c).name for _e, c, _t in agy_commands()}
     assert DOCTOR not in {re.search(r"/bin/([a-z0-9-]+)", c).group(1) for _e, c in claude_commands()}  # type: ignore[union-attr]
 
 
 def test_every_script_that_reads_a_setting_sources_the_lib_before_it_reads_one():
     names = ("A2A_SERVER_URL", "A2A_KEY_FILE", "A2A_CARD", "A2A_AGY_KEY_FILE", "A2A_AGY_CARD")
-    for name in sorted(AGY_ONLY | CLAUDE_ONLY | {DOCTOR}):
+    for name in sorted(AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER}):
         code = [line for line in (PLUGIN_DIR / "bin" / name).read_text().splitlines() if not line.lstrip().startswith("#")]
         source = next((i for i, line in enumerate(code) if "a2a_load_config" in line), None)
         assert source is not None, f"{name} never loads the settings file"
@@ -188,17 +193,21 @@ def test_every_script_that_reads_a_setting_sources_the_lib_before_it_reads_one()
 # MCP entries --------------------------------------------------------------------------------
 
 
-def test_the_claude_mcp_entry_is_one_http_server_with_the_key_from_the_environment():
+def test_the_claude_mcp_entry_is_one_http_server_with_headers_helper():
     data = load(PLUGIN_DIR / "claude" / "mcp.json")
     assert list(data) == ["mcpServers"]
     assert data["mcpServers"] == {
         "a2a-coord": {
             "type": "http",
             "url": "http://127.0.0.1:8120/mcp",
-            "headers": {"Authorization": "Bearer ${A2A_API_KEY}"},
+            "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers",
         }
     }
-    assert "a2ak_" not in (PLUGIN_DIR / "claude" / "mcp.json").read_text(), "a key never goes into the plugin"
+    raw = (PLUGIN_DIR / "claude" / "mcp.json").read_text()
+    assert "headers" not in data["mcpServers"]["a2a-coord"]
+    assert "A2A_API_KEY" not in raw
+    assert "a2ak_" not in raw, "a key never goes into the plugin"
+    assert is_executable(PLUGIN_DIR / "bin" / MCP_HELPER)
 
 
 def test_the_plugin_ships_no_agy_mcp_config():

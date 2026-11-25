@@ -3,9 +3,7 @@
     "a2a-coord": {
       "type": "http",
       "url": "http://127.0.0.1:8120/mcp",
-      "headers": {
-        "Authorization": "Bearer ${A2A_API_KEY}"
-      }
+      "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers"
     }
   }
 }

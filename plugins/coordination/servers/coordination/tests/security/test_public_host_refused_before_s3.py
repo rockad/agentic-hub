@@ -176,16 +176,18 @@ def test_at_s3_the_public_host_passes_the_host_check_and_meets_the_key_check():
     assert client.post("/mcp").status_code == 401  # past the Host check, refused for want of a key
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "USER DECISION (S1-SEC finding): the start-up check knows the public hostname only from A2A_PUBLIC_URL. "
-        "With the URL left at its loopback default, a public hostname added to A2A_ALLOWED_HOSTS before s3 is "
-        "not recognised as public and the server starts and accepts that Host. Closing it needs a rule such as "
-        "'before s3, every allowed host must be loopback or a tailnet name', which would also refuse a plain "
-        "machine name at s1; spec 1.6 does not say which."
-    ),
-)
 def test_the_public_hostname_in_allowed_hosts_is_refused_even_when_the_public_url_is_not_set(cards):
     config = config_for(cards, "s1", (*LOOPBACK_HOSTS, PUBLIC), public_url="http://127.0.0.1:8120")
     assert MESSAGE in problems(config)
+
+
+def test_strict_stage_allowlist_before_s3(cards):
+    # s1: only loopback allowed; tailnet or public or arbitrary name refused
+    assert MESSAGE in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, TAILNET)))
+    assert MESSAGE in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, "mybox")))
+    assert problems(config_for(cards, "s1", LOOPBACK_HOSTS)) == []
+
+    # s2: loopback or tailnet allowed; public or arbitrary name refused
+    assert problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, TAILNET), public_url=f"https://{TAILNET}")) == []
+    assert MESSAGE in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, PUBLIC), public_url="http://127.0.0.1:8120"))
+    assert MESSAGE in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, "mybox"), public_url="http://127.0.0.1:8120"))

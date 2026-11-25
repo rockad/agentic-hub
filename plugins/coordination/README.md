@@ -30,6 +30,8 @@ One server process, one SQLite database, several doors.
 
 This directory is one plugin that both harnesses install with their own command (decisions Z20 and Z21). Each installs from the remote `main` of `rockad/agentic-hub`, never from a copied or symlinked folder, and neither install command edits a shared user-level file. The server must be running (`docker compose up`, port 8120) and you need a `local-harness` API key (`a2a-coord key create`, run on a TTY inside the container; the key is shown once).
 
+The full path from a clean machine (prerequisites, secret files, the cards file, build and start, creating the keys, then the two installs below and `a2a-doctor`) is the [setup guide](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/runbooks/setup.md). Running it afterwards (backups, restore, key rotation, review, kill switches) is the [operations runbook](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/runbooks/operations.md).
+
 ### Claude Code
 
 ```sh
@@ -207,7 +209,13 @@ The `memory` plugin (`plugin.json`, `docker-compose.yml`, `servers/lookup`) is t
 
 ## Documentation index
 
-All links are absolute `file://` links.
+Links to files in this repository are absolute `https://github.com/rockad/agentic-hub/blob/main/...` URLs in this README, and relative links inside `docs/`. There are no `file://` links: this repository is public and a `file://` link would carry a local path.
+
+### Set up and run it
+
+- [`docs/runbooks/setup.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/runbooks/setup.md): the setup guide, from a clean machine to a working stage s1.
+- [`docs/runbooks/operations.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/runbooks/operations.md): the operations runbook.
+- [`docs/runbooks/backup.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/runbooks/backup.md): the dump sidecar, restore and the second restic job.
 
 ### Start here
 

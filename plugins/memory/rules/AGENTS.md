@@ -1,54 +1,20 @@
 # Memory Plugin: Rules & Guidelines
 
-This document governs memory discipline, cross-harness coordination, and storage fallbacks for AI agents using the `memory` plugin.
+Governs durable memory discipline, cross-harness continuity, and local fallbacks for the `memory` plugin.
 
-## 1. Architecture & Dual-Daemon Topology
+## 1. Dual-Daemon Topology & Local Cache
 
-The `memory` plugin coordinates durable memory and full-text transcript search across two resident HTTP daemon containers and a local disk cache:
+- **Recall (`http://127.0.0.1:8110/mcp`)**: Basic Memory (`0.24.1`) hybrid vector + reranker store for durable entities, projects, and `session-memory:<workspace>` (mirrored to `session-handoff:<workspace>`).
+- **Lookup (`http://127.0.0.1:8100/mcp`)**: SQLite FTS5 + BM25 index over Antigravity transcripts (`~/.gemini/antigravity-cli/brain/`), OpenCode logs (`~/.local/share/opencode/`), repo docs, and archives.
+- **Local Disk Cache (`.agents/memory.json` & `.agents/MEMORY.md`)**: Zero-dependency workspace fallback when daemons are offline.
 
-1. **Recall (`http://127.0.0.1:8110/mcp`)**:
-   - Manages durable entities, projects, and structured session memory notes.
-   - Primary state note: `session-memory:<workspace>` (with `session-handoff:<workspace>` mirrored for full backward compatibility).
-   - Backed by Basic Memory (`ghcr.io/basicmachines-co/basic-memory:0.24.1`) with hybrid vector + reranker search.
+## 2. Agent Discipline
 
-2. **Lookup (`http://127.0.0.1:8100/mcp`)**:
-   - Indexes session transcripts (`~/.gemini/antigravity-cli/brain/`), OpenCode session logs (`~/.local/share/opencode/`), repository documents, and knowledge archives.
-   - Powered by SQLite FTS5 with BM25 ranking and per-source result grouping.
+- **Session Inception**: Query `read_note(identifier="session-memory:<workspace>")` (or `.agents/memory.json` / `.agents/MEMORY.md`) at start of multi-turn/new sessions for `activeGoal`, `currentMilestone`, `nextAction`, and cross-harness directives (OpenCode vs Antigravity).
+- **Search Before Re-Deriving**: Call `search_archive(query="...")` via Lookup before guessing paths or re-deriving past decisions/bugs; verify `gated` vs `open` findings with the user before public reuse.
+- **Progress Checkpointing**: Update `activeGoal`, `currentMilestone`, `nextAction`, and `completedMilestones` at logical milestones via `memory.sh set`, `memory.sh mark-done`, or `write_note`, keeping `.agents/memory.json` and `.agents/MEMORY.md` in sync.
 
-3. **Local Disk Cache (`.agents/memory.json` & `.agents/MEMORY.md`)**:
-   - Resides directly in the workspace repository.
-   - Acts as the zero-dependency, local fallback store whenever containers are offline or unreachable.
+## 3. Fail-Open Resilience
 
----
-
-## 2. Memory Discipline for Agents
-
-### Session Inception & Pre-flight
-- At the start of a multi-turn task or new session, query session memory to restore active context:
-  - Check `read_note(identifier="session-memory:<workspace>")` via Recall, or inspect `.agents/memory.json` / `.agents/MEMORY.md`.
-  - Look for unfinished milestones, immediate next actions, and active goals.
-  - If previous work was performed in another harness (e.g. OpenCode vs Google Antigravity), heed cross-harness context directives.
-
-### Search Before Re-deriving
-- Before re-deriving complex architectural decisions, researching past bugs, or guessing paths:
-  - Call `search_archive(query="...")` via Lookup.
-  - Inspect transcripts and past meeting/decision records.
-  - Check visibility annotations (`open` vs `gated`): gated findings require user verification before public reuse.
-
-### Progress Checkpointing
-- At logical milestones, record progress:
-  - Update `activeGoal`, `currentMilestone`, `nextAction`, and append to `completedMilestones`.
-  - Use `memory.sh set` or `memory.sh mark-done` via shell, or write directly to Recall via `write_note`.
-  - Ensure `.agents/memory.json` and `.agents/MEMORY.md` reflect the state.
-
----
-
-## 3. Local Disk Fallback & Resilience
-
-- **Fail-Open Design**: A failure to reach Recall (`:8110`) or Lookup (`:8100`) must **never abort an agent turn or break a session**.
-- **Transparent Fallback**:
-  - `memory.sh` automatically checks daemon health. If HTTP endpoints fail or timeout, it reads/writes directly to `.agents/memory.json` and `.agents/MEMORY.md`.
-  - When daemons resume, the local state is ready to be synchronized back to Recall.
-- **Docker Management**:
-  - To bring up the memory stack: `memory.sh up` (or `docker compose up -d`).
-  - To stop the memory stack: `memory.sh down`.
+- **Never Abort**: Unreachable Recall (`:8110`) or Lookup (`:8100`) must never break a turn or session.
+- **Auto-Fallback & Docker**: `memory.sh` checks daemon health and falls back transparently to `.agents/memory.json` / `.agents/MEMORY.md` (syncing back when daemons resume). Manage stack via `memory.sh up` (`docker compose up -d`) and `memory.sh down`.

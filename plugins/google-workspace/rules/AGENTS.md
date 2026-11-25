@@ -1,19 +1,7 @@
 # Google Workspace: Rules & Guidelines
 
-This document governs email, calendar, and workspace actions for AI agents interacting with Google Workspace via the `google-workspace` plugin.
+Governs email, calendar, and Drive actions via the `google-workspace` plugin.
 
-## 1. Safety & Communication Guardrails
-
-- **Draft Replies Only**: Never call `send_gmail_message` automatically. Always use `draft_gmail_message` so the user can review and approve outgoing messages before transmission.
-- **Explicit User Confirmation**: Sending emails, modifying existing calendar events, or altering mailbox labels must only occur after explicit user instruction and confirmation.
-- **Preview Drafts**: Whenever a draft is created, display the recipient, subject line, and full body text clearly in the chat response.
-
-## 2. Calendar Hygiene
-
-- **Read Before Modify**: Check `get_events` and `query_freebusy` before proposing new calendar appointments or modifying schedules.
-- **Preserve Existing Events**: Never overwrite, delete, or RSVP to events without clear confirmation from the user.
-
-## 3. Privacy & Context Discipline
-
-- **Targeted Retrieval**: Use specific search queries (`query`) and modest page limits (`page_size`) rather than downloading bulk mailboxes.
-- **Privacy Protection**: Keep personal email bodies and sensitive calendar details private; avoid logging sensitive credentials or tokens in conversational transcripts.
+- **Email & Confirmation Guardrails**: Never call `send_gmail_message` automatically; always use `draft_gmail_message` and display recipient, subject, and full body in chat for review. Modify calendar events, alter mailbox labels, or send emails only after explicit user confirmation.
+- **Calendar Hygiene**: Read `get_events` and `query_freebusy` before proposing or modifying events; never overwrite, delete, or RSVP without clear user confirmation.
+- **Targeted & Private Retrieval**: Use specific `query` filters and modest `page_size` limits instead of bulk downloads. Keep email/calendar details private and never log credentials or tokens.

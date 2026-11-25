@@ -58,7 +58,7 @@ IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 LINE = re.compile(r"^(OK|WARN|FAIL|INFO) {1,4}(\S.*)$")
 SUMMARY = re.compile(r"^a2a-doctor: (\d+) FAIL, (\d+) WARN$")
 # The tools the doctor runs, for a PATH that has no jq in it.
-TOOLS = ("curl", "stat", "tr", "sed", "grep", "head", "tail", "cut", "uname", "sort")
+TOOLS = ("curl", "stat", "tr", "sed", "grep", "head", "tail", "cut", "uname", "sort", "sha256sum")
 
 need_jq = pytest.mark.skipif(not HAVE_JQ, reason="jq is not installed")
 need_non_root = pytest.mark.skipif(IS_ROOT, reason="root can read and own everything")
@@ -159,14 +159,18 @@ class Result:
 
 
 class World:
-    """A throwaway HOME laid out like a real one: the config directory (mode 0700) with the Claude key
-    file (0600), and the global agy file (0600) with an `a2a-coord` entry that points at `url`."""
+    """A throwaway HOME laid out like a real one: the config directory (mode 0700), keys/ (0700)
+    with canonical claude-code.key and antigravity.key (0600), and the global agy file (0600) with
+    a matching `a2a-coord` entry that points at `url`."""
 
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
         self.home = tmp / "home"
         self.cfg = self.home / ".config" / "a2a-coord"
-        self.key_file = self.cfg / "api-key"
+        self.keys_dir = self.cfg / "keys"
+        self.key_file = self.keys_dir / "claude-code.key"
+        self.agy_key_file = self.keys_dir / "antigravity.key"
+        self.legacy_claude_file = self.cfg / "api-key"
         self.agy_dir = self.home / ".gemini" / "config"
         self.agy_file = self.agy_dir / "mcp_config.json"
         self.tmpdir = tmp / "tmpdir"
@@ -176,11 +180,14 @@ class World:
         self.claude_key = throwaway_key()
         self.agy_key = throwaway_key()
         self.secrets = [*key_parts(self.claude_key), *key_parts(self.agy_key)]
-        for d in (self.cfg, self.agy_dir, self.tmpdir, self.cwd, self.markers):
+        for d in (self.cfg, self.keys_dir, self.agy_dir, self.tmpdir, self.cwd, self.markers):
             d.mkdir(parents=True, exist_ok=True)
         self.cfg.chmod(0o700)
+        self.keys_dir.chmod(0o700)
         self.key_file.write_text(self.claude_key + "\n")
         self.key_file.chmod(0o600)
+        self.agy_key_file.write_text(self.agy_key + "\n")
+        self.agy_key_file.chmod(0o600)
         self.write_agy("http://127.0.0.1:8120")
         # a fake `agy` and `claude`: if the doctor ever started one, it leaves a marker
         for name in ("agy", "claude"):
@@ -199,7 +206,6 @@ class World:
             "A2A_SERVER_URL": url,
             "A2A_CARD": CLAUDE_CARD,
             "A2A_AGY_CARD": AGY_CARD,
-            "A2A_API_KEY": self.claude_key,
         }
         for name, value in extra.items():
             if value is None:
@@ -285,10 +291,13 @@ def test_a_healthy_install_is_all_green_and_exits_0(world, stub):
     assert (res.count("FAIL"), res.count("WARN")) == (0, 0), res.out
     assert res.out.rstrip().endswith("a2a-doctor: 0 FAIL, 0 WARN")
     res.expect("OK", "GET", "/healthz answered 200")
-    res.expect("OK", "Claude key accepted: registered as", CLAUDE_HANDLE)
-    res.expect("OK", "agy key accepted: registered as", AGY_HANDLE)
-    res.expect("INFO", "Claude probe session ended")
-    res.expect("INFO", "agy probe session ended")
+    res.expect("OK", "claude-code key accepted: registered as", CLAUDE_HANDLE)
+    res.expect("OK", "antigravity key accepted: registered as", AGY_HANDLE)
+    res.expect("OK", "antigravity key file and mcp_config.json literal match")
+    res.expect("OK", "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers")
+    res.expect("OK", "bin/a2a-mcp-headers present and executable")
+    res.expect("INFO", "claude-code probe session ended")
+    res.expect("INFO", "antigravity probe session ended")
 
 
 @need_jq
@@ -316,8 +325,8 @@ def test_the_output_has_the_documented_sections_in_order(world, stub):
         "== Install commands ==",
         "== Plugin files ==",
         "== Settings file ==",
-        "== Claude key ==",
-        "== Antigravity (agy) ==",
+        "== Harness: claude-code ==",
+        "== Harness: antigravity ==",
         "== Server ==",
     ]
 
@@ -438,9 +447,10 @@ def test_the_key_and_card_settings_are_read_through_the_lib(world, stub):
 
 
 def copy_plugin(tmp: Path) -> Path:
-    """A copy of bin/ and plugin.json, to break the install in ways the real tree must not be."""
+    """A copy of bin/, claude/ and plugin.json, to break the install in ways the real tree must not be."""
     plug = tmp / "plug"
     shutil.copytree(PLUGIN_DIR / "bin", plug / "bin")
+    shutil.copytree(PLUGIN_DIR / "claude", plug / "claude")
     shutil.copy2(PLUGIN_DIR / "plugin.json", plug / "plugin.json")
     return plug / "bin" / "a2a-doctor"
 
@@ -609,30 +619,32 @@ def test_the_mode_falls_back_to_the_bsd_stat_form(world):
         'case "$1" in\n'
         '  -c) exit 1 ;;\n'
         '  -f) f=$3; [ "$2" = "%Lp" ] || exit 1\n'
-        '      case $f in *api-key) echo 644 ;; *) echo 700 ;; esac ;;\n'
+        '      case $f in *claude-code.key) echo 644 ;; *a2a-mcp-headers) echo 755 ;; *) echo 700 ;; esac ;;\n'
         'esac\n'
     )
     fake_tool(world.tmp / "bsd", "stat", body)
     res = world.run("--no-network", PATH=f"{world.tmp / 'bsd'}:{world.fakebin}:{os.environ['PATH']}")
-    res.expect("WARN", "Claude key file", "mode 644", "wider than 600")
+    res.expect("WARN", "claude-code key file", "mode 644", "wider than 600")
 
 
 def test_an_unreadable_mode_is_info_not_a_failure(world):
     fake_tool(world.tmp / "nostat", "stat", "exit 1\n")
     res = world.run("--no-network", PATH=f"{world.tmp / 'nostat'}:{world.fakebin}:{os.environ['PATH']}")
-    res.expect("INFO", "Claude key file mode could not be read")
+    res.expect("INFO", "claude-code key file", "mode could not be read")
+    res.expect("INFO", "antigravity key file", "mode could not be read")
+    res.expect("INFO", "keys directory", "mode could not be read")
     res.expect("INFO", "agy file mode could not be read")
     res.expect("INFO", "config directory", "mode could not be read")
     assert res.count("FAIL") == 0
 
 
-# ---- the Claude key ---------------------------------------------------------------------------
+# ---- the Claude key, headersHelper, and keys/ dir ---------------------------------------------
 
 
 def test_a_missing_claude_key_file_is_a_fail_that_says_how_to_create_it_and_creates_nothing(world):
     world.key_file.unlink()
     res = world.run("--no-network")
-    res.expect("FAIL", str(world.key_file), "missing", "mode-0600", "first line is the API key", "admin tool")
+    res.expect("FAIL", str(world.key_file), "missing", "mode-0600", "first line is the API key")
     assert not world.key_file.exists()
     assert res.code == 1
 
@@ -651,7 +663,7 @@ def test_an_unreadable_claude_key_file_is_a_fail(world):
         res = world.run("--no-network")
     finally:
         world.key_file.chmod(0o600)
-    res.expect("FAIL", "Claude key file", "not readable")
+    res.expect("FAIL", "claude-code key file", "not readable")
 
 
 @pytest.mark.parametrize(("mode", "wide"), [(0o600, False), (0o400, False), (0o640, True), (0o644, True), (0o660, True), (0o604, True), (0o700, True)])
@@ -662,15 +674,29 @@ def test_the_claude_key_file_mode_is_checked_against_0600(world, mode, wide):
     finally:
         world.key_file.chmod(0o600)
     if wide:
-        res.expect("WARN", "Claude key file", f"mode {mode:o}", "wider than 600")
+        res.expect("WARN", "claude-code key file", f"mode {mode:o}", "wider than 600")
     else:
-        res.expect("OK", "Claude key file", f"mode {mode:o}")
-        res.expect_none("WARN", "Claude key file")
+        res.expect("OK", "claude-code key file", f"mode {mode:o}")
+        res.expect_none("WARN", "claude-code key file")
+
+
+@pytest.mark.parametrize(("mode", "wide"), [(0o700, False), (0o500, False), (0o755, True), (0o750, True), (0o777, True)])
+def test_the_keys_directory_mode_is_checked_against_0700(world, mode, wide):
+    world.keys_dir.chmod(mode)
+    try:
+        res = world.run("--no-network")
+    finally:
+        world.keys_dir.chmod(0o700)
+    if wide:
+        res.expect("WARN", "keys directory", f"mode {mode:o}", "wider than 700")
+    else:
+        res.expect("OK", "keys directory", f"mode {mode:o}")
+        res.expect_none("WARN", "keys directory")
 
 
 def test_a_good_claude_key_is_ok_and_never_shown(world):
     res = world.run("--no-network")
-    res.expect("OK", "Claude key file first line looks like an a2a key")
+    res.expect("OK", "claude-code key file first line looks like an a2a key")
 
 
 @pytest.mark.parametrize(
@@ -692,14 +718,15 @@ def test_a_good_claude_key_is_ok_and_never_shown(world):
     ],
 )
 def test_a_key_file_that_does_not_look_like_a_key_is_a_fail_and_is_never_printed(world, stub, content):
-    ready(stub)
+    ready(stub, claude=session_reply(AGY_HANDLE))
+    world.write_agy(stub.url)
     world.key_file.write_text(content)
     world.key_file.chmod(0o600)
     res = world.run(url=stub.url, extra_secrets=("SECRETSECRET",))
     res.expect("FAIL", "does not look like an a2a key")
     assert res.code == 1
-    res.expect("INFO", "Claude probe skipped")
-    # the agy probe is independent of the Claude key: at most that one registration is made
+    res.expect("INFO", "claude-code probe skipped")
+    # the antigravity probe is independent of the claude-code key: at most that one registration is made
     assert len(stub.requests("/sessions")) <= 1
 
 
@@ -707,35 +734,89 @@ def test_the_probe_runs_for_a_key_with_every_allowed_character(world, stub):
     key = "a2ak_test_abc123_A-b.c_d~e+f/g=h"
     world.key_file.write_text(key + "\n")
     world.key_file.chmod(0o600)
+    world.write_agy(stub.url)
     ready(stub)
     res = world.run(url=stub.url, extra_secrets=("A-b.c_d~e+f/g=h",))
-    res.expect("OK", "Claude key accepted")
+    res.expect("OK", "claude-code key accepted")
     assert stub.requests("/sessions")[0].headers["authorization"] == f"Bearer {key}"
 
 
 def test_only_the_first_line_of_the_key_file_counts(world, stub):
     world.key_file.write_text(world.claude_key + "\nsecond line with spaces\n")
     world.key_file.chmod(0o600)
+    world.write_agy(stub.url)
     ready(stub)
     res = world.run(url=stub.url)
-    res.expect("OK", "Claude key accepted")
+    res.expect("OK", "claude-code key accepted")
 
 
-def test_a2a_api_key_in_the_shell_is_info_and_unset_is_a_warning_and_its_value_is_never_printed(world):
+def test_a2a_api_key_is_not_checked_or_warned_and_never_printed(world):
     value = "a2ak_test_envenv_ENVSECRETVALUE" + secrets.token_hex(4)
-    res = world.run("--no-network", A2A_API_KEY=value, extra_secrets=(value, "ENVSECRETVALUE"))
-    res.expect("INFO", "A2A_API_KEY is set in this shell")
-    res.expect_none("WARN", "A2A_API_KEY")
-    res = world.run("--no-network", A2A_API_KEY=None)
-    res.expect("WARN", "A2A_API_KEY is not set", "export it from the key file", "restart Claude Code")
-    res = world.run("--no-network", A2A_API_KEY="")
-    res.expect("WARN", "A2A_API_KEY is not set")
+    for env_val in (value, None, "", "something-else"):
+        res = world.run("--no-network", url="http://127.0.0.1:8120", A2A_API_KEY=env_val, extra_secrets=(value, "ENVSECRETVALUE"))
+        assert "A2A_API_KEY" not in res.out
+        assert (res.count("FAIL"), res.count("WARN")) == (0, 0), res.out
 
 
-def test_a2a_api_key_is_not_compared_with_the_file(world):
-    res = world.run("--no-network", A2A_API_KEY="something-else")
-    res.expect("INFO", "A2A_API_KEY is set in this shell")
-    assert res.count("WARN") == 0 or not res.has("WARN", "differ")
+def test_claude_fallback_api_key_warns_with_migration_commands_and_still_probes(world, stub):
+    world.key_file.unlink()
+    world.legacy_claude_file.write_text(world.claude_key + "\n")
+    world.legacy_claude_file.chmod(0o600)
+    world.write_agy(stub.url)
+    ready(stub)
+    res = world.run(url=stub.url)
+    assert res.code == 0
+    res.expect("WARN", "claude-code canonical key file", "is missing; using one-release fallback")
+    res.expect("INFO", "mkdir -p -m 700 ~/.config/a2a-coord/keys")
+    res.expect("INFO", "mv ~/.config/a2a-coord/api-key ~/.config/a2a-coord/keys/claude-code.key")
+    res.expect("INFO", "bin/a2a-doctor")
+    res.expect("OK", "claude-code key accepted")
+    assert stub.requests("/sessions")[0].headers["authorization"] == f"Bearer {world.claude_key}"
+
+
+def test_claude_canonical_wins_over_legacy_api_key_without_warning(world, stub):
+    legacy = throwaway_key()
+    world.legacy_claude_file.write_text(legacy + "\n")
+    world.legacy_claude_file.chmod(0o600)
+    world.write_agy(stub.url)
+    ready(stub)
+    res = world.run(url=stub.url, extra_secrets=tuple(key_parts(legacy)))
+    assert (res.count("FAIL"), res.count("WARN")) == (0, 0), res.out
+    res.expect_none("WARN", "one-release fallback")
+    assert stub.requests("/sessions")[0].headers["authorization"] == f"Bearer {world.claude_key}"
+
+
+def test_claude_headers_helper_and_mcp_json_checks(world):
+    script = copy_plugin(world.tmp)
+    res = run_copy(world, script, "--no-network")
+    res.expect("OK", "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers")
+    res.expect("OK", "bin/a2a-mcp-headers present and executable")
+
+    # Executable but not 0755 -> WARN
+    helper = script.parent / "a2a-mcp-headers"
+    helper.chmod(0o750)
+    res_mode = run_copy(world, script, "--no-network")
+    res_mode.expect("WARN", "bin/a2a-mcp-headers is executable but mode 750 is not 0755")
+    assert res_mode.code == 0
+
+    # Non-executable helper -> FAIL
+    helper.chmod(0o644)
+    res_nx = run_copy(world, script, "--no-network")
+    res_nx.expect("FAIL", "bin/a2a-mcp-headers is not executable")
+    assert res_nx.code == 1
+
+    # Missing helper -> FAIL
+    helper.unlink()
+    res_miss = run_copy(world, script, "--no-network")
+    res_miss.expect("FAIL", "bin/a2a-mcp-headers is missing")
+    assert res_miss.code == 1
+
+    # Missing headersHelper in claude/mcp.json -> FAIL
+    mcp_json = script.parents[1] / "claude" / "mcp.json"
+    mcp_json.write_text(json.dumps({"mcpServers": {"a2a-coord": {"type": "http", "url": "http://127.0.0.1:8120/mcp"}}}))
+    res_nohh = run_copy(world, script, "--no-network")
+    res_nohh.expect("FAIL", "claude/mcp.json does not declare headersHelper")
+    assert res_nohh.code == 1
 
 
 def test_a_key_file_named_by_the_environment_is_the_one_checked(world):
@@ -846,11 +927,12 @@ def test_an_entry_without_a_key_is_a_fail_with_the_no_key_wording(world):
 
 def test_the_placeholder_key_is_a_fail_and_is_not_probed(world, stub):
     ready(stub)
+    world.agy_key_file.unlink()
     config = agy_config(stub.url, "a2ak_REPLACE_WITH_YOUR_KEY")
     world.agy_file.write_text(json.dumps(config))
     res = world.run(url=stub.url)
     res.expect("FAIL", "still holds the placeholder key")
-    res.expect("INFO", "agy probe skipped")
+    res.expect("INFO", "antigravity probe skipped")
     assert len(stub.requests("/sessions")) == 1  # Claude's only
 
 
@@ -915,14 +997,63 @@ def test_an_unreadable_agy_file_is_a_warning(world):
     assert res.count("FAIL") == 0
 
 
-def test_the_agy_file_named_by_the_environment_is_the_one_checked(world):
-    other = world.tmp / "other-mcp.json"
-    other.write_text(json.dumps(agy_config("http://127.0.0.1:1", world.agy_key)))
+def test_the_agy_key_file_named_by_the_environment_is_the_one_checked(world):
+    other = world.tmp / "elsewhere-agy.key"
+    other.write_text(world.agy_key + "\n")
     other.chmod(0o666)
-    world.agy_file.unlink()
+    world.agy_key_file.unlink()
     res = world.run("--no-network", A2A_AGY_KEY_FILE=str(other))
     res.expect("WARN", str(other), "wider than 600")
-    res.expect("OK", "agy file has an a2a-coord server entry")
+    res.expect("OK", "antigravity key file first line looks like an a2a key")
+    res.expect("OK", "antigravity key file and mcp_config.json literal match")
+    res.expect_none("FAIL", "missing")
+
+
+def test_agy_fallback_mcp_config_warns_with_migration_commands_and_still_probes(world, stub):
+    world.agy_key_file.unlink()
+    world.write_agy(stub.url)
+    ready(stub)
+    res = world.run(url=stub.url)
+    assert res.code == 0
+    res.expect("WARN", "antigravity canonical key file", "is missing; using one-release fallback")
+    res.expect("INFO", "mkdir -p -m 700 ~/.config/a2a-coord/keys")
+    res.expect("INFO", "jq -r '.mcpServers[\"a2a-coord\"].headers.Authorization' ~/.gemini/config/mcp_config.json")
+    res.expect("INFO", "bin/a2a-doctor")
+    res.expect("OK", "antigravity key accepted")
+    assert stub.requests("/sessions")[1].headers["authorization"] == f"Bearer {world.agy_key}"
+
+
+@need_jq
+def test_agy_hash_compare_matches_and_warns_when_differing_without_printing_keys(world, tmp_path_factory):
+    # Matching (even without trailing newline in keys/antigravity.key) -> OK, 0 WARN
+    world.agy_key_file.write_text(world.agy_key)
+    res_ok = world.run("--no-network")
+    res_ok.expect("OK", "antigravity key file and mcp_config.json literal match")
+    res_ok.expect_none("WARN", "differ")
+
+    # Differing -> WARN, neither key printed anywhere
+    other = throwaway_key()
+    world.write_agy("http://127.0.0.1:8120", key=other)
+    res_diff = world.run("--no-network", extra_secrets=tuple(key_parts(other)))
+    res_diff.expect("WARN", "antigravity key file and mcp_config.json literal differ")
+    assert res_diff.code == 0
+
+    # Verify hash tool receives key on stdin only, never argv/env
+    log = tmp_path_factory.mktemp("hashlog") / "hash.log"
+    real_sha = shutil.which("sha256sum")
+    if real_sha:
+        spy_body = f'{{ printf "ARGV:%s\\n" "$*"; env | sed "s/^/ENV:/"; }} >> "$A2A_HASH_LOG"\nexec {real_sha} "$@"\n'
+        fake_tool(world.tmp / "hashspy", "sha256sum", spy_body)
+        res_spy = world.run(
+            "--no-network",
+            snap=False,
+            PATH=f"{world.tmp / 'hashspy'}:{world.fakebin}:{os.environ['PATH']}",
+            A2A_HASH_LOG=str(log),
+            extra_secrets=tuple(key_parts(other)),
+        )
+        res_spy.expect("WARN", "antigravity key file and mcp_config.json literal differ")
+        spy_text = log.read_text()
+        assert world.agy_key not in spy_text and other not in spy_text
 
 
 def test_the_old_pre_z20_plugin_folder_file_is_an_orphan_warning_with_its_exact_path(world):
@@ -937,7 +1068,8 @@ def test_the_old_pre_z20_plugin_folder_file_is_an_orphan_warning_with_its_exact_
 
 def test_no_orphan_warning_without_the_old_file(world):
     res = world.run("--no-network")
-    res.expect_none("WARN", "orphan")
+    res.expect_none("WARN", "orphan entry")
+    res.expect_none("WARN", "orphan file")
 
 
 @need_jq
@@ -1027,7 +1159,7 @@ def test_a_probe_that_hangs_is_cut_at_5_seconds_too(world, stub):
     start = time.monotonic()
     res = world.run(url=stub.url)
     assert time.monotonic() - start < 14
-    res.expect("FAIL", "Claude registration: no answer")
+    res.expect("FAIL", "claude-code registration: no answer")
 
 
 @need_jq
@@ -1037,14 +1169,14 @@ def test_every_call_is_bounded_and_ignores_proxies(world, stub):
     world.write_agy(stub.url)
     res = world.run(url=stub.url, HTTP_PROXY="http://127.0.0.1:1", http_proxy="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1")
     res.expect("OK", "healthz answered 200")
-    res.expect("OK", "Claude key accepted")
+    res.expect("OK", "claude-code key accepted")
 
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_a_rejected_claude_key_is_a_fail(world, stub, status):
     ready(stub, claude=Reply(status, "SERVERTEXT"))
     res = world.run(url=stub.url, extra_secrets=("SERVERTEXT",))
-    res.expect("FAIL", "the server rejected the Claude key", str(status))
+    res.expect("FAIL", "the server rejected the claude-code key", str(status), "expired or revoked, run key rotate")
     assert res.code == 1
 
 
@@ -1052,10 +1184,10 @@ def test_a_rejected_claude_key_is_a_fail(world, stub, status):
 def test_another_probe_status_is_a_fail_with_the_status_only(world, stub, status):
     ready(stub, claude=Reply(status, '{"detail":"SERVERTEXT"}'))
     res = world.run(url=stub.url, extra_secrets=("SERVERTEXT",))
-    res.expect("FAIL", "Claude registration failed with status", str(status))
+    res.expect("FAIL", "claude-code registration failed with status", str(status))
     assert "SERVERTEXT" not in res.out
     # a failed registration is not ended
-    assert len(stub.requests("/sessions/end")) <= 1  # only the agy probe's
+    assert len(stub.requests("/sessions/end")) <= 1  # only the antigravity probe's
 
 
 @pytest.mark.parametrize(
@@ -1084,7 +1216,7 @@ def test_a_probe_session_is_ended_and_a_failed_end_is_info(world, stub):
     ready(stub, end=Reply(404, "SERVERTEXT"))
     res = world.run(url=stub.url, extra_secrets=("SERVERTEXT",))
     res.expect("OK", "registered as")
-    res.expect("INFO", "Claude probe session could not be ended", "404")
+    res.expect("INFO", "claude-code probe session could not be ended", "404")
     assert res.code in (0, 1) and not res.has("FAIL", "ended")
 
 
@@ -1114,45 +1246,48 @@ def test_a_host_name_with_odd_characters_is_reduced_like_the_hooks_do(world, stu
 def test_an_invalid_claude_card_is_a_fail_and_not_probed(world, stub, card):
     ready(stub)
     res = world.run(url=stub.url, A2A_CARD=card)
-    res.expect("FAIL", "Claude card", "not a valid card", "set A2A_CARD")
-    assert len(stub.requests("/sessions")) == 1  # agy's only
+    res.expect("FAIL", "claude-code card", "not a valid card", "set A2A_CARD")
+    assert len(stub.requests("/sessions")) == 1  # antigravity's only
 
 
 @pytest.mark.parametrize("card", ["claude-code@box", "antigravity", "antigravity@", "antigravity@Box", "antigravity@-x", "antigravity@bo_x", "antigravity@" + "a" * 33])
 def test_an_invalid_agy_card_is_a_fail_and_not_probed(world, stub, card):
     ready(stub)
     res = world.run(url=stub.url, A2A_AGY_CARD=card)
-    res.expect("FAIL", "agy card", "not a valid card", "set A2A_AGY_CARD")
-    assert len(stub.requests("/sessions")) == 1  # Claude's only
+    res.expect("FAIL", "antigravity card", "not a valid card", "set A2A_AGY_CARD")
+    assert len(stub.requests("/sessions")) == 1  # claude-code's only
 
 
 def test_with_no_usable_claude_key_only_the_agy_probe_runs(world, stub):
-    ready(stub, claude=session_reply(AGY_HANDLE))  # the first registration is agy's now
+    ready(stub, claude=session_reply(AGY_HANDLE))  # the first registration is antigravity's now
     world.key_file.unlink()
     res = world.run(url=stub.url)
-    res.expect("INFO", "Claude probe skipped")
-    res.expect("OK", "agy key accepted")
+    res.expect("INFO", "claude-code probe skipped")
+    res.expect("OK", "antigravity key accepted")
     assert [json.loads(r.body)["card"] for r in stub.requests("/sessions")] == [AGY_CARD]
 
 
 def test_with_no_agy_key_only_the_claude_probe_runs(world, stub):
     ready(stub)
+    world.agy_key_file.unlink()
     world.agy_file.unlink()
     res = world.run(url=stub.url)
-    res.expect("INFO", "agy probe skipped")
-    res.expect("OK", "Claude key accepted")
+    res.expect("INFO", "antigravity probe skipped")
+    res.expect("OK", "claude-code key accepted")
     assert [json.loads(r.body)["card"] for r in stub.requests("/sessions")] == [CLAUDE_CARD]
 
 
-def test_a_rejected_agy_key_is_a_fail_naming_agy(world, stub):
-    ready(stub, agy_reply=Reply(403, ""))
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_agy_key_is_a_fail_naming_agy(world, stub, status):
+    ready(stub, agy_reply=Reply(status, ""))
     res = world.run(url=stub.url)
-    res.expect("OK", "Claude key accepted")
-    res.expect("FAIL", "the server rejected the agy key")
+    res.expect("OK", "claude-code key accepted")
+    res.expect("FAIL", "the server rejected the antigravity key", str(status), "expired or revoked, run key rotate")
 
 
 def test_the_agy_key_is_the_first_a2ak_token_of_the_file_and_goes_to_the_server(world, stub):
     other = throwaway_key()
+    world.agy_key_file.unlink()
     config = agy_config(stub.url, world.agy_key, servers_before={"first": {"headers": {"Authorization": f"Bearer {other}"}}})
     world.agy_file.write_text(json.dumps(config))
     ready(stub)
@@ -1215,7 +1350,7 @@ def test_a_fake_curl_sees_the_key_on_stdin_only_and_every_call_is_bounded(world,
         A2A_TEST_LOG=str(log),
     )
     text = log.read_text()
-    assert res.has("OK", "Claude key accepted")
+    assert res.has("OK", "claude-code key accepted")
     argv_lines = [line for line in text.splitlines() if line.startswith("ARGV:")]
     env_lines = [line for line in text.splitlines() if line.startswith("ENV:")]
     assert len(argv_lines) >= 5  # healthz, two registrations, two ends
@@ -1274,11 +1409,18 @@ def test_the_doctor_never_starts_agy_or_claude_even_with_both_on_the_path_first(
 
 
 def test_the_doctor_leaves_the_environment_variable_out_of_every_child(world, tmp_path_factory):
-    """`A2A_API_KEY` is only noted as set, then unset: a fake `sed` (run by the doctor) sees no such variable."""
+    """`A2A_API_KEY` is unset so no child sees it: a fake `sed` (run by the doctor) sees no such variable."""
     log_dir = tmp_path_factory.mktemp("envlog")
     log = log_dir / "env.log"
     fake_tool(world.tmp / "spy", "sed", f'env >> "$A2A_TEST_LOG"\nexec {shutil.which("sed")} "$@"\n')
-    world.run("--no-network", snap=False, PATH=f"{world.tmp / 'spy'}:{world.fakebin}:{os.environ['PATH']}", A2A_TEST_LOG=str(log))
+    world.run(
+        "--no-network",
+        snap=False,
+        PATH=f"{world.tmp / 'spy'}:{world.fakebin}:{os.environ['PATH']}",
+        A2A_TEST_LOG=str(log),
+        A2A_API_KEY="some-env-secret",
+        extra_secrets=("some-env-secret",),
+    )
     assert log.exists() and log.read_text()
     assert "A2A_API_KEY" not in log.read_text()
 
@@ -1444,11 +1586,11 @@ def test_nothing_in_the_doctor_writes_runs_the_harnesses_or_evaluates_text():
 
 def test_every_key_holder_is_unset_before_it_is_assigned_and_no_secret_is_echoed():
     text = code()
-    assert "unset dr_ckey dr_atok dr_etok dr_eauth pr_key" in text
+    assert "unset dr_ckey dr_akey dr_hkey dr_fbtok dr_atok dr_etok dr_eauth dr_mcp_key dr_pkey pr_key" in text
     assert text.index("set +x") < text.index("unset A2A_API_KEY"), "set +x comes before anything that handles a key"
     for line in text.splitlines():
         if re.match(r"\s*(info|ok|warn|fail)\b", line):
-            assert not re.search(r"\$\{?(dr_ckey|dr_atok|dr_etok|pr_key|KEY)\b", line), line
+            assert not re.search(r"\$\{?(dr_ckey|dr_akey|dr_hkey|dr_fbtok|dr_atok|dr_etok|dr_mcp_key|dr_pkey|pr_key|KEY)\b", line), line
 
 
 def test_the_doctor_output_is_ascii_only_in_the_source_too():
@@ -1457,7 +1599,7 @@ def test_the_doctor_output_is_ascii_only_in_the_source_too():
 
 # ---- review findings of PR #105 (Opus) ---------------------------------------------------------
 
-HOLDERS = ("dr_ckey", "dr_atok", "dr_etok", "dr_eauth", "pr_key")
+HOLDERS = ("dr_ckey", "dr_akey", "dr_hkey", "dr_fbtok", "dr_atok", "dr_etok", "dr_eauth", "dr_mcp_key", "dr_pkey", "pr_key")
 
 
 def test_no_imported_secret_holder_reaches_a_child_on_the_probe_path_either(world, stub, tmp_path_factory):

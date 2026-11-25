@@ -1,6 +1,7 @@
 #!/bin/sh
-# a2a-doctor: checks the install of the coordination plugin and says what to do (decision Z21 item 7;
-# docs/specs/doctor.md). Run by hand, never as a hook. POSIX sh, curl, and optionally jq.
+# a2a-doctor: checks the install of the coordination plugin and says what to do (decisions Z21 item 7,
+# Z22; docs/specs/doctor.md and docs/specs/harness-keys.md). Run by hand, never as a hook.
+# POSIX sh, curl, and optionally jq.
 #
 #   a2a-doctor [--no-network]
 #
@@ -9,12 +10,12 @@
 # for a usage error. --no-network skips the server section (no request at all); -h and --help print
 # the usage and exit 0.
 #
-# What it never does (docs/specs/doctor.md, each one has a test):
+# What it never does (docs/specs/doctor.md, docs/specs/harness-keys.md):
 #   - edit a harness config, a settings file or a key file, or write any file at all;
 #   - print a key or any part of one (text taken from a file is cleaned and any a2ak_ run is hidden
 #     before it is printed, and a server's answer is never printed except a validated handle);
-#   - put a key in an argument or the environment of a child (it goes to curl on stdin, `-K -`; the
-#     variable A2A_API_KEY is only noted as set or not, then unset);
+#   - put a key in an argument or the environment of a child (keys reach curl via `-K -` and hash
+#     tools via stdin; A2A_API_KEY is unset and never read or checked);
 #   - run `claude` or `agy`.
 # Every curl has a connect timeout of 2 s and a limit of 5 s, so it cannot hang.
 #
@@ -22,14 +23,11 @@
 # the effective A2A_SERVER_URL, A2A_CARD, A2A_AGY_CARD, A2A_KEY_FILE and A2A_AGY_KEY_FILE.
 
 set +x # a trace (sh -x, or SHELLOPTS set by the caller) would print the keys: never trace this script
-# Whether the variable the Claude MCP header expands was exported to this shell. Only the fact is
-# kept, never the value; it is unset so that no child inherits it.
-ENV_KEY_SET=0
-[ -n "${A2A_API_KEY:-}" ] && ENV_KEY_SET=1
+# A2A_API_KEY is not read or checked (Z22 section 3.2 & 6); unset it so no child inherits it.
 unset A2A_API_KEY
 # A secret holder must not have come in through the environment: an imported variable stays exported
 # when it is assigned, and would reach every child.
-unset dr_ckey dr_atok dr_etok dr_eauth pr_key
+unset dr_ckey dr_akey dr_hkey dr_fbtok dr_atok dr_etok dr_eauth dr_mcp_key dr_pkey pr_key
 LC_ALL=C
 export LC_ALL
 
@@ -90,6 +88,35 @@ mode_of() {
 }
 # True when dr_mode has any of the bits in the octal mask $1.
 mode_has() { [ $((0$dr_mode & $1)) -ne 0 ]; }
+
+# Hash stdin without putting any secret in argv or env.
+hash_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  elif command -v cksum >/dev/null 2>&1; then
+    cksum | tr ' ' ':'
+  else
+    return 1
+  fi
+}
+
+# Read first line of $1 into dr_hkey if it looks like an a2ak_ key; else dr_hkey=''.
+read_key_line() {
+  dr_hkey=
+  IFS= read -r dr_hkey < "$1" || :
+  case $dr_hkey in
+    a2ak_REPLACE_WITH_YOUR_KEY) dr_hkey= ;;
+    a2ak_?*)
+      case $dr_hkey in
+        *[!A-Za-z0-9._~+/=-]*) dr_hkey= ;;
+      esac
+      ;;
+    *) dr_hkey= ;;
+  esac
+  [ "${#dr_hkey}" -le 512 ] || dr_hkey=
+}
 
 # The directory of this script, to find the lib and the other scripts next to it.
 case $0 in
@@ -207,157 +234,325 @@ else
   info "no config directory at $dr_p"
 fi
 
-# ---- 4. Claude key ----------------------------------------------------------------------------
+# ---- 4. per-harness checks (table-driven from a2a-lib.sh) -------------------------------------
 
-section "Claude key"
-KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
-CLAUDE_KEY_OK=0
-dr_p=$(clean "$KEYFILE")
-if [ -d "$KEYFILE" ]; then
-  fail "Claude key file $dr_p is a directory (it must be a file)"
-elif [ ! -e "$KEYFILE" ]; then
-  fail "Claude key file $dr_p is missing. Create it yourself (the doctor never does): a mode-0600 file whose first line is the API key issued by the server's admin tool"
-elif [ ! -r "$KEYFILE" ]; then
-  fail "Claude key file $dr_p is not readable"
-else
-  mode_of "$KEYFILE"
-  if [ -z "$dr_mode" ]; then
-    info "Claude key file mode could not be read"
-  elif mode_has 07177; then
-    warn "Claude key file $dr_p mode $dr_mode is wider than 600 (chmod 600 $dr_p)"
-  else
-    ok "Claude key file $dr_p mode $dr_mode"
-  fi
-  dr_ckey=
-  IFS= read -r dr_ckey < "$KEYFILE" || :
-  case $dr_ckey in
-    a2ak_?*)
-      case $dr_ckey in
-        *[!A-Za-z0-9._~+/=-]*) dr_ckey= ;;
-      esac
-      ;;
-    *) dr_ckey= ;;
-  esac
-  if [ -n "$dr_ckey" ]; then
-    CLAUDE_KEY_OK=1
-    ok "Claude key file first line looks like an a2a key"
-  else
-    fail "Claude key file $dr_p first line does not look like an a2a key (a2ak_ followed by key characters only; check for a blank first line, a CRLF line ending or a stray space)"
-  fi
-fi
-if [ "$ENV_KEY_SET" = 1 ]; then
-  info "A2A_API_KEY is set in this shell"
-else
-  warn "A2A_API_KEY is not set in this shell: Claude Code's MCP header needs it; export it from the key file in your shell rc, then restart Claude Code"
-fi
-
-# ---- 5. agy -----------------------------------------------------------------------------------
-
-section "Antigravity (agy)"
-AGYFILE=${A2A_AGY_KEY_FILE:-${HOME:-/nonexistent}/.gemini/config/mcp_config.json}
-OLDAGY=${HOME:-/nonexistent}/.gemini/config/plugins/coordination/mcp_config.json
-AGY_KEY_OK=0
-dr_p=$(clean "$AGYFILE")
-dr_usable=0
-dr_entry=0
-dr_json=0
+KEYSDIR=$CFGDIR/keys
 HAVE_JQ=0
 command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 if [ "$URL_OK" = 1 ]; then SNIP_URL=$URL; else SNIP_URL=http://127.0.0.1:8120; fi
 
-if [ -d "$AGYFILE" ]; then
-  fail "agy file $dr_p is a directory (it must be a file)"
-elif [ ! -e "$AGYFILE" ]; then
-  warn "agy entry not set up: $dr_p does not exist (add the snippet below)"
-elif [ ! -r "$AGYFILE" ]; then
-  warn "agy file $dr_p is not readable"
+if [ "$LIB_OK" = 1 ] && command -v a2a_harness_table >/dev/null 2>&1; then
+  dr_htable=$(a2a_harness_table)
 else
-  dr_usable=1
+  dr_htable=$(printf '%s\n' \
+    'claude-code|claude-code@|keys/claude-code.key|A2A_KEY_FILE|cfg:api-key' \
+    'antigravity|antigravity@|keys/antigravity.key|A2A_AGY_KEY_FILE|home:.gemini/config/mcp_config.json')
 fi
-if [ "$dr_usable" = 1 ]; then
-  mode_of "$AGYFILE"
-  if [ -z "$dr_mode" ]; then
-    info "agy file mode could not be read"
-  elif mode_has 07177; then
-    warn "agy file $dr_p mode $dr_mode is wider than 600; it holds a key (chmod 600 $dr_p)"
-  else
-    ok "agy file $dr_p mode $dr_mode"
-  fi
-  if [ "$HAVE_JQ" = 1 ]; then
-    if jq -e 'type == "object"' "$AGYFILE" >/dev/null 2>&1; then
-      dr_json=1
-    else
-      warn "agy file $dr_p is not a valid JSON object: agy will not load it"
-    fi
-  else
-    info "jq is not installed: the agy entry is checked by text search, the url and header checks are skipped"
-  fi
-  if [ "$dr_json" = 1 ]; then
-    if jq -e 'try ((.mcpServers | type == "object") and (.mcpServers | has("a2a-coord"))) catch false' "$AGYFILE" >/dev/null 2>&1; then
-      dr_entry=1
-    fi
-  elif head -c 65536 "$AGYFILE" 2>/dev/null | grep -q '"a2a-coord"'; then
-    dr_entry=1
-  fi
-  # The first a2ak_ token, the way a2a-agy-session reads it. Only the shell holds it.
-  dr_atok=$(head -c 65536 "$AGYFILE" 2>/dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
-  dr_tok_state=none
-  case $dr_atok in
-    '') ;;
-    a2ak_REPLACE_WITH_YOUR_KEY) dr_tok_state=placeholder ;;
-    a2ak_*_*_*) dr_tok_state=good ;;
-    *) dr_tok_state=malformed ;;
-  esac
-  if [ "$dr_entry" = 0 ]; then
-    warn "agy entry not set up: $dr_p has no a2a-coord server entry (add the snippet below by hand)"
-  else
-    ok "agy file has an a2a-coord server entry"
-    case $dr_tok_state in
-      good) ok "agy file holds an a2ak_ key (the agy hooks read the first one)" ;;
-      placeholder) fail "agy file still holds the placeholder key from the snippet: replace it with your key" ;;
-      malformed) fail "agy file holds an a2ak_ token that is not of the form a2ak_<env>_<keyid>_<secret>" ;;
-      *) fail "agy file has an a2a-coord entry but no a2ak_ key: put your key in the Authorization header" ;;
-    esac
-    if [ "$dr_json" = 1 ]; then
-      dr_eurl=$(jq -r 'try (.mcpServers["a2a-coord"].url // .mcpServers["a2a-coord"].serverUrl) catch null | strings' "$AGYFILE" 2>/dev/null | head -n 1)
-      if [ "$URL_OK" = 1 ]; then
-        if [ "$dr_eurl" = "$URL/mcp" ]; then
-          ok "agy entry url is $URL/mcp"
-        else
-          warn "agy entry url is not $URL/mcp, the effective server URL plus /mcp (the entry's own value is not shown)"
-        fi
-      fi
-      dr_eauth=$(jq -r 'try (.mcpServers["a2a-coord"].headers.Authorization) catch null | strings' "$AGYFILE" 2>/dev/null | head -n 1)
-      if [ -z "$dr_eauth" ]; then
-        warn "agy entry has no Authorization header: the agy tools will answer 401"
-      else
-        ok "agy entry has an Authorization header"
-        dr_etok=$(printf '%s' "$dr_eauth" | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
-        if [ -n "$dr_etok" ] && [ -n "$dr_atok" ] && [ "$dr_etok" != "$dr_atok" ]; then
-          warn "the first a2ak_ key in the agy file is not the one in the a2a-coord entry: the agy hooks read the first (move the other entry below it, or remove it)"
-        fi
-      fi
-    fi
-  fi
-  [ "$dr_tok_state" = good ] && AGY_KEY_OK=1
-  # Orphans: other servers of ours in the same file.
-  if [ "$dr_json" = 1 ]; then
-    dr_names=$(jq -r 'try (.mcpServers | keys[] | select(startswith("a2a-") and . != "a2a-coord")) catch empty' "$AGYFILE" 2>/dev/null)
-  else
-    dr_names=$(head -c 65536 "$AGYFILE" 2>/dev/null | tr '\n' ' ' | grep -o '"a2a-[A-Za-z0-9._-]*"' | sort -u | grep -v '^"a2a-coord"$' | tr -d '"')
-  fi
-  if [ -n "$dr_names" ]; then
-    dr_names=$(printf '%s\n' "$dr_names" | head -n 5 | tr '\n' ' ')
-    warn "orphan entry in $dr_p besides a2a-coord: $(clean "$dr_names")(remove it by hand; the plugin never edits the file)"
-  fi
-fi
-if [ -e "$OLDAGY" ] || [ -L "$OLDAGY" ]; then
-  warn "orphan file from before Z20: $(clean "$OLDAGY") (a second a2a server entry that may hold a key; delete it by hand, the doctor never does)"
-fi
-info "agy MCP snippet (merge it into the existing mcpServers object of $dr_p by hand, keep the file mode 0600; the plugin never edits it):"
-info "{\"mcpServers\": {\"a2a-coord\": {\"type\": \"http\", \"url\": \"$SNIP_URL/mcp\", \"headers\": {\"Authorization\": \"Bearer a2ak_REPLACE_WITH_YOUR_KEY\"}}}}"
 
-# ---- 6. server --------------------------------------------------------------------------------
+dr_ckey=
+dr_akey=
+
+while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
+  [ -n "$dr_hid" ] || continue
+  section "Harness: $dr_hid"
+
+  # Keys directory mode 0700 (checked when keys/ exists)
+  dr_kp=$(clean "$KEYSDIR")
+  if [ -e "$KEYSDIR" ] && [ ! -d "$KEYSDIR" ]; then
+    fail "$dr_hid keys directory $dr_kp is not a directory"
+  elif [ -d "$KEYSDIR" ]; then
+    mode_of "$KEYSDIR"
+    if [ -z "$dr_mode" ]; then
+      info "$dr_hid keys directory $dr_kp mode could not be read"
+    elif mode_has 07077; then
+      warn "$dr_hid keys directory $dr_kp mode $dr_mode is wider than 700 (chmod 700 $dr_kp)"
+    else
+      ok "$dr_hid keys directory $dr_kp mode $dr_mode"
+    fi
+  fi
+
+  dr_ovval=
+  case $dr_ovname in
+    A2A_KEY_FILE) dr_ovval=${A2A_KEY_FILE:-} ;;
+    A2A_AGY_KEY_FILE) dr_ovval=${A2A_AGY_KEY_FILE:-} ;;
+  esac
+  dr_canfile="$CFGDIR/$dr_canrel"
+  case $dr_fbspec in
+    cfg:*) dr_fbfile="$CFGDIR/${dr_fbspec#cfg:}" ;;
+    home:*) dr_fbfile="${HOME:-/nonexistent}/${dr_fbspec#home:}" ;;
+    *) dr_fbfile= ;;
+  esac
+
+  dr_src=none
+  dr_kfile=$dr_canfile
+  if [ -n "$dr_ovval" ]; then
+    dr_src=override
+    dr_kfile=$dr_ovval
+  elif [ -e "$dr_canfile" ] || [ -L "$dr_canfile" ]; then
+    dr_src=canonical
+    dr_kfile=$dr_canfile
+  elif [ "$dr_hid" = claude-code ] && [ -n "$dr_fbfile" ] && [ -e "$dr_fbfile" ] && [ ! -d "$dr_fbfile" ]; then
+    dr_src=fallback
+    dr_kfile=$dr_fbfile
+  elif [ "$dr_hid" = antigravity ] && [ -n "$dr_fbfile" ] && [ -r "$dr_fbfile" ] && [ ! -d "$dr_fbfile" ]; then
+    dr_fbtok=$(head -c 65536 "$dr_fbfile" 2>/dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
+    case $dr_fbtok in
+      a2ak_REPLACE_WITH_YOUR_KEY) ;;
+      a2ak_*_*_*)
+        dr_src=fallback
+        dr_kfile=$dr_fbfile
+        ;;
+    esac
+    dr_fbtok=
+  fi
+
+  dr_p=$(clean "$dr_kfile")
+  case $dr_src in
+    none)
+      fail "$dr_hid canonical key file $(clean "$dr_canfile") is missing. Create it yourself (the doctor never does): mkdir -p -m 700 ~/.config/a2a-coord/keys, then a mode-0600 file whose first line is the API key issued by a2a-coord key create --scope local-harness --agent ${dr_cprefix}<machine> --expires 90d"
+      ;;
+    fallback)
+      warn "$dr_hid canonical key file $(clean "$dr_canfile") is missing; using one-release fallback $dr_p. Migrate before the next release:"
+      info "mkdir -p -m 700 ~/.config/a2a-coord/keys"
+      case $dr_hid in
+        claude-code)
+          info "mv ~/.config/a2a-coord/api-key ~/.config/a2a-coord/keys/claude-code.key"
+          ;;
+        antigravity)
+          info "jq -r '.mcpServers[\"a2a-coord\"].headers.Authorization' ~/.gemini/config/mcp_config.json | sed 's/^Bearer //' | (umask 077; cat > ~/.config/a2a-coord/keys/antigravity.key)"
+          ;;
+      esac
+      info "bin/a2a-doctor"
+      if [ "$dr_hid" = claude-code ]; then
+        if [ ! -r "$dr_kfile" ]; then
+          fail "$dr_hid fallback key file $dr_p is not readable"
+        else
+          mode_of "$dr_kfile"
+          if [ -z "$dr_mode" ]; then
+            info "$dr_hid fallback key file $dr_p mode could not be read"
+          elif mode_has 07177; then
+            warn "$dr_hid fallback key file $dr_p mode $dr_mode is wider than 600 (chmod 600 $dr_p)"
+          else
+            ok "$dr_hid fallback key file $dr_p mode $dr_mode"
+          fi
+          read_key_line "$dr_kfile"
+          if [ -n "$dr_hkey" ]; then
+            ok "$dr_hid fallback key file first line looks like an a2a key"
+            dr_ckey=$dr_hkey
+          else
+            fail "$dr_hid fallback key file $dr_p first line does not look like an a2a key (a2ak_ followed by key characters only; check for a blank first line, a CRLF line ending or a stray space)"
+          fi
+          dr_hkey=
+        fi
+      fi
+      ;;
+    canonical | override)
+      if [ -d "$dr_kfile" ]; then
+        fail "$dr_hid key file $dr_p is a directory (it must be a file)"
+      elif [ ! -e "$dr_kfile" ]; then
+        fail "$dr_hid key file $dr_p is missing"
+      elif [ ! -r "$dr_kfile" ]; then
+        fail "$dr_hid key file $dr_p is not readable"
+      else
+        mode_of "$dr_kfile"
+        if [ -z "$dr_mode" ]; then
+          info "$dr_hid key file $dr_p mode could not be read"
+        elif mode_has 07177; then
+          warn "$dr_hid key file $dr_p mode $dr_mode is wider than 600 (chmod 600 $dr_p)"
+        else
+          ok "$dr_hid key file $dr_p mode $dr_mode"
+        fi
+        read_key_line "$dr_kfile"
+        if [ -n "$dr_hkey" ]; then
+          ok "$dr_hid key file first line looks like an a2a key"
+          case $dr_hid in
+            claude-code) dr_ckey=$dr_hkey ;;
+            antigravity) dr_akey=$dr_hkey ;;
+          esac
+        else
+          fail "$dr_hid key file $dr_p first line does not look like an a2a key (a2ak_ followed by key characters only; check for a blank first line, a CRLF line ending or a stray space)"
+        fi
+        dr_hkey=
+      fi
+      ;;
+  esac
+
+  # Harness-specific MCP checks
+  case $dr_hid in
+    claude-code)
+      dr_cmcp="$DIR/../claude/mcp.json"
+      if [ ! -r "$dr_cmcp" ]; then
+        fail "claude/mcp.json is missing or unreadable (reinstall the plugin)"
+      elif [ "$HAVE_JQ" = 1 ]; then
+        if ! jq -e 'type == "object"' "$dr_cmcp" >/dev/null 2>&1; then
+          fail "claude/mcp.json is not valid JSON"
+        else
+          dr_hh=$(jq -r 'try (.mcpServers["a2a-coord"].headersHelper) catch null | strings' "$dr_cmcp" 2>/dev/null | head -n 1)
+          case $dr_hh in
+            *bin/a2a-mcp-headers) ok "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers" ;;
+            *) fail "claude/mcp.json does not declare headersHelper pointing to bin/a2a-mcp-headers" ;;
+          esac
+        fi
+      else
+        if grep -q '"headersHelper"[[:space:]]*:[[:space:]]*"[^"]*bin/a2a-mcp-headers"' "$dr_cmcp" 2>/dev/null; then
+          ok "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers"
+        else
+          fail "claude/mcp.json does not declare headersHelper pointing to bin/a2a-mcp-headers"
+        fi
+      fi
+      if [ ! -f "$DIR/a2a-mcp-headers" ]; then
+        fail "bin/a2a-mcp-headers is missing (reinstall the plugin)"
+      elif [ ! -x "$DIR/a2a-mcp-headers" ]; then
+        fail "bin/a2a-mcp-headers is not executable (reinstall the plugin; do not chmod a copy)"
+      else
+        mode_of "$DIR/a2a-mcp-headers"
+        if [ -z "$dr_mode" ]; then
+          ok "bin/a2a-mcp-headers present and executable (mode could not be read)"
+        elif [ "$dr_mode" = 755 ] || [ "$dr_mode" = 0755 ]; then
+          ok "bin/a2a-mcp-headers present and executable (mode $dr_mode)"
+        else
+          warn "bin/a2a-mcp-headers is executable but mode $dr_mode is not 0755"
+        fi
+      fi
+      ;;
+    antigravity)
+      AGYFILE=${HOME:-/nonexistent}/.gemini/config/mcp_config.json
+      OLDAGY=${HOME:-/nonexistent}/.gemini/config/plugins/coordination/mcp_config.json
+      dr_p=$(clean "$AGYFILE")
+      dr_usable=0
+      dr_entry=0
+      dr_json=0
+      dr_atok=
+      dr_etok=
+      dr_eauth=
+      dr_mcp_key=
+
+      if [ -d "$AGYFILE" ]; then
+        fail "agy file $dr_p is a directory (it must be a file)"
+      elif [ ! -e "$AGYFILE" ]; then
+        warn "agy entry not set up: $dr_p does not exist (add the snippet below)"
+      elif [ ! -r "$AGYFILE" ]; then
+        warn "agy file $dr_p is not readable"
+      else
+        dr_usable=1
+      fi
+      if [ "$dr_usable" = 1 ]; then
+        mode_of "$AGYFILE"
+        if [ -z "$dr_mode" ]; then
+          info "agy file mode could not be read"
+        elif mode_has 07177; then
+          warn "agy file $dr_p mode $dr_mode is wider than 600; it holds a key (chmod 600 $dr_p)"
+        else
+          ok "agy file $dr_p mode $dr_mode"
+        fi
+        if [ "$HAVE_JQ" = 1 ]; then
+          if jq -e 'type == "object"' "$AGYFILE" >/dev/null 2>&1; then
+            dr_json=1
+          else
+            warn "agy file $dr_p is not a valid JSON object: agy will not load it"
+          fi
+        else
+          info "jq is not installed: the agy entry is checked by text search, the url and header checks are skipped"
+        fi
+        if [ "$dr_json" = 1 ]; then
+          if jq -e 'try ((.mcpServers | type == "object") and (.mcpServers | has("a2a-coord"))) catch false' "$AGYFILE" >/dev/null 2>&1; then
+            dr_entry=1
+          fi
+        elif head -c 65536 "$AGYFILE" 2>/dev/null | grep -q '"a2a-coord"'; then
+          dr_entry=1
+        fi
+        dr_atok=$(head -c 65536 "$AGYFILE" 2>/dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
+        dr_tok_state=none
+        case $dr_atok in
+          '') ;;
+          a2ak_REPLACE_WITH_YOUR_KEY) dr_tok_state=placeholder ;;
+          a2ak_*_*_*) dr_tok_state=good ;;
+          *) dr_tok_state=malformed ;;
+        esac
+        if [ "$dr_entry" = 0 ]; then
+          warn "agy entry not set up: $dr_p has no a2a-coord server entry (add the snippet below by hand)"
+        else
+          ok "agy file has an a2a-coord server entry"
+          case $dr_tok_state in
+            good) ok "agy file holds an a2ak_ key" ;;
+            placeholder) fail "agy file still holds the placeholder key from the snippet: replace it with your key" ;;
+            malformed) fail "agy file holds an a2ak_ token that is not of the form a2ak_<env>_<keyid>_<secret>" ;;
+            *) fail "agy file has an a2a-coord entry but no a2ak_ key: put your key in the Authorization header" ;;
+          esac
+          if [ "$dr_json" = 1 ]; then
+            dr_eurl=$(jq -r 'try (.mcpServers["a2a-coord"].url // .mcpServers["a2a-coord"].serverUrl) catch null | strings' "$AGYFILE" 2>/dev/null | head -n 1)
+            if [ "$URL_OK" = 1 ]; then
+              if [ "$dr_eurl" = "$URL/mcp" ]; then
+                ok "agy entry url is $URL/mcp"
+              else
+                warn "agy entry url is not $URL/mcp, the effective server URL plus /mcp (the entry's own value is not shown)"
+              fi
+            fi
+            dr_eauth=$(jq -r 'try (.mcpServers["a2a-coord"].headers.Authorization) catch null | strings' "$AGYFILE" 2>/dev/null | head -n 1)
+            if [ -z "$dr_eauth" ]; then
+              warn "agy entry has no Authorization header: the agy tools will answer 401"
+            else
+              ok "agy entry has an Authorization header"
+              dr_etok=$(printf '%s' "$dr_eauth" | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
+              if [ -n "$dr_etok" ] && [ -n "$dr_atok" ] && [ "$dr_etok" != "$dr_atok" ]; then
+                warn "the first a2ak_ key in the agy file is not the one in the a2a-coord entry"
+              fi
+            fi
+          fi
+        fi
+
+        if [ "$dr_src" = fallback ] && [ "$dr_tok_state" = good ]; then
+          dr_akey=$dr_atok
+        fi
+
+        if [ "$dr_src" != fallback ] && [ -n "$dr_akey" ] && [ "$dr_entry" = 1 ]; then
+          if [ "$dr_json" = 1 ] && [ -n "$dr_etok" ]; then
+            dr_mcp_key=$dr_etok
+          elif [ "$dr_tok_state" = good ]; then
+            dr_mcp_key=$dr_atok
+          fi
+          if [ -n "$dr_mcp_key" ]; then
+            dr_h1=$(printf '%s' "$dr_akey" | hash_stdin) || dr_h1=
+            dr_h2=$(printf '%s' "$dr_mcp_key" | hash_stdin) || dr_h2=
+            if [ -z "$dr_h1" ] || [ -z "$dr_h2" ]; then
+              info "antigravity key hash comparison skipped: no sha256sum, shasum, or cksum available"
+            elif [ "$dr_h1" = "$dr_h2" ]; then
+              ok "antigravity key file and mcp_config.json literal match"
+            else
+              warn "antigravity key file and mcp_config.json literal differ (copy the current key to both places during rotation)"
+            fi
+            dr_h1=
+            dr_h2=
+          fi
+        fi
+        dr_atok=
+        dr_etok=
+        dr_eauth=
+        dr_mcp_key=
+
+        # Orphans: other servers of ours in the same file.
+        if [ "$dr_json" = 1 ]; then
+          dr_names=$(jq -r 'try (.mcpServers | keys[] | select(startswith("a2a-") and . != "a2a-coord")) catch empty' "$AGYFILE" 2>/dev/null)
+        else
+          dr_names=$(head -c 65536 "$AGYFILE" 2>/dev/null | tr '\n' ' ' | grep -o '"a2a-[A-Za-z0-9._-]*"' | sort -u | grep -v '^"a2a-coord"$' | tr -d '"')
+        fi
+        if [ -n "$dr_names" ]; then
+          dr_names=$(printf '%s\n' "$dr_names" | head -n 5 | tr '\n' ' ')
+          warn "orphan entry in $dr_p besides a2a-coord: $(clean "$dr_names")(remove it by hand; the plugin never edits the file)"
+        fi
+      fi
+      if [ -e "$OLDAGY" ] || [ -L "$OLDAGY" ]; then
+        warn "orphan file from before Z20: $(clean "$OLDAGY") (a second a2a server entry that may hold a key; delete it by hand, the doctor never does)"
+      fi
+      info "agy MCP snippet (merge it into the existing mcpServers object of $dr_p by hand, keep the file mode 0600; the plugin never edits it):"
+      info "{\"mcpServers\": {\"a2a-coord\": {\"type\": \"http\", \"url\": \"$SNIP_URL/mcp\", \"headers\": {\"Authorization\": \"Bearer a2ak_REPLACE_WITH_YOUR_KEY\"}}}}"
+      ;;
+  esac
+done <<EOF
+$dr_htable
+EOF
+
+# ---- 5. server --------------------------------------------------------------------------------
 
 # probe LABEL CARD KEY: register a probe session as the hook would, report, and end it again. The
 # key goes to curl on stdin; neither the key nor any server text but a validated handle is printed.
@@ -396,16 +591,18 @@ probe() {
               200 | 204) info "$pr_label probe session ended" ;;
               *) info "$pr_label probe session could not be ended (status $(clean "$pr_ecode")); it ends by itself when idle" ;;
             esac
+            pr_key=
             return 0
             ;;
         esac
       fi
       fail "$pr_label registration answered $pr_code but not with a valid handle for card $(clean "$pr_card")"
       ;;
-    401 | 403) fail "the server rejected the $pr_label key (status $pr_code)" ;;
+    401 | 403) fail "the server rejected the $pr_label key (status $pr_code): expired or revoked, run key rotate" ;;
     000) fail "$pr_label registration: no answer from $URL" ;;
     *) fail "$pr_label registration failed with status $pr_code" ;;
   esac
+  pr_key=
   return 0
 }
 
@@ -432,67 +629,80 @@ else
 fi
 
 if [ "$HEALTH_OK" = 1 ]; then
-  # Claude: the card the way a2a-register computes it.
   dr_nl='
 '
-  CARD=${A2A_CARD:-}
-  if [ -z "$CARD" ]; then
-    dr_h=$(uname -n 2>/dev/null)
-    dr_h=${dr_h%%.*}
-    dr_h=$(printf '%s' "$dr_h" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32)
-    while :; do
-      case $dr_h in
-        -*) dr_h=${dr_h#-} ;;
-        *) break ;;
-      esac
-    done
-    CARD=claude-code@$dr_h
-  fi
-  if [ "$CLAUDE_KEY_OK" = 0 ]; then
-    info "Claude probe skipped: no usable Claude key"
-  else
-    case $CARD in
-      *"$dr_nl"*) dr_cardok=0 ;;
-      *) if printf '%s' "$CARD" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$'; then dr_cardok=1; else dr_cardok=0; fi ;;
-    esac
-    if [ "$dr_cardok" = 1 ]; then
-      info "Claude card $CARD"
-      probe Claude "$CARD" "$dr_ckey"
-    else
-      fail "Claude card $(clean "$CARD") is not a valid card (harness@machine, lowercase letters, digits and hyphens): the hooks stay silent; set A2A_CARD"
-    fi
-  fi
-  # agy: the card the way a2a-agy-session computes it.
-  ACARD=${A2A_AGY_CARD:-}
-  if [ -z "$ACARD" ]; then
-    dr_m=$(uname -n 2>/dev/null | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n-' '-' | head -c 32)
-    ACARD=antigravity@$dr_m
-  fi
-  if [ "$AGY_KEY_OK" = 0 ]; then
-    info "agy probe skipped: no usable a2ak_ key in the agy file"
-  else
+  while IFS='|' read -r dr_hid dr_cprefix _; do
+    [ -n "$dr_hid" ] || continue
+    dr_card=
+    dr_pkey=
     dr_cardok=0
-    case $ACARD in
-      antigravity@*)
-        dr_m=${ACARD#antigravity@}
-        case $dr_m in
-          '' | [!a-z0-9]* | *[!a-z0-9-]*) ;;
-          *) [ "${#dr_m}" -le 32 ] && dr_cardok=1 ;;
-        esac
+    case $dr_hid in
+      claude-code)
+        dr_pkey=$dr_ckey
+        dr_card=${A2A_CARD:-}
+        if [ -z "$dr_card" ]; then
+          dr_h=$(uname -n 2>/dev/null)
+          dr_h=${dr_h%%.*}
+          dr_h=$(printf '%s' "$dr_h" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32)
+          while :; do
+            case $dr_h in
+              -*) dr_h=${dr_h#-} ;;
+              *) break ;;
+            esac
+          done
+          dr_card="${dr_cprefix}$dr_h"
+        fi
+        if [ -n "$dr_pkey" ]; then
+          case $dr_card in
+            *"$dr_nl"*) dr_cardok=0 ;;
+            *) if printf '%s' "$dr_card" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}@[a-z0-9][a-z0-9-]{0,31}$'; then dr_cardok=1; else dr_cardok=0; fi ;;
+          esac
+        fi
+        ;;
+      antigravity)
+        dr_pkey=$dr_akey
+        dr_card=${A2A_AGY_CARD:-}
+        if [ -z "$dr_card" ]; then
+          dr_m=$(uname -n 2>/dev/null | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n-' '-' | head -c 32)
+          dr_card="${dr_cprefix}$dr_m"
+        fi
+        if [ -n "$dr_pkey" ]; then
+          case $dr_card in
+            antigravity@*)
+              dr_m=${dr_card#antigravity@}
+              case $dr_m in
+                '' | [!a-z0-9]* | *[!a-z0-9-]*) ;;
+                *) [ "${#dr_m}" -le 32 ] && dr_cardok=1 ;;
+              esac
+              ;;
+          esac
+        fi
         ;;
     esac
-    if [ "$dr_cardok" = 1 ]; then
-      info "agy card $ACARD"
-      probe agy "$ACARD" "$dr_atok"
+
+    if [ -z "$dr_pkey" ]; then
+      info "$dr_hid probe skipped: no usable $dr_hid key"
+    elif [ "$dr_cardok" = 1 ]; then
+      info "$dr_hid card $dr_card"
+      probe "$dr_hid" "$dr_card" "$dr_pkey"
     else
-      fail "agy card $(clean "$ACARD") is not a valid card (antigravity@machine, lowercase letters, digits and hyphens): the agy hooks stay silent; set A2A_AGY_CARD"
+      case $dr_hid in
+        claude-code) fail "$dr_hid card $(clean "$dr_card") is not a valid card (harness@machine, lowercase letters, digits and hyphens): the hooks stay silent; set A2A_CARD" ;;
+        antigravity) fail "$dr_hid card $(clean "$dr_card") is not a valid card (antigravity@machine, lowercase letters, digits and hyphens): the agy hooks stay silent; set A2A_AGY_CARD" ;;
+      esac
     fi
-  fi
+    dr_pkey=
+  done <<EOF
+$dr_htable
+EOF
 elif [ "$URL_OK" = 1 ] && [ "$NO_NET" = 0 ]; then
   info "probe sessions skipped: the health check did not pass"
 fi
 
-# ---- 7. summary -------------------------------------------------------------------------------
+dr_ckey=
+dr_akey=
+
+# ---- 6. summary -------------------------------------------------------------------------------
 
 printf '\na2a-doctor: %s FAIL, %s WARN\n' "$n_fail" "$n_warn"
 [ "$n_fail" -eq 0 ]

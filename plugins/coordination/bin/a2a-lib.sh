@@ -77,6 +77,15 @@ a2a_load_config() {
 # | claude-code  | claude-code@     | $CFGDIR/keys/claude-code.key         | A2A_KEY_FILE      | $CFGDIR/api-key                          |
 # | antigravity  | antigravity@     | $CFGDIR/keys/antigravity.key         | A2A_AGY_KEY_FILE  | ~/.gemini/config/mcp_config.json         |
 #
+#   a2a_harness_table
+# Prints one pipe-delimited row per harness:
+#   harness_id|card_prefix|canonical_rel|override_var|fallback_spec
+a2a_harness_table() {
+  printf '%s\n' \
+    'claude-code|claude-code@|keys/claude-code.key|A2A_KEY_FILE|cfg:api-key' \
+    'antigravity|antigravity@|keys/antigravity.key|A2A_AGY_KEY_FILE|home:.gemini/config/mcp_config.json'
+}
+#
 #   a2a_resolve_keyfile <harness_id>
 # Sets A2A_RESOLVED_KEYFILE to the resolved key file path with canonical-wins precedence,
 # override support, and one-release fallback.

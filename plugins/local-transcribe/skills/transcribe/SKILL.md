@@ -338,7 +338,7 @@ passing on — it means a machine that should be fast is not.
 
 Read `references/flags-and-vocabulary.md` for full flag semantics, `--rerender` caveats, and `--names-file` formatting. Key flags:
 
-- `--language <code|auto>`, `--names 'A,B,C'`, `--speaker-threshold <0.4>`, `--me-stream 1`, `--stream N`
+- `--language <code>|--language <code>`, `--names 'A,B,C'`, `--speaker-threshold <0.4>`, `--me-stream 1`, `--stream N`
 - `--engine mlx-whisper|faster-whisper`, `--model <name>`
 - `--no-ocr` / `--ocr`, `--ocr-model`, `--ocr-scene`, `--ocr-interval`, `--ocr-min-gap`, `--ocr-max-frames`
 - `--enroll NAME`, `--enroll-from-speaker N`, `--no-identify` / `--identify`, `--list-voices`, `--forget NAME`

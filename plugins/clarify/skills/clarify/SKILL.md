@@ -107,7 +107,7 @@ Example: `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Archite
 
   > **Recommendation:** **Option A: <name>** — <one clause explaining why>.
 
-- **Next cue & tool call:** immediately after the Recommendation, print a one-line cue (`→ next: call the question tool now for Question N`), then immediately invoke the question tool in the same reply.
+- **Then the tool call:** invoke the question tool in the same reply, straight after the Recommendation. Print no extra cue line.
 
 Mode B's full format (Door Type and Under the Hood header, 4-question framing, example option) is in `references/plain-mode.md`. Read it before the first question in Mode B.
 

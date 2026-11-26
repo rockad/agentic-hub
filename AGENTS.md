@@ -23,7 +23,8 @@ agentic-hub/
 │   │   ├── servers/lookup/ # Relocated FTS5 search engine & extractors
 │   │   ├── skills/       # memory, lookup, recall
 │   │   └── docker-compose.yml # Resident daemon compose stack
-│   └── subagents/        # Specialised engineering, QA, research and operations subagents
+│   ├── subagents/        # Specialised engineering, QA, research and operations subagents
+│   └── todo/             # Shortcut to the harness's built-in todo (Claude Code and Antigravity)
 ├── skills/               # Standalone agent skills
 │   ├── handoff/          # Living HANDOFF.md (optional HANDOFF_DIR), switch mode, optional drift hook
 │   ├── markdown-convert/ # Document to Markdown converter
@@ -31,8 +32,7 @@ agentic-hub/
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Skills installation repair utility
-│   ├── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
-│   └── todo/             # Shortcut to the harness's built-in todo
+│   └── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
 └── marketplace.json      # Public marketplace manifest
 ```
 

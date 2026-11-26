@@ -19,7 +19,8 @@ agentic-hub/
 │   │   ├── servers/lookup/ # Resident SQLite FTS5 search engine & extractors
 │   │   ├── skills/       # memory, lookup, recall
 │   │   └── docker-compose.yml # Dual-service daemon stack for recall & lookup
-│   └── subagents/        # Specialised engineering, QA, research and operations subagents
+│   ├── subagents/        # Specialised engineering, QA, research and operations subagents
+│   └── todo/             # Shortcut to the harness's built-in todo (Claude Code and Antigravity)
 ├── skills/               # Standalone agent skills
 │   ├── clarify/          # Interactive design clarification skill
 │   ├── handoff/          # Living HANDOFF.md (optional HANDOFF_DIR), switch mode, optional drift hook
@@ -27,8 +28,7 @@ agentic-hub/
 │   ├── md-to-pdf/        # Markdown to PDF converter via WeasyPrint
 │   ├── rclone-cloud-storage/ # Multi-cloud storage operations via rclone
 │   ├── skills-doctor/    # Diagnostic and repair tool for npx skills installs
-│   ├── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
-│   └── todo/             # Shortcut to the harness's built-in todo, kept current across subagents and workflows
+│   └── sync-main/        # Merge main into the current branch, then build, test and lint with attribution
 ├── marketplace.json      # Google Antigravity plugin and skill marketplace manifest
 ├── AGENTS.md             # Canonical AI agent guidance
 └── LICENSE               # MIT Open Source License
@@ -87,6 +87,9 @@ Walk non-trivial designs through their forks one question at a time, with trade-
 - **Skill and commands**: the `clarify` skill (`/clarify`, `/grill-me`), plus `/clarify:plain` (plain English, no jargon) and `/clarify:eli5` ("explain like I'm five"), which run it in plain-English mode.
 - **Hooks**: a Claude Code `PreToolUse` hook that blocks a question asked without its write-up, and an Antigravity `Stop` hook that blocks a reply that skips `ask_question`.
 
+### `plugins/todo`
+A shortcut to the harness's built-in todo, not a reimplementation: create it if missing, reconcile it if it exists, and carry the progress of subagents and workflows into it. Only the main session marks items completed or creates follow-ups. Maps both Claude Code (`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`) and Antigravity (`update_steps`).
+
 ### Standalone Skills
 - **`skills/handoff`**: Keep a project's `HANDOFF.md` (state, decisions with what was rejected, deferred branches with triggers, next actions) so a new session can continue without the original conversation; the file can live outside the repository when `HANDOFF_DIR` is set (unset, it silently lands in the project root; see the skill's Gotchas); `/handoff switch` carries work across a change of login or subscription; optional SessionStart hook that reminds you when it falls behind the project's files. File-based, so it works without the memory daemons; complements `plugins/memory`'s `session-handoff`.
 - **`skills/markdown-convert`**: Convert PDFs, Office documents, and `.eml` emails to Markdown sidecar files with offline OCR fallback.
@@ -94,7 +97,6 @@ Walk non-trivial designs through their forks one question at a time, with trade-
 - **`skills/rclone-cloud-storage`**: Safe cloud storage management (Google Drive, OneDrive, etc.) via rclone.
 - **`skills/skills-doctor`**: Diagnose and repair `npx skills` installations across projects and global directories.
 - **`skills/sync-main`**: Merge the latest main into the current branch (main wins on shared code, the branch keeps its own), then build, test and lint the affected parts, attribute each failure to the merge or to the branch, and offer options instead of fixing silently. Never pushes on its own.
-- **`skills/todo`**: A shortcut to the harness's built-in todo, not a reimplementation: create it if missing, reconcile it if it exists, and carry the progress of subagents and workflows into it. Only the main session marks items completed or creates follow-ups. Claude Code is mapped; other harnesses come as `references/<harness>.md`.
 - **`skills/mcp-toggle`**: Context window optimizer; inspect and toggle on-demand MCP plugins (`chrome-devtools`, `google-workspace`, `jev`) saving ~22,000–24,000 tokens per turn.
 
 ---

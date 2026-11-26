@@ -24,6 +24,7 @@ The todo list is the user's live view of the work: what is done, what is running
 Read the one reference for your harness, chosen by which todo tool exists:
 
 - `references/claude-code.md` when `TaskCreate` / `TaskUpdate` exist (possibly deferred). `TodoWrite` alone is not mapped.
+- `references/antigravity.md` when `update_steps` exists.
 
 The reference names the tools, how to load them, and the delegation details. A harness with no listed reference has no mapping yet: say so in one line and do not improvise one.
 
@@ -88,7 +89,7 @@ Every task the user sees is numbered, so they can refer to it ("do 3", "drop 5")
   - `⏳` pending
   - `⛔` blocked: add `(blocked by #<id>)`
 - **Keep the order by id**, not by status, so a number never moves between replies.
-- **The number is also in the stored subject**, so it shows in the harness's own task list and not only in your replies. Write it as a prefix: `#4 Rebase PR branch onto main`. The id is only known after create, so right after each create, update the subject to `#<id> <subject>` (several creates: do the updates in one parallel batch). Never put the status marker in the stored subject; the harness list shows status itself and a stored marker goes stale.
+- **The number is also in the stored subject**, so it shows in the harness's own task list and not only in your replies. Write it as a prefix: `#4 Rebase PR branch onto main`. The id is only known after create, so right after each create, update the subject to `#<id> <subject>` (several creates: do the updates in one parallel batch). Never put the status marker in the stored subject; the harness list shows status itself and a stored marker goes stale. Skip the stored-subject prefix when the harness reference says the tool forbids numbers in titles (such as Antigravity's `update_steps`).
 - **Subjects are imperative and short**, so a line reads as a command. In your replies the marker goes between number and subject: `#4 🔄 Rebase PR branch onto main`.
 - **Reconcile renumbering**: when matching existing items (Step 1), fix any subject whose prefix is missing or does not match its id.
 - Refer to items by number everywhere else too: follow-ups, blockers, and the "still open" lines in the final reply (`#7 ⏳ Verify on core: waiting on the restart window`).

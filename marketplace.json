@@ -3,7 +3,7 @@
   "name": "Rockad Agentic Hub Marketplace",
   "description": "Public Antigravity Plugin & Skill Marketplace for provider-agnostic agent capabilities",
   "repository": "https://github.com/rockad/agentic-hub.git",
-  "updated_at": "2026-11-26T21:15:00Z",
+  "updated_at": "2026-11-26T22:10:00Z",
   "plugins": [
     {
       "id": "jev",
@@ -102,6 +102,17 @@
       "skills": [
         "plugins/clarify/skills/clarify"
       ]
+    },
+    {
+      "id": "todo",
+      "name": "todo",
+      "displayName": "Todo",
+      "description": "A shortcut to the harness's built-in todo: create it if missing, reconcile it if it exists, and carry subagent and workflow progress into it.",
+      "version": "1.3.0",
+      "path": "plugins/todo",
+      "skills": [
+        "plugins/todo/skills/todo"
+      ]
     }
   ],
   "standalone_skills": [
@@ -132,10 +143,6 @@
     {
       "id": "sync-main",
       "path": "skills/sync-main"
-    },
-    {
-      "id": "todo",
-      "path": "skills/todo"
     }
   ]
 }

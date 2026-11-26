@@ -96,11 +96,14 @@ def test_claude_manifest_points_at_the_claude_folder_and_agy_manifest_at_nothing
 
 
 def test_the_plugin_root_holds_none_of_the_files_agy_warns_about():
-    """agy's validator warns about a `.mcp.json` (never loaded) and a `hooks/hooks.json` (ignored) at the
-    plugin root; both moved into claude/. (AGENTS.md is the one remaining warning: it is developer
-    guidance for this folder, not a rule to ship.)"""
+    """agy's validator warns about `.mcp.json` (never loaded), `hooks/hooks.json` (ignored), and
+    `AGENTS.md` at the plugin root (not a rule under rules/). Claude files live in `claude/` and
+    developer guidance lives in `docs/DEVELOPING.md` so `agy plugin validate --strict` exits 0
+    without injecting developer rules into end-user sessions."""
     assert not (PLUGIN_DIR / ".mcp.json").exists()
     assert not (PLUGIN_DIR / "hooks").exists()
+    assert not (PLUGIN_DIR / "AGENTS.md").exists()
+    assert (PLUGIN_DIR / "docs" / "DEVELOPING.md").is_file()
 
 
 def test_the_old_agy_fragment_directory_is_gone():

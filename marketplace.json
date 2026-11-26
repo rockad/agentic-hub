@@ -3,7 +3,7 @@
   "name": "Rockad Agentic Hub Marketplace",
   "description": "Public Antigravity Plugin & Skill Marketplace for provider-agnostic agent capabilities",
   "repository": "https://github.com/rockad/agentic-hub.git",
-  "updated_at": "2026-10-07T07:00:00Z",
+  "updated_at": "2026-11-26T21:15:00Z",
   "plugins": [
     {
       "id": "jev",
@@ -13,7 +13,8 @@
       "version": "2.3.21",
       "path": "plugins/jev",
       "skills": [
-        "plugins/jev/skills/jev"
+        "plugins/jev/skills/jev",
+        "plugins/jev/skills/jev-refresh"
       ]
     },
     {

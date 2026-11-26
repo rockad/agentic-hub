@@ -1,0 +1,149 @@
+name: Release Antigravity Plugin Marketplace
+
+# Builds deterministic per-plugin .zip archives and a zip-indexed marketplace.json
+# (with https:// source.url + sha256 per plugin) and publishes them as GitHub Release
+# assets so `agy plugin validate <release-url>/marketplace.json` and zip installs work.
+#
+# Never modifies root `marketplace.json` or `.claude-plugin/marketplace.json`, keeping
+# Claude Code marketplace installs and repo tree-based installs intact.
+#
+# Triggers only on an `agy-marketplace-v*` tag or manual `workflow_dispatch`.
+
+on:
+  push:
+    tags:
+      - 'agy-marketplace-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (default: agy-marketplace-vYYYY.MM.DD)'
+        required: false
+        default: ''
+      plugins:
+        description: 'Optional comma-separated plugin subset (blank = all)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark GitHub Release as prerelease'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Build and upload workflow artifact only (do not publish GitHub Release)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: Build & Verify Plugin Zips
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Validate manifests and check public leaks
+        run: |
+          bun run scripts/validate-manifests.ts
+          bash scripts/check-public-leaks.sh
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="agy-marketplace-v$(date -u +%Y.%m.%d)"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: ${TAG}"
+
+      - name: Run packager unit tests
+        run: python3 -m unittest scripts/test-build-agy-release-marketplace.py -v
+
+      - name: Build plugin zips and zip-indexed marketplace.json
+        run: |
+          python3 scripts/build-agy-release-marketplace.py \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --plugins "${{ inputs.plugins }}" \
+            --out-dir dist/agy-release
+
+      - name: Verify SHA256SUMS and generated marketplace.json
+        run: |
+          (cd dist/agy-release && sha256sum -c SHA256SUMS.txt)
+          jq -e '
+            .plugins | length > 0 and all(
+              (.name | type == "string" and length > 0) and
+              (.version | type == "string" and length > 0) and
+              (.source.url | startswith("https://")) and
+              (.source.sha256 | test("^[0-9a-f]{64}$"))
+            )
+          ' dist/agy-release/marketplace.json >/dev/null
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agy-marketplace-${{ steps.meta.outputs.tag }}
+          path: dist/agy-release/
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build-and-verify
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agy-marketplace-${{ needs.build-and-verify.outputs.tag }}
+          path: dist/agy-release
+
+      - name: Publish or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build-and-verify.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease || false }}
+        run: |
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/agy-release/* --clobber --repo "${{ github.repository }}"
+          else
+            FLAGS=()
+            if [ "$PRERELEASE" = "true" ]; then
+              FLAGS+=(--prerelease)
+            fi
+            gh release create "$TAG" dist/agy-release/* \
+              --repo "${{ github.repository }}" \
+              --title "Antigravity Plugin Marketplace (${TAG})" \
+              --notes "Automated Antigravity plugin release zips and zip-indexed \`marketplace.json\`." \
+              "${FLAGS[@]}"
+          fi
+
+      - name: Write release summary
+        env:
+          TAG: ${{ needs.build-and-verify.outputs.tag }}
+        run: |
+          {
+            echo "### Antigravity Plugin Marketplace Release: \`${TAG}\`"
+            echo
+            echo "- Marketplace JSON: \`https://github.com/${{ github.repository }}/releases/download/${TAG}/marketplace.json\`"
+            echo "- Validate: \`agy plugin validate https://github.com/${{ github.repository }}/releases/download/${TAG}/marketplace.json\`"
+            echo
+            echo "#### Checksums"
+            echo '```'
+            cat dist/agy-release/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

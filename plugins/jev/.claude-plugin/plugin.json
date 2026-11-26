@@ -14,5 +14,6 @@
     "mcp",
     "reasoning"
   ],
-  "hooks": "./claude/hooks.json"
+  "hooks": "./claude/hooks.json",
+  "mcpServers": "./claude/mcp.json"
 }

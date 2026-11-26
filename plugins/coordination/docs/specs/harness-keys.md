@@ -32,7 +32,7 @@ One key per card: one per harness per machine, shared by every session of that h
 
 ### 3.1 Key files
 
-- One file per harness: `~/.config/a2a-coord/keys/<harness>.key`, first line the key and nothing else, mode 0600.
+- One file per harness: `~/.config/a2a-coord/keys/<harness>.key`, containing **exactly one line** (the key and nothing else — no trailing comment lines, no CRLF, no trailing whitespace), mode 0600. Both `a2a-mcp-headers` and `a2a-doctor` strictly enforce this single-line rule.
 - The directory `~/.config/a2a-coord/keys` has mode 0700 (the parent `~/.config/a2a-coord` stays 0700 as the doctor already checks).
 - The hooks, the doctor and Claude's MCP helper read this file. The plugin never creates, edits or deletes it **[design]**; you create it with the commands of section 9.
 
@@ -45,7 +45,7 @@ The settings file `~/.config/a2a-coord/settings` (see the README, Settings file)
 | `claude-code` | `A2A_KEY_FILE` |
 | `antigravity` | `A2A_AGY_KEY_FILE` |
 
-A set override replaces the canonical path. The environment variable of the same name wins over the settings file, as for every other setting. **`A2A_API_KEY` is not read by anything**: not by the hooks, not by the helper, not by the doctor **[design]**. A shell that still exports it does no harm and does no good.
+A set override replaces the canonical path. The environment variable of the same name wins over the settings file, as for every other setting. However, because Claude Code strips credential-named environment variables (including any containing `KEY`, such as `A2A_KEY_FILE`) when spawning plugin `headersHelper`, a `claude-code` key-file override **must be set in `~/.config/a2a-coord/settings`** rather than relying on the shell environment. `a2a-doctor` warns if `A2A_KEY_FILE` is set in the shell environment without matching the settings file. **`A2A_API_KEY` is not read by anything**: not by the hooks, not by the helper, not by the doctor **[design]**. A shell that still exports it does no harm and does no good.
 
 ### 3.3 Fallbacks for one release
 
@@ -56,7 +56,7 @@ For one release after this design ships, a missing canonical file falls back to 
 | `claude-code` | `~/.config/a2a-coord/api-key` |
 | `antigravity` | the first `a2ak_` token of `~/.gemini/config/mcp_config.json` |
 
-The canonical file always wins when it exists. The doctor `WARN`s while a fallback is in use and prints the migration commands of section 9. After the release the fallbacks are removed and a missing canonical file is a `FAIL`.
+The canonical file always wins when it is readable (matching `-r` in the resolver; `a2a-doctor` fails on an unreadable canonical file). The doctor `WARN`s while a fallback is in use and prints the migration commands of section 9. After the release the fallbacks are removed and a missing canonical file is a `FAIL`.
 
 ## 4. Harness sections
 
@@ -104,7 +104,7 @@ docker compose exec -it coordination a2a-coord key create --scope local-harness 
 docker compose exec -it coordination a2a-coord key rotate <key_id> --grace 24h
 ```
 
-2. Write the new key to `keys/<harness>.key`. The hooks and, for `claude-code`, the MCP helper read the file on their next call, so no restart is needed **[design]**.
+2. Write the new key to `keys/<harness>.key`. The hooks read the file on their next call, and for `claude-code`, `a2a-mcp-headers` runs at connect and after a `401`/`403`. During the grace window the old key stays valid and MCP switches on reconnect or after the first `401` post-grace-window, retrying without a restart **[design]**.
 3. For `antigravity` only: also replace the literal in `~/.gemini/config/mcp_config.json`, inside the grace window. agy may need a new session to reread that file **[unverified]**.
 4. Run `bin/a2a-doctor`. It must show no `WARN` about the key files and both probes accepted.
 
@@ -126,7 +126,7 @@ All **[design]**; the checks are table-driven from the table of section 2, one b
 - Per harness:
   - the key file exists (else `FAIL`; while a fallback source is in use, `WARN` with the migration commands)
   - the key file has mode 0600 and its directory 0700 (else `WARN`)
-  - the first line looks like an `a2ak_` key (else `FAIL`; the line is not printed)
+  - the file contains exactly one valid line (the 1-line rule) and looks like an `a2ak_` key (else `FAIL`; the line is not printed)
   - the key is accepted by the server through the registration probe (a 401 or 403 is a `FAIL` that says "expired or revoked, run key rotate")
 - For `claude-code`: the plugin's `claude/mcp.json` names the helper and the helper is executable.
 - For `antigravity`: the `a2a-coord` entry exists in `mcp_config.json`, its URL is the effective server URL plus `/mcp`, and the hash of its literal equals the hash of the key file (`WARN` when they differ; neither value is printed).

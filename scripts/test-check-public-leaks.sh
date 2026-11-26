@@ -27,9 +27,11 @@ fails=0
 ok() { echo "PASS $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
-# Parts of keys, joined only at run time.
+# Parts of keys, joined only at run time (split so gitleaks does not flag a literal).
 P="a2ak"
-SECRET43="Zq9XvT3mNpL0aBcDeFgHiJkLmNoPqRsTuV-w_xY4zAb"   # 43 chars, not a real key
+PART_A="Zq9XvT3mNpL0aBcDeFgHiJ"
+PART_B="kLmNoPqRsTuV-w_xY4zAb"
+SECRET43="${PART_A}${PART_B}"   # 43 chars, not a real key
 SECRET42="${SECRET43%?}"
 ID="3f9c01ab"
 key() { printf '%s_%s_%s_%s' "$P" "$1" "$2" "$3"; } # env id secret

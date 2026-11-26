@@ -28,6 +28,8 @@ import socket
 import subprocess
 import uuid
 import pytest
+
+pytestmark = pytest.mark.hooks
 import yaml
 from conftest import COMPOSE_FILE, _unavailable, pinned_postgres_image
 

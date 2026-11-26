@@ -20,6 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.hooks
 import sec_scan
 from conftest import PLUGIN_DIR
 

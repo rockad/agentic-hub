@@ -26,6 +26,8 @@ from pathlib import Path
 import agy_hook_helpers as agy
 import hook_helpers as hh
 import pytest
+
+pytestmark = pytest.mark.hooks
 from conftest import PLUGIN_DIR
 from hook_helpers import hook_env, stub  # noqa: F401  (fixtures)
 

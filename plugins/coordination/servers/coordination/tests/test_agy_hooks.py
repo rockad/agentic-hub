@@ -20,6 +20,10 @@ What it checks (plan 4.2, S1-AGY acceptance):
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.hooks
+
 import json
 import os
 import re

@@ -16,6 +16,8 @@ Same environment as `test_mcp_transport.py`: the real app over a real Postgres (
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.hooks
 from mcp_helpers import make_env
 
 from coordination.mcp.server import SUPPORTED_VERSIONS

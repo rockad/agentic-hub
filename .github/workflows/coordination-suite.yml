@@ -7,17 +7,17 @@
 # have as well (Opus review of PR #94, 2026-11-23). This workflow runs them from the checkout and fails
 # when a run skips what it should have run (scripts/check-pytest-skips.sh).
 #
-# Two parallel jobs:
-#   1. `hooks`: the hook tests of both harnesses (static, listener, register and pending, agy), the settings reader
-#      and the doctor (jq is installed for it), and the three security tests that read a repository file
-#      (the static launch search over bin/, the README table against api 9, the compose topology probe):
-#      no skip allowed.
-#   2. `suite`: the rest of the suite with Docker (A2A_TEST_REQUIRE_DOCKER=1 turns a missing Docker into a failure),
-#      ignoring the 12 hook/static-security files to avoid duplication:
+# Two steps:
+#   1. the hook tests of both harnesses (static, listener, register and pending, agy), the settings reader
+#      and the doctor (jq is installed for it): no skip allowed
+#   2. the whole suite with Docker (A2A_TEST_REQUIRE_DOCKER=1 turns a missing Docker into a failure):
 #      exactly three skips are expected, each covered by another job:
 #        - tests/test_a2a_tck.py     needs the TCK checkout (job "A2A TCK against the coordination server")
 #        - tests/test_backup_script.py  needs A2A_BACKUP_IMAGE (job "Build the coordination images ...")
 #        - tests/test_compose.py     needs a running stack (the same image job)
+#      A fourth skip, or fewer than three, fails the job, and so does a skip in any other module: the
+#      fourth argument of check-pytest-skips.sh names the three modules (their pytest classnames).
+#      Change the number and the list here with the test.
 name: Coordination suite
 
 on:
@@ -63,13 +63,8 @@ jobs:
         env:
           A2A_TEST_REQUIRE_DOCKER: "1"
         run: |
-          uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/hooks.xml" \
-            tests/test_hooks_static.py tests/test_hooks_listen.py tests/test_hooks_register_pending.py \
-            tests/test_hooks_review_fixes.py tests/test_agy_hooks.py tests/test_skip_gate.py \
-            tests/test_mcp_agy_opening.py tests/test_config_reader.py tests/test_doctor.py \
-            tests/security/test_no_code_path_launches_a_harness.py tests/security/test_readme_maps_every_api9_bullet.py \
-            tests/security/test_sbx_never_reaches_the_service.py
-          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 300
+          uv run pytest -q -rs -p no:cacheprovider -m hooks --junitxml="$RUNNER_TEMP/hooks.xml"
+          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 900
 
   suite:
     name: Coordination suite with Docker (excluding hooks)
@@ -89,18 +84,6 @@ jobs:
         env:
           A2A_TEST_REQUIRE_DOCKER: "1"
         run: |
-          uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/all.xml" \
-            --ignore=tests/test_hooks_static.py \
-            --ignore=tests/test_hooks_listen.py \
-            --ignore=tests/test_hooks_register_pending.py \
-            --ignore=tests/test_hooks_review_fixes.py \
-            --ignore=tests/test_agy_hooks.py \
-            --ignore=tests/test_skip_gate.py \
-            --ignore=tests/test_mcp_agy_opening.py \
-            --ignore=tests/test_config_reader.py \
-            --ignore=tests/test_doctor.py \
-            --ignore=tests/security/test_no_code_path_launches_a_harness.py \
-            --ignore=tests/security/test_readme_maps_every_api9_bullet.py \
-            --ignore=tests/security/test_sbx_never_reaches_the_service.py
-          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1200 \
+          uv run pytest -q -rs -p no:cacheprovider -m "not hooks" --junitxml="$RUNNER_TEMP/all.xml"
+          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1400 \
             "tests.test_a2a_tck tests.test_backup_script tests.test_compose"

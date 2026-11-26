@@ -275,7 +275,7 @@ def test_claude_mcp_json_uses_headers_helper_without_headers_block():
             "a2a-coord": {
                 "type": "http",
                 "url": "http://127.0.0.1:8120/mcp",
-                "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers",
+                "headersHelper": '"${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers"',
             }
         }
     }

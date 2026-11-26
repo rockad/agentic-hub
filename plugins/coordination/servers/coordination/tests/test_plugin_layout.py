@@ -200,7 +200,7 @@ def test_the_claude_mcp_entry_is_one_http_server_with_headers_helper():
         "a2a-coord": {
             "type": "http",
             "url": "http://127.0.0.1:8120/mcp",
-            "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers",
+            "headersHelper": '"${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers"',
         }
     }
     raw = (PLUGIN_DIR / "claude" / "mcp.json").read_text()

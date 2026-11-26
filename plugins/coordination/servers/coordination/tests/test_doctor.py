@@ -741,13 +741,60 @@ def test_the_probe_runs_for_a_key_with_every_allowed_character(world, stub):
     assert stub.requests("/sessions")[0].headers["authorization"] == f"Bearer {key}"
 
 
-def test_only_the_first_line_of_the_key_file_counts(world, stub):
-    world.key_file.write_text(world.claude_key + "\nsecond line with spaces\n")
+@pytest.mark.parametrize(
+    "extra_payload",
+    [
+        pytest.param("\n# rotated 2026-11\n", id="comment-second-line"),
+        pytest.param("\n# rotated 2026-11", id="comment-second-line-no-nl"),
+        pytest.param("\n\n", id="trailing-blank-line"),
+        pytest.param("\nsecond line with spaces\n", id="second-line-text"),
+    ],
+)
+def test_multiline_claude_key_file_is_a_fail_matching_mcp_headers(world, stub, extra_payload):
+    world.key_file.write_text(world.claude_key + extra_payload)
     world.key_file.chmod(0o600)
     world.write_agy(stub.url)
-    ready(stub)
+    ready(stub, claude=session_reply(AGY_HANDLE))
     res = world.run(url=stub.url)
-    res.expect("OK", "claude-code key accepted")
+    res.expect("FAIL", "claude-code key file", "has more than one line")
+    res.expect_none("OK", "claude-code key file first line looks like an a2a key")
+    res.expect("INFO", "claude-code probe skipped")
+    assert res.code == 1
+    assert len(stub.requests("/sessions")) == 1  # antigravity only
+
+
+def test_multiline_fallback_agy_and_override_key_files_all_fail(world, stub):
+    # Legacy api-key fallback with 2nd line -> FAIL
+    world.key_file.unlink()
+    world.legacy_claude_file.write_text(world.claude_key + "\n# rotated 2026-11\n")
+    world.legacy_claude_file.chmod(0o600)
+    res_fb = world.run("--no-network")
+    res_fb.expect("FAIL", "claude-code fallback key file", "has more than one line")
+    assert res_fb.code == 1
+
+    # Canonical antigravity.key with 2nd line -> FAIL
+    world.legacy_claude_file.unlink()
+    world.key_file.write_text(world.claude_key + "\n")
+    world.key_file.chmod(0o600)
+    world.agy_key_file.write_text(world.agy_key + "\n# rotated 2026-11\n")
+    world.agy_key_file.chmod(0o600)
+    res_agy = world.run("--no-network")
+    res_agy.expect("FAIL", "antigravity key file", "has more than one line")
+    res_agy.expect("OK", "claude-code key file first line looks like an a2a key")
+    assert res_agy.code == 1
+
+    # A2A_KEY_FILE override with 2nd line -> FAIL
+    world.agy_key_file.write_text(world.agy_key + "\n")
+    world.agy_key_file.chmod(0o600)
+    override = world.tmp / "override-multiline.key"
+    override.write_text(world.claude_key + "\n# rotated 2026-11\n")
+    override.chmod(0o600)
+    settings = world.cfg / "settings"
+    settings.write_text(f"A2A_KEY_FILE={override}\n")
+    settings.chmod(0o600)
+    res_ov = world.run("--no-network", A2A_KEY_FILE=str(override))
+    res_ov.expect("FAIL", "claude-code key file", "has more than one line")
+    assert res_ov.code == 1
 
 
 def test_a2a_api_key_is_not_checked_or_warned_and_never_printed(world):
@@ -827,6 +874,45 @@ def test_a_key_file_named_by_the_environment_is_the_one_checked(world):
     res = world.run("--no-network", A2A_KEY_FILE=str(other))
     res.expect("WARN", str(other), "wider than 600")
     res.expect_none("FAIL", "missing")
+
+
+def test_a2a_key_file_env_without_matching_settings_emits_warn_and_no_warn_when_matching(world):
+    other = world.tmp / "env-override.key"
+    other.write_text(world.claude_key + "\n")
+    other.chmod(0o600)
+
+    # 1. Set in shell env only (no settings file) -> WARN about *KEY* stripping
+    res_noset = world.run("--no-network", url="http://127.0.0.1:8120", A2A_KEY_FILE=str(other))
+    res_noset.expect("WARN", "A2A_KEY_FILE", "*KEY*", "headersHelper", "~/.config/a2a-coord/settings")
+    assert res_noset.code == 0
+
+    # 2. Set in shell env with a different value in settings -> WARN
+    settings = world.cfg / "settings"
+    settings.write_text(f"A2A_KEY_FILE={world.key_file}\n")
+    settings.chmod(0o600)
+    res_diff = world.run("--no-network", url="http://127.0.0.1:8120", A2A_KEY_FILE=str(other))
+    res_diff.expect("WARN", "A2A_KEY_FILE", "*KEY*", "headersHelper", "~/.config/a2a-coord/settings")
+    assert res_diff.code == 0
+
+    # 3. Set in shell env AND matching value in settings -> no WARN
+    settings.write_text(f"A2A_KEY_FILE={other}\n")
+    settings.chmod(0o600)
+    res_match = world.run("--no-network", url="http://127.0.0.1:8120", A2A_KEY_FILE=str(other))
+    res_match.expect_none("WARN", "A2A_KEY_FILE")
+    res_match.expect_none("WARN", "*KEY*")
+    assert (res_match.count("FAIL"), res_match.count("WARN")) == (0, 0), res_match.out
+
+    # 4. Quoted matching value in settings -> no WARN
+    settings.write_text(f'A2A_KEY_FILE="{other}"\n')
+    res_quoted = world.run("--no-network", url="http://127.0.0.1:8120", A2A_KEY_FILE=str(other))
+    res_quoted.expect_none("WARN", "A2A_KEY_FILE")
+    assert (res_quoted.count("FAIL"), res_quoted.count("WARN")) == (0, 0), res_quoted.out
+
+    # 5. Also verify claude/mcp.json headersHelper check passes without jq
+    path = nojq_path(world.tmp / "nojq-mcp")
+    res_nojq = world.run("--no-network", url="http://127.0.0.1:8120", PATH=f"{world.fakebin}:{path}", A2A_KEY_FILE=str(other))
+    res_nojq.expect("OK", "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers")
+    res_nojq.expect_none("WARN", "A2A_KEY_FILE")
 
 
 # ---- agy ---------------------------------------------------------------------------------------

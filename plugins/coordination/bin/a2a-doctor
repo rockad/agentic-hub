@@ -28,6 +28,7 @@ unset A2A_API_KEY
 # A secret holder must not have come in through the environment: an imported variable stays exported
 # when it is assigned, and would reach every child.
 unset dr_ckey dr_akey dr_hkey dr_fbtok dr_atok dr_etok dr_eauth dr_mcp_key dr_pkey pr_key
+unset dr_hextra dr_hmulti dr_env_keyfile dr_set_keyfile
 LC_ALL=C
 export LC_ALL
 
@@ -102,10 +103,19 @@ hash_stdin() {
   fi
 }
 
-# Read first line of $1 into dr_hkey if it looks like an a2ak_ key; else dr_hkey=''.
+# Read key from single-line file $1 into dr_hkey if it is a single line looking like an a2ak_ key;
+# else dr_hkey='' (and dr_hmulti=1 when the file has more than one line).
 read_key_line() {
   dr_hkey=
-  IFS= read -r dr_hkey < "$1" || :
+  dr_hmulti=0
+  dr_hextra=
+  {
+    IFS= read -r dr_hkey || :
+    if IFS= read -r dr_hextra || [ -n "$dr_hextra" ]; then
+      dr_hmulti=1
+    fi
+  } < "$1"
+  dr_hextra=
   case $dr_hkey in
     a2ak_REPLACE_WITH_YOUR_KEY) dr_hkey= ;;
     a2ak_?*)
@@ -116,6 +126,11 @@ read_key_line() {
     *) dr_hkey= ;;
   esac
   [ "${#dr_hkey}" -le 512 ] || dr_hkey=
+  if [ -z "$dr_hkey" ]; then
+    dr_hmulti=0
+  elif [ "$dr_hmulti" = 1 ]; then
+    dr_hkey=
+  fi
 }
 
 # The directory of this script, to find the lib and the other scripts next to it.
@@ -123,6 +138,9 @@ case $0 in
   */*) DIR=${0%/*} ;;
   *) DIR=. ;;
 esac
+
+# Capture A2A_KEY_FILE from the caller environment before a2a_load_config merges settings.
+dr_env_keyfile=${A2A_KEY_FILE-}
 
 LIB_OK=0
 if [ -r "$DIR/a2a-lib.sh" ]; then
@@ -339,6 +357,8 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
           if [ -n "$dr_hkey" ]; then
             ok "$dr_hid fallback key file first line looks like an a2a key"
             dr_ckey=$dr_hkey
+          elif [ "$dr_hmulti" = 1 ]; then
+            fail "$dr_hid fallback key file $dr_p has more than one line (only a single line with the a2a key is allowed)"
           else
             fail "$dr_hid fallback key file $dr_p first line does not look like an a2a key (a2ak_ followed by key characters only; check for a blank first line, a CRLF line ending or a stray space)"
           fi
@@ -369,6 +389,8 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
             claude-code) dr_ckey=$dr_hkey ;;
             antigravity) dr_akey=$dr_hkey ;;
           esac
+        elif [ "$dr_hmulti" = 1 ]; then
+          fail "$dr_hid key file $dr_p has more than one line (only a single line with the a2a key is allowed)"
         else
           fail "$dr_hid key file $dr_p first line does not look like an a2a key (a2ak_ followed by key characters only; check for a blank first line, a CRLF line ending or a stray space)"
         fi
@@ -380,6 +402,16 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
   # Harness-specific MCP checks
   case $dr_hid in
     claude-code)
+      if [ -n "$dr_env_keyfile" ]; then
+        dr_set_keyfile=
+        if [ "$LIB_OK" = 1 ]; then
+          dr_set_keyfile=$(unset A2A_KEY_FILE; a2a_load_config; printf '%s' "${A2A_KEY_FILE:-}")
+        fi
+        if [ "$dr_env_keyfile" != "$dr_set_keyfile" ]; then
+          warn "A2A_KEY_FILE is set in the shell environment without matching ~/.config/a2a-coord/settings: Claude Code strips *KEY* env vars from headersHelper, so place the A2A_KEY_FILE override in ~/.config/a2a-coord/settings"
+        fi
+        dr_set_keyfile=
+      fi
       dr_cmcp="$DIR/../claude/mcp.json"
       if [ ! -r "$dr_cmcp" ]; then
         fail "claude/mcp.json is missing or unreadable (reinstall the plugin)"
@@ -389,12 +421,12 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
         else
           dr_hh=$(jq -r 'try (.mcpServers["a2a-coord"].headersHelper) catch null | strings' "$dr_cmcp" 2>/dev/null | head -n 1)
           case $dr_hh in
-            *bin/a2a-mcp-headers) ok "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers" ;;
+            *bin/a2a-mcp-headers | *bin/a2a-mcp-headers'"') ok "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers" ;;
             *) fail "claude/mcp.json does not declare headersHelper pointing to bin/a2a-mcp-headers" ;;
           esac
         fi
       else
-        if grep -q '"headersHelper"[[:space:]]*:[[:space:]]*"[^"]*bin/a2a-mcp-headers"' "$dr_cmcp" 2>/dev/null; then
+        if grep -Eq '"headersHelper"[[:space:]]*:[[:space:]]*"([^"]|\\")*bin/a2a-mcp-headers(\\")?"' "$dr_cmcp" 2>/dev/null; then
           ok "claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers"
         else
           fail "claude/mcp.json does not declare headersHelper pointing to bin/a2a-mcp-headers"

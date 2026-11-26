@@ -32,9 +32,10 @@ from typing import Any
 from a2a.types import a2a_pb2 as pb
 from google.protobuf import json_format
 
-from coordination.mcp.sanitize import clean_json, clean_text, strip_controls
+from coordination.mcp.sanitize import clean_json, clean_text
 from coordination.service import coord as C
 from coordination.service.types import InboxItem
+from coordination.text_sanitize import sanitize_preview
 
 #: The constant of spec 4.1. Byte-identical to the spec text; a test compares the two.
 UNTRUSTED_NOTICE = (
@@ -68,7 +69,7 @@ def part_to_dict(part: pb.Part) -> dict[str, Any]:
     media = _media(part)
     out: dict[str, Any] = {}
     if part.filename:
-        out["filename"] = strip_controls(part.filename)[:255]
+        out["filename"] = sanitize_preview(part.filename, max_len=255)
     if kind == "text":
         if media in ("", _TEXT_PLAIN):
             text, cut = clean_text(part.text, MAX_PART_BYTES)
@@ -76,7 +77,7 @@ def part_to_dict(part: pb.Part) -> dict[str, Any]:
             if cut:
                 out["truncated"] = True
         else:
-            out.update(type="text", omitted=True, media_type=strip_controls(media), size=len(part.text.encode()))
+            out.update(type="text", omitted=True, media_type=sanitize_preview(media, max_len=128), size=len(part.text.encode()))
     elif kind == "data":
         if media in ("", _JSON):
             value = clean_json(json_format.MessageToDict(part.data))
@@ -87,10 +88,15 @@ def part_to_dict(part: pb.Part) -> dict[str, Any]:
                 out.update(type="data", data=value)
         else:
             out.update(
-                type="data", omitted=True, media_type=strip_controls(media), size=part.data.ByteSize()
+                type="data", omitted=True, media_type=sanitize_preview(media, max_len=128), size=part.data.ByteSize()
             )
     elif kind == "raw":
-        out.update(type="raw", omitted=True, media_type=strip_controls(media) or "application/octet-stream", size=len(part.raw))
+        out.update(
+            type="raw",
+            omitted=True,
+            media_type=sanitize_preview(media, max_len=128) or "application/octet-stream",
+            size=len(part.raw),
+        )
     elif kind == "url":
         # A string, for the model to show its user; the server never opens it.
         url, cut = clean_text(part.url, 2048)
@@ -98,7 +104,7 @@ def part_to_dict(part: pb.Part) -> dict[str, Any]:
         if cut:
             out["truncated"] = True
         if media:
-            out["media_type"] = strip_controls(media)
+            out["media_type"] = sanitize_preview(media, max_len=128)
     else:
         out.update(type="empty")
     return out
@@ -106,7 +112,7 @@ def part_to_dict(part: pb.Part) -> dict[str, Any]:
 
 def message_to_dict(message: pb.Message) -> dict[str, Any]:
     return {
-        "message_id": strip_controls(message.message_id),
+        "message_id": sanitize_preview(message.message_id, max_len=128),
         "role": pb.Role.Name(message.role),
         "parts": [part_to_dict(p) for p in message.parts],
     }
@@ -114,8 +120,8 @@ def message_to_dict(message: pb.Message) -> dict[str, Any]:
 
 def artifact_to_dict(artifact: pb.Artifact) -> dict[str, Any]:
     out: dict[str, Any] = {
-        "artifact_id": strip_controls(artifact.artifact_id),
-        "name": clean_text(artifact.name, 256)[0],
+        "artifact_id": sanitize_preview(artifact.artifact_id, max_len=128),
+        "name": sanitize_preview(artifact.name, max_len=256),
         "parts": [part_to_dict(p) for p in artifact.parts],
     }
     return out
@@ -127,7 +133,7 @@ def origin_of(task: pb.Task) -> dict[str, Any]:
     block = C.coord_get(task)
     return {
         "kind": block.get("origin"),
-        "from": strip_controls(block["from"]) if isinstance(block.get("from"), str) else None,
+        "from": sanitize_preview(block["from"]) if isinstance(block.get("from"), str) else None,
         "verified_by_server": True,
     }
 

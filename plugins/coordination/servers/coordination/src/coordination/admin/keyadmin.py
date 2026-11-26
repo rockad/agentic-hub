@@ -41,6 +41,7 @@ from coordination.auth.records import LOCAL_HARNESS, REMOTE_PEER
 from coordination.clock import Clock
 from coordination.config import Config
 from coordination.service.types import CARD_RE
+from coordination.text_sanitize import sanitize_preview
 
 DEFAULT_GRACE = timedelta(hours=24)
 MIN_EXPIRES = timedelta(hours=1)
@@ -87,14 +88,15 @@ def key_row(record: ApiKeyRecord, now: datetime) -> dict[str, Any]:
         status = "expired"
     else:
         status = "active"
+    owner = record.card_id or record.peer_id or record.name
     return {
         "key_id": record.key_id,
         "status": status,
         "scope": record.scope,
         "env": record.env,
-        "owner": record.card_id or record.peer_id or record.name,
-        "cards_allowed": list(record.cards_allowed) if record.cards_allowed is not None else None,
-        "tailnet_node": record.tailnet_node,
+        "owner": sanitize_preview(owner) if owner is not None else None,
+        "cards_allowed": [sanitize_preview(c) for c in record.cards_allowed] if record.cards_allowed is not None else None,
+        "tailnet_node": sanitize_preview(record.tailnet_node) if record.tailnet_node is not None else None,
         "created_at": record.created_at.isoformat(),
         "expires_at": record.expires_at.isoformat(),
         "last_used_at": record.last_used_at.isoformat() if record.last_used_at else None,

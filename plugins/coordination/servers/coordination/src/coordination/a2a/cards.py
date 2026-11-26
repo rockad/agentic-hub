@@ -56,6 +56,7 @@ from coordination.service.ports import ListenerView
 from coordination.service.types import CARD_RE
 from coordination.store.tables import cards as cards_table
 from coordination.store.tables import sessions as sessions_table
+from coordination.text_sanitize import sanitize_preview
 
 log = logging.getLogger("coordination.a2a")
 
@@ -328,7 +329,7 @@ class CardBuilder:
         card = self.member(definition)
         if sessions is not None:
             ext = next(e for e in card.capabilities.extensions if e.uri == EXTENSION_URI)
-            ext.params.update({"sessions": [{"handle": s.handle, "liveness": s.liveness} for s in sessions]})
+            ext.params.update({"sessions": [{"handle": sanitize_preview(s.handle), "liveness": s.liveness} for s in sessions]})
         return card
 
 

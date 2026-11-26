@@ -48,6 +48,7 @@ from coordination.service.directory import ACTIVE_WINDOW
 from coordination.store import schema
 from coordination.store.tables import cards as cards_table
 from coordination.store.tables import sessions, task_index, wakes
+from coordination.text_sanitize import sanitize_preview
 
 S = pb.TaskState
 STALE_OFFER_LIST = 20
@@ -150,13 +151,16 @@ class StatusAdmin:
         registered = sum(int(r[2]) for r in session_rows)
         return {
             "now": now.isoformat(),
-            "stage": self._config.exposure_stage,
-            "env": self._config.env,
+            "stage": sanitize_preview(self._config.exposure_stage),
+            "env": sanitize_preview(self._config.env),
             "sessions": {
                 "registered": registered,
                 "active": sum(int(r[1]) for r in session_rows),
                 "ended": int(ended),
-                "by_card": [{"card": r[0], "registered": int(r[2]), "active": int(r[1])} for r in session_rows],
+                "by_card": [
+                    {"card": sanitize_preview(r[0]), "registered": int(r[2]), "active": int(r[1])}
+                    for r in session_rows
+                ],
                 "mcp_bound": self._mcp_session_count() if self._mcp_session_count else None,
             },
             "listeners": {"parked": self._listener_count() if self._listener_count else None},
@@ -165,13 +169,20 @@ class StatusAdmin:
                 "card_queue": int(pending[1]),
                 "held": int(pending[2]),
                 "working": int(pending[3]),
-                "by_card": [{"card": r[0], "submitted": int(r[1])} for r in per_card],
+                "by_card": [
+                    {"card": sanitize_preview(r[0]) if r[0] is not None else None, "submitted": int(r[1])}
+                    for r in per_card
+                ],
             },
             "budgets": {
                 "wake_per_hour_limit": self._config.wake_budget_per_h,
                 "window_minutes": int(WAKE_WINDOW.total_seconds() // 60),
                 "used": [
-                    {"handle": r[0], "wakes": int(r[1]), "remaining": max(self._config.wake_budget_per_h - int(r[1]), 0)}
+                    {
+                        "handle": sanitize_preview(r[0]),
+                        "wakes": int(r[1]),
+                        "remaining": max(self._config.wake_budget_per_h - int(r[1]), 0),
+                    }
                     for r in wake_rows
                 ],
             },
@@ -181,7 +192,7 @@ class StatusAdmin:
                 "tasks": [
                     {
                         "task_id": r[0],
-                        "card": r[1],
+                        "card": sanitize_preview(r[1]) if r[1] is not None else None,
                         "offer_count": int(r[2]),
                         "last_offered_at": r[3].isoformat() if r[3] else None,
                     }
@@ -207,7 +218,7 @@ class StatusAdmin:
             definition = registry.get(card_id)
             assert definition is not None
             for message in _card_problems(builder.member(definition), card_id, config, sentence):
-                problems.append(f"{card_id}: {message}")
+                problems.append(f"{sanitize_preview(card_id)}: {sanitize_preview(message)}")
 
         async with self._engine.connect() as conn:
             in_table = {r[0] for r in (await conn.execute(sa.select(cards_table.c.card_id))).all()}
@@ -222,12 +233,16 @@ class StatusAdmin:
             )
         defined = set(registry.ids())
         for card_id in sorted(defined - in_table):
-            problems.append(f"{card_id}: defined in the cards file but not in the cards table (restart the server)")
+            problems.append(
+                f"{sanitize_preview(card_id)}: defined in the cards file but not in the cards table (restart the server)"
+            )
         for card_id in sorted(in_table - defined):
-            notes.append(f"{card_id}: in the cards table but not in the cards file (kept on purpose, spec 1.3)")
+            notes.append(
+                f"{sanitize_preview(card_id)}: in the cards table but not in the cards file (kept on purpose, spec 1.3)"
+            )
         for card_id in sorted(defined):
             if not live.get(card_id):
-                notes.append(f"{card_id}: no live session")
+                notes.append(f"{sanitize_preview(card_id)}: no live session")
 
         now = self._clock.now()
         for key in await self._keys.list_all():
@@ -236,13 +251,15 @@ class StatusAdmin:
             named = [key.card_id] if key.card_id else list(key.cards_allowed or ())
             for card_id in named:
                 if card_id not in defined | in_table:
-                    problems.append(f"key {key.key_id} ({key.scope}) names the undefined card {card_id}")
+                    problems.append(
+                        f"key {sanitize_preview(key.key_id)} ({sanitize_preview(key.scope)}) names the undefined card {sanitize_preview(card_id)}"
+                    )
         return {
             "ok": not problems,
             "problems": problems,
             "notes": notes,
             "cards": [
-                {"card_id": c, "in_table": c in in_table, "live_sessions": int(live.get(c, 0))}
+                {"card_id": sanitize_preview(c), "in_table": c in in_table, "live_sessions": int(live.get(c, 0))}
                 for c in registry.ids()
             ],
         }

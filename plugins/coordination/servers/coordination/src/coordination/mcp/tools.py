@@ -62,6 +62,7 @@ from coordination.service import Caller, CoordinationService, ListenerView, NoLi
 from coordination.service import coord as C
 from coordination.service.errors import ServiceError
 from coordination.service.types import CARD_RE, HANDLE_RE, card_of
+from coordination.text_sanitize import sanitize_preview
 
 log = logging.getLogger("coordination.mcp")
 
@@ -507,8 +508,8 @@ class McpTools:
         pending, held = await self._counts(handle, card)
         return ok(
             {
-                "handle": handle,
-                "card": card,
+                "handle": sanitize_preview(handle),
+                "card": sanitize_preview(card),
                 "bound": True,
                 "pending": pending,
                 "held_for_review": held,
@@ -568,16 +569,26 @@ class McpTools:
                 continue
             by_card.setdefault(s.card_id, []).append(
                 {
-                    "handle": s.handle,
+                    "handle": sanitize_preview(s.handle),
                     "liveness": s.liveness(now, self._listeners.is_listening(s.handle)),
                     "last_seen_at": s.last_seen_at.isoformat(),
                 }
             )
         cards = [
-            {"card": c.card_id, "harness": c.harness, "machine": c.machine, "sessions": by_card.get(c.card_id, [])}
+            {
+                "card": sanitize_preview(c.card_id),
+                "harness": sanitize_preview(c.harness),
+                "machine": sanitize_preview(c.machine),
+                "sessions": by_card.get(c.card_id, []),
+            }
             for c in await self._registry.cards()
         ]
-        return ok({"self": {"handle": handle, "card": ctx.principal.card_id}, "cards": cards})
+        return ok(
+            {
+                "self": {"handle": sanitize_preview(handle), "card": sanitize_preview(ctx.principal.card_id or "")},
+                "cards": cards,
+            }
+        )
 
     async def _runs(self, ctx: CallContext, args: dict[str, Any]) -> dict[str, Any]:
         await self._handle(ctx, args)

@@ -26,6 +26,7 @@ from coordination.mcp.frame import build_frame, task_to_dict
 from coordination.service import CoordinationService
 from coordination.service import coord as C
 from coordination.store.task_store import CoordTaskStore, IndexRow
+from coordination.text_sanitize import sanitize_preview
 
 #: Held tasks `show` looks through. The quota is 20 held per peer (spec 3.3.2), so this is not a limit
 #: anyone reaches in practice; the list says how many were returned.
@@ -40,9 +41,9 @@ def _summary(task: pb.Task, index: IndexRow) -> dict[str, Any]:
     block = C.coord_get(task)
     return {
         "task_id": task.id,
-        "peer": index.from_principal,
-        "card": index.to_card,
-        "to_handle": index.to_handle,
+        "peer": sanitize_preview(index.from_principal),
+        "card": sanitize_preview(index.to_card) if index.to_card is not None else None,
+        "to_handle": sanitize_preview(index.to_handle) if index.to_handle is not None else None,
         "received_at": block.get("createdAt"),
         "expires_at": index.expires_at.isoformat() if index.expires_at else None,
         "size_bytes": _text_bytes(task),

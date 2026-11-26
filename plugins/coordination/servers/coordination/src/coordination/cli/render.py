@@ -5,21 +5,23 @@ this is the second layer."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Sequence
 from typing import Any, TextIO
 
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+from coordination.mcp.sanitize import strip_controls
+from coordination.text_sanitize import sanitize_preview
+
+#: Upper bound for single-line CLI cell sanitization so URLs and diagnostic messages are not truncated.
+_CLI_CLEAN_MAX_LEN = 4096
 
 
 def clean(value: object) -> str:
-    """`value` as text with every control character removed (newline and tab are kept by
-    `clean_block`, not here: a table cell is one line)."""
-    return _CONTROL.sub("", str(value)).replace("\n", " ").replace("\t", " ")
+    """`value` as single-line text with escape sequences, controls, and bidi overrides removed."""
+    return sanitize_preview(str(value), max_len=_CLI_CLEAN_MAX_LEN)
 
 
 def clean_block(value: object) -> str:
-    return _CONTROL.sub("", str(value).replace("\r\n", "\n"))
+    return strip_controls(str(value))
 
 
 def ts(value: str | None) -> str:

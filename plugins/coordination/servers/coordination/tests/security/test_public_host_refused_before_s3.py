@@ -88,11 +88,10 @@ def test_the_refusal_is_the_process_exiting_with_one_line(cards, stage):
         startup_check(env, check_db=never_db)
     message = exc.value.code
     assert isinstance(message, str) and message.startswith("coordination: ") and "\n" not in message
-    assert PUBLIC not in message or "public hostname" in message  # names the rule, may name the variable
+    assert PUBLIC not in message or "not allowed at" in message  # names the rule, may name the variable
 
 
 def test_the_same_configuration_starts_at_s3(cards):
-    assert MESSAGE not in problems(config_for(cards, "s3", (*LOOPBACK_HOSTS, PUBLIC)))
     assert problems(config_for(cards, "s3", (*LOOPBACK_HOSTS, PUBLIC))) == []
 
 

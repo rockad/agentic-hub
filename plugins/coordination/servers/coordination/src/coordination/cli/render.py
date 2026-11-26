@@ -150,7 +150,9 @@ def status(out: TextIO, r: dict[str, Any]) -> None:
         print(f"  {clean(t['task_id'])} ({clean(t['card'] or '-')}), last offered {ts(t['last_offered_at'])}", file=out)
     sc = r["schema"]
     print(f"schema:       coordination v{sc['coord_schema_version']}, SDK revision {val(sc['sdk_revision'])}", file=out)
-    print(f"backup:       last good dump {val(r['backup']['dump_age_h'])} h ago (null = unknown)", file=out)
+    bk = r["backup"]
+    stale_note = " [STALE]" if bk.get("stale") else ""
+    print(f"backup:       last good dump {val(bk['dump_age_h'])} h ago (null = unknown){stale_note}", file=out)
 
 
 def card_check(out: TextIO, r: dict[str, Any]) -> None:

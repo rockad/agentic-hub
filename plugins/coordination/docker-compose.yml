@@ -57,11 +57,14 @@ services:
     environment:
       A2A_DB_URL: ${A2A_DB_URL:-postgresql+asyncpg://coordination@postgres:5432/coordination}  # no password in the URL
       A2A_DB_PASSWORD_FILE: /run/secrets/a2a_db_password
-      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://127.0.0.1:8120}
+      A2A_PORT: ${A2A_PORT:-8120}
+      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://127.0.0.1:${A2A_PORT:-8120}}
       A2A_DEPLOY_HOST: ${A2A_DEPLOY_HOST:-local}  # a label, never a trust input
       A2A_ENV: ${A2A_ENV:-dev}
       A2A_EXPOSURE_STAGE: ${A2A_EXPOSURE_STAGE:-s1}
       A2A_ALLOW_WRITES: ${A2A_ALLOW_WRITES:-0}
+      A2A_ALLOWED_HOSTS: ${A2A_ALLOWED_HOSTS:-127.0.0.1:${A2A_PORT:-8120},localhost:${A2A_PORT:-8120}}
+      A2A_KEY_PEPPER: ${A2A_KEY_PEPPER:-}
       A2A_DUMP_LAST_OK_FILE: /var/lib/a2a-backup/last_ok  # written by the dump sidecar (S1-BKP), read-only here
     volumes:
       - a2a-data:/data  # go-live import run artefacts only, not the database

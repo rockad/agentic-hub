@@ -6,8 +6,9 @@ server reads `os.environ`. Defaults are the ones the spec states.
 
 Two rows of that table are not read here because they are not server variables:
 `COMPOSE_PROFILES` belongs to Docker Compose. `A2A_PORT` and `A2A_PUBLIC_PORT`
-are read only so the table stays complete; they are the host side of the compose
-port mapping and the server does not listen on them.
+are the host side of the compose port mapping (the server itself listens on
+`A2A_LISTEN`/`A2A_PUBLIC_LISTEN`), and `A2A_PORT` also sizes the default
+loopback `allowed_hosts` and `public_url` when those variables are unset.
 
 Start-up checks (spec 1.6) are not part of this module (they are `coordination.auth.startup`). It
 only parses and types, plus the one derived field `public_listener_enabled`.
@@ -32,6 +33,11 @@ class ConfigError(ValueError):
 
 def _str(name: str, raw: str) -> str:
     return raw
+
+
+def _opt_str(name: str, raw: str) -> str | None:
+    """Empty string means unset (matches Compose `${VAR:-}` fallback)."""
+    return raw if raw else None
 
 
 def _int(name: str, raw: str) -> int:
@@ -121,6 +127,11 @@ class Config:
             raw = environ.get(name)
             if raw is not None:
                 values[attr] = parse(name, raw)
+        port = values.get("port", cls.port)
+        if "allowed_hosts" not in values and port != cls.port:
+            values["allowed_hosts"] = (f"127.0.0.1:{port}", f"localhost:{port}")
+        if "public_url" not in values and port != cls.port:
+            values["public_url"] = f"http://127.0.0.1:{port}"
         if "enforce_tailnet_identity" not in values:
             # Spec 1.5: "0 at s1, 1 at s2 and s3".
             stage = values.get("exposure_stage", cls.exposure_stage)
@@ -158,7 +169,7 @@ _SPEC: dict[str, tuple[str, Callable[[str, str], Any]]] = {
     "allowed_origins": ("A2A_ALLOWED_ORIGINS", _csv),
     "trusted_proxy_ips": ("A2A_TRUSTED_PROXY_IPS", _csv),
     "cards_file": ("A2A_CARDS_FILE", _str),
-    "key_pepper": ("A2A_KEY_PEPPER", _str),
+    "key_pepper": ("A2A_KEY_PEPPER", _opt_str),
     "wake_round_s": ("A2A_WAKE_ROUND_S", _int),
     "wake_budget_per_h": ("A2A_WAKE_BUDGET_PER_H", _int),
     "reoffer_after_s": ("A2A_REOFFER_AFTER_S", _int),

@@ -597,3 +597,13 @@ def test_the_status_route_refuses_when_it_is_reached_without_a_status_client_pri
 
     app = create_app(make_config(status_enabled=True), status_authorizer=status_client_authorizer)
     assert TestClient(app).post("/status").status_code == 401
+
+
+def test_custom_a2a_port_allows_loopback_hosts_without_421():
+    store = InMemoryApiKeyStore()
+    token = add_key(store, LOCAL_HARNESS)
+    app = probe_app(Config.from_env({"A2A_PORT": "8129"}), store)
+    assert client_for(app, host="127.0.0.1:8129").post("/mcp", headers=bearer(token)).status_code == 200
+    assert client_for(app, host="localhost:8129").post("/mcp", headers=bearer(token)).status_code == 200
+    assert client_for(app, host="LOCALHOST:8129").post("/mcp", headers=bearer(token)).status_code == 200
+    assert client_for(app, host="127.0.0.1:8120").post("/mcp", headers=bearer(token)).status_code == 421

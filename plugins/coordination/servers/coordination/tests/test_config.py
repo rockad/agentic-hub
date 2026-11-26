@@ -123,3 +123,17 @@ def test_bad_listen_address():
 def test_secrets_not_in_repr():
     c = Config.from_env({"A2A_KEY_PEPPER": "s3cret-a", "A2A_PUSH_ENC_KEY": "s3cret-b"})
     assert "s3cret" not in repr(c)
+
+
+def test_custom_port_derives_allowed_hosts_and_public_url_when_unset():
+    c = Config.from_env({"A2A_PORT": "8129"})
+    assert c.port == 8129
+    assert c.allowed_hosts == ("127.0.0.1:8129", "localhost:8129")
+    assert c.public_url == "http://127.0.0.1:8129"
+    overridden = Config.from_env({"A2A_PORT": "8129", "A2A_ALLOWED_HOSTS": "custom:8129", "A2A_PUBLIC_URL": "http://custom:8129"})
+    assert overridden.allowed_hosts == ("custom:8129",)
+    assert overridden.public_url == "http://custom:8129"
+
+
+def test_empty_key_pepper_is_treated_as_unset():
+    assert Config.from_env({"A2A_KEY_PEPPER": ""}).key_pepper is None

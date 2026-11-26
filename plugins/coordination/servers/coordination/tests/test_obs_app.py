@@ -331,3 +331,23 @@ def test_audit_row_refuses_what_the_canary_would_be(canaries):
         asyncio.run(audit.session_registered(actor=f"Bearer {key}", handle="h", card_id="c", via="hook"))
     assert re.search(r"a2ak_", "".join(map(str, store.rows))) is None
     assert store.rows == []
+
+
+def test_key_pepper_is_redacted_from_logs():
+    pepper = "pepper-secret-canary-987654"
+    cfg = Config.from_env({"A2A_KEY_PEPPER": pepper})
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    stream = io.StringIO()
+    try:
+        configure_logging("debug", stream=stream, secrets=(cfg.key_pepper or "", cfg.push_enc_key or ""))
+        logging.getLogger("coordination.test").warning(
+            "unexpected pepper %s",
+            pepper,
+            extra={"fields": {"raw": pepper}},
+        )
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+    out = stream.getvalue()
+    assert pepper not in out and "[REDACTED]" in out

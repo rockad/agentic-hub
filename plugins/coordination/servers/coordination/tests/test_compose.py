@@ -159,6 +159,41 @@ def test_default_up_does_not_include_or_need_the_sidecar(tmp_path):
     assert sorted(with_profile.stdout.split()) == ["coordination", "dump", "postgres"]
 
 
+def test_compose_declares_port_allowed_hosts_and_optional_pepper(compose):
+    srv_env = compose["services"]["coordination"]["environment"]
+    assert srv_env["A2A_PORT"] == "${A2A_PORT:-8120}"
+    assert srv_env["A2A_PUBLIC_URL"] == "${A2A_PUBLIC_URL:-http://127.0.0.1:${A2A_PORT:-8120}}"
+    assert srv_env["A2A_ALLOWED_HOSTS"] == "${A2A_ALLOWED_HOSTS:-127.0.0.1:${A2A_PORT:-8120},localhost:${A2A_PORT:-8120}}"
+    assert srv_env["A2A_KEY_PEPPER"] == "${A2A_KEY_PEPPER:-}"
+
+
+@pytest.mark.skipif(not shutil.which("docker"), reason="needs docker")
+def test_compose_resolves_custom_port_and_optional_pepper(tmp_path):
+    base_env = {k: v for k, v in os.environ.items() if not k.startswith("A2A_")}
+    base_env["A2A_SECRETS_DIR"] = str(tmp_path)
+    base_env["COMPOSE_PROFILES"] = ""
+    cmd = ["docker", "compose", "-f", str(COMPOSE), "config", "--format", "json"]
+
+    custom = subprocess.run(cmd, capture_output=True, text=True, env={**base_env, "A2A_PORT": "8129"})
+    assert custom.returncode == 0, custom.stderr
+    custom_env = json.loads(custom.stdout)["services"]["coordination"]["environment"]
+    assert custom_env["A2A_PORT"] == "8129"
+    assert custom_env["A2A_ALLOWED_HOSTS"] == "127.0.0.1:8129,localhost:8129"
+    assert custom_env["A2A_PUBLIC_URL"] == "http://127.0.0.1:8129"
+    assert custom_env["A2A_KEY_PEPPER"] == ""
+
+    peppered = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env={**base_env, "A2A_PORT": "8129", "A2A_ALLOWED_HOSTS": "box.ts.net", "A2A_KEY_PEPPER": "pepper-canary-1234"},
+    )
+    assert peppered.returncode == 0, peppered.stderr
+    pep_env = json.loads(peppered.stdout)["services"]["coordination"]["environment"]
+    assert pep_env["A2A_ALLOWED_HOSTS"] == "box.ts.net"
+    assert pep_env["A2A_KEY_PEPPER"] == "pepper-canary-1234"
+
+
 @pytest.mark.skipif(not os.environ.get("A2A_INSPECT_PROJECT"), reason="needs a running stack")
 def test_running_image_matches():
     project = os.environ["A2A_INSPECT_PROJECT"]

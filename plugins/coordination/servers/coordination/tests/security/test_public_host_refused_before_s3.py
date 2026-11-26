@@ -30,7 +30,6 @@ from coordination.config import Config
 PUBLIC = "a2a.example.org"
 TAILNET = "box.tail1234.ts.net"
 LOOPBACK_HOSTS = ("127.0.0.1:8120", "localhost:8120")
-MESSAGE = "A2A_ALLOWED_HOSTS contains the public hostname before A2A_EXPOSURE_STAGE=s3"
 
 
 @pytest.fixture
@@ -70,7 +69,8 @@ def config_for(cards, stage: str, hosts: tuple[str, ...], public_url: str = f"ht
     ids=["bare", "port443", "port8120", "uppercase", "alone", "among-others"],
 )
 def test_the_public_hostname_in_allowed_hosts_is_refused_before_s3(cards, stage, hosts):
-    assert MESSAGE in problems(config_for(cards, stage, hosts))
+    probs = problems(config_for(cards, stage, hosts))
+    assert any(f"not allowed at {stage}" in m for m in probs)
 
 
 @pytest.mark.parametrize("stage", ["s1", "s2"])
@@ -178,16 +178,16 @@ def test_at_s3_the_public_host_passes_the_host_check_and_meets_the_key_check():
 
 def test_the_public_hostname_in_allowed_hosts_is_refused_even_when_the_public_url_is_not_set(cards):
     config = config_for(cards, "s1", (*LOOPBACK_HOSTS, PUBLIC), public_url="http://127.0.0.1:8120")
-    assert MESSAGE in problems(config)
+    assert any("not allowed at s1" in m for m in problems(config))
 
 
 def test_strict_stage_allowlist_before_s3(cards):
     # s1: only loopback allowed; tailnet or public or arbitrary name refused
-    assert MESSAGE in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, TAILNET)))
-    assert MESSAGE in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, "mybox")))
+    assert any("not allowed at s1" in m for m in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, TAILNET))))
+    assert any("not allowed at s1" in m for m in problems(config_for(cards, "s1", (*LOOPBACK_HOSTS, "mybox"))))
     assert problems(config_for(cards, "s1", LOOPBACK_HOSTS)) == []
 
     # s2: loopback or tailnet allowed; public or arbitrary name refused
     assert problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, TAILNET), public_url=f"https://{TAILNET}")) == []
-    assert MESSAGE in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, PUBLIC), public_url="http://127.0.0.1:8120"))
-    assert MESSAGE in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, "mybox"), public_url="http://127.0.0.1:8120"))
+    assert any("not allowed at s2" in m for m in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, PUBLIC), public_url="http://127.0.0.1:8120")))
+    assert any("not allowed at s2" in m for m in problems(config_for(cards, "s2", (*LOOPBACK_HOSTS, "mybox"), public_url="http://127.0.0.1:8120")))

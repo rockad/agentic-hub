@@ -85,7 +85,7 @@ The configuration conditions run before the database check, so a bad configurati
 **[design]** choices:
 
 - "Public listener enabled" is `Config.public_listener_enabled`. With `A2A_PUBLIC_LISTEN` unset it follows the stage (on from `s2`, spec 1.5); set to a value it is on; set to the empty string it is off. Spec 1.5 gives the variable a default and says it starts at `s2` and `s3`, not at `s1`, so the value alone cannot tell "enabled". S2-LISTEN should use the same field.
-- "The public hostname" is the host of `A2A_PUBLIC_URL` when that is neither loopback nor a Tailscale name (`*.ts.net`). At `s2` the public URL is the tailnet name and `A2A_ALLOWED_HOSTS` must contain it, so only the Cloudflare hostname is refused before `s3`. The `.ts.net` suffix rule is an assumption **[unverified]**: the spec names the hostname only as a placeholder.
+- Strict stage allowlist for allowed hosts before `s3`: at `s1`, every host in `A2A_ALLOWED_HOSTS` must be loopback; at `s2`, every host must be loopback or a Tailscale name (`*.ts.net`); at `s3`, public hosts are allowed. The `.ts.net` suffix rule is an assumption **[unverified]**: the spec names the hostname only as a placeholder.
 - The card id in the cards file is the entry's `name` (the AgentCard field of spec 8.5). The full cards schema belongs to S1-A2A and S1-ID; this check enforces only what 1.6 states.
 - "More than one worker" is checked on the number `main` passes (`app.WORKERS`, which it also hands to uvicorn). No environment variable sets the worker count, so the check guards the code path, not a setting.
 - `pyyaml` moved from the dev group to the runtime dependencies, because the cards file is read at start.

@@ -263,7 +263,7 @@ The server section registers a probe session per key (`doctor-<pid>`) and ends i
 | `WARN agy entry url is not <server url>/mcp` | The entry points elsewhere | Fix the `url` to the server URL plus `/mcp` |
 | `WARN` orphan `~/.gemini/config/plugins/coordination/mcp_config.json`, or another `a2a-` server | Leftovers from the older install layout | Delete the old file by hand; the doctor never does |
 | `FAIL GET <url>/healthz: no answer` | The server is not running, or the URL is wrong | `docker compose ps`; `docker compose up -d`; check `A2A_SERVER_URL` [verified 2026-11-24] |
-| `FAIL Claude registration failed with status 421` (or agy) | The server refused the `Host` header | Use the default port 8120, or set `A2A_ALLOWED_HOSTS` in an override file [verified 2026-11-24] |
+| `FAIL Claude registration failed with status 421` (or agy) | The server refused the `Host` header | Use the default port 8120, or set `A2A_ALLOWED_HOSTS` in an override file (note: before `s2` only loopback hosts are allowed; at `s2` loopback or `*.ts.net`) [verified 2026-11-24] |
 | `FAIL the server rejected the Claude key (status 401)` (or agy, or 403) | The key is wrong, expired, revoked, or the card of the key does not match the hook's card | `a2a-coord key list`; compare the status and owner; set `A2A_CARD` / `A2A_AGY_CARD`, or issue a new key [verified 2026-11-24: 401 for an unknown key; after `key revoke` the agy line failed with 401] |
 | `FAIL not a valid card` | The computed card name has a bad shape | Set `A2A_CARD` / `A2A_AGY_CARD` in the settings file |
 | `INFO probe session ended` / `could not be ended` | Cleanup of the probe; a failed end is harmless | None; the session ends by itself when idle |

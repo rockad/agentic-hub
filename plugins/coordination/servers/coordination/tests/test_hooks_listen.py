@@ -15,6 +15,10 @@ Acceptance covered (plan S1-CLAUDE, api 7.1 and 11.1; BP2, BP3, BP7):
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.hooks
+
 import json
 import os
 import shutil

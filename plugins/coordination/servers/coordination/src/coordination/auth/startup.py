@@ -110,13 +110,13 @@ def problems(config: Config, *, workers: int = 1) -> list[str]:
         for h in config.allowed_hosts:
             host = _host_of(h)
             if host is None or not _is_loopback(host):
-                out.append("A2A_ALLOWED_HOSTS contains the public hostname before A2A_EXPOSURE_STAGE=s3")
+                out.append(f"A2A_ALLOWED_HOSTS contains {h} which is not allowed at s1 (must be loopback)")
                 break
     elif config.exposure_stage == "s2":
         for h in config.allowed_hosts:
             host = _host_of(h)
             if host is None or not (_is_loopback(host) or host.endswith(TAILNET_SUFFIX)):
-                out.append("A2A_ALLOWED_HOSTS contains the public hostname before A2A_EXPOSURE_STAGE=s3")
+                out.append(f"A2A_ALLOWED_HOSTS contains {h} which is not allowed at s2 (must be loopback or *.ts.net)")
                 break
     if config.env not in ENVS:
         out.append("A2A_ENV must be dev or live")

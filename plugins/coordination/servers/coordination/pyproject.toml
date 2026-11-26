@@ -33,3 +33,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "hooks: hook and repo-dependent static security tests",
+]

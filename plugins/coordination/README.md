@@ -50,7 +50,7 @@ The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, 
 agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination
 ```
 
-**Unverified:** A8c ran `agy plugin install <path>` only. Installing from a GitHub tree URL has not been run (user's live-check list). `agy plugin validate --strict` exited 1 on three warnings before the Claude files moved into `claude/` (agy's own run, 2026-11-24, verified: `.mcp.json` never loaded, `hooks/hooks.json` ignored, `AGENTS.md` at the plugin root is not a rule); the first two are gone, and the third stays on purpose, because `AGENTS.md` is developer guidance for this folder. Re-run it to confirm.
+`agy plugin validate --strict plugins/coordination` passes with 0 errors and 0 warnings (Claude files moved into `claude/`, and developer guidance moved to [`docs/DEVELOPING.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/DEVELOPING.md)).
 
 The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-session` on `SessionStart`, `./bin/a2a-agy-pending` on `PreInvocation`). It brings **no** MCP entry and no key: agy expands only its own placeholders in a plugin's MCP config, not environment variables, so agy's entry is a user-scope server in your global `~/.gemini/config/mcp_config.json`, with the key as a literal `Authorization` header. Add this entry once (merge it into the existing `mcpServers` object by hand or with `agy mcp add`; the plugin never edits the file) and keep the file private:
 
@@ -199,8 +199,7 @@ plugins/coordination/
 ├── servers/coordination/         # the server: uv project, Dockerfile, src, tests
 ├── config/cards.yaml
 ├── README.md
-├── AGENTS.md
-└── docs/                         # plans, specs, research
+└── docs/                         # plans, specs, research, DEVELOPING.md
 ```
 
 The version in `plugin.json`, `.claude-plugin/plugin.json` and the plugin's entries in `.claude-plugin/marketplace.json` and the root `marketplace.json` must be equal: `bun scripts/validate-manifests.ts` and `tests/test_plugin_layout.py` check it.
@@ -267,7 +266,7 @@ Earlier research:
 ### Historical (from `agents-bridge`)
 
 - [`docs/archive/agents-bridge-README.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-README.md): the old repository README. It still describes ACP and a zero-daemon core, both superseded.
-- [`docs/archive/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md): the old repository rules, carried over and updated into [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md).
+- [`docs/archive/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md): the old repository rules, carried over and updated into [`docs/DEVELOPING.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/DEVELOPING.md).
 
 ## History
 
@@ -285,4 +284,4 @@ Still in force: the DDR-001 exclusions (`mcp_agent_mail_rust`), DDR-003 (never w
 
 ## Working in this plugin
 
-Read [`AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/AGENTS.md) before touching anything.
+Read [`docs/DEVELOPING.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/DEVELOPING.md) before touching anything.

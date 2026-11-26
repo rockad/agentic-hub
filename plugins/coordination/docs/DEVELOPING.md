@@ -1,4 +1,4 @@
-# AGENTS.md
+# DEVELOPING.md
 
 Rules for Google Antigravity, Claude Code and any other AI coding assistant working in `plugins/coordination`. Carried over from the old `agents-bridge` rules ([`docs/archive/agents-bridge-AGENTS.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/archive/agents-bridge-AGENTS.md), kept as history) and updated for the 2026-11-04 decisions.
 

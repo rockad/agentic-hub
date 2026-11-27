@@ -59,7 +59,7 @@ esac
 [ "${#sid}" -le 128 ] || exit 0
 
 KEY=''
-if [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
+if [ -f "$KEYFILE" ] && [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
 case $KEY in
   ''|*[!A-Za-z0-9._~+/=-]*) exit 0 ;; # empty, or a character that could break out of the curl config line
 esac

@@ -312,7 +312,7 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
   elif [ "$dr_hid" = claude-code ] && [ -n "$dr_fbfile" ] && [ -e "$dr_fbfile" ] && [ ! -d "$dr_fbfile" ]; then
     dr_src=fallback
     dr_kfile=$dr_fbfile
-  elif [ "$dr_hid" = antigravity ] && [ -n "$dr_fbfile" ] && [ -r "$dr_fbfile" ] && [ ! -d "$dr_fbfile" ]; then
+  elif [ "$dr_hid" = antigravity ] && [ -n "$dr_fbfile" ] && [ -f "$dr_fbfile" ] && [ -r "$dr_fbfile" ]; then
     dr_fbtok=$(head -c 65536 "$dr_fbfile" 2>/dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
     case $dr_fbtok in
       a2ak_REPLACE_WITH_YOUR_KEY) ;;
@@ -342,7 +342,9 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
       esac
       info "bin/a2a-doctor"
       if [ "$dr_hid" = claude-code ]; then
-        if [ ! -r "$dr_kfile" ]; then
+        if [ ! -f "$dr_kfile" ]; then
+          fail "$dr_hid fallback key file $dr_p is not a regular file"
+        elif [ ! -r "$dr_kfile" ]; then
           fail "$dr_hid fallback key file $dr_p is not readable"
         else
           mode_of "$dr_kfile"
@@ -371,6 +373,8 @@ while IFS='|' read -r dr_hid dr_cprefix dr_canrel dr_ovname dr_fbspec; do
         fail "$dr_hid key file $dr_p is a directory (it must be a file)"
       elif [ ! -e "$dr_kfile" ]; then
         fail "$dr_hid key file $dr_p is missing"
+      elif [ ! -f "$dr_kfile" ]; then
+        fail "$dr_hid key file $dr_p is not a regular file"
       elif [ ! -r "$dr_kfile" ]; then
         fail "$dr_hid key file $dr_p is not readable"
       else

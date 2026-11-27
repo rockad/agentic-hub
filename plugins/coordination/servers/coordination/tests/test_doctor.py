@@ -656,6 +656,31 @@ def test_a_directory_at_the_key_path_is_a_fail(world):
     res.expect("FAIL", "is a directory")
 
 
+def test_a_fifo_at_the_key_path_fails_fast_as_not_a_regular_file(world):
+    world.key_file.unlink()
+    os.mkfifo(world.key_file, 0o600)
+    res = world.run("--no-network", timeout=5)
+    res.expect("FAIL", "claude-code key file", "is not a regular file")
+    assert res.code == 1
+
+    # Fallback FIFO also fails fast without hanging
+    world.key_file.unlink()
+    os.mkfifo(world.legacy_claude_file, 0o600)
+    res_fb = world.run("--no-network", timeout=5)
+    res_fb.expect("FAIL", "claude-code fallback key file", "is not a regular file")
+    assert res_fb.code == 1
+
+    # Override FIFO also fails fast without hanging
+    world.legacy_claude_file.unlink()
+    world.key_file.write_text(world.claude_key + "\n")
+    world.key_file.chmod(0o600)
+    fifo_override = world.tmp / "override.fifo"
+    os.mkfifo(fifo_override, 0o600)
+    res_ov = world.run("--no-network", timeout=5, A2A_KEY_FILE=str(fifo_override))
+    res_ov.expect("FAIL", "claude-code key file", "is not a regular file")
+    assert res_ov.code == 1
+
+
 @need_non_root
 def test_an_unreadable_claude_key_file_is_a_fail(world):
     world.key_file.chmod(0o000)

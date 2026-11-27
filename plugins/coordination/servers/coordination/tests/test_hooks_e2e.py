@@ -76,12 +76,13 @@ def real(served, tmp_path):
 
 def register(scripts, real, sid: str = SID, **hook_extra) -> str:
     r = run_script(
-        scripts["a2a-register"], ["start"], stdin=hook_json("SessionStart", sid=sid, source="startup", **hook_extra), env=real(A2A_API_KEY="set")
+        scripts["a2a-register"], ["start"], stdin=hook_json("SessionStart", sid=sid, source="startup", **hook_extra), env=real()
     )
     assert r.returncode == 0 and r.stderr == "", r
     out = json.loads(r.stdout)["hookSpecificOutput"]
     assert out["hookEventName"] == "SessionStart"
     text = out["additionalContext"]
+    assert "A2A_API_KEY" not in text
     prefix, suffix = "[a2a] Your session handle is ", ". Call a2a_hello with it before other a2a_ tools."
     assert text.startswith(prefix) and suffix in text
     return text[len(prefix) : text.index(suffix)]
@@ -156,7 +157,7 @@ def test_register_end_ends_the_session_on_the_server(scripts, real):
 
 def test_a_key_of_another_card_cannot_register_a_claude_session(scripts, real):
     r = run_script(
-        scripts["a2a-register"], ["start"], stdin=hook_json("SessionStart"), env=real(A2A_CARD=CARD_AGY, A2A_API_KEY="set")
+        scripts["a2a-register"], ["start"], stdin=hook_json("SessionStart"), env=real(A2A_CARD=CARD_AGY)
     )
     assert r.returncode == 0 and r.stdout == "" and r.stderr == "", "403 wrong_card: nothing is printed"
     assert sessions(real) == []
@@ -167,7 +168,7 @@ def test_a_key_of_another_card_cannot_register_a_claude_session(scripts, real):
 
 def test_a_task_wakes_the_parked_listener_with_the_constant_stub_and_exit_2(scripts, real):
     handle = register(scripts, real, session_title="wake-me")
-    proc = start_script(scripts["a2a-listen"], stdin=STOP, env=real(A2A_API_KEY="set", CLAUDE_PID=str(os.getpid())))
+    proc = start_script(scripts["a2a-listen"], stdin=STOP, env=real(CLAUDE_PID=str(os.getpid())))
     try:
         wait_listening(real, handle)
         assert sessions(real, handle=handle)[0]["liveness"] == "listening"

@@ -166,7 +166,7 @@ owner_alive() { # kill -0 is also true for a zombie, so read the state: /proc, e
 # ---- key, card ---------------------------------------------------------------------------------
 
 KEY=''
-if [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
+if [ -f "$KEYFILE" ] && [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
 case $KEY in
   ''|*[!A-Za-z0-9._~+/=-]*) # empty, or a character that could break out of the curl config line
     log "no usable API key in the key file, exit 0"; exit 0 ;;

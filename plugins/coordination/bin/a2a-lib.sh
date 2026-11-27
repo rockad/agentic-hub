@@ -90,6 +90,7 @@ a2a_harness_table() {
 # Sets A2A_RESOLVED_KEYFILE to the resolved key file path with canonical-wins precedence,
 # override support, and one-release fallback.
 # No eval, no backticks, no extra subshell.
+# shellcheck disable=SC2034 # A2A_RESOLVED_KEYFILE is set for the caller that sources this library
 a2a_resolve_keyfile() {
   a2a_rk_harness=$1
   [ -n "$a2a_rk_harness" ] || return 1
@@ -126,7 +127,6 @@ a2a_resolve_keyfile() {
       ;;
   esac
 
-  export A2A_RESOLVED_KEYFILE
   unset a2a_rk_harness a2a_rk_cfgdir
   return 0
 }

@@ -19,6 +19,7 @@ You are continuing the A2A coordination plugin work (repo agentic-hub, folder pl
 7. Never launch, drive or probe the Antigravity CLI (agy) as a helper; the user starts agy and agy answers prompts. In Claude Code, run Jev's pre-flight before delegating non-trivial work.
 8. When you finish a step: update sections 1 to 4 of this file (status, milestones, stream tables, todo), commit, then tell the user what changed and what is next. Docs updates go straight to main (user decision, 2026-11-15; no PR for docs); stream code goes one PR per stream.
 9. Quota rule (user): when a workflow finishes, or when the weekly quota nears its limit, stop starting new agents and update sections 0.1, 1, 3.2 and 4.2 with the exact state (branches, shas, uncommitted files, what to run next), then commit to main.
+10. Agy idle wake (Z23): read master-tasklist section 3.9 and master-plan 4.2a. Work in the worktree `~/projects/agentic-hub-wt-agywake` on branch `feat/coordination-agy-idle-wake`. AW0 (the user's two-session test) gates AW1 to AW4; update 3.9 and the 4.2 checklist after every stream change.
 ```
 
 ### 0.2 Read in this order
@@ -330,6 +331,20 @@ Off by default; contract in `docs/specs/status-client.md`. `status_runs` and `st
 - BuildSlot (cognitive-engine PR #13, branch `feat/buildslot-protocol`, stacked on #5, open): independent track, still in force; its open items are in section 4.
 - The frozen file channel stays frozen until go-live (decision 14); the exception is that Antigravity may use it for research on this work. The turn watcher is obsolete and is stopped in go-live (GL-RETIRE).
 
+### 3.9 AW: agy idle wake (design in master-plan 4.2a, decision Z23)
+
+Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-agywake` (local only, not pushed, no PR). Update this table and the checklist in 4.2 on every stream change, then commit.
+
+| Stream | Scope | Status | Branch / sha | Evidence | Next action |
+| --- | --- | --- | --- | --- | --- |
+| AW0 | two-agy-session manual test | runbook written, blocked (user): run it | feat/coordination-agy-idle-wake | runbook: `docs/research/spike-runbook-2026-11-27-agy-idle-wake.md` | (user) run C1 to C8 in two agy sessions, write `spike-results-2026-11-2x-agy-idle-wake.md`, report back |
+| AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | todo (blocked by AW0 pass) | | | |
+| AW2 | `bin/a2a-agy-listen` + tests | todo (blocked by AW0 pass) | | | |
+| AW3 | agy session/pending hooks, skill `a2a-wake`, rules | todo (blocked by AW1, AW2) | | | |
+| AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | todo (blocked by AW1 to AW3) | | | |
+| AW5 | shared core in `a2a-lib.sh` for listen and pending | later phase, plan only | | | |
+| AW6 | clarify case study + GitHub issue | done | feat/coordination-agy-idle-wake | `plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, [issue #123](https://github.com/rockad/agentic-hub/issues/123) | none (fix tracked in issue #123) |
+
 ### 3.8 Delivered results kept from the handoff
 
 - S1-SCAF (PR #32, `11f7e0f`, merged 2026-11-11) [verified by the main session, acceptance re-run on a fresh `--no-cache` build]:
@@ -448,6 +463,14 @@ S1 items carried from the old tasklist (the stream that owns each is in brackets
 - [ ] [TEST] Rerun the SP5 D2 load with session-register and budget writes (done as SP5b; the S1-TEST load skeleton reuses the driver)
 - [ ] Not adopted, for the record: WAL archiving and point-in-time restore; host-installed Postgres
 - [ ] (user) Decide whether to commit the SP5 and SP5b scratch drivers into the repo so a session on another machine can run them (today only on <workstation>, `~/scratch/a2a-spikes/`)
+
+AW: agy idle wake (3.9)
+- [x] AW-setup: worktree, plan 4.2a, decision Z23, tasklist 3.9
+- [x] AW0: write the two-session runbook
+- [ ] (user) AW0: run the runbook in two agy sessions and report the results; the results go to `docs/research/spike-results-2026-11-2x-agy-idle-wake.md`
+- [x] AW6: clarify case study and GitHub issue (`plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, issue #123)
+- [ ] AW1 to AW4: only after AW0 passes (C1 and C5 both pass)
+- [ ] AW5: later phase, shared core for listen and pending (plan only)
 
 ### 4.3 S2: production on <storage-host>
 

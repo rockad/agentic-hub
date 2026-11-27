@@ -1,0 +1,56 @@
+#!/bin/sh
+# a2a-mcp-headers: Claude Code MCP headersHelper (Z22; docs/specs/harness-keys.md section 4.1).
+# POSIX sh, nothing else.
+#
+# Resolves the claude-code API key file via a2a-lib.sh (A2A_KEY_FILE override, then canonical
+# keys/claude-code.key, then one-release fallback api-key; A2A_API_KEY is never read), validates
+# the key shape, and prints {"Authorization":"Bearer <key>"} on stdout.
+#
+# Fails closed: on missing, unreadable, empty, or malformed key file, prints nothing to stdout or
+# stderr and exits 1. Never traces, never passes the key via child env or argv.
+
+set +x # never trace: a trace would print the key
+unset A2A_API_KEY mcp_dir mcp_keyfile mcp_key mcp_extra A2A_RESOLVED_KEYFILE
+umask 077
+exec 2>/dev/null
+
+LC_ALL=C
+
+case $0 in
+  */*) mcp_dir=${0%/*} ;;
+  *) mcp_dir=. ;;
+esac
+
+[ -r "$mcp_dir/a2a-lib.sh" ] || exit 1
+# shellcheck source=/dev/null
+. "$mcp_dir/a2a-lib.sh" || exit 1
+a2a_load_config || exit 1
+
+a2a_resolve_keyfile claude-code || exit 1
+mcp_keyfile=${A2A_RESOLVED_KEYFILE:-}
+unset A2A_RESOLVED_KEYFILE
+
+[ -n "$mcp_keyfile" ] && [ -f "$mcp_keyfile" ] && [ -r "$mcp_keyfile" ] || exit 1
+
+mcp_key=
+mcp_extra=
+{
+  IFS= read -r mcp_key || :
+  if IFS= read -r mcp_extra || [ -n "$mcp_extra" ]; then
+    mcp_key=
+  fi
+} < "$mcp_keyfile"
+
+case $mcp_key in
+  a2ak_?*)
+    case $mcp_key in
+      *[!A-Za-z0-9._~+/=-]*) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+
+[ "${#mcp_key}" -le 512 ] || exit 1
+
+printf '{"Authorization":"Bearer %s"}\n' "$mcp_key"
+exit 0

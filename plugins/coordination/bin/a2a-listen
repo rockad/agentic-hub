@@ -84,7 +84,9 @@ BMAX=$(num "${A2A_BACKOFF_MAX_S:-}" 60 1 3600)
 RESET=$(num "${A2A_BACKOFF_RESET_S:-}" 10 1 3600)
 RETRY410=$(num "${A2A_410_RETRY_S:-}" 15 0 3600)
 STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
-KEYFILE=${A2A_KEY_FILE:-${HOME:-/nonexistent}/.config/a2a-coord/api-key}
+KEYFILE=""
+a2a_resolve_keyfile claude-code && KEYFILE="$A2A_RESOLVED_KEYFILE"
+unset A2A_RESOLVED_KEYFILE
 
 mkdir -p "$STATE" 2>/dev/null || exit 0
 [ -d "$STATE" ] && [ -w "$STATE" ] || exit 0
@@ -164,7 +166,7 @@ owner_alive() { # kill -0 is also true for a zombie, so read the state: /proc, e
 # ---- key, card ---------------------------------------------------------------------------------
 
 KEY=''
-if [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
+if [ -f "$KEYFILE" ] && [ -r "$KEYFILE" ]; then IFS= read -r KEY < "$KEYFILE" || :; fi
 case $KEY in
   ''|*[!A-Za-z0-9._~+/=-]*) # empty, or a character that could break out of the curl config line
     log "no usable API key in the key file, exit 0"; exit 0 ;;

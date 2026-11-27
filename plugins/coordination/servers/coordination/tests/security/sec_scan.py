@@ -90,7 +90,8 @@ def scan_python(source: str) -> list[Finding]:
 #: wrapper such as `exec`, `nohup`, `sudo`, `env`, `timeout N`, `xargs`, `command`, `nice`).
 _COMMAND_POSITION = re.compile(
     r"(?:^\(?|[;&|`{]|\$\(|\b(?:then|do|else|exec|nohup|sudo|xargs|env|command|nice|setsid|stdbuf)\b|\btimeout\s+\S+)"
-    r"\s*(?:\S*/)?(agy|claude|tmux|agentapi)\b"
+    r"\s*(?:\w+=(?:\"(?:\\.|[^\"\\])*\"|\S*)\s+)*"
+    r"(?:[\w.${}/-]+/)?(agy|claude|tmux|agentapi)(?=$|[\s;&|)`])"
 )
 #: Anywhere in code (strings included): these are never part of a legitimate script of ours.
 _ANYWHERE = (
@@ -101,49 +102,169 @@ _ANYWHERE = (
     ("claude -p", re.compile(r"\bclaude\b\s+(-p\b|--print\b)")),
     ("agy -p", re.compile(r"\bagy\b\s+(-p\b|--prompt\b)")),
 )
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_HEREDOC = re.compile(
+    r"<<-?\s*(?:(['\"])([A-Za-z_][A-Za-z0-9_]*)\1|((?:\\?[A-Za-z_])(?:\\?[A-Za-z0-9_])*))"
+)
 
 
 def strip_shell_comment(line: str) -> str:
     """The line without a trailing `# comment`, quote-aware (a `#` inside quotes or `$#` stays)."""
     out: list[str] = []
     quote: str | None = None
+    escaped = False
     for i, ch in enumerate(line):
-        if quote:
-            if ch == quote:
+        if escaped:
+            escaped = False
+        elif quote == "'":
+            if ch == "'":
                 quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#" and (i == 0 or line[i - 1] in " \t;") :
-            break
+        elif quote == '"':
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quote = None
+        else:
+            if ch == "\\":
+                escaped = True
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#" and (i == 0 or line[i - 1] in " \t;"):
+                break
         out.append(ch)
     return "".join(out)
+
+
+def _blank_single_quotes(line: str) -> str:
+    """Replace single-quoted spans `'...'` outside double quotes with `''`."""
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in line:
+        if escaped:
+            escaped = False
+            if quote != "'":
+                out.append(ch)
+        elif quote == "'":
+            if ch == "'":
+                quote = None
+                out.append(ch)
+        elif quote == '"':
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quote = None
+            out.append(ch)
+        else:
+            if ch == "\\":
+                escaped = True
+                out.append(ch)
+            elif ch == "'":
+                quote = "'"
+                out.append(ch)
+            elif ch == '"':
+                quote = '"'
+                out.append(ch)
+            else:
+                out.append(ch)
+    return "".join(out)
+
+
+def _heredoc_substitutions(line: str) -> list[str]:
+    """Extract `$(...)` and backtick command substitution bodies from an unquoted heredoc line."""
+    subs: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "$" and i + 1 < n and line[i + 1] == "(":
+            if i + 2 < n and line[i + 2] == "(":
+                i += 3
+                continue
+            start = i + 2
+            depth = 1
+            j = start
+            quote: str | None = None
+            while j < n and depth > 0:
+                c = line[j]
+                if quote == "'":
+                    if c == "'":
+                        quote = None
+                elif quote == '"':
+                    if c == "\\" and j + 1 < n:
+                        j += 2
+                        continue
+                    if c == '"':
+                        quote = None
+                else:
+                    if c == "\\" and j + 1 < n:
+                        j += 2
+                        continue
+                    if c in "'\"":
+                        quote = c
+                    elif c == "(":
+                        depth += 1
+                    elif c == ")":
+                        depth -= 1
+                j += 1
+            end = j - 1 if depth == 0 else n
+            subs.append(line[start:end])
+            i = j
+            continue
+        if ch == "`":
+            start = i + 1
+            j = start
+            while j < n:
+                if line[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if line[j] == "`":
+                    break
+                j += 1
+            subs.append(line[start:j])
+            i = j + 1
+            continue
+        i += 1
+    return subs
 
 
 def scan_shell(text: str) -> list[Finding]:
     found: set[Finding] = set()
     terminator: str | None = None
+    heredoc_quoted = False
     for number, raw in enumerate(text.splitlines(), start=1):
         if terminator is not None:
             body = raw.strip()
             if body == terminator:
                 terminator = None
+                heredoc_quoted = False
                 continue
-            line, in_heredoc = body, True  # data: only the "anywhere" tokens apply
+            line, in_heredoc = body, True  # data: only the "anywhere" tokens apply unless unquoted subst
         else:
             line, in_heredoc = strip_shell_comment(raw).strip(), False
             heredoc = _HEREDOC.search(line)
             if heredoc:
-                terminator = heredoc.group(2)
+                if heredoc.group(2) is not None:
+                    terminator = heredoc.group(2)
+                    heredoc_quoted = True
+                else:
+                    raw_delim = heredoc.group(3)
+                    terminator = raw_delim.replace("\\", "")
+                    heredoc_quoted = "\\" in raw_delim
         if not line:
             continue
         for token, pattern in _ANYWHERE:
             if pattern.search(line):
                 found.add((token, number, raw.strip()))
         if not in_heredoc:
-            match = _COMMAND_POSITION.search(line)
-            if match:
+            for match in _COMMAND_POSITION.finditer(_blank_single_quotes(line)):
                 found.add((match.group(1), number, raw.strip()))
+        elif not heredoc_quoted:
+            for sub in _heredoc_substitutions(line):
+                for match in _COMMAND_POSITION.finditer(_blank_single_quotes(sub.strip())):
+                    found.add((match.group(1), number, raw.strip()))
     return sorted(found, key=lambda f: (f[1], f[0]))
 
 

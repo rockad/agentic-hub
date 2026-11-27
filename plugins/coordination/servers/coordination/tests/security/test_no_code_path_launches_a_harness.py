@@ -176,6 +176,15 @@ def test_the_python_scanner_ignores_prose_comments_and_docstrings(snippet):
         ("agentapi", "agentapi server\n"),
         ("pty", "script -c x /dev/null # pty\nx=\"pty\"\n"),
         ("subprocess", "echo subprocess\n"),
+        ("claude", 'x="\\" #"; claude -p hi\n'),
+        ("claude -p", 'x="\\" #"; claude -p hi\n'),
+        ("claude", "FOO=1 claude --resume\n"),
+        ("claude", "FOO='1 2' BAR=x claude --resume\n"),
+        ("claude", "env FOO=1 claude --resume\n"),
+        ("agy", "cat <<EOF\n$(agy -p hi)\nEOF\n"),
+        ("agy -p", "cat <<EOF\n$(agy -p hi)\nEOF\n"),
+        ("agy", "cat <<EOF\n$(agy status)\nEOF\n"),
+        ("claude", "cat <<EOF\n`claude --resume`\nEOF\n"),
     ],
 )
 def test_the_shell_scanner_catches_each_forbidden_token(token, snippet):
@@ -192,7 +201,16 @@ def test_the_shell_scanner_catches_each_forbidden_token(token, snippet):
         'echo "agy file is missing"\n',
         "agy_file=\"$HOME/x\"\n",
         "cat <<'EOF'\nagy says hello\nclaude go\nEOF\n",
+        "cat <<'EOF'\n$(agy status)\nEOF\n",
+        'cat <<"EOF"\n$(agy status)\nEOF\n',
+        "cat <<\\EOF\n$(agy status)\nEOF\n",
+        "cat <<-'EOF'\n$(agy status)\nEOF\n",
+        "cat <<EOF\nclaude says hello\nfoo | claude\nEOF\n",
         'printf "%s" "$#"\n',
+        "'claude-code|claude-code@|keys/claude-code.key|A2A_KEY_FILE|cfg:api-key' \\\n",
+        "claude-code)\n",
+        'dr_cmcp="$DIR/../claude/mcp.json"\n',
+        'A2A_RESOLVED_KEYFILE="$a2a_rk_cfgdir/keys/claude-code.key"\n',
     ],
 )
 def test_the_shell_scanner_ignores_comments_prose_and_heredoc_text(snippet):

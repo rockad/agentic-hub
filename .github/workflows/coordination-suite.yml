@@ -7,7 +7,7 @@
 # have as well (Opus review of PR #94, 2026-11-23). This workflow runs them from the checkout and fails
 # when a run skips what it should have run (scripts/check-pytest-skips.sh).
 #
-# Two steps:
+# Two parallel jobs:
 #   1. the hook tests of both harnesses (static, listener, register and pending, agy), the settings reader
 #      and the doctor (jq is installed for it): no skip allowed
 #   2. the whole suite with Docker (A2A_TEST_REQUIRE_DOCKER=1 turns a missing Docker into a failure):

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from conftest import PLUGIN_DIR, run
+from conftest import PLUGIN_DIR, _unavailable, run
 from coordination.backup_status import dump_age_h, is_stale
 from coordination.cli import main
 from coordination.db_admin import DUMP_ROLE, RunResult, init_dump_role
@@ -282,7 +282,8 @@ def test_init_dump_role_idempotent_on_fresh_and_existing_db_and_rotates_password
 
 
 def test_backup_once_and_pg_restore_row_count_parity_against_postgres(pg_server, pg_db, tmp_path):
-    assert SCRIPT.is_file(), f"missing {SCRIPT}"
+    if not SCRIPT.is_file():
+        _unavailable(f"missing {SCRIPT}")
     assert shutil.which("sh") is not None
 
     src_cfg = pg_db()

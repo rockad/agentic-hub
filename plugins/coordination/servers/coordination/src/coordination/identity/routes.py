@@ -33,6 +33,7 @@ from coordination.identity.errors import IdentityError, InvalidRequest, WrongCar
 from coordination.identity.handles import CARD_RE, HANDLE_RE, SESSION_ID_RE
 from coordination.identity.registry import MAX_LIST
 from coordination.identity.service import IdentityService
+from coordination.text_sanitize import sanitize_preview
 
 _TITLES = {
     400: "Bad Request",
@@ -176,13 +177,13 @@ class SessionsEndpoint:
             {
                 "sessions": [
                     {
-                        "handle": r.view.handle,
-                        "card": r.view.card_id,
+                        "handle": sanitize_preview(r.view.handle),
+                        "card": sanitize_preview(r.view.card_id),
                         "liveness": r.liveness,
                         "registered_at": r.view.registered_at.isoformat(),
                         "last_seen_at": r.view.last_seen_at.isoformat(),
                         "pending": r.pending,
-                        "aliases": list(r.view.aliases),
+                        "aliases": [sanitize_preview(a) for a in r.view.aliases],
                     }
                     for r in rows
                 ]

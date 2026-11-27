@@ -23,6 +23,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.hooks
+
 from conftest import PLUGIN_DIR
 from hook_helpers import DASH
 

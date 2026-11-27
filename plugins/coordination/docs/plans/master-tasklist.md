@@ -343,7 +343,7 @@ Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-ag
 | AW3 | agy session/pending hooks, skill `a2a-wake`, rules | todo (blocked by AW1, AW2) | | | |
 | AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | todo (blocked by AW1 to AW3) | | | |
 | AW5 | shared core in `a2a-lib.sh` for listen and pending | later phase, plan only | | | |
-| AW6 | clarify case study + GitHub issue | todo | | | write case study, `gh issue create` |
+| AW6 | clarify case study + GitHub issue | done | feat/coordination-agy-idle-wake | `plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, [issue #123](https://github.com/rockad/agentic-hub/issues/123) | none (fix tracked in issue #123) |
 
 ### 3.8 Delivered results kept from the handoff
 
@@ -468,7 +468,7 @@ AW: agy idle wake (3.9)
 - [x] AW-setup: worktree, plan 4.2a, decision Z23, tasklist 3.9
 - [x] AW0: write the two-session runbook
 - [ ] (user) AW0: run the runbook in two agy sessions and report the results; the results go to `docs/research/spike-results-2026-11-2x-agy-idle-wake.md`
-- [ ] AW6: clarify case study and GitHub issue
+- [x] AW6: clarify case study and GitHub issue (`plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, issue #123)
 - [ ] AW1 to AW4: only after AW0 passes (C1 and C5 both pass)
 - [ ] AW5: later phase, shared core for listen and pending (plan only)
 

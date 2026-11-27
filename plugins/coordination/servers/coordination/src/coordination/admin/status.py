@@ -13,7 +13,7 @@ schema version; "additions [design]"), and which ones are filled today:
 | `budgets` | the `wakes` table, last hour, against `A2A_WAKE_BUDGET_PER_H` | real; empty until S1-WAKE writes wakes |
 | `stale_offers` | `SUBMITTED` tasks offered `A2A_REOFFER_MAX` times [design] | real |
 | `schema` | `coord_schema_version` and the SDK's Alembic revision | real |
-| `backup` | `dump_age_h` from the dump sidecar's `last_ok` file (`null` = unknown) | real |
+| `backup` | `dump_age_h` and `stale` from the dump sidecar's `last_ok` file (`null` = unknown) | real |
 
 `card check` [design: the spec names the command and nothing else] checks that what the cards file
 defines is what the server serves and what the keys point at:
@@ -41,7 +41,7 @@ from a2a.server.models import TaskModel
 from a2a.types import a2a_pb2 as pb
 from coordination.a2a.cards import CardBuilder, CardRegistry, deviation_sentence
 from coordination.admin.keystore import KeyAdminStore
-from coordination.backup_status import status_fields
+from coordination.backup_status import is_stale, status_fields
 from coordination.clock import Clock
 from coordination.config import Config
 from coordination.service.directory import ACTIVE_WINDOW
@@ -147,6 +147,7 @@ class StatusAdmin:
                 )
             ).all()
         versions = await schema.versions(self._engine)
+        backup = status_fields(self._config.dump_last_ok_file, now)
         registered = sum(int(r[2]) for r in session_rows)
         return {
             "now": now.isoformat(),
@@ -189,7 +190,7 @@ class StatusAdmin:
                 ],
             },
             "schema": {"coord_schema_version": versions.coord_schema_version, "sdk_revision": versions.sdk_revision},
-            "backup": status_fields(self._config.dump_last_ok_file, now),
+            "backup": {**backup, "stale": is_stale(backup["dump_age_h"])},
         }
 
     # -- card check -------------------------------------------------------------------------

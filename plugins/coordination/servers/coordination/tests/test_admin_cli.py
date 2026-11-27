@@ -221,10 +221,13 @@ def test_status_and_card_check_render_and_card_check_exit_codes():
         "pending": {"submitted": 2, "card_queue": 1, "held": 1, "working": 0, "by_card": [{"card": "claude-code@box", "submitted": 2}]},
         "budgets": {"wake_per_hour_limit": 20, "window_minutes": 60, "used": []},
         "stale_offers": {"reoffer_max": 5, "count": 0, "tasks": []},
-        "schema": {"coord_schema_version": 2, "sdk_revision": "abc"}, "backup": {"dump_age_h": None},
+        "schema": {"coord_schema_version": 2, "sdk_revision": "abc"}, "backup": {"dump_age_h": None, "stale": False},
     }  # fmt: skip
     code, out, _, _ = run_cli(["status"], client=FakeClient(replies={"status": status}))
-    assert code == 0 and "listeners:    null parked" in out and "schema:       coordination v2" in out
+    assert code == 0 and "listeners:    null parked" in out and "schema:       coordination v2" in out and "[STALE]" not in out
+    stale_status = {**status, "backup": {"dump_age_h": 40.0, "stale": True}}
+    code, out, _, _ = run_cli(["status"], client=FakeClient(replies={"status": stale_status}))
+    assert code == 0 and "last good dump 40.0 h ago" in out and "[STALE]" in out
     ok = {"ok": True, "problems": [], "notes": ["claude-code@box: no live session"], "cards": [{"card_id": "claude-code@box", "in_table": True, "live_sessions": 0}]}
     bad = {**ok, "ok": False, "problems": ["claude-code@box: x"]}
     assert run_cli(["card", "check"], client=FakeClient(replies={"card.check": ok}))[0] == 0

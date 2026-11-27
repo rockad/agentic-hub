@@ -83,6 +83,15 @@ install -d -m 700 ~/.config/a2a-coord/secrets
 
 Never paste either value into a chat, a ticket or a shell history, and never commit them. [verified 2026-11-24: both files were created with these commands in a throwaway directory.]
 
+- **Optional API key pepper (`A2A_KEY_PEPPER`):** by default, API key secrets are stored as SHA-256 hashes (`sha256:<hex>`). To enable server-side HMAC-SHA-256 peppering (`hmac-sha256:<hex>`), create a mode-0600 pepper file outside the repository and export `A2A_KEY_PEPPER` from the shell that starts or recreates `coordination`:
+
+  ```sh
+  (umask 077; openssl rand -hex 32 | tr -d '\n' > ~/.config/a2a-coord/secrets/a2a_key_pepper)
+  export A2A_KEY_PEPPER="$(cat ~/.config/a2a-coord/secrets/a2a_key_pepper)"
+  ```
+
+  When `A2A_KEY_PEPPER` is unset or empty, the stack starts normally without peppering. Never put `A2A_KEY_PEPPER` in `.env`, never commit it, and do not paste `docker compose config` output while it is exported (server logs automatically scrub `key_pepper`). Keys created before enabling `A2A_KEY_PEPPER` keep verifying under `sha256:`, whereas keys created with a pepper (`hmac-sha256:`) stop verifying if the pepper is removed or changed.
+
 The dump directory (for backups; create it now, owned by you, before the first start, otherwise a rootful Docker creates it as root):
 
 ```sh
@@ -126,7 +135,7 @@ docker compose up -d --build
 - Why `A2A_UID` and `A2A_GID`: compose bind-mounts a file secret as it is on the host and ignores the owner and mode set for it, so the server must run as the user that owns the 0600 file. The default `10001` is the image's own user and works only when the secret files are owned by that uid. A failure to read a secret names the path and the OS error, never the contents.
 - You can put `A2A_CONFIG_DIR`, `A2A_UID`, `A2A_GID` and other non-secret variables in an uncommitted `plugins/coordination/.env` file instead of exporting them (`.env` is git-ignored; compose reads it by itself) [unverified: Compose's own behaviour, not run here]. Secrets never go there.
 - The first build takes minutes: the image runs the whole test suite in its build stage, and a failing test fails the build [verified 2026-11-24]. The compose project name is `coordination`; the server image is tagged `coordination:local`. The sidecar image `coordination-backup:local` is built only when the `backup` profile is in play (for example `docker compose --profile backup build dump`); a plain `docker compose up -d --build` does not build it.
-- Do not change `A2A_PORT`. Port 8120 is what the plugin's hooks and MCP entries default to, and the compose file does not pass `A2A_ALLOWED_HOSTS` to the container, so a different host port makes every request fail with status 421 (the server checks the `Host` header against `127.0.0.1:8120,localhost:8120`) [verified 2026-11-24: the walk-through ran on another port and hit exactly this]. A second stack on the same machine needs a different project name (`-p`), a different port, an override file that sets `A2A_ALLOWED_HOSTS`, and its own image tags.
+- By default `A2A_PORT` is `8120`, which the plugin's hooks and MCP entries default to. If you set a custom `A2A_PORT` (for example `A2A_PORT=8129` for a second stack with `-p`), `docker-compose.yml` derives `A2A_ALLOWED_HOSTS` (`127.0.0.1:${A2A_PORT:-8120},localhost:${A2A_PORT:-8120}`) and `A2A_PUBLIC_URL` (`http://127.0.0.1:${A2A_PORT:-8120}`) automatically unless overridden, so requests to that port do not fail with status 421; point your client's `A2A_SERVER_URL` (and second stack's image tags if needed) at the custom port.
 
 Check that it is up:
 

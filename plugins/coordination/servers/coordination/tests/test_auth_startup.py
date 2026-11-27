@@ -187,6 +187,16 @@ def test_the_tailnet_name_is_not_the_public_hostname_at_s2(cards):
     startup_check(env_for(cards, "s2"), check_db=Recorder())  # TAILNET_NAME is in A2A_ALLOWED_HOSTS
 
 
+def test_custom_port_passes_s1_startup_and_keeps_pre_s3_public_hostname_check(cards):
+    config = startup_check(env_for(cards, "s1", A2A_PORT="8129"), check_db=Recorder())
+    assert config.allowed_hosts == ("127.0.0.1:8129", "localhost:8129")
+    assert config.public_url == "http://127.0.0.1:8129"
+    # Pre-s3 public hostname refusal still holds when a non-loopback public host is listed alongside a custom port
+    bad = env_for(cards, "s2", A2A_PORT="8129", A2A_PUBLIC_URL=f"https://{PUBLIC_NAME}", A2A_ALLOWED_HOSTS=f"127.0.0.1:8129,{PUBLIC_NAME}")
+    msg = refused(bad)
+    assert "not allowed at" in msg or "public hostname" in msg
+
+
 def test_a_card_with_a_valid_id_passes(tmp_path):
     path = tmp_path / "cards.yaml"
     path.write_text("cards:\n  - name: claude-code@box\n    description: x\n  - name: antigravity@mac\n")

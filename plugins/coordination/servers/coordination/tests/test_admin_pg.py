@@ -348,7 +348,7 @@ def test_status_reads_the_real_tables(config, sock_dir):
             assert fresh["sessions"] == {"registered": 0, "active": 0, "ended": 0, "by_card": [], "mcp_bound": 0}
             assert fresh["listeners"] == {"parked": None}  # WAKE fills it
             assert fresh["pending"]["submitted"] == fresh["pending"]["held"] == 0
-            assert fresh["schema"]["coord_schema_version"] >= 2 and fresh["backup"] == {"dump_age_h": None}
+            assert fresh["schema"]["coord_schema_version"] >= 2 and fresh["backup"] == {"dump_age_h": None, "stale": False}
 
             await p.env.add_session(H_A1)
             await p.env.add_session(f"{CARD_A}/old~aaaaaaa9", ended=True)

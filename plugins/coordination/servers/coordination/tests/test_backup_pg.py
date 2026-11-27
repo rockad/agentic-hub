@@ -167,7 +167,7 @@ def _install_container_pg_shims(fakebin: Path, container_name: str, log_dir: Pat
         '[ -n "$out" ]\n'
         f'docker exec -i "{container_name}" sh -c '
         '\'umask 077; t=$(mktemp); trap "rm -f \\"$t\\"" EXIT; cat > "$t"; chmod 600 "$t"; '
-        'PGPASSFILE="$t" exec pg_dump -h "$1" -p "$2" -U "$3" -d "$4" -Fc -w\' '
+        'PGPASSFILE="$t" pg_dump -h "$1" -p "$2" -U "$3" -d "$4" -Fc -w\' '
         '_ "$PGHOST" "$PGPORT" "$PGUSER" "$PGDATABASE" < "$PGPASSFILE" > "$out"\n'
     )
     pg_dump_shim.chmod(0o755)
@@ -441,7 +441,10 @@ def test_backup_once_and_pg_restore_row_count_parity_against_postgres(pg_server,
         assert got2 is not None and got2.task.history[0].parts[0].text == "backup-body-two"
 
         # Negative control: after password rotation, the stale password in backup.sh fails closed
-        # and does not overwrite last_ok or leave a partial file.
+        # and does not overwrite last_ok or leave a partial file. Rename the prior dump to a past
+        # UTC timestamp so a sub-second run never collides with backup.sh's 1-second ts_now name.
+        kept_dump = dirs["dumps"] / "a2a-20000101T000000Z.dump"
+        dump_file.rename(kept_dump)
         prior_last_ok = last_ok.read_text()
         pw_file.write_text(stale_pw + "\n")
         fail_proc = subprocess.run(
@@ -455,7 +458,7 @@ def test_backup_once_and_pg_restore_row_count_parity_against_postgres(pg_server,
         assert fail_proc.returncode != 0
         assert "ERROR" in fail_proc.stderr and "last_ok not updated" in fail_proc.stderr
         assert last_ok.read_text() == prior_last_ok
-        assert sorted(dirs["dumps"].iterdir()) == [dump_file]
+        assert sorted(dirs["dumps"].iterdir()) == [kept_dump]
         assert stale_pw not in fail_proc.stdout + fail_proc.stderr
         assert stale_pw not in _pg_logs(pg_server)
     finally:

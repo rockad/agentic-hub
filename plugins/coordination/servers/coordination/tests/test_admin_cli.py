@@ -237,11 +237,19 @@ def test_status_and_card_check_render_and_card_check_exit_codes():
     assert code == 0 and json.loads(out)["ok"] is True
 
 
-def test_expose_check_and_admin_apply_say_they_are_not_available_and_exit_2():
-    for argv, owner in ((["expose", "check"], "S3-EXPOSE-CHECK"), (["admin-apply"], "GL-IMPORT")):
-        code, out, err, client = run_cli(argv)
-        assert code == 2 and "not available at this stage" in err and owner in err
-        assert out == "" and client.calls == []
+def test_admin_apply_says_it_is_not_available_and_exit_2():
+    code, out, err, client = run_cli(["admin-apply"])
+    assert code == 2 and "not available at this stage" in err and "GL-IMPORT" in err
+    assert out == "" and client.calls == []
+
+
+def test_expose_check_cli():
+    ok = {"ok": True, "checks": [], "manual": [], "problems": []}
+    fail = {"ok": False, "checks": [], "manual": [], "problems": ["error"]}
+    code, out, _, _ = run_cli(["expose", "check"], client=FakeClient(replies={"expose.check": ok}))
+    assert code == 0 and "expose checks OK" in out
+    code, out, _, _ = run_cli(["expose", "check"], client=FakeClient(replies={"expose.check": fail}))
+    assert code == 1 and "failing check(s)" in out
 
 
 def test_a_bad_socket_variable_is_reported():

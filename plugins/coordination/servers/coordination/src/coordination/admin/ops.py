@@ -43,6 +43,9 @@ class AdminOps:
         async def card_check(_args: Mapping[str, Any], _actor: str) -> dict[str, Any]:
             return await status.card_check()
 
+        async def expose_check(_args: Mapping[str, Any], _actor: str) -> dict[str, Any]:
+            return await status.expose_check()
+
         self._handlers: dict[str, Handler] = {
             "key.create": keys.create,
             "key.list": key_list,
@@ -54,6 +57,7 @@ class AdminOps:
             "review.deny": review.deny,
             "status": status_,
             "card.check": card_check,
+            "expose.check": expose_check,
         }
         assert set(self._handlers) == set(COMMANDS), "the command table and protocol.COMMANDS differ"
 

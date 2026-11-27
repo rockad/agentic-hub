@@ -23,8 +23,8 @@ from typing import Any
 #: show` returns a bounded frame, 64 KiB at most), so this is generous.
 MAX_LINE = 256 * 1024
 
-#: The commands the socket serves. `expose check` (S3-EXPOSE-CHECK) and `admin-apply` (GL-IMPORT)
-#: are not here: asking for them is `unknown_command`.
+#: The commands the socket serves. `admin-apply` (GL-IMPORT) is not here: asking for them
+#: is `unknown_command`.
 COMMANDS = (
     "key.create",
     "key.list",
@@ -36,6 +36,7 @@ COMMANDS = (
     "review.deny",
     "status",
     "card.check",
+    "expose.check",
 )
 
 

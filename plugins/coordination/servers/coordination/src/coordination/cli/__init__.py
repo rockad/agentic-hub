@@ -159,6 +159,8 @@ class _Cli:
             return self._show("status", {}, render.status, a)
         if a.command == "card":
             return self._card_check(a)
+        if a.command == "expose" and a.expose_command == "check":
+            return self._expose_check(a)
         if a.command == "expose":
             return self.fail("expose check is not available at this stage (S3-EXPOSE-CHECK)", 2)
         if a.command == "admin-apply":
@@ -246,6 +248,14 @@ class _Cli:
             print(json.dumps(result, indent=2, sort_keys=True), file=self.out)
         else:
             render.card_check(self.out, result)
+        return 0 if result["ok"] else 1
+
+    def _expose_check(self, a: argparse.Namespace) -> int:
+        result = self.client.call("expose.check", {})
+        if getattr(a, "json", False):
+            print(json.dumps(result, indent=2, sort_keys=True), file=self.out)
+        else:
+            render.expose_check(self.out, result)
         return 0 if result["ok"] else 1
 
 

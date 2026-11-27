@@ -41,7 +41,8 @@ from a2a.server.models import TaskModel
 from a2a.types import a2a_pb2 as pb
 from coordination.a2a.cards import CardBuilder, CardRegistry, deviation_sentence
 from coordination.admin.keystore import KeyAdminStore
-from coordination.backup_status import is_stale, status_fields
+from coordination.auth.startup import _host_of, public_hostname
+from coordination.backup_status import dump_age_h, is_stale, status_fields
 from coordination.clock import Clock
 from coordination.config import Config
 from coordination.service.directory import ACTIVE_WINDOW
@@ -263,6 +264,94 @@ class StatusAdmin:
                 {"card_id": sanitize_preview(c), "in_table": c in in_table, "live_sessions": int(live.get(c, 0))}
                 for c in registry.ids()
             ],
+        }
+
+    # -- expose check -----------------------------------------------------------------------
+
+    async def expose_check(self) -> dict[str, Any]:
+        config = self._config
+        clock = self._clock
+        now = clock.now()
+        checks: list[dict[str, Any]] = []
+        problems: list[str] = []
+
+        pub_host = public_hostname(config.public_url)
+        pub_ok = config.public_url.startswith("https://") and pub_host is not None
+        pub_detail = f"public_url is {sanitize_preview(config.public_url)}"
+        checks.append({
+            "item": "public_url_https",
+            "status": "pass" if pub_ok else "fail",
+            "detail": pub_detail,
+        })
+        if not pub_ok:
+            problems.append("A2A_PUBLIC_URL must be a non-loopback https:// URL")
+
+        has_wildcard = any("*" in h for h in config.allowed_hosts)
+        host_included = pub_host is None or any(
+            _host_of(h) == pub_host for h in config.allowed_hosts
+        )
+        allowed_ok = not has_wildcard and host_included and pub_host is not None
+        allowed_detail = f"allowed_hosts: {list(config.allowed_hosts)}"
+        checks.append({
+            "item": "allowed_hosts_public",
+            "status": "pass" if allowed_ok else "fail",
+            "detail": allowed_detail,
+        })
+        if has_wildcard:
+            problems.append("A2A_ALLOWED_HOSTS must not contain wildcards")
+        elif pub_host is not None and not host_included:
+            problems.append(f"A2A_ALLOWED_HOSTS must include public hostname {pub_host}")
+        elif pub_host is None:
+            problems.append("public hostname could not be determined from A2A_PUBLIC_URL")
+
+        pepper_ok = bool(config.key_pepper and config.key_pepper.strip())
+        checks.append({
+            "item": "key_pepper",
+            "status": "pass" if pepper_ok else "fail",
+            "detail": "key_pepper configured" if pepper_ok else "key_pepper missing or empty",
+        })
+        if not pepper_ok:
+            problems.append("A2A_KEY_PEPPER is not configured")
+
+        age = dump_age_h(config.dump_last_ok_file, now)
+        backup_fresh = age is not None and not is_stale(age)
+        backup_detail = f"dump_age_h: {age}"
+        checks.append({
+            "item": "backup_dump_fresh",
+            "status": "pass" if backup_fresh else "fail",
+            "detail": backup_detail,
+        })
+        if not backup_fresh:
+            problems.append(f"backup dump is missing or stale (dump_age_h={age})")
+
+        db_ok = False
+        try:
+            async with self._engine.connect() as conn:
+                await conn.execute(sa.select(1))
+            db_ok = True
+        except Exception:
+            db_ok = False
+
+        checks.append({
+            "item": "database_connectivity",
+            "status": "pass" if db_ok else "fail",
+            "detail": "database reachable" if db_ok else "database unreachable",
+        })
+        if not db_ok:
+            problems.append("database is unreachable")
+
+        manual = [
+            {"item": "fuzz_report", "status": "manual", "detail": "fuzz report green"},
+            {"item": "honest_public_card", "status": "manual", "detail": "honest public card"},
+            {"item": "extension_uri", "status": "manual", "detail": "extension URI fixed"},
+            {"item": "cloudflare_tunnel_route", "status": "manual", "detail": "Cloudflare tunnel route absent until flip"},
+        ]
+
+        return {
+            "ok": not problems,
+            "checks": checks,
+            "manual": manual,
+            "problems": problems,
         }
 
 

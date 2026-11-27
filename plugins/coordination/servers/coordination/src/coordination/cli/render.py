@@ -166,3 +166,14 @@ def card_check(out: TextIO, r: dict[str, Any]) -> None:
     for problem in r["problems"]:
         print(f"PROBLEM: {clean(problem)}", file=out)
     print("cards OK" if r["ok"] else f"{len(r['problems'])} problem(s)", file=out)
+
+
+def expose_check(out: TextIO, r: dict[str, Any]) -> None:
+    for check in r.get("checks", []):
+        status_str = "PASS" if check["status"] == "pass" else "FAIL"
+        print(f"{clean(check['item'])}: {status_str} ({clean(check['detail'])})", file=out)
+    for m in r.get("manual", []):
+        print(f"{clean(m['item'])}: MANUAL ({clean(m['detail'])})", file=out)
+    for problem in r.get("problems", []):
+        print(f"PROBLEM: {clean(problem)}", file=out)
+    print("expose checks OK" if r["ok"] else f"{len(r['problems'])} failing check(s)", file=out)

@@ -1,0 +1,50 @@
+# gitleaks configuration: the default ruleset plus the A2A API key shape.
+#
+# This repository is public. scripts/check-public-leaks.sh (rg based, runs in ci.yml) and gitleaks
+# (standalone "gitleaks" CI job in ci.yml planned as a follow-up PR, not wired in this PR yet)
+# both refuse a real-shape A2A API key; they use the same
+# shape and the same single placeholder rule, so a change to one needs the same change in the other:
+#   a2ak_<env>_<key id>_<secret>   env [a-z]{1,8}, key id 8 lower-case hex, secret 43 base64url
+#   (plugins/coordination/servers/coordination/src/coordination/auth/keys.py, _KEY_RE)
+# Placeholders stay allowed because they are not the real shape: a2ak_REPLACE_WITH_YOUR_KEY,
+# a2ak_<hidden>, a2ak_<env>_<keyid>_<secret>, a2ak_dev_k1_SECRET... A real-shape example must give a
+# secret that starts with FAKE- (allowlist below). Tests generate their keys at run time.
+#
+# Run it by hand:      gitleaks dir . --config .gitleaks.toml --redact
+#                      gitleaks git . --config .gitleaks.toml --redact      (the history too)
+# As a git hook, with no extra hook framework (this repository does not use pre-commit): put
+#   #!/bin/sh
+#   exec gitleaks git --staged --redact --config .gitleaks.toml --no-banner
+# in .git/hooks/pre-commit and make it executable. gitleaks 8.19 and later: `gitleaks protect` is
+# deprecated, `gitleaks git --staged` replaces `gitleaks protect --staged`.
+
+title = "agentic-hub"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic Bearer spike-token in sp5b curl verification doc"
+condition = "AND"
+paths = ['''plugins/coordination/docs/research/spike-results-2026-11-10-sp5b-followup\.md$''']
+regexTarget = "match"
+regexes = ['''Authorization: Bearer spike-token''']
+
+[[allowlists]]
+description = "Env var name A2A_EXPOSURE_STAGE near 'api 1.5' prose in master-plan.md"
+condition = "AND"
+paths = ['''plugins/coordination/docs/plans/master-plan\.md$''']
+regexTarget = "match"
+regexes = ['''A2A_EXPOSURE_STAGE''']
+
+[[rules]]
+id = "a2a-api-key"
+description = "A2A API key (a2ak_<env>_<8 hex>_<43 base64url>)"
+regex = '''a2ak_[a-z]{1,8}_[0-9a-f]{8}_[A-Za-z0-9_-]{43}'''
+keywords = ["a2ak_"]
+tags = ["key", "a2a"]
+
+  [[rules.allowlists]]
+  description = "A secret that starts with FAKE- is a placeholder by construction"
+  regexTarget = "match"
+  regexes = ['''a2ak_[a-z]{1,8}_[0-9a-f]{8}_FAKE-''']

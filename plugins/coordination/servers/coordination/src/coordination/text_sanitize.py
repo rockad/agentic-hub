@@ -41,7 +41,7 @@ def sanitize_preview(text: str, max_len: int = DEFAULT_PREVIEW_MAX_LEN) -> str:
     if max_len <= 0 or not text:
         return ""
 
-    normalized = text.replace("\r\n", "\n")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     stripped_escapes = _ANSI_ESCAPE_RE.sub("", normalized)
 
     cleaned_chars: list[str] = []

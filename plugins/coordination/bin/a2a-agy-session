@@ -20,6 +20,7 @@
 # Environment (all optional)
 #   A2A_SERVER_URL              server base URL, default http://127.0.0.1:8120 [design: name]
 #   A2A_AGY_KEY_FILE            file that holds the local-harness API key as a literal, default
+#                               ~/.config/a2a-coord/keys/antigravity.key, falling back to
 #                               $HOME/.gemini/config/mcp_config.json (the user's global agy MCP file,
 #                               mode 0600, outside the plugin, decisions Z20 and Z21; the first a2ak_
 #                               token in it is the key)

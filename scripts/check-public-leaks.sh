@@ -37,6 +37,7 @@ TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 errors=0
+allowlistable_errors=0
 REDACT=0 # 1 while the key rule runs: report() then prints a redacted form, never the match
 
 # a2ak_dev_3f9c01ab_<43 chars> -> a2ak_dev_xxxx_<redacted> (keeps the env, drops the id and the secret)
@@ -56,6 +57,8 @@ report() { # file line match reason
     shown="$(redact_key "$3")" # the key rule is never excused by an allowlist entry
   elif is_allowed "$1" "$3"; then
     return 0
+  else
+    allowlistable_errors=$((allowlistable_errors + 1))
   fi
   echo "LEAK: $1:$2: '$shown' ($4)" >&2
   errors=$((errors + 1))
@@ -138,7 +141,11 @@ if [ -s "$PRIVATE_PATTERNS" ]; then
 fi
 
 if [ "$errors" -gt 0 ]; then
-  echo "Public leak check failed with $errors finding(s). Fix them, or add a justified entry to scripts/public-leaks-allow.txt." >&2
+  if [ "$allowlistable_errors" -gt 0 ]; then
+    echo "Public leak check failed with $errors finding(s). Fix them, or add a justified entry to scripts/public-leaks-allow.txt." >&2
+  else
+    echo "Public leak check failed with $errors finding(s). Fix them (A2A API keys cannot be allowlisted; use a FAKE- placeholder)." >&2
+  fi
   exit 1
 fi
 

@@ -26,7 +26,8 @@
 # in ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/settings as KEY=value lines, read by bin/a2a-lib.sh, the
 # environment wins):
 #   A2A_SERVER_URL      default http://127.0.0.1:8120
-#   A2A_KEY_FILE        default ~/.config/a2a-coord/api-key (first line is the key, decision D34)
+#   A2A_KEY_FILE        default ~/.config/a2a-coord/keys/claude-code.key, falling back to
+#                       ~/.config/a2a-coord/api-key (first line is the key, decision D34)
 #   A2A_CARD            this machine's card; default claude-code@<short hostname> [design]
 #   A2A_STATE_DIR       marker files and listen.log; default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord
 #   A2A_ROUND_S         round length in seconds, 1 to 900, default 900

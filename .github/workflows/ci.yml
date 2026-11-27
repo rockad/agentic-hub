@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -65,11 +69,11 @@ jobs:
   gitleaks:
     name: Secret Scan (gitleaks)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pinned gitleaks binary
         env:
@@ -89,3 +93,7 @@ jobs:
 
       - name: Run gitleaks
         run: gitleaks dir . --config .gitleaks.toml --redact --verbose
+
+      - name: Run gitleaks (PR commit range)
+        if: github.event_name == 'pull_request'
+        run: gitleaks git . --config .gitleaks.toml --redact --verbose --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"

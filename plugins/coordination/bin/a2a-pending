@@ -15,7 +15,8 @@
 # failure of a hook anyway).
 #
 # Configuration (environment, all optional): A2A_SERVER_URL (default http://127.0.0.1:8120),
-# A2A_KEY_FILE (default ~/.config/a2a-coord/api-key); both may also be set in
+# A2A_KEY_FILE (default ~/.config/a2a-coord/keys/claude-code.key, falling back to
+# ~/.config/a2a-coord/api-key); both may also be set in
 # ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/settings (KEY=value lines, bin/a2a-lib.sh; the environment wins). The key goes to curl on stdin (`curl -K -`),
 # never in argv; A2A_API_KEY is never read, and is unset so curl does not inherit it.
 

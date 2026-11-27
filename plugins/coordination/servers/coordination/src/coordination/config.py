@@ -128,6 +128,8 @@ class Config:
             if raw is not None:
                 values[attr] = parse(name, raw)
         port = values.get("port", cls.port)
+        if not 1 <= port <= 65535:
+            raise ConfigError(f"A2A_PORT: expected a port in 1..65535, got {port}")
         if "allowed_hosts" not in values and port != cls.port:
             values["allowed_hosts"] = (f"127.0.0.1:{port}", f"localhost:{port}")
         if "public_url" not in values and port != cls.port:

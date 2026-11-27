@@ -39,13 +39,13 @@ claude plugin marketplace add rockad/agentic-hub
 claude plugin install coordination@agentic-hub
 ```
 
-The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`claude/mcp.json`; the Claude manifest names both files, as Jev's does, so agy never sees a `hooks/hooks.json` or `.mcp.json` it would warn about; `http://127.0.0.1:8120/mcp`; the credential comes from a `headersHelper`, `${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers`, which prints `{"Authorization":"Bearer <key>"}` from the key file below).
+The plugin brings the hooks (`claude/hooks.json`: `a2a-register`, `a2a-listen`, `a2a-pending`) and the MCP entry `a2a-coord` (`claude/mcp.json`; the Claude manifest names both files, as Jev's does, so agy never sees a `hooks/hooks.json` or `.mcp.json` it would warn about; `http://127.0.0.1:8120/mcp`; the credential comes from `"headersHelper": "\"${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers\""`, which prints `{"Authorization":"Bearer <key>"}` from the key file below).
 
 - Put the key in `~/.config/a2a-coord/keys/claude-code.key`: one line, the key, mode 0600, in a directory of mode 0700 (`install -d -m 700 ~/.config/a2a-coord/keys`, then `(umask 077; ${EDITOR:-vi} ~/.config/a2a-coord/keys/claude-code.key)`). The hooks and the MCP helper both read this one file, so **Claude has no second copy of its key**. There is no `A2A_API_KEY` to export and nothing reads it; a Claude Code started from a desktop launcher or an IDE works like one started from a shell.
 - The helper is built by the key-files stream [design: `bin/a2a-mcp-headers` and the `claude/mcp.json` change]. What backs the approach: on 2026-11-24, with Claude Code 2.1.331, a plugin `headersHelper` that read a key file delivered its header, and a real model call of `a2a_hello` through such a helper on the real server returned `bound: true` with no `A2A_API_KEY` in the environment [verified, an experiment, not a test in this repository]. Claude Code runs the helper at session start and on reconnect, once more after a 401 or 403, with a 10 s limit and no caching [documented, Claude Code docs fetched 2026-11-24].
 - The helper fails closed: on any problem it prints nothing and exits 1 [design].
 - Rotating: write the new key to the same file. The hooks and the helper pick it up at once, with no restart [design, from the documented helper behaviour].
-- Upgrading from the old layout: for one release the hooks still fall back to `~/.config/a2a-coord/api-key`, and `a2a-doctor` warns and shows how to migrate ([Key files](#key-files)).
+- Upgrading from the old layout: for one release the hooks still fall back to `~/.config/a2a-coord/api-key`, and `a2a-doctor` warns and shows how to migrate ([`docs/specs/harness-keys.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/harness-keys.md), sections 3.3 and 9).
 
 ### Antigravity (agy)
 
@@ -75,7 +75,9 @@ The plugin brings the hooks (`hooks.json` at the plugin root: `./bin/a2a-agy-ses
 chmod 600 ~/.gemini/config/mcp_config.json
 ```
 
-The agy hooks read the key from the same file: the first `a2ak_` token in it (`A2A_AGY_KEY_FILE`, default `~/.gemini/config/mcp_config.json`). Keep that file out of any dotfiles repository and out of chezmoi (decision D24). Because the entry lives outside the plugin, `agy plugin uninstall` does not remove it.
+Put the key in `~/.config/a2a-coord/keys/antigravity.key` (one line, mode `0600`, in `~/.config/a2a-coord/keys` mode `0700`: `install -d -m 700 ~/.config/a2a-coord/keys`, then `(umask 077; ${EDITOR:-vi} ~/.config/a2a-coord/keys/antigravity.key)`). The agy hooks read `~/.config/a2a-coord/keys/antigravity.key` (mode `0600`; override: `A2A_AGY_KEY_FILE`; for one release, a missing canonical file falls back to the first `a2ak_` token in `~/.gemini/config/mcp_config.json` with a `WARN` from `a2a-doctor`).
+
+**Second copy (Z22):** Because agy's MCP client can take only a literal `Authorization` header in `~/.gemini/config/mcp_config.json`, the literal key in `~/.gemini/config/mcp_config.json` is a documented second copy of the key. `a2a-doctor` hash-compares that literal against `~/.config/a2a-coord/keys/antigravity.key` (without printing either) and `WARN`s when they differ; during rotation, replace both inside the grace window. Keep both `~/.config/a2a-coord/keys/antigravity.key` and `~/.gemini/config/mcp_config.json` out of any dotfiles repository and out of chezmoi (decision D24). Because the MCP entry lives outside the plugin, `agy plugin uninstall` does not remove it.
 
 ### Settings file
 
@@ -86,13 +88,13 @@ Both harnesses read the machine's settings from `${XDG_CONFIG_HOME:-$HOME/.confi
 A2A_SERVER_URL=http://127.0.0.1:8120
 A2A_CARD=claude-code@mybox
 A2A_AGY_CARD=antigravity@mybox
-A2A_KEY_FILE=/home/user/.config/a2a-coord/api-key
-A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
+A2A_KEY_FILE=/home/user/.config/a2a-coord/keys/claude-code.key
+A2A_AGY_KEY_FILE=/home/user/.config/a2a-coord/keys/antigravity.key
 ```
 
 - Only these five names are read. Anything else, a comment (`#`), a blank line and a line without `=` is ignored.
 - The file is read line by line and never sourced or evaluated. A value is literal text: `$HOME`, `~`, a backtick or `$(...)` are not expanded, so write absolute paths. One pair of surrounding single or double quotes is removed; a value over 512 bytes or with a control character is dropped.
-- An environment variable that is set and not empty wins over the file; the first occurrence of a name in the file wins over a later one.
+- An environment variable that is set and not empty wins over the file; the first occurrence of a name in the file wins over a later one. Exception for `claude-code`: Claude Code strips credential-named environment variables (including any containing `KEY`, such as `A2A_KEY_FILE`) when spawning `headersHelper`, so `claude-code`'s `A2A_KEY_FILE` override **must be set in `~/.config/a2a-coord/settings`** (`a2a-doctor` warns if `A2A_KEY_FILE` is set in the shell environment without matching `~/.config/a2a-coord/settings`).
 - A missing or unreadable file, a directory of that name, or a file you do not own (`test -O`) is ignored silently: another local user must not be able to point the hooks at their own listener. Keep the file mode 0600; [`a2a-doctor`](#doctor) reports a wider mode. The name is `settings`, not `config`: `~/.config/a2a-coord/config/` is where a hand-run server keeps its cards.
 - `A2A_SERVER_URL` must be `http://` or `https://` with plain URL characters in every script (the Claude scripts check it now as the agy ones did), and curl is called with `--proto =http,https`, so a settings value can never become a curl option.
 
@@ -107,24 +109,41 @@ A2A_AGY_KEY_FILE=/home/user/.gemini/config/mcp_config.json
 
 `<plugin folder>` is where the harness installed the plugin (the path is the harness's own and is not fixed here; it is the folder that holds `plugin.json` and `bin/`). The script finds `a2a-lib.sh` and the other scripts next to itself, so run it in place, not from a copy of the one file.
 
-- It checks, in sections: the plugin files next to it and the plugin version; the settings file and the config directory (mode, owner, a directory of that name); the Claude key file (exists, mode, looks like a key) and whether `A2A_API_KEY` is set in your shell; the agy file (entry, url, `Authorization` header, key, mode, orphans: the old pre-Z20 `~/.gemini/config/plugins/coordination/mcp_config.json` and any other `a2a-` server in the global file); and the server (`GET /healthz`, then a probe session registered and ended again for each key it can use).
+- It checks, in sections: install commands; the plugin files next to it and the plugin version; the settings file and the config directory (mode, owner, a directory of that name); a table-driven section per harness (`== Harness: claude-code ==` and `== Harness: antigravity ==`, driven from `a2a-lib.sh`) checking `~/.config/a2a-coord/keys` mode (0700), each canonical key file (exists, mode 0600, strict single-line `a2ak_` check; or one-release fallback with `WARN` and migration commands), `claude/mcp.json` `headersHelper` + executable `bin/a2a-mcp-headers` (plus a `WARN` if `A2A_KEY_FILE` in the shell environment differs from `settings`), and the agy file (`~/.gemini/config/mcp_config.json` mode, JSON, `a2a-coord` entry, `url`, `Authorization` header, key, hash comparison against `keys/antigravity.key`, and orphans: the old pre-Z20 `~/.gemini/config/plugins/coordination/mcp_config.json` and any other `a2a-` server in the global file); and the server (`GET /healthz`, then a probe session registered and ended again for each key it can use). `A2A_API_KEY` is never read or checked.
 - It prints the two Claude install commands, the agy one and the agy MCP snippet, so the fix for each finding is on the screen.
 - It edits **nothing**: no harness config, no settings file, no key file, no file at all. It never prints a key or any part of one, never puts a key in a command line or a child's environment (curl reads it on stdin), and never starts `claude` or `agy`. Every request has a 2 s connect and 5 s total limit.
 - Output is plain ASCII, one line per check, prefixed `OK`, `WARN`, `FAIL` or `INFO`, and ends with `a2a-doctor: N FAIL, M WARN`. Exit status: 0 when there is no `FAIL`, 1 when there is at least one, 2 for a usage error.
 
 ```text
-== Claude key ==
-OK    Claude key file /home/user/.config/a2a-coord/api-key mode 600
-OK    Claude key file first line looks like an a2a key
-WARN  A2A_API_KEY is not set in this shell: Claude Code's MCP header needs it; export it from the key file in your shell rc, then restart Claude Code
+== Harness: claude-code ==
+OK    claude-code keys directory /home/user/.config/a2a-coord/keys mode 700
+OK    claude-code key file /home/user/.config/a2a-coord/keys/claude-code.key mode 600
+OK    claude-code key file first line looks like an a2a key
+OK    claude/mcp.json declares headersHelper pointing to bin/a2a-mcp-headers
+OK    bin/a2a-mcp-headers present and executable (mode 755)
+
+== Harness: antigravity ==
+OK    antigravity keys directory /home/user/.config/a2a-coord/keys mode 700
+OK    antigravity key file /home/user/.config/a2a-coord/keys/antigravity.key mode 600
+OK    antigravity key file first line looks like an a2a key
+OK    agy file /home/user/.gemini/config/mcp_config.json mode 600
+OK    agy file has an a2a-coord server entry
+OK    agy file holds an a2ak_ key
+OK    agy entry url is http://127.0.0.1:8120/mcp
+OK    agy entry has an Authorization header
+OK    antigravity key file and mcp_config.json literal match
 
 == Server ==
 INFO  effective server URL http://127.0.0.1:8120
 OK    GET http://127.0.0.1:8120/healthz answered 200
-OK    Claude key accepted: registered as claude-code@box/doctor-4242~3f2a9c1d
-INFO  Claude probe session ended
+INFO  claude-code card claude-code@box
+OK    claude-code key accepted: registered as claude-code@box/doctor-4242~3f2a9c1d
+INFO  claude-code probe session ended
+INFO  antigravity card antigravity@box
+OK    antigravity key accepted: registered as antigravity@box/doctor-4242~7b1e4a02
+INFO  antigravity probe session ended
 
-a2a-doctor: 0 FAIL, 1 WARN
+a2a-doctor: 0 FAIL, 0 WARN
 ```
 
 ## Architecture
@@ -167,7 +186,7 @@ Notes on the diagram:
   - `status-client`: `POST /status` only.
 - Remote peers never reach `/mcp`, `/wake/listen` or `/sessions`.
 - Admin commands (`key create|list|rotate|revoke`, `review`) run inside the container, on whichever host runs it (<storage-host> in production: `ssh <storage-host>`, then `docker compose exec -it coordination a2a-coord ...`), over an in-container Unix socket that is not published on any port. There is no admin HTTP endpoint and no admin API-key scope. `review` needs a TTY, and only a human releases a quarantined task, one typed decision per task.
-- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed). Claude Code's key lives in an unmanaged, mode-0600 `~/.config/a2a-coord/api-key` that the hooks read directly, exported as `A2A_API_KEY` by one non-secret shell line for the plugin's `claude/mcp.json` entry; agy's key is a literal `Authorization` header in a user-scope `a2a-coord` entry of the user's global `~/.gemini/config/mcp_config.json` (mode 0600, outside the plugin, Z20 and Z21), which the agy hooks also read. See [Install](#install). Chezmoi-managed files never hold keys.
+- Credentials are service-issued API keys (`a2ak_<env>_<keyid>_<secret>`, shown once, stored hashed), kept in per-harness single-line files under `~/.config/a2a-coord/keys/<harness>.key` (mode 0600, in a mode-0700 directory). For `claude-code`, both the hooks and the plugin's `claude/mcp.json` `headersHelper` (`bin/a2a-mcp-headers`) read `keys/claude-code.key`, so Claude has no second copy and reads no `A2A_API_KEY` variable. For `antigravity`, the agy hooks read `keys/antigravity.key`, while agy's MCP client takes a literal `Authorization` header in the user-scope `a2a-coord` entry of `~/.gemini/config/mcp_config.json` (mode 0600, outside the plugin, Z20 and Z21) — a documented second copy that `a2a-doctor` hash-compares against `keys/antigravity.key`. See [Install](#install) and [`docs/specs/harness-keys.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/harness-keys.md). Chezmoi-managed files never hold keys.
 - Harness setup is the harness's own plugin install (decisions Z20 and Z21): `claude plugin install coordination@agentic-hub` and `agy plugin install https://github.com/rockad/agentic-hub/tree/main/plugins/coordination`, from the remote `main`. One shared `bin/` serves both: Claude's hooks call `"${CLAUDE_PLUGIN_ROOT}/bin/..."`, agy's call `./bin/...` (agy runs a plugin hook with the plugin folder as its working directory). The agy inbox instruction comes from `SessionStart` `injectSteps`: nothing writes any `AGENTS.md`, and nothing launches, drives or wraps agy.
 - Agent Cards: one path per card, `/agents/<card>/.well-known/agent-card.json`, plus a public, generic "front desk" card at the root. Member cards need a valid API key. `A2A-Version` is strict. Streaming and push are off until a peer needs them.
 
@@ -194,7 +213,8 @@ plugins/coordination/
 ├── claude/hooks.json             # Claude hooks (named by the Claude manifest): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
 ├── claude/mcp.json               # Claude MCP entry a2a-coord (agy never sees it; there is no mcp_config.json here)
 ├── bin/
-│   ├── a2a-lib.sh                # sourced settings reader (~/.config/a2a-coord/settings)
+│   ├── a2a-lib.sh                # sourced settings reader & per-harness key resolver (~/.config/a2a-coord/settings)
+│   ├── a2a-mcp-headers           # Claude MCP headersHelper: reads keys/claude-code.key
 │   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks
 │   ├── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
 │   └── a2a-doctor                # run by hand: checks the install, edits nothing (no hook)
@@ -238,6 +258,7 @@ Links to files in this repository are absolute `https://github.com/rockad/agenti
 ### Specs
 
 - [`docs/specs/server-api.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/server-api.md): endpoints, handles, trust states, wake, auth.
+- [`docs/specs/harness-keys.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/harness-keys.md): per-harness API key contract, second-copy disclosure, rotation, and one-release fallback.
 - [`docs/specs/doctor.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/doctor.md): `bin/a2a-doctor`, the install check: checks, output, exit codes, what is verified.
 - [`docs/specs/status-client.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/status-client.md): cognitive-engine status contract.
 - [`docs/specs/spikes.md`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/spikes.md): S0 spikes and the S1 gate.

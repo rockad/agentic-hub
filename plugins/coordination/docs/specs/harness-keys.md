@@ -63,7 +63,7 @@ The canonical file always wins when it is readable (matching `-r` in the resolve
 ### 4.1 `claude-code`
 
 - Hooks (`a2a-register`, `a2a-listen`, `a2a-pending`) read `keys/claude-code.key` and pass the key to curl on stdin. Behaviour of the hooks is in [`claude-hooks.md`](claude-hooks.md).
-- The plugin's `claude/mcp.json` declares the `a2a-coord` server with `"headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers"` and no `headers` block **[design]**. `bin/a2a-mcp-headers` is a POSIX script that prints exactly `{"Authorization":"Bearer <key>"}` on stdout, read from the key file **[design]**. It fails closed: on a missing, unreadable or malformed file it prints nothing and exits 1 **[design]**.
+- The plugin's `claude/mcp.json` declares the `a2a-coord` server with `"headersHelper": "\"${CLAUDE_PLUGIN_ROOT}/bin/a2a-mcp-headers\""` and no `headers` block **[design]**. `bin/a2a-mcp-headers` is a POSIX script that prints exactly `{"Authorization":"Bearer <key>"}` on stdout, read from the key file **[design]**. It fails closed: on a missing, unreadable or malformed file it prints nothing and exits 1 **[design]**.
 - How Claude Code runs a helper **[documented]**:
   - at session start and on reconnect, and once more after a 401 or 403
   - with a 10 second limit

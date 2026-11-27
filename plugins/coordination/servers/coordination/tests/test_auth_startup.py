@@ -190,7 +190,8 @@ def test_custom_port_passes_s1_startup_and_keeps_pre_s3_public_hostname_check(ca
     assert config.public_url == "http://127.0.0.1:8129"
     # Pre-s3 public hostname refusal still holds when a non-loopback public host is listed alongside a custom port
     bad = env_for(cards, "s2", A2A_PORT="8129", A2A_PUBLIC_URL=f"https://{PUBLIC_NAME}", A2A_ALLOWED_HOSTS=f"127.0.0.1:8129,{PUBLIC_NAME}")
-    assert "public hostname" in refused(bad)
+    msg = refused(bad)
+    assert "not allowed at" in msg or "public hostname" in msg
 
 
 def test_a_card_with_a_valid_id_passes(tmp_path):

@@ -19,8 +19,9 @@ value, except for the few non-secret values it must quote (the stage, the env).
   follows the stage (on from s2, spec 1.5); set to a value it is on; set to the empty string it is
   off. So `s1` plus a value, and `s2` or `s3` plus the empty string, are refused.
 - "the public hostname" is the host of `A2A_PUBLIC_URL` when that is neither loopback nor a
-  Tailscale name (`*.ts.net`): at s2 the public URL is the tailnet name, which `A2A_ALLOWED_HOSTS`
-  must contain; only the Cloudflare hostname is refused before s3.
+  Tailscale name (`*.ts.net`): at s1 `A2A_ALLOWED_HOSTS` must contain only loopback hosts; at s2
+  `A2A_ALLOWED_HOSTS` must contain only loopback or Tailscale names (`*.ts.net`). Any other host
+  is refused before s3.
 - the card id of an entry in the cards file is its `name` (the AgentCard field of spec 8.5). The
   full cards schema belongs to S1-A2A and S1-ID; this check only enforces what 1.6 states.
 - "more than one worker" is checked on the number the caller passes (`workers`), because no
@@ -58,11 +59,15 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _is_tailnet(host: str) -> bool:
+    return host.endswith(TAILNET_SUFFIX) and len(host) > len(TAILNET_SUFFIX)
+
+
 def public_hostname(public_url: str) -> str | None:
     """The Cloudflare-side hostname named by `A2A_PUBLIC_URL`, or None if it is loopback or a
     Tailscale name (see the module docstring)."""
     host = _host_of(public_url)
-    if host is None or _is_loopback(host) or host.endswith(TAILNET_SUFFIX):
+    if host is None or _is_loopback(host) or _is_tailnet(host):
         return None
     return host
 
@@ -105,11 +110,18 @@ def problems(config: Config, *, workers: int = 1) -> list[str]:
         out.append(f"A2A_EXPOSURE_STAGE={config.exposure_stage} needs the public listener (A2A_PUBLIC_LISTEN) enabled")
     if config.exposure_stage == "s1" and config.public_listener_enabled:
         out.append("A2A_EXPOSURE_STAGE=s1 must not enable the public listener (A2A_PUBLIC_LISTEN)")
-    public = public_hostname(config.public_url)
-    if config.exposure_stage != "s3" and public is not None:
-        hosts = {_host_of(h) for h in config.allowed_hosts}
-        if public in hosts:
-            out.append("A2A_ALLOWED_HOSTS contains the public hostname before A2A_EXPOSURE_STAGE=s3")
+    if config.exposure_stage == "s1":
+        for h in config.allowed_hosts:
+            host = _host_of(h)
+            if host is None or not _is_loopback(host):
+                out.append(f"A2A_ALLOWED_HOSTS contains {h} which is not allowed at s1 (must be loopback)")
+                break
+    elif config.exposure_stage == "s2":
+        for h in config.allowed_hosts:
+            host = _host_of(h)
+            if host is None or not (_is_loopback(host) or _is_tailnet(host)):
+                out.append(f"A2A_ALLOWED_HOSTS contains {h} which is not allowed at s2 (must be loopback or *.ts.net)")
+                break
     if config.env not in ENVS:
         out.append("A2A_ENV must be dev or live")
     if late and not config.enforce_tailnet_identity:

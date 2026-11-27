@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.hooks
 from conftest import PLUGIN_DIR
 
 # Inside the server image PLUGIN_DIR is /app-like and has no second parent: the lookup must not raise at

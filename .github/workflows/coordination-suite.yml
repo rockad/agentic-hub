@@ -4,10 +4,10 @@
 # (servers/coordination/Dockerfile) with only src/ and tests/ in the build context. There every test
 # that needs a repository file (the hook scripts, compose, the cards file) or Docker is SKIPPED, so a
 # green CI said nothing about the hooks: 102 Claude hook tests skipped and the AGY hook tests would
-# have as well (Opus review of PR #94, 2026-11-23). This job runs them from the checkout and fails
+# have as well (Opus review of PR #94, 2026-11-23). This workflow runs them from the checkout and fails
 # when a run skips what it should have run (scripts/check-pytest-skips.sh).
 #
-# Two steps:
+# Two parallel jobs:
 #   1. the hook tests of both harnesses (static, listener, register and pending, agy), the settings reader
 #      and the doctor (jq is installed for it): no skip allowed
 #   2. the whole suite with Docker (A2A_TEST_REQUIRE_DOCKER=1 turns a missing Docker into a failure):
@@ -38,8 +38,36 @@ permissions:
   contents: read
 
 jobs:
+  hooks:
+    name: Hook & static-security tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: plugins/coordination/servers/coordination
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Tools the hook tests need (dash, curl, shellcheck, jq)
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dash curl shellcheck jq
+          dash -c 'echo dash ok'; curl --version | head -n 1; shellcheck --version | head -n 2; jq --version
+
+      - name: Hook tests of both harnesses, no skip allowed
+        env:
+          A2A_TEST_REQUIRE_DOCKER: "1"
+        run: |
+          uv run pytest -q -rs -p no:cacheprovider -m hooks --junitxml="$RUNNER_TEMP/hooks.xml"
+          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 900
+
   suite:
-    name: Coordination suite from a checkout (hooks, then everything with Docker)
+    name: Coordination suite with Docker (excluding hooks)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -52,27 +80,10 @@ jobs:
         with:
           version: "latest"
 
-      - name: Tools the hook tests need (dash, curl, shellcheck)
-        working-directory: .
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dash curl shellcheck jq
-          dash -c 'echo dash ok'; curl --version | head -n 1; shellcheck --version | head -n 2; jq --version
-
-      - name: Hook tests of both harnesses, no skip allowed
+      - name: The remaining suite with Docker, only the three known skips
         env:
           A2A_TEST_REQUIRE_DOCKER: "1"
         run: |
-          uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/hooks.xml" \
-            tests/test_hooks_static.py tests/test_hooks_listen.py tests/test_hooks_register_pending.py \
-            tests/test_hooks_review_fixes.py tests/test_agy_hooks.py tests/test_skip_gate.py \
-            tests/test_mcp_agy_opening.py tests/test_config_reader.py tests/test_doctor.py
-          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/hooks.xml" 0 300
-
-      - name: The whole suite with Docker, only the three known skips
-        env:
-          A2A_TEST_REQUIRE_DOCKER: "1"
-        run: |
-          uv run pytest -q -rs -p no:cacheprovider --junitxml="$RUNNER_TEMP/all.xml"
-          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1500 \
+          uv run pytest -q -rs -p no:cacheprovider -m "not hooks" --junitxml="$RUNNER_TEMP/all.xml"
+          bash "$GITHUB_WORKSPACE/scripts/check-pytest-skips.sh" "$RUNNER_TEMP/all.xml" 3 1400 \
             "tests.test_a2a_tck tests.test_backup_script tests.test_compose"

@@ -8,6 +8,10 @@ build runs the suite with only those two directories).
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.hooks
+
 import json
 import os
 import re

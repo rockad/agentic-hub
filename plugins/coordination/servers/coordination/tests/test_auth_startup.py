@@ -85,10 +85,13 @@ def test_condition_public_listener_must_not_be_enabled_at_s1(cards):
 
 def test_condition_public_hostname_is_refused_in_allowed_hosts_before_s3(cards):
     env = env_for(cards, "s2", A2A_PUBLIC_URL=f"https://{PUBLIC_NAME}", A2A_ALLOWED_HOSTS=f"127.0.0.1:8120,127.0.0.1:8121,{PUBLIC_NAME}")
-    assert "public hostname" in refused(env)
+    assert "not allowed at" in refused(env)
     # with a port on the entry as well
     env["A2A_ALLOWED_HOSTS"] = f"127.0.0.1:8120,{PUBLIC_NAME}:443"
-    assert "public hostname" in refused(env)
+    assert "not allowed at" in refused(env)
+    # bare ".ts.net" suffix without a node label is also refused at s2
+    env = env_for(cards, "s2", A2A_ALLOWED_HOSTS="127.0.0.1:8120,.ts.net")
+    assert "not allowed at s2" in refused(env)
 
 
 @pytest.mark.parametrize("value", ["prod", "Dev", "", "development"])

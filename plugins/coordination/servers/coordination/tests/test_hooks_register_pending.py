@@ -14,6 +14,10 @@ Acceptance covered (plan S1-CLAUDE, api 11.1, BP5):
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.hooks
+
 import json
 import re
 import time

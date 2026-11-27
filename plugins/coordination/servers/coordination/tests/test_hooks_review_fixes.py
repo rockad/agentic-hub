@@ -18,6 +18,10 @@ a Stop without a marker) and are named as such.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.hooks
+
 import json
 import re
 import signal

@@ -37,6 +37,8 @@ from pathlib import Path
 
 import agy_hook_helpers as agy
 import pytest
+
+pytestmark = pytest.mark.hooks
 from conftest import PLUGIN_DIR, free_port
 from hook_helpers import (
     DASH,

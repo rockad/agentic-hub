@@ -336,88 +336,19 @@ passing on — it means a machine that should be fast is not.
 
 ## Other flags
 
-- `--language en|fi|ru|…` — skip auto-detection when the language is known.
-- `--names 'A,B,C'` — real names for `Speaker 1…N`, in order of first speaking.
-- `--speaker-threshold 0.4` — with no count given, lower splits voices apart,
-  higher merges them (default `0.5`).
-- `--me-stream 1` — which stream is the user's own microphone, when `Me` and
-  `Remote` come out the wrong way round on a multi-track file.
-- `--stream N` — transcribe only stream N of a multi-track file, unlabelled.
-- `--engine mlx-whisper|faster-whisper`, `--model <name>` — override the
-  per-platform default (`mlx-whisper` on Apple Silicon, `faster-whisper`
-  elsewhere).
-- `--no-ocr` — do not read the screen. `--ocr` insists on it and fails loudly
-  if the vision model is missing.
-- `--ocr-model`, `--ocr-scene`, `--ocr-interval`, `--ocr-min-gap`,
-  `--ocr-max-frames` — which model reads the screen and how often it looks.
-- `--enroll NAME` / `--enroll-from-speaker N` — store a voice print; see
-  *Voice prints* above before offering this to name anyone but the user.
-- `--no-identify` — leave every speaker numbered even if a print would match;
-  `--identify` (the default) is what turns a match into a name.
-- `--list-voices` / `--forget NAME` — see and remove enrolled voice prints.
-- `--rerender TRANSCRIPT` — rebuild an existing transcript's `## Needs a quick
-  look` block from its own turn lines, in place. No audio and no recognition,
-  so it is the cheap way to apply an improved `--names-file` to what a run
-  already produced. It rewrites only that section; the transcript text is
-  untouched. ⚠️ Speaker-identification checks are not re-run — a transcript
-  records no similarity scores — so any *Low-confidence* or *Unresolved
-  speakers* section from the original run is dropped rather than guessed at,
-  and it says so on stderr. Re-run the recording itself if those matter.
-- `--attendees 'A,B,…'` — name a speaker from context (elimination, a
-  self-introduction, being addressed); see *Naming a speaker from context*
-  above. Read the verification block's `### Unresolved speakers` back to the
-  user rather than guessing when it appears.
-- `--names-file PATH` — the user's own vocabulary. Off by default, and it
-  does two jobs: the terms are **primed into the recogniser before decoding**,
-  and any mis-hearings listed are corrected afterwards. Accepts either a
-  plain `Correct: misheard one, misheard two` list or a Markdown file whose
-  body holds a two-column table (canonical spelling, then renderings) —
-  whichever the file's content actually is, detected automatically, so a
-  vocabulary already kept as a note needs no separate list derived from it.
-  See *Mixed-language speech* below, which is where it earns its place.
-- `--no-verify` — turn off the whole `## Needs a quick look` block; see
-  *The verification block* above. `--verify` (the default) is what turns
-  every kind of uncertainty a run had into that one ask.
+Read `references/flags-and-vocabulary.md` for full flag semantics, `--rerender` caveats, and `--names-file` formatting. Key flags:
+
+- `--language <code>` (omit to auto-detect), `--names 'A,B,C'`, `--speaker-threshold <0.4>`, `--me-stream 1`, `--stream N`
+- `--engine mlx-whisper|faster-whisper`, `--model <name>`
+- `--no-ocr` / `--ocr`, `--ocr-model`, `--ocr-scene`, `--ocr-interval`, `--ocr-min-gap`, `--ocr-max-frames`
+- `--enroll NAME`, `--enroll-from-speaker N`, `--no-identify` / `--identify`, `--list-voices`, `--forget NAME`
+- `--attendees 'A,B,…'`, `--names-file PATH`, `--no-verify` / `--verify`, `--rerender TRANSCRIPT` (rebuilds `## Needs a quick look` only; drops *Low-confidence* / *Unresolved speakers* because no similarity scores remain)
 
 ## Mixed-language speech, and a two-person recording's second speaker
 
-**A conversation that switches language mid-sentence is the ordinary case in
-some of these recordings, not an edge.** Measured on one real 55-minute
-Russian meeting, **every one of 120 turns** contained a run of Latin text. So:
+**Code-switching mid-sentence is normal;** ordinary English phrases inside Russian survive unaided, so never suggest `--language ru` as a remedy (measured to help nothing). Rare technical or product names break (`Kubernetes` → *«Кьюбор Ниц»*, `Linear` → *«линии»*, `CEO` → `SEO`), and `--names-file` is the fix: terms are primed before decoding and repaired after. Never invent entries silently—suggest them and state what would be rewritten. Cyrillic-rendered Latin names are only recovered if the user lists the exact Cyrillic rendering (`references/flags-and-vocabulary.md` covers `prime only` / `excluded` table rows).
 
-- **Ordinary English phrases inside Russian survive unaided** — *"что we
-  should probably roll that back before the release, потому что…"* came back
-  exactly. Do not offer a flag for this; it already works.
-- **Rare technical and product names are what break**, and they break in the
-  destructive direction: `Kubernetes` became *«Кьюбор Ниц»*, and on real audio
-  `Linear` became *«линии»* and `CEO` became `SEO`. A reader who does not know
-  the systems cannot recover those.
-- **`--names-file` is the fix, and priming is the half that works best** —
-  a primed term is usually recognised correctly in the first place. Forcing
-  the language changes nothing either way; that was measured, so do not
-  suggest `--language ru` as a remedy.
-- **It also canonicalises.** One term spelled four ways in a single file
-  (`Object Storage` 15 times, `object storage` 9) is correct recognition and
-  still bad output, so a term is matched against itself too. This is wrong
-  for an ordinary word or phrase rather than a proper noun (`handover`,
-  `private networks`) — the Markdown table format marks such a row
-  `prime only` in its renderings cell, which keeps priming and repair but
-  skips the self-match, rather than `excluded`, which drops the row
-  entirely and gets no priming at all.
-- ⚠️ **The list is the user's and its entries can be wrong.** Mapping
-  `CEO: SEO` repairs a real mis-hearing but would corrupt a meeting that
-  genuinely discussed SEO. Suggest entries, never invent them silently, and
-  say what a new entry would rewrite.
-- ⚠️ **A Cyrillic-rendered Latin name is only recovered if the user lists the
-  rendering they saw.** The matching is literal, not phonetic. When such a
-  mangling appears, offer to add that exact string to their file.
-
-**On a two-speaker recording `Speaker 2` never appears.** The other speaker is
-either a name reached from context or the literal `Unknown` — with two people
-a number tells the reader nothing the meeting had not already told them, while
-`Unknown` says the true thing. From three speakers up the numbers stay, since
-telling them apart is then the point. `Unattributed` is a different label for a
-different fact: one stretch of speech no speaker could be matched to.
+**On a two-speaker recording `Speaker 2` never appears.** The other speaker is either a name reached from context or the literal `Unknown` — with two people a number tells the reader nothing the meeting had not already told them, while `Unknown` says the true thing. From three speakers up the numbers stay, since telling them apart is then the point. `Unattributed` is a different label for a different fact: one stretch of speech no speaker could be matched to.
 
 Environment variables override the defaults for a whole session and are listed
 in the plugin README: `LOCAL_TRANSCRIBE_ASR_ENGINE`, `_ASR_MODEL`,

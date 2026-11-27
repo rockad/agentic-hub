@@ -22,5 +22,6 @@
     "automation",
     "wsl",
     "windows"
-  ]
+  ],
+  "mcpServers": "./claude/mcp.json"
 }

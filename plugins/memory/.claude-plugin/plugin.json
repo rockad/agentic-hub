@@ -1,6 +1,6 @@
 {
   "name": "memory",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Unified Memory umbrella wrapping Recall (durable memory graph @ :8110) and Lookup (semantic transcript index @ :8100)",
   "author": {
     "name": "Aleksandr Korolev"
@@ -14,5 +14,6 @@
     "antigravity",
     "opencode",
     "cross-harness"
-  ]
+  ],
+  "mcpServers": "./claude/mcp.json"
 }

@@ -12,5 +12,6 @@
     "gmail",
     "calendar",
     "mcp"
-  ]
+  ],
+  "mcpServers": "./claude/mcp.json"
 }

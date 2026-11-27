@@ -1,9 +1,9 @@
 # gitleaks configuration: the default ruleset plus the A2A API key shape.
 #
-# This repository is public. scripts/check-public-leaks.sh (rg based, runs in ci.yml) and gitleaks
-# (standalone "gitleaks" CI job in ci.yml planned as a follow-up PR, not wired in this PR yet)
-# both refuse a real-shape A2A API key; they use the same
-# shape and the same single placeholder rule, so a change to one needs the same change in the other:
+# This repository is public. scripts/check-public-leaks.sh (rg based, runs in .github/workflows/ci.yml)
+# and gitleaks (standalone "gitleaks" CI job in .github/workflows/ci.yml) both refuse a real-shape
+# A2A API key; they use the same shape and the same single placeholder rule, so a change to one
+# needs the same change in the other:
 #   a2ak_<env>_<key id>_<secret>   env [a-z]{1,8}, key id 8 lower-case hex, secret 43 base64url
 #   (plugins/coordination/servers/coordination/src/coordination/auth/keys.py, _KEY_RE)
 # Placeholders stay allowed because they are not the real shape: a2ak_REPLACE_WITH_YOUR_KEY,

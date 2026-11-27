@@ -41,6 +41,7 @@ def add_data(message: pb.Message, value: dict, media_type: str) -> None:
         ("one\r\ntwo\rthree", "one\ntwothree"),
         ("keep\ttabs\nand newlines", "keep\ttabs\nand newlines"),
         ("‮evil‬ ⁦x⁩", "evil x"),
+        ("a\u061cb\u200bc\u200fd\ufeffe\U000e0001f", "abcdef"),
         ("plain ünicode ✓ 漢字", "plain ünicode ✓ 漢字"),
     ],
 )

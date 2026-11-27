@@ -71,6 +71,7 @@ case "$OUT" in *"docs/notes.md:2:"*) ok "plant reports file and line" ;; *) bad 
 case "$OUT" in *"a2ak_dev_xxxx_<redacted>"*) ok "plant is shown redacted" ;; *) bad "plant: no redacted form in output" ;; esac
 never_echoes "$SECRET43" "${SECRET43:0:12}" "$ID" "$(key dev "$ID" "")" \
   && ok "plant: secret and key id never echoed" || bad "plant: the secret or the key id was echoed"
+case "$OUT" in *"public-leaks-allow.txt"*) bad "plant: advised allowlist for an API key" ;; *) ok "plant: does not advise allowlist for an API key" ;; esac
 
 # 1b. A live env key in another file type, and a secret with - and _ in it.
 d="$(tree plant-live)"
@@ -114,6 +115,7 @@ d="$(tree oldrule)"
 printf '%s\n' "/home/$(printf 'rea%s' 'lperson')/x" > "$d/a.txt"
 run "$d"
 [ "$RC" = 1 ] && ok "existing home-path rule still fails" || bad "home-path rule: expected exit 1, got $RC"
+case "$OUT" in *"public-leaks-allow.txt"*) ok "home-path rule advises allowlist" ;; *) bad "home-path rule: expected allowlist advice" ;; esac
 
 [ "$fails" = 0 ] && { echo "all cases passed"; exit 0; }
 echo "$fails case(s) failed" >&2

@@ -104,6 +104,9 @@ def test_other_variables_are_ignored():
     "name,value",
     [
         ("A2A_PORT", "eighty"),
+        ("A2A_PORT", "0"),
+        ("A2A_PORT", "-1"),
+        ("A2A_PORT", "65536"),
         ("A2A_RETAIN_DAYS", "thirty"),
         ("A2A_ALLOW_WRITES", "yes"),
         ("A2A_ENV", "prod"),
@@ -113,6 +116,15 @@ def test_other_variables_are_ignored():
 def test_bad_values_name_the_variable(name, value):
     with pytest.raises(ConfigError, match=name):
         Config.from_env({name: value})
+
+
+def test_port_range_boundaries():
+    assert Config.from_env({"A2A_PORT": "1"}).port == 1
+    assert Config.from_env({"A2A_PORT": "65535"}).port == 65535
+    with pytest.raises(ValueError, match="A2A_PORT"):
+        Config.from_env({"A2A_PORT": "0"})
+    with pytest.raises(ValueError, match="A2A_PORT"):
+        Config.from_env({"A2A_PORT": "65536"})
 
 
 def test_bad_listen_address():

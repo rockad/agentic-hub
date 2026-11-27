@@ -19,6 +19,7 @@ cuts a character in half.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 # Escape sequences first, so the payload of a sequence goes with it. An unterminated string-type
@@ -37,10 +38,11 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 
 
 def strip_controls(text: str) -> str:
-    """`text` without escape sequences, control characters and bidirectional overrides."""
+    """`text` without escape sequences, control characters and Unicode format/bidi controls."""
     text = text.replace("\r\n", "\n")
     text = _ESCAPE.sub("", text)
-    return _CONTROL.sub("", text)
+    text = _CONTROL.sub("", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
 def truncate_utf8(text: str, max_bytes: int) -> tuple[str, bool]:

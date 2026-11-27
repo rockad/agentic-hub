@@ -72,6 +72,7 @@ def test_bidi_and_format_controls_stripped(raw: str, expected: str) -> None:
         ("\x9d0;title\x07body", "body"),
         ("a\x00b\x07c\x08d\x7fe\x85f", "abcdef"),
         (f"{ESC}]0;never ended\nsecond line", "second line"),
+        (f"{ESC}]0;never ended\rsecond line", "second line"),
     ],
 )
 def test_ansi_and_c0_c1_controls_stripped(raw: str, expected: str) -> None:
@@ -182,6 +183,11 @@ def test_mcp_frame_sanitizes_origin_and_metadata_without_mutating_task() -> None
     # Raw protobuf Task remains untouched.
     assert task.history[0].parts[0].text == raw_body
     assert "\u202e" in task.history[0].parts[0].filename
+
+
+def test_cli_clean_block_strips_cf_format_controls() -> None:
+    raw = f"line1\u200b\t\ufeffok\nline2\u061c\u200e{ESC}[31m"
+    assert render.clean_block(raw) == "line1\tok\nline2"
 
 
 def test_cli_render_strips_ansi_sequences_and_bidi_controls() -> None:

@@ -337,7 +337,7 @@ Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-ag
 
 | Stream | Scope | Status | Branch / sha | Evidence | Next action |
 | --- | --- | --- | --- | --- | --- |
-| AW0 | two-agy-session manual test | todo | | runbook: `docs/research/spike-runbook-2026-11-27-agy-idle-wake.md` | write runbook, then (user) run it |
+| AW0 | two-agy-session manual test | runbook written, blocked (user): run it | feat/coordination-agy-idle-wake | runbook: `docs/research/spike-runbook-2026-11-27-agy-idle-wake.md` | (user) run C1 to C8 in two agy sessions, write `spike-results-2026-11-2x-agy-idle-wake.md`, report back |
 | AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | todo (blocked by AW0 pass) | | | |
 | AW2 | `bin/a2a-agy-listen` + tests | todo (blocked by AW0 pass) | | | |
 | AW3 | agy session/pending hooks, skill `a2a-wake`, rules | todo (blocked by AW1, AW2) | | | |
@@ -465,8 +465,8 @@ S1 items carried from the old tasklist (the stream that owns each is in brackets
 - [ ] (user) Decide whether to commit the SP5 and SP5b scratch drivers into the repo so a session on another machine can run them (today only on <workstation>, `~/scratch/a2a-spikes/`)
 
 AW: agy idle wake (3.9)
-- [ ] AW-setup: worktree, plan 4.2a, decision Z23, tasklist 3.9
-- [ ] AW0: write the two-session runbook
+- [x] AW-setup: worktree, plan 4.2a, decision Z23, tasklist 3.9
+- [x] AW0: write the two-session runbook
 - [ ] (user) AW0: run the runbook in two agy sessions and report the results; the results go to `docs/research/spike-results-2026-11-2x-agy-idle-wake.md`
 - [ ] AW6: clarify case study and GitHub issue
 - [ ] AW1 to AW4: only after AW0 passes (C1 and C5 both pass)

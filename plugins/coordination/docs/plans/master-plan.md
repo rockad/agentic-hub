@@ -853,7 +853,14 @@ All S1 work lands under `servers/coordination/` unless stated. Keys issued at S1
 
 Status: designed in a `/clarify` round (user, 2026-11-27, Z23). Branch `feat/coordination-agy-idle-wake`, worktree `../agentic-hub-wt-agywake`. Status per stream is in the tasklist, section 3.9. Supersedes D9 ("agy surfacing, no idle wake") **if the AW0 test passes**; until then D9 stands.
 
-Problem: an idle Antigravity session is not woken by a message (D9, accepted). The harness now documents that a finished background `run_command` resumes the session and that the `schedule` tool fires timers and crons into it. The 2026-11-04 audit marked the first as unverified.
+Problem: an idle Antigravity session is not woken by a message (D9, accepted). The 2026-11-04 audit (`docs/research/a2a-audit-2026-11-04/t1b-wake-mechanisms.md`) found no documented compliant wake for `agy` and marked a session-started background watcher as `unverified`.
+
+Research findings (2026-11-27):
+- **Background command completion:** Antigravity harness docs now explicitly state that the system automatically resumes a session when a background `run_command` finishes (though this remains `[unverified]` in practice until AW0 passes, and whether `agy remote-control` / daemon unloads idle conversations is unknown).
+- **`schedule` tool:** Antigravity now exposes a `schedule` tool for one-shot timers and recurring 5-field cron jobs (with jitter unless `ExactTiming` is set). Cron-only polling (`*/10 * * * *`) is viable as a fallback but re-sends the full conversation context on every empty tick.
+- **`ConversationService` (`conversations` skill):** Exposes `CreateConversation`, `ListConversations`, `GetConversation`, `UpdateConversation`, `DeleteConversation` over Connect HTTP+JSON. It cannot inject a message into an existing conversation, and using `CreateConversation` from the server would violate DDR-003.
+- **Rejected paths:** `agy agentapi send-message`, `tmux send-keys`, `agy -p` (all DDR-003 violations); held `Stop` hook (keeps TUI showing "Working" and blocks typing, timeout limits undocumented).
+- **API keys:** `bin/a2a-lib.sh` already resolves `antigravity` keys via `A2A_AGY_KEY_FILE` -> `$CFGDIR/keys/antigravity.key` -> `~/.gemini/config/mcp_config.json` (fallback).
 
 Design decisions (all from the `/clarify` round of 2026-11-27):
 

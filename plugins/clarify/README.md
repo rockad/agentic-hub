@@ -84,6 +84,7 @@ scripts/check-clarify-transcript.sh --format antigravity \
 
 - It fails a question that has no `## Question N` write-up before it, a Claude Code description under 120 characters, an empty preview, or a fork count that changes without a `Fork map revised` notice.
 - In Antigravity, it also fails a question heading with no `ask_question` call in the same reply.
+- In Antigravity, it fails a picker whose labels do not follow the `### Option X.` headings of the step: a different letter sequence, or a label that carries the prose name of another letter (the picker was reordered and the prose was not). A label reworded in place is a warning.
 - It warns on a Claude Code preview without the `→ next:` line.
 - In Claude Code transcripts, a question call that a hook denied (the earlier checkpoint design, or a user hook) is reported as `DENIED` and counted in `denied=N` at the end of the summary line; the retry after it counts the write-up printed before the denied attempt. So `failed` describes what the user saw.
 - Exit codes: `0` all pass, `1` a failure, `2` no clarify questions found, `3` usage error.

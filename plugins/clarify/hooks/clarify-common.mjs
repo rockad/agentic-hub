@@ -41,6 +41,9 @@ const SLASH_CMD_RE = /^\/[a-z][a-z0-9:_-]*(?:\s|$)/;
 
 const OPTION_PREFIX_RE = /^\s*(?:\(Recommended\)\s+)?Option\s+[A-Z]\s*:/;
 
+const PROSE_OPTION_RE = /^#{2,6}[ \t]*Option[ \t]+([A-Z])[.:][ \t]+(.*)$/;
+const PICKER_OPTION_RE = /^\s*(?:\(Recommended\)\s+)?Option\s+([A-Z])\s*:\s*(.*)$/;
+
 function str(v) {
   return typeof v === "string" ? v : "";
 }
@@ -373,6 +376,80 @@ function optstr(v) {
   return "";
 }
 
+/**
+ * An option name reduced to its words: no `(Recommended)` marker, case or punctuation.
+ */
+function optionName(s) {
+  return str(s)
+    .replace(/\(Recommended\)/gi, " ")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/**
+ * Whether two reduced option names are the same option. One may continue the other, because a
+ * Mode B picker label adds the formal anchor after the prose name.
+ */
+function sameOption(a, b) {
+  if (a === b) return true;
+  if (a === "" || b === "") return false;
+  return a.startsWith(`${b} `) || b.startsWith(`${a} `);
+}
+
+/**
+ * `### Option X. <name>` headings of the last question step in a reply, outside fenced blocks.
+ */
+export function proseOptions(text) {
+  const lines = outsideFences(text);
+  let res = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.startsWith("##")) continue;
+    if (headingMatch(l) !== null) {
+      res = [];
+      continue;
+    }
+    const m = PROSE_OPTION_RE.exec(l);
+    if (m) res.push({ letter: m[1], name: optionName(m[2]) });
+  }
+  return res;
+}
+
+/**
+ * Compare the prose option headings of a step with the picker labels of its `ask_question` call.
+ * Returns `{ why, warn }`: a different letter sequence, or a picker label that carries the prose
+ * name of another letter, is a failure; a label reworded in place is a warning.
+ */
+export function compareOptions(prose, opts) {
+  const why = [];
+  const warn = [];
+  const picked = [];
+  for (let i = 0; i < opts.length; i++) {
+    const m = PICKER_OPTION_RE.exec(optstr(opts[i]));
+    if (m) picked.push({ letter: m[1], name: optionName(m[2]) });
+  }
+  if (prose.length === 0 || picked.length === 0) return { why, warn };
+
+  const proseLetters = prose.map((o) => o.letter).join(", ");
+  const pickedLetters = picked.map((o) => o.letter).join(", ");
+  if (proseLetters !== pickedLetters) {
+    why.push(`prose options ${proseLetters} do not match picker options ${pickedLetters}`);
+  }
+  for (let i = 0; i < picked.length; i++) {
+    const p = picked[i];
+    const own = prose.find((o) => o.letter === p.letter);
+    if (own !== undefined && sameOption(own.name, p.name)) continue;
+    const other = prose.find((o) => o.letter !== p.letter && sameOption(o.name, p.name));
+    if (other !== undefined) {
+      why.push(`picker Option ${p.letter} carries the prose name of Option ${other.letter}`);
+    } else if (own !== undefined) {
+      warn.push(`Option ${p.letter} is named differently in the prose and in the picker`);
+    }
+  }
+  return { why, warn };
+}
+
 function parseQtag(q) {
   if (typeof q !== "string") return null;
   const m = QTAG_RE.exec(q);
@@ -470,6 +547,12 @@ function checkAsk(step, tc, st) {
     if (!proseRe.test(st.text)) {
       warn.push(`WARN ${name}: ask_question without "## Question ${n}" prose in same reply (step ${step})`);
     }
+  }
+
+  const labels = compareOptions(proseOptions(st.text), opts);
+  why.push(...labels.why);
+  for (let i = 0; i < labels.warn.length; i++) {
+    warn.push(`WARN ${name}: ${labels.warn[i]} (step ${step})`);
   }
 
   st.checked += 1;

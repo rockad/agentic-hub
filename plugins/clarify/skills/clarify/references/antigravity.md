@@ -40,4 +40,6 @@ ask_question({
 
 The Antigravity UI automatically numbers the picker options and appends an `Other` option (rendered as `Write-in...` in the Antigravity CLI). Never print numbered text options in prose—always pass the options to `ask_question` instead.
 
+**Antigravity option-label hook:** `hooks.json` also registers `hooks/clarify-labels.mjs` as a `PreToolUse` hook on `ask_question`. Antigravity writes the reply to the transcript before `PreToolUse` runs, so it compares the printed `### Option X.` headings with the picker labels (letters, order, the recommended option, and which option is which) and denies a mismatch, at most twice per question. After a denial, reprint the step with the corrected headings, then call `ask_question` again.
+
 **Antigravity `Stop` hook:** The plugin bundles `hooks.json` at the plugin root to register `hooks/clarify-stop-check.mjs` (with the `clarify-stop-check.sh` wrapper) automatically on `agy plugin install`. It catches `NO_TOOL_CALL` replies containing `## Question N` without `ask_question` and forces the missing call. See the plugin README (`../../../README.md`) for details and verification steps.

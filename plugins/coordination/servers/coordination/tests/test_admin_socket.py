@@ -205,11 +205,11 @@ def test_the_client_talks_to_the_server_over_the_socket(sock_dir):
     assert ok == {"echo": "status", "args": {"x": 1}} and (exc.code, exc.message) == ("refused", "no")
 
 
-def test_the_command_list_is_closed_and_has_no_expose_check_or_admin_apply():
+def test_the_command_list_is_closed_and_has_no_admin_apply():
     assert set(COMMANDS) == {
         "key.create", "key.list", "key.rotate", "key.revoke",
         "review.list", "review.show", "review.release", "review.deny",
-        "status", "card.check",
+        "status", "card.check", "expose.check",
     }  # fmt: skip
     with pytest.raises(AdminError):
         decode_request(b'[]')

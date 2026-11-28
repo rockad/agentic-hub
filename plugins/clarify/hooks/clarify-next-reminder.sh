@@ -31,7 +31,7 @@ n=$((10#${nm% *})); m=$((10#${nm#* }))
 
 if [ "$n" -lt "$m" ]; then
   next=$((n + 1))
-  msg="clarify: Question $n of $m is answered. Per-fork invariant: before you call the question tool again, print the full step for Question $next in this reply (the '## Question $next (of $m)' heading, context, argued options with pros and cons, your reading and the recommendation). The dialog must not be the only explanation, whatever the output style says."
+  msg="clarify: Question $n of $m is answered. Per-fork invariant: before you call the question tool again, print the full step for Question $next in this reply (the '## Question $next (of $m)' heading, context, argued options with pros and cons, your reading and the recommendation). Settle the recommendation and the option order before you write the headings (the recommended option is A); the dialog labels must repeat the printed headings letter for letter, and if the recommendation changes after printing, reprint the step. The dialog must not be the only explanation, whatever the output style says."
 else
   msg="clarify: the last question ($n of $m) is answered. Print the decision table, the final architecture artifact and the workstream breakdown, then ask for the go (do not tag that gate as a Question)."
 fi

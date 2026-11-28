@@ -216,6 +216,24 @@ else
   }
 fi
 
+# Option labels (issue #123): the dialog labels must repeat the printed `### Option X.` headings
+# (same letters, same options, recommended = A). Checked in node, shared with the live hooks.
+if command -v node >/dev/null 2>&1; then
+  labels_mode="--check-claude"; [ "$format" = "antigravity" ] && labels_mode="--check-agy"
+  labels="$(node "$(cd "$(dirname "$0")/.." && pwd)/plugins/clarify/hooks/clarify-labels.mjs" "$labels_mode" "$file" 2>/dev/null)" || labels=""
+  label_failed="${labels##*labelfailed=}"
+  case "$label_failed" in ''|*[!0-9]*) label_failed=0 ;; esac
+  if [ "$label_failed" -gt 0 ]; then
+    summary_line="$(printf '%s\n' "$result" | tail -n 1)"
+    body="$(printf '%s\n' "$result" | sed '$d')"
+    f0="${summary_line##*failed=}"; f0="${f0%% *}"
+    new_summary="${summary_line/failed=$f0/failed=$((f0 + label_failed))}"
+    result="$(printf '%s\n%s\n%s' "$body" "$(printf '%s\n' "$labels" | sed '/^labelfailed=/d')" "$new_summary")"
+  fi
+else
+  echo "note: node is not installed, the option-label check was skipped" >&2
+fi
+
 printf '%s\n' "$result"
 
 summary="$(printf '%s\n' "$result" | tail -n 1)"

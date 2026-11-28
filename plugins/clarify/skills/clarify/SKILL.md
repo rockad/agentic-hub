@@ -100,6 +100,7 @@ Example: `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Archite
 ## Question N (of Total) — <name of the fork, four to eight words>
 ````
 
+- **Decide first, then draft.** Before you write any `### Option X.` heading, settle which option you recommend and the order of the options: the recommended one is A. Write the headings, then "Your reading", in that order. Never relabel after the prose is printed.
 - **Context:** two to four sentences: what is decided, why it matters, what it constrains downstream.
 - **Options, argued** (two to four, mutually exclusive, genuinely different in consequence; merge cosmetic differences): for each, a technical block (ASCII diagram, snippet, DTO, schema or formula), **Pros** (two to four concrete points) and **Cons** (two to four). Four to eight lines of pros and cons per option is plenty.
 - **Your reading:** three to six sentences: why Option A is recommended, under what conditions it would flip to B or C, and which later forks this cascades into.
@@ -107,7 +108,7 @@ Example: `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Archite
 
   > **Recommendation:** **Option A: <name>** — <one clause explaining why>.
 
-- **Then the tool call:** invoke the question tool in the same reply, straight after the Recommendation. Print no extra cue line.
+- **Then the tool call:** invoke the question tool in the same reply, straight after the Recommendation. Print no extra cue line. Dialog labels repeat the printed headings letter for letter. If the recommendation changes after printing, reprint the whole step with corrected headings; never patch only the dialog. A hook denies a mismatch.
 
 Mode B's full format (Door Type and Under the Hood header, 4-question framing, example option) is in `references/plain-mode.md`. Read it before the first question in Mode B.
 

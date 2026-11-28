@@ -8,5 +8,20 @@
         "timeout": 5
       }
     ]
+  },
+  "clarify-option-labels": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/clarify-labels.mjs agy-pre",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }

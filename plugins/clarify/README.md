@@ -65,6 +65,19 @@ Rules alone stopped holding in long sessions: a terse output style repeats its b
 - It fails open if `jq` is missing. It needs `bash` and `jq`.
 - Tests: `scripts/test-clarify-next-reminder.sh`. It only runs when the skill is installed as the plugin; a plain `npx skills` copy has no Claude Code hook.
 
+## Option labels: prose and dialog must agree (issue #123)
+
+The printed step names its options `### Option A. <name>`; the question tool's dialog names them `Option A: <name>`. They can drift apart: the recommendation changes while "Your reading" is drafted, the dialog is relabelled to keep the recommended option at A, and the headings above stay as they were. The user then answers "Option B" in the dialog and means something other than the "Option B" they read. Reproduced twice (Antigravity 2026-11-27, Claude Code 2026-11-28; case study in `docs/case-studies/2026-11-27-option-label-mismatch.md`), and the same drift shows up in older sessions as a recommended "Option B" moved to the front of the list.
+
+- **Skill rule:** settle the recommendation and the option order (recommended = A) before writing any heading; if the recommendation changes after printing, reprint the whole step, never patch only the dialog.
+- **`hooks/clarify-labels.mjs`** shares one comparison for every path:
+  - Dialog only: labels are `Option A:`, `Option B:`, ... in order, and the recommended option is A.
+  - Dialog against prose: same letters, same recommended option, and each dialog option is the printed option of the same letter (a swap is caught by name similarity, so a rename that keeps the meaning passes). A reply cut by the compact transcript form (`<truncated N bytes>`) is not compared.
+- **Claude Code** (`hooks/clarify-labels.sh`, `PreToolUse` on `AskUserQuestion`): checks the dialog only, because Claude Code writes the current reply to the transcript after `PreToolUse` hooks finish. It denies a violation (and says to reprint the step), never a correct dialog, so there is no message on a normal question. The prose comparison happens offline in `scripts/check-clarify-transcript.sh`, which adds `FAIL ... option labels` lines and counts them in `failed`.
+- **Antigravity** (`hooks.json`, `PreToolUse` on `ask_question`): Antigravity writes the reply to the transcript before the hook runs, so this hook also compares the printed headings with the picker labels. It prints a `{"decision":"deny"}`; a pass-through is empty stdout (Antigravity treats `{}` from a `PreToolUse` hook as a denial).
+- Both deny at most twice per question number and conversation, so a model that ignores the message cannot loop. Both fail open; the Claude Code wrapper reports a missing `node` on stderr.
+- Tests: `scripts/test-clarify-labels.sh`.
+
 ## Claude Code notes
 
 - Claude Code may show the user only the `AskUserQuestion` dialog. So each option carries a 2–3 sentence `description` and a `preview` with `+` and `-` lines.

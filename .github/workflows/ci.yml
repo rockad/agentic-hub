@@ -46,6 +46,9 @@ jobs:
       - name: Test Clarify Next Reminder
         run: bash scripts/test-clarify-next-reminder.sh
 
+      - name: Test Clarify Option Labels
+        run: bash scripts/test-clarify-labels.sh
+
       - name: Test Jev Plugin
         run: |
           cd plugins/jev

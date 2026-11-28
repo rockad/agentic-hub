@@ -11,20 +11,14 @@ A2A_RESTIC_TAG="${A2A_RESTIC_TAG:-a2a-dumps}"
 [ -n "$A2A_RESTIC_REPO" ] || { echo "ERROR: A2A_RESTIC_REPO is required" >&2; exit 1; }
 [ -f "$A2A_RESTIC_PASSWORD_FILE" ] || { echo "ERROR: password file $A2A_RESTIC_PASSWORD_FILE is missing or not a file" >&2; exit 1; }
 
-# Check file permissions: expect exactly 3 octal digits where group and other digits are 0 (e.g. 600, 400, 700).
-# Portable stat: Linux uses stat -c %a, BSD/macOS uses stat -f %Lp
-PERMS=$(stat -c %a "$A2A_RESTIC_PASSWORD_FILE" 2>/dev/null || stat -f %Lp "$A2A_RESTIC_PASSWORD_FILE" 2>/dev/null || echo "0000")
-PERMS=$(echo "$PERMS" | sed 's/^[0-7]*\(...\)$/\1/')
+[ -r "$A2A_RESTIC_PASSWORD_FILE" ] || { echo "ERROR: password file $A2A_RESTIC_PASSWORD_FILE is not readable" >&2; exit 1; }
 
-# Extract owner, group, and other permission digits
-OWNER_PERM=$(echo "$PERMS" | cut -c1)
-GROUP_PERM=$(echo "$PERMS" | cut -c2)
-OTHER_PERM=$(echo "$PERMS" | cut -c3)
-
-# Group and other permissions must be 0 (no group or other access)
-case "$GROUP_PERM$OTHER_PERM" in
-    *[4567]*|*[123]* )
-        echo "ERROR: password file permissions $PERMS are too wide (must be 0600 or stricter)" >&2
+# Check file permissions: must be 0600 or 0400 (portable: Linux stat -c %a, BSD/macOS stat -f %Lp).
+PERMS=$(stat -c '%a' "$A2A_RESTIC_PASSWORD_FILE" 2>/dev/null || stat -f '%Lp' "$A2A_RESTIC_PASSWORD_FILE" 2>/dev/null || echo "")
+case "$PERMS" in
+    600|0600|400|0400) ;;
+    *)
+        echo "ERROR: password file permissions ${PERMS:-unknown} are too wide or invalid (must be 0600 or 0400)" >&2
         exit 1
         ;;
 esac

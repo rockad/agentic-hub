@@ -121,7 +121,7 @@ Values (placeholders; the real ones are filled in by the user on `<storage-host>
 - retention `restic forget --keep-last 3 --prune --tag a2a-dumps`;
 - schedule: one user-crontab line `45 5 * * *` in `<storage-host>`'s local time, after the existing 05:30 job and well after the 02:00 dump.
 
-Script `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh` (never written into the knowledge-archive git repository):
+Checked-in configurable reference script: [`servers/backup/a2a-restic-backup.sh`](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/servers/backup/a2a-restic-backup.sh) (uses `A2A_RESTIC_REPO`, `A2A_RESTIC_PASSWORD_FILE`, `A2A_DUMP_DIR`, `A2A_RESTIC_KEEP_LAST`, and `A2A_RESTIC_TAG`, and fails closed on missing/wide-mode secrets or empty dump directories). Example target copy at `~/.local/share/a2a-coord/<version>/bin/a2a-restic-backup.sh` (never written into the knowledge-archive git repository):
 
 ```sh
 #!/bin/sh

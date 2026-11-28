@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.hooks
+_ROOT = Path(__file__).resolve().parents  # tests, servers/coordination, servers, plugin root
+SCRIPT = (_ROOT[2] if len(_ROOT) > 2 else Path("/nonexistent")) / "backup" / "a2a-restic-backup.sh"
+pytestmark = [
+    pytest.mark.hooks,
+    pytest.mark.skipif(not SCRIPT.is_file(), reason="a2a-restic-backup.sh is outside the build context"),
+]
 
 @pytest.fixture
 def restic_env(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -61,10 +67,15 @@ def run_script(
     )
 
 
+def test_restic_script_is_executable_and_shellcheck_clean():
+    assert SCRIPT.stat().st_mode & stat.S_IXUSR, "a2a-restic-backup.sh must be executable"
+    if shutil.which("shellcheck"):
+        subprocess.run(["shellcheck", "-s", "sh", str(SCRIPT)], check=True)
+
+
 def test_restic_script_missing_repo(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
-    script = Path(__file__).parents[3] / "servers" / "backup" / "a2a-restic-backup.sh"
-    
+
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["A2A_RESTIC_PASSWORD_FILE"] = str(password_file)
@@ -72,58 +83,54 @@ def test_restic_script_missing_repo(restic_env):
     # A2A_RESTIC_REPO unset
     if "A2A_RESTIC_REPO" in env:
         del env["A2A_RESTIC_REPO"]
-        
-    res = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+
+    res = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
     assert res.returncode != 0
     assert "A2A_RESTIC_REPO is required" in res.stderr
 
 
 def test_restic_script_missing_password_file(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
-    script = Path(__file__).parents[3] / "servers" / "backup" / "a2a-restic-backup.sh"
-    
+
     missing_pw = password_file.parent / "nonexistent"
-    res = run_script(script, str(repo_dir), missing_pw, dump_dir, bin_dir)
+    res = run_script(SCRIPT, str(repo_dir), missing_pw, dump_dir, bin_dir)
     assert res.returncode != 0
     assert "missing or not a file" in res.stderr
 
 
 def test_restic_script_wide_permissions(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
-    script = Path(__file__).parents[3] / "servers" / "backup" / "a2a-restic-backup.sh"
-    
+
     password_file.chmod(0o644)
-    res = run_script(script, str(repo_dir), password_file, dump_dir, bin_dir)
+    res = run_script(SCRIPT, str(repo_dir), password_file, dump_dir, bin_dir)
     assert res.returncode != 0
     assert "permissions" in res.stderr and "too wide" in res.stderr
 
 
 def test_restic_script_empty_dump_dir(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
-    script = Path(__file__).parents[3] / "servers" / "backup" / "a2a-restic-backup.sh"
-    
+
     # dump_dir has no .dump files
-    res = run_script(script, str(repo_dir), password_file, dump_dir, bin_dir)
+    res = run_script(SCRIPT, str(repo_dir), password_file, dump_dir, bin_dir)
     assert res.returncode != 0
     assert "has no .dump files" in res.stderr
 
 
 def test_restic_script_happy_path(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
-    script = Path(__file__).parents[3] / "servers" / "backup" / "a2a-restic-backup.sh"
-    
+
     # Create a valid .dump file
     (dump_dir / "a2a-20261127T020000Z.dump").write_text("fake dump content")
-    
-    res = run_script(script, str(repo_dir), password_file, dump_dir, bin_dir)
+
+    res = run_script(SCRIPT, str(repo_dir), password_file, dump_dir, bin_dir)
     assert res.returncode == 0, res.stderr
-    
+
     stub_log = bin_dir.parent / "restic.log"
     log_content = stub_log.read_text()
-    
+
     assert f"backup {dump_dir} --tag a2a-dumps" in log_content
     assert f"forget --keep-last 3 --prune --tag a2a-dumps" in log_content
-    
+
     # Verify secret password is never echoed
     assert "secretpassword" not in log_content
     assert "secretpassword" not in res.stdout

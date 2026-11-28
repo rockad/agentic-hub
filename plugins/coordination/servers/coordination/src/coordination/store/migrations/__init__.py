@@ -32,6 +32,7 @@ from coordination.store.migrations import (
     m0002_cards_sessions_wakes_audit,
     m0003_session_aliases_conversations,
     m0004_wakes_set_hash,
+    m0005_sessions_wake_opted_in,
 )
 from coordination.store.tables import coord_schema_version
 
@@ -64,6 +65,11 @@ STEPS: tuple[Step, ...] = (
         m0003_session_aliases_conversations.upgrade,
     ),
     Step(m0004_wakes_set_hash.VERSION, m0004_wakes_set_hash.NAME, m0004_wakes_set_hash.upgrade),
+    Step(
+        m0005_sessions_wake_opted_in.VERSION,
+        m0005_sessions_wake_opted_in.NAME,
+        m0005_sessions_wake_opted_in.upgrade,
+    ),
 )
 
 LATEST: int = STEPS[-1].version

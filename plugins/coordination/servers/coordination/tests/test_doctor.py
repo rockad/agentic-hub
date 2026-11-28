@@ -469,9 +469,10 @@ def run_copy(world: World, script: Path, *args: str, path: str | None = None, ru
 
 def test_all_scripts_are_found_and_the_version_is_printed(world):
     res = world.run("--no-network")
-    for name in ("a2a-register", "a2a-listen", "a2a-pending", "a2a-agy-session", "a2a-agy-pending"):
+    for name in ("a2a-register", "a2a-listen", "a2a-pending", "a2a-agy-session", "a2a-agy-pending", "a2a-agy-listen"):
         res.expect("OK", name, "present and executable")
     res.expect("OK", "a2a-lib.sh found next to a2a-doctor")
+    res.expect("OK", "skills/a2a-wake/SKILL.md present")
     expected = json.loads((PLUGIN_DIR / "plugin.json").read_text())["version"]
     res.expect("INFO", f"plugin version {expected}")
 
@@ -1757,3 +1758,29 @@ def test_a_trace_in_shellopts_does_not_print_a_key_under_bash(world, stub):
     ready(stub)
     res = world.run(url=stub.url, runner=[BASH, "--posix", "-x"], snap=False)
     assert world.claude_key not in res.proc.stderr and world.agy_key not in res.proc.stderr
+
+
+# ---- AW4 (Z23): the agy idle-wake listener and its skill --------------------------------------------
+
+
+def test_a_missing_agy_listener_is_a_fail(world):
+    script = copy_plugin(world.tmp)
+    (script.parent / "a2a-agy-listen").unlink()
+    res = run_copy(world, script, "--no-network")
+    res.expect("FAIL", "a2a-agy-listen is missing")
+    assert res.code == 1
+
+
+def test_an_agy_listener_that_is_not_executable_is_a_fail(world):
+    script = copy_plugin(world.tmp)
+    (script.parent / "a2a-agy-listen").chmod(0o644)
+    res = run_copy(world, script, "--no-network")
+    res.expect("FAIL", "a2a-agy-listen is not executable")
+    res.expect("OK", "a2a-agy-pending present and executable")
+
+
+def test_a_missing_wake_skill_is_a_warning_not_a_fail(world):
+    script = copy_plugin(world.tmp)  # the copy has no skills/ folder
+    res = run_copy(world, script, "--no-network")
+    res.expect("WARN", "skills/a2a-wake/SKILL.md not found")
+    assert res.code == 0, res.out

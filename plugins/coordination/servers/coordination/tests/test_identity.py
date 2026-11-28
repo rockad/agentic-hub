@@ -101,7 +101,11 @@ def test_nothing_the_server_must_not_keep_is_accepted_or_stored(env):
     assert env.session_rows() == []
     register(c, env.keys.claude)
     (row,) = env.session_rows()
-    assert set(row._mapping) == {"handle", "card_id", "harness_session_id", "registered_at", "last_seen_at", "ended_at"}
+    assert set(row._mapping) == {
+        "handle", "card_id", "harness_session_id", "registered_at", "last_seen_at", "ended_at",
+        "wake_opted_in",  # AW1 (Z23): a timestamp flag, not data the server must not keep
+    }
+    assert row.wake_opted_in is None  # a registration never opts in
 
 
 @pytest.mark.parametrize(

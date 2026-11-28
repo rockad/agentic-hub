@@ -1,7 +1,7 @@
-"""The nine tools of spec section 4, and the code that runs them.
+"""The ten tools of spec section 4, and the code that runs them.
 
-The set is closed: `a2a_hello`, `a2a_inbox`, `a2a_get`, `a2a_wait`, `a2a_peers` and `a2a_runs`
-always; `a2a_send`, `a2a_respond` and `a2a_cancel` only when `A2A_ALLOW_WRITES=1` (spec 3.4: with
+The set is closed: `a2a_hello`, `a2a_inbox`, `a2a_get`, `a2a_wait`, `a2a_peers`, `a2a_runs` and
+`a2a_wake_off` always; `a2a_send`, `a2a_respond` and `a2a_cancel` only when `A2A_ALLOW_WRITES=1` (spec 3.4: with
 writes off a write tool is not listed and a call to it is an unknown tool). No tool reads a path,
 runs a command, opens a URL or proxies another server: every handler below is one call into the
 S1-STATE service layer (`CoordinationService`) plus the framing of its result. No task logic lives
@@ -156,7 +156,7 @@ class ToolSpec:
 
 
 def catalogue(max_wait_s: int) -> list[ToolSpec]:
-    """The nine tool specs. `max_wait_s` (`A2A_MAX_WAIT_S`, decision Z15) is the maximum the two
+    """The ten tool specs. `max_wait_s` (`A2A_MAX_WAIT_S`, decision Z15) is the maximum the two
     wait arguments advertise; the server also caps a larger value to it."""
     cap = max(1, max_wait_s)
     task_id = {"type": "string", "minLength": 1, "maxLength": 64}
@@ -233,6 +233,14 @@ def catalogue(max_wait_s: int) -> list[ToolSpec]:
             "Recent status reports from the status client. Empty while the status client is off.",
             _obj({"limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}, "handle": _HANDLE_ARG}),
             _READ,
+        ),
+        ToolSpec(
+            "a2a_wake_off",
+            "Turn off this session's opt-in idle wake: the server forgets that this session ever armed a "
+            "listener, so it no longer asks for it to be re-armed. Stop the background listener yourself first. "
+            "Returns whether an opt-in was cleared.",
+            _obj({"handle": _HANDLE_ARG}),
+            _SESSION,
         ),
         ToolSpec(
             "a2a_send",
@@ -359,6 +367,7 @@ class McpTools:
             "a2a_wait": self._wait,
             "a2a_peers": self._peers,
             "a2a_runs": self._runs,
+            "a2a_wake_off": self._wake_off,
             "a2a_send": self._send,
             "a2a_respond": self._respond,
             "a2a_cancel": self._cancel,
@@ -370,7 +379,7 @@ class McpTools:
         return self._identity
 
     def listing(self) -> list[dict[str, Any]]:
-        """`tools/list`: six tools, or nine with writes on."""
+        """`tools/list`: seven tools, or ten with writes on."""
         return [s.listing() for s in self._specs.values()]
 
     def known(self, name: str) -> bool:
@@ -528,6 +537,14 @@ class McpTools:
             return
         for old in ctx.bindings.unbind_others(handle, card, ctx.session.session_id):
             await self._identity.rebound(key_id, handle, old[:8], ctx.session.session_id[:8])
+
+    # -- a2a_wake_off --------------------------------------------------------------------
+
+    async def _wake_off(self, ctx: CallContext, args: dict[str, Any]) -> dict[str, Any]:
+        """AW1 (Z23): clear the calling session's `wake_opted_in`. Idempotent."""
+        handle = await self._handle(ctx, args)
+        cleared = await self._registry.clear_wake_opted_in(handle)
+        return ok({"handle": sanitize_preview(handle), "wake_opted_in": False, "cleared": cleared})
 
     # -- reads ---------------------------------------------------------------------------
 

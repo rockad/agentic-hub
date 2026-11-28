@@ -99,6 +99,8 @@ sessions = sa.Table(
     sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    #: AW1 (Z23): set on the session's first successful `/wake/listen` park, cleared by `a2a_wake_off`.
+    sa.Column("wake_opted_in", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("card_id", "harness_session_id", name="uq_sessions_card_hsid"),
 )
 

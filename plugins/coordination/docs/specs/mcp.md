@@ -7,7 +7,7 @@ Labels: **spec** is written in `server-api.md`. **[design]** is a choice made wh
 ## 1. What is in the code
 
 - `coordination/mcp/server.py`: the streamable-HTTP transport, one ASGI app (`McpEndpoint`).
-- `coordination/mcp/tools.py`: the nine-tool catalogue and the handlers. Every handler is one call into the S1-STATE `CoordinationService` plus the framing of its result. No task logic is here.
+- `coordination/mcp/tools.py`: the ten-tool catalogue and the handlers. Every handler is one call into the S1-STATE `CoordinationService` plus the framing of its result. No task logic is here.
 - `coordination/mcp/frame.py`: the untrusted-data frame of spec 4.1 (`UNTRUSTED_NOTICE`, per-part and per-result caps, part rules).
 - `coordination/mcp/sanitize.py`: escape-sequence and control-character stripping, UTF-8 truncation.
 - `coordination/mcp/sessions.py`: `McpSessions` (the `Mcp-Session-Id` map) and `SessionRegistry` (the `sessions` table, as far as MCP needs it).
@@ -56,7 +56,7 @@ The constant error: the tool result has `isError: true`, its text is exactly `No
 
 ## 4. Tools (spec section 4)
 
-The set is closed: six always, three with `A2A_ALLOW_WRITES=1`. With writes off a write tool is not listed and a `tools/call` for it is the JSON-RPC error `-32602 Unknown tool.`, the same answer as for any other unknown name. Annotations: reads `readOnlyHint: true`; writes `readOnlyHint: false, destructiveHint: false`; `a2a_hello` `readOnlyHint: false, destructiveHint: false, idempotentHint: true`; all `openWorldHint: false`. Arguments are checked against the published schema (`additionalProperties: false`); a failed check is a tool error `invalid_params: <argument> ...` that never repeats the value.
+The set is closed: seven always (the original six and `a2a_wake_off`, AW1, Z23), three with `A2A_ALLOW_WRITES=1`. With writes off a write tool is not listed and a `tools/call` for it is the JSON-RPC error `-32602 Unknown tool.`, the same answer as for any other unknown name. Annotations: reads `readOnlyHint: true`; writes `readOnlyHint: false, destructiveHint: false`; `a2a_hello` `readOnlyHint: false, destructiveHint: false, idempotentHint: true`; all `openWorldHint: false`. Arguments are checked against the published schema (`additionalProperties: false`); a failed check is a tool error `invalid_params: <argument> ...` that never repeats the value.
 
 Results: `structuredContent` and one JSON text block of the same object. A failure is `isError: true` with `<code>: <message>`; a service error keeps its constant `code` (`task_not_found`, `invalid_transition`, `already_claimed`, `forbidden`, `session_ended`, ...). An unexpected exception is `internal_error` with no detail.
 

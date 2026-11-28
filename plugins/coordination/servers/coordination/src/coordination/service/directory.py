@@ -28,6 +28,8 @@ class Session:
     registered_at: datetime
     last_seen_at: datetime
     ended_at: datetime | None
+    #: AW1 (Z23): when the session first parked an opt-in listener; None if it never did or turned it off.
+    wake_opted_in: datetime | None = None
 
     @property
     def ended(self) -> bool:
@@ -84,4 +86,5 @@ def _session(row: sa.Row) -> Session:
         registered_at=row.registered_at,
         last_seen_at=row.last_seen_at,
         ended_at=row.ended_at,
+        wake_opted_in=row.wake_opted_in,
     )

@@ -1,0 +1,272 @@
+#!/bin/sh
+# a2a-agy-listen: the opt-in idle-wake listener of an Antigravity session (AW2, decision Z23,
+# master plan 4.2a, docs/specs/agy-hooks.md and wake.md). A standalone fork of bin/a2a-listen.
+# POSIX sh plus curl, nothing else.
+#
+# The session starts it itself, in the background, when its user asks (skill a2a-wake):
+#
+#     run_command: <plugin>/bin/a2a-agy-listen <conversation-id>      (no NotificationTimeoutSeconds)
+#
+# Antigravity resumes an idle session when that background command finishes, so the listener ends
+# on the first wake and the session re-arms it. Nothing in this plugin starts, steers or wraps an
+# agy process (DDR-003): the process exists only because the session ran it.
+#
+# It long-polls POST /wake/listen in rounds of up to 900 s and acts on the status table of api 7.1:
+#   200  stdout "[a2a] N pending. Call a2a_inbox. Then re-arm the listener." (N is [1-9][0-9]{0,3}:
+#        1 to 4 digits, no leading zero, not 0), exit 0; any other body is treated as a server error
+#   408  the round ended with nothing to deliver: loop at once
+#   409  a newer listener for this session took over: exit 0, silent
+#   410  silent exit 0, but inside the first A2A_410_RETRY_S seconds (default 15) it is retried,
+#        because the session's registration (SessionStart hook or first a2a_ call) may not have
+#        landed yet (the race window of a2a-listen, BP7)
+#   401, 403  silent exit 0 (the key or the server is wrong; the doctor and the PreInvocation
+#        hook say so, a model should not be woken for it)
+#   429, 5xx, no answer  back off; the backoff resets when the call lasted at least 10 s
+#   any other status  silent exit 0 (waiting does not fix a client error)
+# It also ends, silently with exit 0, when the process that owned it at start (its parent, polled
+# every A2A_POLL_S) is gone. After A2A_LISTEN_MAX_S seconds (default 43200, 12 h) it prints
+# "[a2a] listener expired; re-arm." and exits 0.
+#
+# Usage: a2a-agy-listen <conversation-id>
+#   The conversation id is the session's own id, the one agy gives its hooks as conversationId. It
+#   must match ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$, else the script exits 0 without a call.
+#
+# stdout carries only the two constant lines above (one validated integer in the first). stderr is
+# never written. The API key is read from a file (never the environment, never argv) and handed to
+# curl on stdin with `curl -K -`; this script unsets A2A_API_KEY so curl does not inherit it either.
+#
+# Configuration (environment, all optional; A2A_SERVER_URL and A2A_AGY_KEY_FILE may also be set in
+# ${XDG_CONFIG_HOME:-~/.config}/a2a-coord/settings as KEY=value lines, read by bin/a2a-lib.sh, the
+# environment wins):
+#   A2A_SERVER_URL      default http://127.0.0.1:8120
+#   A2A_AGY_KEY_FILE    default ~/.config/a2a-coord/keys/antigravity.key, falling back to
+#                       ~/.gemini/config/mcp_config.json (the first a2ak_ token in either is the key)
+#   A2A_STATE_DIR       scratch files and agy-listen.log; default ${XDG_STATE_HOME:-~/.local/state}/a2a-coord
+#   A2A_ROUND_S         round length in seconds, 1 to 900, default 900
+#   A2A_LISTEN_MAX_S    lifetime in seconds, 1 to 604800, default 43200
+#   A2A_OWNER_PID       pid whose death ends the listener; default the parent pid
+#   A2A_POLL_S          owner-watch tick in whole seconds, default 1
+#   A2A_BACKOFF_MAX_S   default 60
+#   A2A_BACKOFF_RESET_S a call that lasted at least this long resets the backoff, default 10
+#   A2A_410_RETRY_S     window for retrying a 410 after start, default 15
+#   A2A_PROC_DIR        where the owner's /proc/<pid>/status is read; default /proc (a test seam)
+#
+# A number in the environment is taken only as digits without a leading zero (dash reads 08 and 09
+# as bad octal) and of at most 9 digits; anything else keeps the default.
+#
+# Exits 0 on every path, whatever happens: a shell error (a failed arithmetic expansion, a failed
+# redirection) is silenced too, so nothing but the two constant lines can ever reach the model.
+
+unset A2A_API_KEY
+umask 077
+exec 2>/dev/null
+
+LC_ALL=C # a plain assignment: the shell's own 512-byte limit and the control-character test of the lib count bytes
+# shellcheck source=/dev/null
+if [ -r "${0%/*}/a2a-lib.sh" ]; then . "${0%/*}/a2a-lib.sh" && a2a_load_config; fi
+
+num() { # value default min max: the value if it is an integer inside [min, max], else the default
+  case $1 in
+    '' | *[!0-9]* | 0?*) printf '%s' "$2"; return ;; # not a number, or a leading zero (bad octal in dash)
+  esac
+  # a number too long for shell arithmetic would abort the script: keep the default
+  if [ "${#1}" -gt 9 ]; then printf '%s' "$2"; return; fi
+  if [ "$1" -lt "$3" ] || [ "$1" -gt "$4" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+
+# on any shell error `set -e` is not used: every path below ends in an explicit exit 0
+conv=${1:-}
+case $conv in
+  '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.:-]*) exit 0 ;;
+esac
+[ "${#conv}" -le 128 ] || exit 0
+
+URL=${A2A_SERVER_URL:-http://127.0.0.1:8120}
+URL=${URL%/}
+# only http(s) and plain URL characters, so a value can never turn into a curl option
+case $URL in
+  http://* | https://*) ;;
+  *) exit 0 ;;
+esac
+case $URL in
+  *[!A-Za-z0-9._~:/@%-]*) exit 0 ;;
+esac
+ROUND=$(num "${A2A_ROUND_S:-}" 900 1 900)
+MAXS=$(num "${A2A_LISTEN_MAX_S:-}" 43200 1 604800)
+POLL=$(num "${A2A_POLL_S:-}" 1 1 60)
+BMAX=$(num "${A2A_BACKOFF_MAX_S:-}" 60 1 3600)
+RESET=$(num "${A2A_BACKOFF_RESET_S:-}" 10 1 3600)
+RETRY410=$(num "${A2A_410_RETRY_S:-}" 15 0 3600)
+STATE=${A2A_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/a2a-coord}
+KEYFILE=""
+a2a_resolve_keyfile antigravity && KEYFILE="$A2A_RESOLVED_KEYFILE"
+unset A2A_RESOLVED_KEYFILE
+
+command -v curl > /dev/null 2>&1 || exit 0
+mkdir -p "$STATE" 2> /dev/null || exit 0
+[ -d "$STATE" ] && [ -w "$STATE" ] || exit 0
+# an own directory only: the temp names are predictable (no `test -O` in POSIX sh)
+[ -n "$(find "$STATE" -maxdepth 0 -user "$(id -u)" 2> /dev/null)" ] || exit 0
+LOG=$STATE/agy-listen.log
+TMP=$STATE/agy-run.$$
+
+log() { # one line, no server body, ever; the log is capped at 256 KiB
+  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2> /dev/null || echo 0)" -gt 262144 ]; then ( : > "$LOG" ) 2> /dev/null; fi
+  printf '%s pid=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*" >> "$LOG" 2> /dev/null
+}
+
+# ---- owner process -----------------------------------------------------------------------------
+
+OWNER=''
+case ${A2A_OWNER_PID:-} in '' | *[!0-9]*) ;; *) OWNER=$A2A_OWNER_PID ;; esac
+[ -n "$OWNER" ] || OWNER=$PPID
+[ "$OWNER" -gt 1 ] 2> /dev/null || OWNER=$PPID
+
+PROCDIR=${A2A_PROC_DIR:-/proc}
+
+owner_alive() { # kill -0 is also true for a zombie, so read the state: /proc, else ps
+  kill -0 "$OWNER" 2> /dev/null || return 1
+  if [ -r "$PROCDIR/$OWNER/status" ]; then
+    while IFS= read -r line; do
+      case $line in
+        State:*Z* | State:*X*) return 1 ;;
+        State:*) return 0 ;;
+      esac
+    done < "$PROCDIR/$OWNER/status"
+  else
+    # no /proc (macOS): an empty answer or a state starting with Z (zombie) or X (dead) is gone
+    st=$(ps -o stat= -p "$OWNER" 2> /dev/null | tr -d '[:space:]')
+    case $st in '' | Z* | X*) return 1 ;; esac
+  fi
+  return 0
+}
+
+# ---- key ---------------------------------------------------------------------------------------
+
+# The antigravity key may be a bare key file or the user's mcp_config.json (the one-release fallback
+# of a2a-lib.sh): the first a2ak_ token in the first 64 KiB is the key, as in the agy hooks.
+KEY=''
+if [ -f "$KEYFILE" ] && [ -r "$KEYFILE" ]; then
+  KEY=$(head -c 65536 "$KEYFILE" 2> /dev/null | tr '\n' ' ' | grep -o 'a2ak_[A-Za-z0-9_-]*' | head -n 1)
+fi
+case $KEY in
+  a2ak_*_*_*) ;;
+  *) log "no usable API key in the key file, exit 0"; exit 0 ;;
+esac
+
+# ---- state -------------------------------------------------------------------------------------
+
+CURL_PID=''
+cleanup() {
+  [ -n "$CURL_PID" ] && kill "$CURL_PID" 2> /dev/null
+  rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
+}
+trap 'log "signal received, exit 0"; cleanup; exit 0' TERM INT HUP
+trap 'cleanup; exit 0' EXIT
+
+find "$STATE" -maxdepth 1 -type f -name 'agy-run.*' -mtime +1 -exec rm -f {} + 2> /dev/null # left by a killed run
+
+expire() { # the lifetime is over: the one line that tells the session to re-arm
+  log "lifetime of ${MAXS}s reached, exit 0"
+  printf '[a2a] listener expired; re-arm.\n'
+  exit 0
+}
+
+nap() { # $1 seconds, in POLL steps, ending the listener early if the owner dies or the lifetime ends
+  left=$1
+  while [ "$left" -gt 0 ]; do
+    owner_alive || { log "owner $OWNER gone during a wait, exit 0"; exit 0; }
+    [ $(( $(date +%s) - t_start )) -lt "$MAXS" ] || expire
+    sleep "$POLL"
+    left=$((left - POLL))
+  done
+}
+
+owner_alive || { log "owner $OWNER is not alive at start, exit 0"; exit 0; }
+log "start owner=$OWNER round=${ROUND}s max=${MAXS}s"
+
+cr=$(printf '\r')
+n=0
+again=1 # X-Coord-Again: the number of the PARKED round (1 = first). The server opts the session in on 1, so a refused
+        # or failed attempt (410 inside the start window, 429, 5xx) must not use it up; only a round that ended 408 does.
+backoff=1
+t_start=$(date +%s)
+
+while :; do
+  owner_alive || { log "owner $OWNER gone, exit 0"; exit 0; }
+  [ $(( $(date +%s) - t_start )) -lt "$MAXS" ] || expire
+  n=$((n + 1))
+  t0=$(date +%s)
+  rm -f "$TMP.body" "$TMP.hdr" "$TMP.code" "$TMP.err"
+  ( : > "$TMP.code" ) 2> /dev/null
+  # The key goes to curl on stdin as a config line: it never appears in argv, and this script does
+  # not export it, so it is not in curl's environment either.
+  curl -q -sS --proto '=http,https' --noproxy '*' -o "$TMP.body" -D "$TMP.hdr" -w '%{http_code}' \
+    --connect-timeout 10 --max-time "$((ROUND + 30))" -K - -X POST \
+    -H "X-Coord-Session: $conv" -H "X-Coord-Wait: $ROUND" -H "X-Coord-Again: ${again}" \
+    "$URL/wake/listen" > "$TMP.code" 2> "$TMP.err" << EOF &
+header = "Authorization: Bearer $KEY"
+EOF
+  CURL_PID=$!
+  # A finished child stays a zombie until it is waited for, so completion is judged by curl's
+  # -w output (written last, also for 000), not by kill -0 alone.
+  while [ ! -s "$TMP.code" ] && kill -0 "$CURL_PID" 2> /dev/null; do
+    if ! owner_alive; then
+      log "owner $OWNER gone while parked, exit 0"
+      kill "$CURL_PID" 2> /dev/null; wait "$CURL_PID" 2> /dev/null; CURL_PID=''
+      exit 0
+    fi
+    if [ $(( $(date +%s) - t_start )) -ge "$MAXS" ]; then
+      kill "$CURL_PID" 2> /dev/null; wait "$CURL_PID" 2> /dev/null; CURL_PID=''
+      expire
+    fi
+    sleep "$POLL"
+  done
+  wait "$CURL_PID" 2> /dev/null
+  CURL_PID=''
+  code=$(cat "$TMP.code" 2> /dev/null); [ -n "$code" ] || code=000
+  dur=$(( $(date +%s) - t0 ))
+  log "round=$n http=$code dur=${dur}s"
+
+  case $code in
+    200)
+      body=$(cat "$TMP.body" 2> /dev/null) # command substitution drops trailing newlines
+      body=${body%"$cr"}
+      case $body in '' | *[!0-9]* | 0*) body='' ;; esac # [1-9][0-9]{0,3}: no 0, no leading zero
+      if [ -n "$body" ] && [ "${#body}" -le 4 ]; then
+        log "wake: $body pending, exit 0"
+        printf '[a2a] %s pending. Call a2a_inbox. Then re-arm the listener.\n' "$body"
+        exit 0
+      fi
+      log "200 with a body that is not a count of 1 to 4 digits: not waking, treated as a server error"
+      code=500 ;;
+    408)
+      backoff=1; again=$((again + 1)); continue ;;
+    409)
+      log "409 superseded, exit 0"; exit 0 ;;
+    401 | 403)
+      log "$code, exit 0"; exit 0 ;;
+    410)
+      # Inside the start window the registration may not have landed yet: retry. After it, final.
+      if [ $(( $(date +%s) - t_start )) -lt "$RETRY410" ]; then
+        log "410 inside the ${RETRY410}s start window, retrying"
+        nap 1; continue
+      fi
+      log "410, exit 0"; exit 0 ;;
+    429 | 5[0-9][0-9] | 000) ;;
+    *)
+      # A client error the table does not list (400, 404, 413 ...) does not go away by waiting.
+      log "http=$code is not in the status table, exit 0"; exit 0 ;;
+  esac
+
+  # 429, 5xx, no answer: back off, never wake. A long call resets the backoff.
+  [ "$dur" -ge "$RESET" ] && backoff=1
+  ra=$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$TMP.hdr" 2> /dev/null | head -n 1)
+  ra=$(num "$ra" 0 0 3600) # a leading zero or a huge value must not reach shell arithmetic
+  delay=$backoff
+  [ -n "$ra" ] && [ "$ra" -gt "$delay" ] && delay=$ra
+  [ "$delay" -gt "$BMAX" ] && delay=$BMAX
+  log "http=$code, backing off ${delay}s"
+  nap "$delay"
+  backoff=$((backoff * 2)); [ "$backoff" -gt "$BMAX" ] && backoff=$BMAX
+done

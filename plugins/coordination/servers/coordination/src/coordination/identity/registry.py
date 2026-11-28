@@ -252,6 +252,29 @@ class SessionRegistry:
         async with self._engine.begin() as conn:
             await conn.execute(stmt)
 
+    async def set_wake_opted_in(self, handle: str) -> bool:
+        """AW1 (Z23): mark a live session as opted in to idle wake, only while it is not yet. True if
+        this call set it (the first park), False if it was already set, ended or unknown."""
+        stmt = (
+            sa.update(sessions)
+            .where(sessions.c.handle == handle, sessions.c.ended_at.is_(None), sessions.c.wake_opted_in.is_(None))
+            .values(wake_opted_in=self._clock.now())
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+        return bool(result.rowcount)
+
+    async def clear_wake_opted_in(self, handle: str) -> bool:
+        """AW1 (Z23, `a2a_wake_off`): forget the opt-in. True if it was set, False if it was not."""
+        stmt = (
+            sa.update(sessions)
+            .where(sessions.c.handle == handle, sessions.c.wake_opted_in.is_not(None))
+            .values(wake_opted_in=None)
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+        return bool(result.rowcount)
+
     async def idle_handles(self, last_seen_before: datetime) -> list[str]:
         """Handles of live sessions with no call since `last_seen_before` (the idle-TTL candidates),
         oldest first."""
@@ -353,4 +376,5 @@ def _session(row: sa.Row) -> Session:
         registered_at=row.registered_at,
         last_seen_at=row.last_seen_at,
         ended_at=row.ended_at,
+        wake_opted_in=row.wake_opted_in,
     )

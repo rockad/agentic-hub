@@ -9,10 +9,16 @@
 #
 # Contract
 #   stdin    the hook input JSON (camelCase). Read: conversationId and the first workspacePaths entry.
-#   stdout   `{}` in every case except an announcement. An announcement is exactly
-#            {"injectSteps":[{"systemMessage":{"systemMessage":"[a2a] N pending. Call a2a_inbox."}}]}
-#            with N an integer 1 to 9999 and nothing else varying (Y5, Y6; the nested systemMessage
-#            object is the verified injectSteps shape, SP3 P1b and P4b).
+#   stdout   `{}` in every case except an announcement. An announcement is one injectSteps
+#            systemMessage whose text is made only of these constants (the nested systemMessage object
+#            is the verified injectSteps shape, SP3 P1b and P4b):
+#              "[a2a] N pending. Call a2a_inbox."   with N an integer 1 to 9999 and nothing else varying
+#                                                   (Y5, Y6), when the server says `announce`
+#              "[a2a] listener not armed: re-arm it (skill a2a-wake)."
+#                                                   (AW3, Z23) when the server says `rearm`, the session
+#                                                   has opted in to idle wake and no listener is parked;
+#                                                   the server tells it at most once per 10 minutes
+#            both, in that order separated by one space, when both apply.
 #   stderr   never written.
 #   exit     always 0, on every failure: a hook must never block or break a model call (Y6, SP3 P5).
 #
@@ -150,15 +156,32 @@ case $body in
 esac
 
 announce=$(printf '%s' "$body" | grep -o '"announce"[[:space:]]*:[[:space:]]*[a-z]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
-[ "$announce" = true ] || nothing
 
-n=$(printf '%s' "$body" | grep -o '"pending"[[:space:]]*:[[:space:]]*[-0-9.eE+]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
-case $n in
-  '' | 0* | *[!0-9]*) nothing ;;
-esac
-# The server records the announcement before this script prints, and clamps its own stub to 9999
-# (wake/outcomes.py), so a larger count prints as 9999 instead of being lost until the repeat.
-[ "${#n}" -le 4 ] || n=9999
+msg=
+if [ "$announce" = true ]; then
+  n=$(printf '%s' "$body" | grep -o '"pending"[[:space:]]*:[[:space:]]*[-0-9.eE+]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+  case $n in
+    '' | 0* | *[!0-9]*) ;;
+    *)
+      # The server records the announcement before this script prints, and clamps its own stub to 9999
+      # (wake/outcomes.py), so a larger count prints as 9999 instead of being lost until the repeat.
+      [ "${#n}" -le 4 ] || n=9999
+      msg="[a2a] $n pending. Call a2a_inbox."
+      ;;
+  esac
+fi
 
-printf '{"injectSteps":[{"systemMessage":{"systemMessage":"[a2a] %s pending. Call a2a_inbox."}}]}\n' "$n"
+# AW3 (Z23): an opted-in session whose idle-wake listener is gone is asked to re-arm it, at most once
+# per announce window (the server keeps that memory: `rearm` is true only then). The three fields are
+# checked together, so one stray field in the reply cannot print the line.
+rearm=$(printf '%s' "$body" | grep -o '"rearm"[[:space:]]*:[[:space:]]*[a-z]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+opted=$(printf '%s' "$body" | grep -o '"wake_opted_in"[[:space:]]*:[[:space:]]*[a-z]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+listening=$(printf '%s' "$body" | grep -o '"listening"[[:space:]]*:[[:space:]]*[a-z]*' | head -n 1 | sed 's/^[^:]*:[[:space:]]*//')
+if [ "$rearm" = true ] && [ "$opted" = true ] && [ "$listening" = false ]; then
+  msg="${msg:+$msg }[a2a] listener not armed: re-arm it (skill a2a-wake)."
+fi
+
+[ -n "$msg" ] || nothing
+
+printf '{"injectSteps":[{"systemMessage":{"systemMessage":"%s"}}]}\n' "$msg"
 exit 0

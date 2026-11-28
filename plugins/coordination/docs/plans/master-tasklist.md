@@ -333,15 +333,15 @@ Off by default; contract in `docs/specs/status-client.md`. `status_runs` and `st
 
 ### 3.9 AW: agy idle wake (design in master-plan 4.2a, decision Z23)
 
-Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-agywake` (local only, not pushed, no PR). Update this table and the checklist in 4.2 on every stream change, then commit.
+Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-agywake` (AW1–AW4 built, local only, not yet pushed, no PR yet). Update this table and the checklist in 4.2 on every stream change, then commit.
 
 | Stream | Scope | Status | Branch / sha | Evidence | Next action |
 | --- | --- | --- | --- | --- | --- |
 | AW0 | two-agy-session manual test | done 2026-11-28 (gate passed: C1 and C5 pass) | `main` (`4046d7c`) | `docs/research/spike-results-2026-11-28-agy-idle-wake.md` | none |
-| AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | in progress (single PR on `feat/coordination-agy-idle-wake`, delegated to peer session `65a6a5d2`) | `feat/coordination-agy-idle-wake` | | implement m0005, `listening` in `/wake/pending`, `a2a_wake_off`, tests |
-| AW2 | `bin/a2a-agy-listen` + tests | ready (AW0 passed) | `feat/coordination-agy-idle-wake` | | fork `a2a-listen`, add tests modelled on `test_hooks_listen.py` |
-| AW3 | agy session/pending hooks, skill `a2a-wake`, rules | blocked by AW1, AW2 | `feat/coordination-agy-idle-wake` | | update hooks, add `skills/a2a-wake/SKILL.md` and rule |
-| AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | blocked by AW1 to AW3 | `feat/coordination-agy-idle-wake` | | update docs, D9 status, and `a2a-doctor` |
+| AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | built, in the single PR on `feat/coordination-agy-idle-wake` (peer session `65a6a5d2`) | `feat/coordination-agy-idle-wake` | `servers/coordination/tests/test_wake_opt_in.py`; spec `docs/specs/wake.md` section 13 | review and merge the PR |
+| AW2 | `bin/a2a-agy-listen` + tests | built, in the single PR | `feat/coordination-agy-idle-wake` | `servers/coordination/tests/test_agy_listen.py`, `test_agy_wake_e2e.py` | review and merge the PR |
+| AW3 | agy session/pending hooks, skill `a2a-wake`, rules | built, in the single PR | `feat/coordination-agy-idle-wake` | `tests/test_agy_hooks.py`, `tests/test_plugin_layout.py` | review and merge the PR |
+| AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | built, in the single PR (D9 recorded as superseded by Z23 in `docs/specs/agy-hooks.md` section 11) | `feat/coordination-agy-idle-wake` | `tests/test_doctor.py` | review and merge the PR |
 | AW5 | shared core in `a2a-lib.sh` for listen and pending | later phase, plan only | | | |
 | AW6 | clarify case study + GitHub issue | done | `main` | `plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, [issue #123](https://github.com/rockad/agentic-hub/issues/123) | none (fix tracked in issue #123) |
 
@@ -469,7 +469,7 @@ AW: agy idle wake (3.9)
 - [x] AW0: write the two-session runbook
 - [x] (user) AW0: ran the runbook in two agy sessions (`2026-11-28`, `C1` and `C5` pass, `C7` pass, `C8` re-arm required on resume); results in `docs/research/spike-results-2026-11-28-agy-idle-wake.md` (`4046d7c`)
 - [x] AW6: clarify case study and GitHub issue (`plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, issue #123)
-- [ ] AW1 to AW4: single PR on `feat/coordination-agy-idle-wake` (user decision `2026-11-28`; AW0 gate passed)
+- [x] AW1 to AW4: built on `feat/coordination-agy-idle-wake` (single PR per user decision `2026-11-28`; AW0 gate passed); awaiting full test pass, push and PR review
 - [ ] AW5: later phase, shared core for listen and pending (plan only)
 
 ### 4.3 S2: production on <storage-host>

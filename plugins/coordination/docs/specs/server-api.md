@@ -1191,7 +1191,7 @@ When there is nothing to announce it returns `{}` with status 200. The string is
 - Esc-interrupted turns fire no `Stop`, so nothing re-arms until the next completed turn [reported].
 - The hook `timeout` is enforced for `asyncRewake`; the script loops 900 s rounds inside a 604800 s timeout and nothing re-arms after SIGTERM until the next `Stop` or `SessionStart` [verified, hooks docs line quoted in t1b section 4]. Tasks therefore stay queued server-side.
 - Required Claude Code version: 2.1.290 or later [reported, derived from the changelog by zb-ss]. The install step checks `claude --version`.
-- agy has no idle wake. Accepted asymmetry [D9]. Pending tasks surface at the next model call through the PreInvocation hook, at session start through the `SessionStart` `injectSteps` instruction [D27], and on demand through `a2a_wait`.
+- agy has no idle wake by default. Accepted asymmetry [D9], **superseded by the opt-in idle wake of Z23** (master plan 4.2a, `docs/specs/agy-hooks.md` section 11): a session that the user asked to listen is woken by a background listener. Pending tasks surface at the next model call through the PreInvocation hook, at session start through the `SessionStart` `injectSteps` instruction [D27], and on demand through `a2a_wait`.
 - Held Stop park for agy: spike only, not shipped [D9]. Needs the agy spikes in section 12.
 
 - As built (S1-WAKE, 2026-11-18): the listener table, `POST /wake/listen`, `GET|POST /wake/pending`, the budget, the anti-loop rule and the wake confirmation are in `coordination/wake/`; see [wake.md](https://github.com/rockad/agentic-hub/blob/main/plugins/coordination/docs/specs/wake.md). No table or migration changed (`wakes` is migration 2's). Additions to this section, all [design]:

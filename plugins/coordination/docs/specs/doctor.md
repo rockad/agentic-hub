@@ -43,8 +43,9 @@ The server URL is checked once, as the hook scripts check it: `http://` or `http
 | Check | Result |
 | --- | --- |
 | `a2a-lib.sh` next to the doctor | `OK`, else `FAIL` |
-| `a2a-register a2a-listen a2a-pending a2a-agy-session a2a-agy-pending` exist | `OK`, else `FAIL` |
+| `a2a-register a2a-listen a2a-pending a2a-agy-session a2a-agy-pending a2a-agy-listen` exist | `OK`, else `FAIL` |
 | ... and are executable | `OK`, else `FAIL` |
+| `../skills/a2a-wake/SKILL.md` exists (AW4, Z23: the skill that arms the opt-in agy idle wake) | `OK`, else `WARN` (a missing skill does not break the hooks) |
 | `curl` on PATH | `OK`, else `FAIL` |
 | version from `../plugin.json` (`jq` when present, else `sed`) | `INFO plugin version X`, else `WARN` |
 

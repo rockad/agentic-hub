@@ -881,12 +881,12 @@ Streams:
 | Stream | Scope | Deliverable and acceptance | Depends on |
 | --- | --- | --- | --- |
 | AW0 | `docs/research/spike-runbook-2026-11-27-agy-idle-wake.md` and `docs/research/spike-results-2026-11-28-agy-idle-wake.md` | **DONE 2026-11-28 (`4046d7c`):** Two-session manual test, `C1` and `C5` (37m idle) PASS, `C7` PASS, `C8` confirmed re-arm required on resume | none |
-| AW1 | `servers/coordination/` (migration m0005, wake service, `/wake/pending`, MCP `a2a_wake_off`) | `wake_opted_in` nullable column set on first park, `listening` in the pending reply, `a2a_wake_off`, tests, `uv run pytest` green | AW0 pass |
-| AW2 | `bin/a2a-agy-listen`, tests | Fork of `a2a-listen` per decisions 5 and 6, tests modelled on `test_hooks_listen.py`, `shellcheck` clean | AW0 pass |
-| AW3 | `bin/a2a-agy-session`, `bin/a2a-agy-pending`, `skills/a2a-wake/SKILL.md`, `rules/AGENTS.md` | Advert clause, opted-in re-arm line, the exact `run_command` and `schedule` recipe, rule "arm only on the user's request" | AW1, AW2 |
-| AW4 | `docs/specs/agy-hooks.md`, `wake.md`, README, `a2a-doctor` | Docs, D9 revised, doctor check | AW1 to AW3 |
+| AW1 | `servers/coordination/` (migration m0005, wake service, `/wake/pending`, MCP `a2a_wake_off`) | **BUILT (`feat/coordination-agy-idle-wake`):** `wake_opted_in` nullable column set on first park, `listening`/`wake_opted_in`/`rearm` in the pending reply, `a2a_wake_off`, tests | AW0 pass |
+| AW2 | `bin/a2a-agy-listen`, tests | **BUILT (`feat/coordination-agy-idle-wake`):** Fork of `a2a-listen` per decisions 5 and 6, tests in `test_agy_listen.py`, `shellcheck` clean | AW0 pass |
+| AW3 | `bin/a2a-agy-session`, `bin/a2a-agy-pending`, `skills/a2a-wake/SKILL.md`, `rules/AGENTS.md` | **BUILT (`feat/coordination-agy-idle-wake`):** Advert clause, opted-in re-arm line, exact `run_command` and `schedule` recipe, rule "arm only on the user's request" | AW1, AW2 |
+| AW4 | `docs/specs/agy-hooks.md`, `wake.md`, README, `a2a-doctor` | **BUILT (`feat/coordination-agy-idle-wake`):** Docs, D9 superseded by Z23, doctor check + tests | AW1 to AW3 |
 | AW5 | `a2a-lib.sh`, both listen and both pending scripts | **Later phase, plan only:** one shared loop and pending core, thin wrappers per harness | AW4 |
-| AW6 | `plugins/clarify/docs/case-studies/`, GitHub issue | Case study of the option-label mismatch seen in this round, plus an issue on `rockad/agentic-hub` | none |
+| AW6 | `plugins/clarify/docs/case-studies/`, GitHub issue | **DONE:** Case study of the option-label mismatch seen in this round, plus [issue #123](https://github.com/rockad/agentic-hub/issues/123) on `rockad/agentic-hub` | none |
 
 Re-plan if: the AW0 test fails C1 or C5 (then cron-only), C3 shows no stable PPID (drop the pid watch), or conversations are unloaded while idle.
 

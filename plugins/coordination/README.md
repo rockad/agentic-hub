@@ -212,11 +212,13 @@ plugins/coordination/
 ├── hooks.json                    # agy hooks: group a2a-coord, SessionStart and PreInvocation, commands ./bin/a2a-agy-*
 ├── claude/hooks.json             # Claude hooks (named by the Claude manifest): "${CLAUDE_PLUGIN_ROOT}/bin/..." commands
 ├── claude/mcp.json               # Claude MCP entry a2a-coord (agy never sees it; there is no mcp_config.json here)
+├── skills/a2a-wake/SKILL.md      # arm or disarm the opt-in agy idle wake (listener plus hourly heartbeat)
 ├── bin/
 │   ├── a2a-lib.sh                # sourced settings reader & per-harness key resolver (~/.config/a2a-coord/settings)
 │   ├── a2a-mcp-headers           # Claude MCP headersHelper: reads keys/claude-code.key
 │   ├── a2a-register, a2a-listen, a2a-pending            # Claude hooks
 │   ├── a2a-agy-session, a2a-agy-pending                 # agy hooks (agy only)
+│   ├── a2a-agy-listen            # opt-in idle-wake listener for agy, started by the session itself (skill a2a-wake), never a hook
 │   └── a2a-doctor                # run by hand: checks the install, edits nothing (no hook)
 ├── docker-compose.yml            # the server stack (port 8120)
 ├── servers/coordination/         # the server: uv project, Dockerfile, src, tests

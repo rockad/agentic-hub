@@ -104,7 +104,7 @@ def test_the_official_client_connects_binds_and_exchanges_a_task_between_both_ha
     async def scenario() -> None:
         async with official_client(served, keys.claude) as claude, official_client(served, keys.agy) as agy:
             tools = await claude.list_tools()
-            assert len(tools.tools) == 9
+            assert len(tools.tools) == 10
             # The client really opened with `server/discover` and fell back to `initialize`.
             assert "server/discover" in served.methods and "initialize" in served.methods
             assert served.methods.index("server/discover") < served.methods.index("initialize")

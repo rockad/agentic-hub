@@ -235,6 +235,14 @@ def catalogue(max_wait_s: int) -> list[ToolSpec]:
             _READ,
         ),
         ToolSpec(
+            "a2a_wake_off",
+            "Turn off this session's opt-in idle wake: the server forgets that this session ever armed a "
+            "listener, so it no longer asks for it to be re-armed. Stop the background listener yourself first. "
+            "Returns whether an opt-in was cleared.",
+            _obj({"handle": _HANDLE_ARG}),
+            _SESSION,
+        ),
+        ToolSpec(
             "a2a_send",
             "Send a task to another session (a handle) or to a card (any live session of it). Your "
             "identity is the bound session; there is no from argument. wait_seconds above 0 waits for "
@@ -359,6 +367,7 @@ class McpTools:
             "a2a_wait": self._wait,
             "a2a_peers": self._peers,
             "a2a_runs": self._runs,
+            "a2a_wake_off": self._wake_off,
             "a2a_send": self._send,
             "a2a_respond": self._respond,
             "a2a_cancel": self._cancel,
@@ -528,6 +537,14 @@ class McpTools:
             return
         for old in ctx.bindings.unbind_others(handle, card, ctx.session.session_id):
             await self._identity.rebound(key_id, handle, old[:8], ctx.session.session_id[:8])
+
+    # -- a2a_wake_off --------------------------------------------------------------------
+
+    async def _wake_off(self, ctx: CallContext, args: dict[str, Any]) -> dict[str, Any]:
+        """AW1 (Z23): clear the calling session's `wake_opted_in`. Idempotent."""
+        handle = await self._handle(ctx, args)
+        cleared = await self._registry.clear_wake_opted_in(handle)
+        return ok({"handle": sanitize_preview(handle), "wake_opted_in": False, "cleared": cleared})
 
     # -- reads ---------------------------------------------------------------------------
 

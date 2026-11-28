@@ -47,7 +47,7 @@ def _walk(value, path=()):
 
 def test_the_tool_catalogue_names_no_forbidden_capability():
     specs = catalogue(50)
-    assert len(specs) == 9
+    assert len(specs) == 10
     for spec in specs:
         assert not FORBIDDEN.search(spec.name), spec.name
         for path, text in _walk(spec.schema):

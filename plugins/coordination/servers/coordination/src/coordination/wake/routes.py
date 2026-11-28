@@ -13,7 +13,9 @@ Errors that the table of spec 7.1 does not list (a missing or malformed header) 
 `application/problem+json` [design].
 
 `/wake/pending` is the busy-session path. `GET ?session=<id>[&announce=1]` returns
-`{"pending", "announce", "held_for_review"}`. `POST` takes the Claude Code `UserPromptSubmit` HTTP
+`{"pending", "announce", "held_for_review", "listening", "wake_opted_in", "rearm"}` (the last three are
+AW1, Z23: a listener is parked now, the session has opted in to idle wake, and with `announce=1` it
+should re-arm its listener now, at most once per announce window). `POST` takes the Claude Code `UserPromptSubmit` HTTP
 hook input and returns the hook output: only `session_id` is read from the body (the body also
 carries the prompt text, which is never read, stored or logged), and the answer is `{}` unless
 there is something to announce, then the `hookSpecificOutput` form SP1 T11 recorded as the only
@@ -134,6 +136,10 @@ class WakeEndpoint:
         if delay is not None:
             return _bare(429, {"Retry-After": str(max(1, int(delay + 0.999)))})
         entry = self._wake.table.park(session.handle, card_id, key_id)
+        # AW1 (Z23): a listener's first round is its opt-in. Later rounds (`X-Coord-Again` above 1)
+        # do not set it, so a listener that outlives `a2a_wake_off` does not undo it.
+        if again in ("", "1"):
+            await self._wake.opt_in(session)
         log.debug("listener parked", extra={"fields": {"again": again[:8] if again.isdigit() else None}})
         release = await self._wake.listen(entry, wait, request.receive)
         return response_for(release)
@@ -159,7 +165,16 @@ class WakeEndpoint:
         if session.ended:
             return _bare(410, {"X-Coord-Reason": "ended"})
         view = await self._wake.pending(session, announce=flag == "1")
-        response = JSONResponse({"pending": view.pending, "announce": view.announce, "held_for_review": view.held_for_review})
+        response = JSONResponse(
+            {
+                "pending": view.pending,
+                "announce": view.announce,
+                "held_for_review": view.held_for_review,
+                "listening": view.listening,
+                "wake_opted_in": view.wake_opted_in,
+                "rearm": view.rearm,
+            }
+        )
         response.headers["Cache-Control"] = "no-store"
         return response
 

@@ -222,14 +222,14 @@ def test_schema_checker_refuses_a_keyword_it_does_not_know():
         schema.check({"type": "object", "patternProperties": {}}, {})
 
 
-def test_tool_catalogue_is_the_closed_set_of_nine():
+def test_tool_catalogue_is_the_closed_set_of_ten():
     names = [s.name for s in catalogue(50)]
-    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_send", "a2a_respond", "a2a_cancel"]
+    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off", "a2a_send", "a2a_respond", "a2a_cancel"]
     assert [s.name for s in catalogue(50) if s.write] == ["a2a_send", "a2a_respond", "a2a_cancel"]
     for spec in catalogue(50):
         if spec.write:
             assert spec.annotations["readOnlyHint"] is False and spec.annotations["destructiveHint"] is False
-        elif spec.name != "a2a_hello":
+        elif spec.name not in ("a2a_hello", "a2a_wake_off"):
             assert spec.annotations["readOnlyHint"] is True
 
 

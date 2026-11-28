@@ -129,7 +129,7 @@ def test_the_baseline_is_a_real_scenario_with_a_held_task_that_stays_held(baseli
 
 # -- the tool set is closed ----------------------------------------------------------------------------
 
-NINE = ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_send", "a2a_respond", "a2a_cancel"]
+NINE = ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off", "a2a_send", "a2a_respond", "a2a_cancel"]
 UNLISTED = [
     "a2a_approve", "a2a_release", "a2a_review", "a2a_release_hold", "a2a_sweep", "a2a_run", "a2a_exec", "a2a_shell",
     "jev_set_mode", "jev_get_mode", "run_command", "bash", "read_file", "fetch", "proxy", "tools/call", "a2a_hello ",

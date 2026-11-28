@@ -35,6 +35,9 @@ except IndexError:  # the server image runs the suite from a path without a repo
     REPO_ROOT = None
 
 AGY_ONLY = {"a2a-agy-session", "a2a-agy-pending"}
+# The agy idle-wake listener (AW2, Z23): started by the session itself with `run_command` when the user asks
+# (skill a2a-wake), so it is in neither hooks file.
+AGY_LISTEN = "a2a-agy-listen"
 CLAUDE_ONLY = {"a2a-register", "a2a-listen", "a2a-pending"}
 # The doctor is run by hand, never as a hook: it is in neither hooks file (docs/specs/doctor.md).
 DOCTOR = "a2a-doctor"
@@ -166,7 +169,7 @@ def test_the_agy_only_scripts_are_listed_in_the_agy_hooks_only():
 
 def test_the_bin_directory_holds_exactly_the_known_scripts_the_doctor_and_the_settings_lib():
     bin_dir = PLUGIN_DIR / "bin"
-    assert {p.name for p in bin_dir.iterdir()} == AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER, "a2a-lib.sh"}
+    assert {p.name for p in bin_dir.iterdir()} == AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER, AGY_LISTEN, "a2a-lib.sh"}
     assert not is_executable(bin_dir / "a2a-lib.sh"), "the lib is sourced, never run"
     assert is_executable(bin_dir / DOCTOR), "the doctor is run by hand: it must be executable"
     assert is_executable(bin_dir / MCP_HELPER), "the MCP headers helper is run by Claude Code: it must be executable"
@@ -185,7 +188,7 @@ def test_neither_hooks_file_names_the_doctor_or_mcp_helper():
 
 def test_every_script_that_reads_a_setting_sources_the_lib_before_it_reads_one():
     names = ("A2A_SERVER_URL", "A2A_KEY_FILE", "A2A_CARD", "A2A_AGY_KEY_FILE", "A2A_AGY_CARD")
-    for name in sorted(AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER}):
+    for name in sorted(AGY_ONLY | CLAUDE_ONLY | {DOCTOR, MCP_HELPER, AGY_LISTEN}):
         code = [line for line in (PLUGIN_DIR / "bin" / name).read_text().splitlines() if not line.lstrip().startswith("#")]
         source = next((i for i, line in enumerate(code) if "a2a_load_config" in line), None)
         assert source is not None, f"{name} never loads the settings file"
@@ -243,3 +246,46 @@ def test_the_plugin_is_listed_in_the_root_marketplace_with_the_same_version():
     assert entries[0]["path"] == "plugins/coordination"
     assert entries[0]["version"] == load(PLUGIN_DIR / "plugin.json")["version"]
     assert entries[0]["name"] and entries[0]["description"]
+
+
+# AW3 and AW4 (Z23): the opt-in agy idle wake ----------------------------------------------------
+
+
+def test_the_agy_listener_is_executable_and_in_neither_hooks_file():
+    """A hook would start it on every session: the listener is armed by the session, on the user's request."""
+    assert is_executable(PLUGIN_DIR / "bin" / AGY_LISTEN)
+    for path in (PLUGIN_DIR / "hooks.json", PLUGIN_DIR / "claude" / "hooks.json"):
+        assert AGY_LISTEN not in path.read_text(), f"{path.name} starts the opt-in listener"
+
+
+def test_the_agy_manifest_lists_the_wake_skill_and_the_skill_exists():
+    agy = load(PLUGIN_DIR / "plugin.json")
+    assert agy["skills"] == ["skills/a2a-wake"]
+    skill = PLUGIN_DIR / "skills" / "a2a-wake" / "SKILL.md"
+    assert skill.is_file()
+    head, _, _ = skill.read_text().partition("\n---\n")
+    assert head.startswith("---\nname: a2a-wake\n")
+
+
+def test_the_wake_skill_carries_the_exact_arming_recipe():
+    text = (PLUGIN_DIR / "skills" / "a2a-wake" / "SKILL.md").read_text()
+    for needle in (
+        "bin/a2a-agy-listen <CONVERSATION_ID>",
+        '"CronExpression": "0 * * * *"',
+        '"MaxIterations": 12',
+        "[a2a] heartbeat: re-arm the listener if it is not running; call a2a_inbox",
+        "a2a_hello",
+        "a2a_wake_off",
+        "[a2a] N pending. Call a2a_inbox. Then re-arm the listener.",
+        "[a2a] listener expired; re-arm.",
+        "[a2a] listener not armed: re-arm it (skill a2a-wake).",
+    ):
+        assert needle in text, needle
+    assert "NotificationTimeoutSeconds" in text  # named only to forbid it
+    assert "a2ak_" not in text
+
+
+def test_the_runtime_rules_say_arm_only_on_the_users_request():
+    text = (PLUGIN_DIR / "rules" / "AGENTS.md").read_text()
+    assert "only when the user asks" in text
+    assert "never arm in a sub-invocation conversation" in text

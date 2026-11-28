@@ -887,11 +887,11 @@ def test_announce_is_true_once_for_a_stable_count_and_again_after_10_min_or_a_ch
                 assert r.headers["cache-control"] == "no-store"
                 return r.json()
 
-            assert await get() == {"pending": 0, "announce": False, "held_for_review": 0}
+            assert await get() == {"pending": 0, "announce": False, "held_for_review": 0, "listening": False, "wake_opted_in": False, "rearm": False}
             await wk.send(H_CLAUDE, "a")
             await wk.send(H_CLAUDE, "b")
-            assert await get(None) == {"pending": 2, "announce": False, "held_for_review": 0}  # no `announce`: just the count
-            assert await get("0") == {"pending": 2, "announce": False, "held_for_review": 0}
+            assert await get(None) == {"pending": 2, "announce": False, "held_for_review": 0, "listening": False, "wake_opted_in": False, "rearm": False}  # no `announce`: just the count
+            assert await get("0") == {"pending": 2, "announce": False, "held_for_review": 0, "listening": False, "wake_opted_in": False, "rearm": False}
             assert (await get())["announce"] is True  # first announcement
             assert (await get())["announce"] is False  # same count, a moment later
             wk.clock.advance(minutes=9, seconds=59)

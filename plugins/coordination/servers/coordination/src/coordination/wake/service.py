@@ -71,6 +71,13 @@ class PendingView:
     pending: int
     announce: bool
     held_for_review: int
+    #: AW1 (Z23): a listener of this handle is parked right now.
+    listening: bool = False
+    #: AW1 (Z23): the session has opted in to idle wake (`sessions.wake_opted_in` is set).
+    wake_opted_in: bool = False
+    #: AW1 (Z23): with `announce=1`, tell the session to re-arm its listener now (opted in, not
+    #: listening, not told within the announce window).
+    rearm: bool = False
 
 
 class WakeService:
@@ -265,7 +272,27 @@ class WakeService:
         count = await self._svc.pending_count(handle)
         held = await self._svc.held_count(session.card_id)
         say = self._announcer.check(handle, count, self._clock.now(), record=announce) if announce else False
-        return PendingView(count, say, held)
+        listening = self.table.is_listening(handle)
+        opted_in = session.wake_opted_in is not None
+        rearm = False
+        if announce:
+            # AW1 (Z23): an opted-in session whose listener is gone is told to re-arm it, at most once per
+            # announce window; a parked listener (or no opt-in) clears the memory so the next lapse is
+            # announced afresh. The count is a constant 1: only the window matters.
+            key = handle + "|rearm"
+            now = self._clock.now()
+            rearm = self._announcer.check(key, 1 if opted_in and not listening else 0, now, record=True)
+        return PendingView(count, say, held, listening=listening, wake_opted_in=opted_in, rearm=rearm)
+
+    async def opt_in(self, session: Session) -> None:
+        """AW1 (Z23): record the session's first successful park as its opt-in to idle wake. A no-op
+        once set. Never raises into the listener's request: a failure is logged and the park goes on."""
+        if session.wake_opted_in is not None:
+            return
+        try:
+            await self._registry.set_wake_opted_in(session.handle)
+        except Exception as exc:  # noqa: BLE001 - the park must not fail because the flag could not be set
+            log.warning("wake opt-in failed", extra={"fields": {"error": type(exc).__name__}})
 
     def pending_stub(self, count: int) -> str:
         """The hook text: a server constant with one validated integer (spec 7.5, security

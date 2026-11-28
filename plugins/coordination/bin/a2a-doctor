@@ -181,7 +181,7 @@ if [ "$LIB_OK" = 1 ]; then
 else
   fail "a2a-lib.sh not found next to a2a-doctor"
 fi
-for dr_f in a2a-register a2a-listen a2a-pending a2a-agy-session a2a-agy-pending; do
+for dr_f in a2a-register a2a-listen a2a-pending a2a-agy-session a2a-agy-pending a2a-agy-listen; do
   if [ ! -f "$DIR/$dr_f" ]; then
     fail "$dr_f is missing next to a2a-doctor (reinstall the plugin)"
   elif [ ! -x "$DIR/$dr_f" ]; then
@@ -194,6 +194,12 @@ if command -v curl >/dev/null 2>&1; then
   ok "curl found (the hooks need it)"
 else
   fail "curl not found (the hooks need it: install curl)"
+fi
+# AW3 (Z23): the skill that arms the opt-in idle-wake listener ships with the plugin
+if [ -f "$DIR/../skills/a2a-wake/SKILL.md" ] && [ -r "$DIR/../skills/a2a-wake/SKILL.md" ]; then
+  ok "skills/a2a-wake/SKILL.md present (the opt-in idle wake for agy)"
+else
+  warn "skills/a2a-wake/SKILL.md not found next to bin/ (agy idle wake cannot be armed; reinstall the plugin)"
 fi
 dr_ver=
 if [ -r "$DIR/../plugin.json" ]; then

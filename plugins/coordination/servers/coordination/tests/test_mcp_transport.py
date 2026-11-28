@@ -20,18 +20,18 @@ def env(pg_db):
     return make_env(pg_db)
 
 
-def test_tools_list_is_nine_with_writes_on_and_six_with_writes_off(pg_db):
+def test_tools_list_is_ten_with_writes_on_and_seven_with_writes_off(pg_db):
     on = make_env(pg_db, allow_writes=True)
     c = on.client()
     c.initialize(on.keys.claude)
     names = [t["name"] for t in c.tools(on.keys.claude)]
-    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_send", "a2a_respond", "a2a_cancel"]
+    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off", "a2a_send", "a2a_respond", "a2a_cancel"]
 
     off = make_env(pg_db, allow_writes=False)
     c = off.client()
     c.initialize(off.keys.claude)
     names = [t["name"] for t in c.tools(off.keys.claude)]
-    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs"]
+    assert names == ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off"]
 
 
 def test_tool_annotations_and_schemas_on_the_wire(env):

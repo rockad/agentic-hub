@@ -337,13 +337,13 @@ Branch `feat/coordination-agy-idle-wake`, worktree `~/projects/agentic-hub-wt-ag
 
 | Stream | Scope | Status | Branch / sha | Evidence | Next action |
 | --- | --- | --- | --- | --- | --- |
-| AW0 | two-agy-session manual test | runbook written, blocked (user): run it | feat/coordination-agy-idle-wake | runbook: `docs/research/spike-runbook-2026-11-27-agy-idle-wake.md` | (user) run C1 to C8 in two agy sessions, write `spike-results-2026-11-2x-agy-idle-wake.md`, report back |
-| AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | todo (blocked by AW0 pass) | | | |
-| AW2 | `bin/a2a-agy-listen` + tests | todo (blocked by AW0 pass) | | | |
-| AW3 | agy session/pending hooks, skill `a2a-wake`, rules | todo (blocked by AW1, AW2) | | | |
-| AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | todo (blocked by AW1 to AW3) | | | |
+| AW0 | two-agy-session manual test | done 2026-11-28 (gate passed: C1 and C5 pass) | `main` (`4046d7c`) | `docs/research/spike-results-2026-11-28-agy-idle-wake.md` | none |
+| AW1 | server: m0005 `wake_opted_in`, `listening`, `a2a_wake_off` | in progress (single PR on `feat/coordination-agy-idle-wake`, delegated to peer session `65a6a5d2`) | `feat/coordination-agy-idle-wake` | | implement m0005, `listening` in `/wake/pending`, `a2a_wake_off`, tests |
+| AW2 | `bin/a2a-agy-listen` + tests | ready (AW0 passed) | `feat/coordination-agy-idle-wake` | | fork `a2a-listen`, add tests modelled on `test_hooks_listen.py` |
+| AW3 | agy session/pending hooks, skill `a2a-wake`, rules | blocked by AW1, AW2 | `feat/coordination-agy-idle-wake` | | update hooks, add `skills/a2a-wake/SKILL.md` and rule |
+| AW4 | docs (agy-hooks, wake, README, doctor), D9 revised | blocked by AW1 to AW3 | `feat/coordination-agy-idle-wake` | | update docs, D9 status, and `a2a-doctor` |
 | AW5 | shared core in `a2a-lib.sh` for listen and pending | later phase, plan only | | | |
-| AW6 | clarify case study + GitHub issue | done | feat/coordination-agy-idle-wake | `plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, [issue #123](https://github.com/rockad/agentic-hub/issues/123) | none (fix tracked in issue #123) |
+| AW6 | clarify case study + GitHub issue | done | `main` | `plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, [issue #123](https://github.com/rockad/agentic-hub/issues/123) | none (fix tracked in issue #123) |
 
 ### 3.8 Delivered results kept from the handoff
 
@@ -467,9 +467,9 @@ S1 items carried from the old tasklist (the stream that owns each is in brackets
 AW: agy idle wake (3.9)
 - [x] AW-setup: worktree, plan 4.2a, decision Z23, tasklist 3.9
 - [x] AW0: write the two-session runbook
-- [ ] (user) AW0: run the runbook in two agy sessions and report the results; the results go to `docs/research/spike-results-2026-11-2x-agy-idle-wake.md`
+- [x] (user) AW0: ran the runbook in two agy sessions (`2026-11-28`, `C1` and `C5` pass, `C7` pass, `C8` re-arm required on resume); results in `docs/research/spike-results-2026-11-28-agy-idle-wake.md` (`4046d7c`)
 - [x] AW6: clarify case study and GitHub issue (`plugins/clarify/docs/case-studies/2026-11-27-option-label-mismatch.md`, issue #123)
-- [ ] AW1 to AW4: only after AW0 passes (C1 and C5 both pass)
+- [ ] AW1 to AW4: single PR on `feat/coordination-agy-idle-wake` (user decision `2026-11-28`; AW0 gate passed)
 - [ ] AW5: later phase, shared core for listen and pending (plan only)
 
 ### 4.3 S2: production on <storage-host>

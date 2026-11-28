@@ -244,12 +244,24 @@ def test_admin_apply_says_it_is_not_available_and_exit_2():
 
 
 def test_expose_check_cli():
-    ok = {"ok": True, "checks": [], "manual": [], "problems": []}
-    fail = {"ok": False, "checks": [], "manual": [], "problems": ["error"]}
+    ok = {
+        "ok": True,
+        "checks": [{"item": "key_pepper", "status": "info", "detail": "key_pepper not configured (optional)"}],
+        "manual": [],
+        "problems": [],
+    }
+    fail = {"ok": False, "checks": [{"item": "backup_dump_fresh", "status": "fail", "detail": "dump_age_h: None"}], "manual": [], "problems": ["error"]}
     code, out, _, _ = run_cli(["expose", "check"], client=FakeClient(replies={"expose.check": ok}))
-    assert code == 0 and "expose checks OK" in out
+    assert code == 0 and "key_pepper: INFO" in out and "expose checks OK" in out
+    code, out, _, _ = run_cli(["expose", "check", "--json"], client=FakeClient(replies={"expose.check": ok}))
+    assert code == 0 and json.loads(out)["ok"] is True
     code, out, _, _ = run_cli(["expose", "check"], client=FakeClient(replies={"expose.check": fail}))
-    assert code == 1 and "failing check(s)" in out
+    assert code == 1 and "backup_dump_fresh: FAIL" in out and "failing check(s)" in out
+    code, out, err, _ = run_cli(
+        ["expose", "check"],
+        client=FakeClient(replies={"expose.check": AdminError("unavailable", "database is unreachable")}),
+    )
+    assert code == 2 and out == "" and "database is unreachable" in err
 
 
 def test_a_bad_socket_variable_is_reported():

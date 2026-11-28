@@ -170,7 +170,7 @@ def card_check(out: TextIO, r: dict[str, Any]) -> None:
 
 def expose_check(out: TextIO, r: dict[str, Any]) -> None:
     for check in r.get("checks", []):
-        status_str = "PASS" if check["status"] == "pass" else "FAIL"
+        status_str = {"pass": "PASS", "info": "INFO"}.get(check["status"], "FAIL")
         print(f"{clean(check['item'])}: {status_str} ({clean(check['detail'])})", file=out)
     for m in r.get("manual", []):
         print(f"{clean(m['item'])}: MANUAL ({clean(m['detail'])})", file=out)

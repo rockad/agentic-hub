@@ -11,12 +11,13 @@ Two kinds of command:
 - Host commands, which do not use the socket: `db init-dump-role` (S1-PG, talks to Docker) and,
   later, `install` (S1-INST).
 
-`expose check` (S3-EXPOSE-CHECK) and `admin-apply` (GL-IMPORT) are named here and answer that they
-are not available at this stage; they exit 2 ("could not evaluate"), never 0.
+`expose check` (S3-EXPOSE-CHECK) evaluates runtime exposure preconditions (0 all met, 1 unmet,
+2 could not evaluate). `admin-apply` (GL-IMPORT) is named here and answers that it is not available
+at this stage (exits 2, never 0).
 
 Exit codes: 0 done; 1 refused or failed (the message says why); 2 the server could not be reached,
-the command is not available yet, or the arguments are wrong. `card check` follows the same
-convention as `expose check`: 0 no problem, 1 at least one problem, 2 could not evaluate.
+the command is not available yet, could not evaluate, or the arguments are wrong. `card check` follows
+the same convention as `expose check`: 0 no problem, 1 at least one problem, 2 could not evaluate.
 """
 
 from __future__ import annotations
@@ -89,8 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     card = add("card", help="Agent Card checks")
     card_sub = card.add_subparsers(dest="card_command", required=True)
     as_json(card_sub.add_parser("check", allow_abbrev=False, help="check the cards file, the cards table and the keys that name cards"))
-    expose = add("expose", help="S3 exposure check (not available at this stage)")
-    expose.add_subparsers(dest="expose_command", required=True).add_parser("check", allow_abbrev=False)
+    expose = add("expose", help="S3 exposure preconditions check")
+    expose_sub = expose.add_subparsers(dest="expose_command", required=True)
+    as_json(expose_sub.add_parser("check", allow_abbrev=False, help="evaluate S3 exposure preconditions"))
     add("admin-apply", help="go-live import (not available at this stage)")
 
     # -- db (host side) ---------------------------------------------------------------------
@@ -252,7 +254,7 @@ class _Cli:
 
     def _expose_check(self, a: argparse.Namespace) -> int:
         result = self.client.call("expose.check", {})
-        if getattr(a, "json", False):
+        if a.json:
             print(json.dumps(result, indent=2, sort_keys=True), file=self.out)
         else:
             render.expose_check(self.out, result)

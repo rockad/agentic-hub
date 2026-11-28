@@ -41,6 +41,7 @@ from a2a.server.models import TaskModel
 from a2a.types import a2a_pb2 as pb
 from coordination.a2a.cards import CardBuilder, CardRegistry, deviation_sentence
 from coordination.admin.keystore import KeyAdminStore
+from coordination.admin.protocol import AdminError
 from coordination.auth.startup import _host_of, public_hostname
 from coordination.backup_status import dump_age_h, is_stale, status_fields
 from coordination.clock import Clock
@@ -67,6 +68,9 @@ class StatusAdmin:
         *,
         mcp_session_count: Callable[[], int] | None = None,
         listener_count: Callable[[], int] | None = None,
+        remote_quarantine_enforced: bool = True,
+        rate_limits_and_guess_counter_enabled: bool = False,
+        public_listener_loopback_bound: bool = False,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -75,6 +79,9 @@ class StatusAdmin:
         self._registry = registry
         self._mcp_session_count = mcp_session_count
         self._listener_count = listener_count
+        self._remote_quarantine_enforced = remote_quarantine_enforced
+        self._rate_limits_and_guess_counter_enabled = rate_limits_and_guess_counter_enabled
+        self._public_listener_loopback_bound = public_listener_loopback_bound
 
     # -- status -----------------------------------------------------------------------------
 
@@ -275,23 +282,55 @@ class StatusAdmin:
         checks: list[dict[str, Any]] = []
         problems: list[str] = []
 
-        pub_host = public_hostname(config.public_url)
-        pub_ok = config.public_url.startswith("https://") and pub_host is not None
+        try:
+            async with self._engine.connect() as conn:
+                await conn.execute(sa.select(1))
+        except Exception as exc:
+            raise AdminError("unavailable", "database is unreachable") from exc
+
+        checks.append({
+            "item": "database_connectivity",
+            "status": "pass",
+            "detail": "database reachable",
+        })
+
+        try:
+            pub_host = public_hostname(config.public_url)
+        except ValueError:
+            pub_host = None
         pub_detail = f"public_url is {sanitize_preview(config.public_url)}"
+        has_wildcard = any("*" in h for h in config.allowed_hosts)
+        sanitized_hosts = [sanitize_preview(h) for h in config.allowed_hosts]
+        allowed_detail = f"allowed_hosts: {sanitized_hosts}"
+
+        def _safe_host_of(entry: str) -> str | None:
+            try:
+                return _host_of(entry)
+            except ValueError:
+                return None
+
+        if config.exposure_stage == "s3":
+            pub_ok = config.public_url.startswith("https://") and pub_host is not None
+            host_included = pub_host is not None and any(
+                _safe_host_of(h) == pub_host for h in config.allowed_hosts
+            )
+            allowed_ok = not has_wildcard and host_included
+        else:
+            pub_ok = config.public_url.startswith("https://")
+            host_included = True
+            allowed_ok = not has_wildcard
+
         checks.append({
             "item": "public_url_https",
             "status": "pass" if pub_ok else "fail",
             "detail": pub_detail,
         })
         if not pub_ok:
-            problems.append("A2A_PUBLIC_URL must be a non-loopback https:// URL")
+            if config.exposure_stage == "s3":
+                problems.append("A2A_PUBLIC_URL must be a non-loopback https:// URL")
+            else:
+                problems.append("A2A_PUBLIC_URL must use https://")
 
-        has_wildcard = any("*" in h for h in config.allowed_hosts)
-        host_included = pub_host is None or any(
-            _host_of(h) == pub_host for h in config.allowed_hosts
-        )
-        allowed_ok = not has_wildcard and host_included and pub_host is not None
-        allowed_detail = f"allowed_hosts: {list(config.allowed_hosts)}"
         checks.append({
             "item": "allowed_hosts_public",
             "status": "pass" if allowed_ok else "fail",
@@ -299,46 +338,63 @@ class StatusAdmin:
         })
         if has_wildcard:
             problems.append("A2A_ALLOWED_HOSTS must not contain wildcards")
-        elif pub_host is not None and not host_included:
-            problems.append(f"A2A_ALLOWED_HOSTS must include public hostname {pub_host}")
-        elif pub_host is None:
+        elif config.exposure_stage == "s3" and pub_host is not None and not host_included:
+            problems.append(f"A2A_ALLOWED_HOSTS must include public hostname {sanitize_preview(pub_host)}")
+        elif config.exposure_stage == "s3" and pub_host is None:
             problems.append("public hostname could not be determined from A2A_PUBLIC_URL")
 
-        pepper_ok = bool(config.key_pepper and config.key_pepper.strip())
         checks.append({
-            "item": "key_pepper",
-            "status": "pass" if pepper_ok else "fail",
-            "detail": "key_pepper configured" if pepper_ok else "key_pepper missing or empty",
+            "item": "remote_quarantine",
+            "status": "pass" if self._remote_quarantine_enforced else "fail",
+            "detail": (
+                "remote-peer quarantine enforced"
+                if self._remote_quarantine_enforced
+                else "quarantine is not enforced for remote-peer keys"
+            ),
         })
-        if not pepper_ok:
-            problems.append("A2A_KEY_PEPPER is not configured")
+        if not self._remote_quarantine_enforced:
+            problems.append("quarantine is not enforced for remote-peer keys")
+
+        checks.append({
+            "item": "rate_limits_and_guess_counter",
+            "status": "pass" if self._rate_limits_and_guess_counter_enabled else "fail",
+            "detail": (
+                "per-key rate limits and handle guess counter enabled"
+                if self._rate_limits_and_guess_counter_enabled
+                else "per-key rate limits and handle guess counter are not enabled"
+            ),
+        })
+        if not self._rate_limits_and_guess_counter_enabled:
+            problems.append("per-key rate limits and handle guess counter are not enabled")
+
+        checks.append({
+            "item": "public_listener_loopback",
+            "status": "pass" if self._public_listener_loopback_bound else "fail",
+            "detail": (
+                "port 8121 bound to host loopback"
+                if self._public_listener_loopback_bound
+                else "port 8121 public listener is not bound to host loopback"
+            ),
+        })
+        if not self._public_listener_loopback_bound:
+            problems.append("port 8121 public listener is not bound to host loopback")
 
         age = dump_age_h(config.dump_last_ok_file, now)
-        backup_fresh = age is not None and not is_stale(age)
-        backup_detail = f"dump_age_h: {age}"
+        backup_fresh = age is not None and age < 36.0
         checks.append({
             "item": "backup_dump_fresh",
             "status": "pass" if backup_fresh else "fail",
-            "detail": backup_detail,
+            "detail": f"dump_age_h: {age}",
         })
         if not backup_fresh:
             problems.append(f"backup dump is missing or stale (dump_age_h={age})")
 
-        db_ok = False
-        try:
-            async with self._engine.connect() as conn:
-                await conn.execute(sa.select(1))
-            db_ok = True
-        except Exception:
-            db_ok = False
-
+        pepper_ok = bool(config.key_pepper and config.key_pepper.strip())
         checks.append({
-            "item": "database_connectivity",
-            "status": "pass" if db_ok else "fail",
-            "detail": "database reachable" if db_ok else "database unreachable",
+            "item": "key_pepper",
+            "status": "pass" if pepper_ok else "info",
+            "detail": "key_pepper configured" if pepper_ok else "key_pepper not configured (optional)",
         })
-        if not db_ok:
-            problems.append("database is unreachable")
 
         manual = [
             {"item": "fuzz_report", "status": "manual", "detail": "fuzz report green"},

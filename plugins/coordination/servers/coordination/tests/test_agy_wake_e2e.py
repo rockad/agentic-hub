@@ -23,6 +23,7 @@ import pytest
 pytestmark = pytest.mark.hooks
 
 import subprocess
+import time
 
 import httpx
 from agy_hook_helpers import PENDING, SESSION, hook_env, hook_input, run_hook, write_key_file
@@ -100,6 +101,24 @@ def test_a_task_wakes_the_listener_and_the_hook_then_asks_for_a_rearm_once(serve
     assert hook.code == 0 and hook.err == ""
     assert message_text(hook.out) == f"[a2a] 1 pending. Call a2a_inbox. {REARM}"
     assert run_hook(PENDING, hook_input(CONV), agy_env).out == "{}\n"  # the announce window
+
+
+def test_a_park_after_a_refused_first_attempt_still_opts_the_session_in(served, agy_env):  # noqa: F811
+    """Both halves joined: the listener's first attempt is a 410 (the conversation is not registered yet, inside
+    the start window), then the registration lands and it parks. That park is still round 1 on the wire, so the
+    server records the opt-in and, once the listener is gone, asks for a re-arm."""
+    proc = start_listener(agy_env, A2A_410_RETRY_S="60", A2A_ROUND_S="1")
+    try:
+        time.sleep(1.5)  # at least one 410 answered, the listener is retrying
+        assert proc.poll() is None
+        run_hook(SESSION, hook_input(CONV, event="SessionStart"), agy_env)
+        wait_for(lambda: view(served)["wake_opted_in"] is True, 20, "the park after the 410 to opt the session in")
+    finally:
+        kill_quietly(proc)
+    wait_for(lambda: view(served)["listening"] is False, 10, "the killed listener to leave the table")
+    assert view(served)["wake_opted_in"] is True
+    hook = run_hook(PENDING, hook_input(CONV), agy_env)
+    assert REARM in message_text(hook.out)
 
 
 def test_a_session_that_never_parked_is_never_asked_to_rearm(served, agy_env):  # noqa: F811

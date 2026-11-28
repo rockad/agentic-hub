@@ -161,6 +161,24 @@ def test_410_inside_the_race_window_is_retried_then_wakes(listen, stub, hook_env
     assert time.monotonic() - t0 < 10
 
 
+def test_x_coord_again_counts_parked_rounds_not_attempts(listen, stub, hook_env):
+    """The server opts a session in on `X-Coord-Again` 1 only. A refused or failed attempt (410 inside the
+    start window, 429, 5xx) is not a parked round, so the header stays 1 until a round ends 408."""
+    stub.script(
+        "/wake/listen",
+        listen_reply(410, "", **{"X-Coord-Reason": "unregistered"}),
+        listen_reply(429, "", **{"Retry-After": "1"}),
+        listen_reply(503, "", **{"Retry-After": "1"}),
+        listen_reply(408),
+        listen_reply(408),
+        listen_reply(200, "1"),
+    )
+    r = quiet(run_script(listen, [CONV], env=env_for(hook_env, stub.url)))
+    assert r.stdout == wake_text(1)
+    reqs = stub.requests("/wake/listen")
+    assert [q.headers["x-coord-again"] for q in reqs] == ["1", "1", "1", "1", "2", "3"]
+
+
 def test_410_stays_final_after_the_race_window(listen, stub, hook_env):
     stub.script("/wake/listen", listen_reply(410, "", **{"X-Coord-Reason": "unregistered"}))
     r = quiet(run_script(listen, [CONV], env=env_for(hook_env, stub.url, A2A_410_RETRY_S="3"), timeout=30))

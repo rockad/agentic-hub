@@ -51,6 +51,8 @@ anchors=(
   'never under 120|core'
   '→ next: full Question N+1 write-up, then ask|core'
   'Option X:|core'
+  '`### Option A. <name> (Recommended)`|core'
+  'before writing any `### Option X.` heading|core'
   'plain english|body'
   '/clarify eli5|body'
   'cplain|body'

@@ -38,6 +38,10 @@
 #      appeared since the previous clarify question.
 #   5. WARNING only: ask_question with [Question/Fork N of M] without
 #      "## Question N" prose in the same reply segment.
+#   6. The "### Option X. <name>" headings of the step and the picker labels name the
+#      same options under the same letters: a different letter sequence, or a label that
+#      carries the prose name of another letter, fails (issue #123). WARNING only: a label
+#      reworded in place. Skipped when the step has no option headings.
 # The session ends, as in the Stop hook, when the user abandons the series: an explicit
 # cancel or a different slash command after the last question (issue #82).
 #
@@ -66,8 +70,10 @@ Antigravity rules per clarify reply: (1) every clarify "## Question N" heading
 is paired with an ask_question call in the same reply, (2) questions[0].question
 starts with [Question N of M] or [Fork N of M] matching the heading, (3) every
 option starts with "(Recommended) Option X:" or "Option X:", (4) M constant
-within a series unless "Fork map revised". Rule 5 is a warning only:
-ask_question without "## Question N" prose in the same reply.
+within a series unless "Fork map revised", (6) the "### Option X. <name>"
+headings of the step and the picker labels name the same options under the
+same letters. Warnings only: ask_question without "## Question N" prose in the
+same reply (rule 5), and a picker label reworded in place (rule 6).
 
 Output: one line per checked question ("PASS ..." or "FAIL ...: reasons"),
 each followed by any "WARN ..." lines, then a summary line

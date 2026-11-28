@@ -42,14 +42,14 @@ run_hook() {
   else record x "FAIL $name: expected $expect, got $got (exit $rc, $out)"; fi
 }
 
-# run_checker <name> <expected failed count> < transcript
+# run_checker <name> <expected failed count> [expected warned count] < transcript
 run_checker() {
-  local name="checker-$1" want="$2" file="$tmp/checker-$1.jsonl" out got
+  local name="checker-$1" want="failed=$2${3:+ warned=$3}" file="$tmp/checker-$1.jsonl" out got
   cat > "$file"
   out="$(bash "$checker" --format antigravity "$file" 2>&1)"
-  got="$(printf '%s\n' "$out" | grep -o 'failed=[0-9]*' | tail -1)"
-  if [ "$got" = "failed=$want" ]; then record ok "PASS $name"
-  else record x "FAIL $name: expected failed=$want, got ${got:-none}"; printf '%s\n' "$out" | tail -5; fi
+  got="$(printf '%s\n' "$out" | grep -o "failed=[0-9]*${3:+ warned=[0-9]*}" | tail -1)"
+  if [ "$got" = "$want" ]; then record ok "PASS $name"
+  else record x "FAIL $name: expected $want, got ${got:-none}"; printf '%s\n' "$out" | tail -5; fi
 }
 
 Q1=$'Target resolved: the storage design.\n\n## Question 1 (of 3) — Storage\n\nWhich store?'
@@ -246,6 +246,73 @@ case "$err" in *"standing down after 2 consecutive interventions"*) record ok "P
   | run_checker 12-mid-series-decision-table 1
 { user "/clarify storage"; reply "$NESTED"; } \
   | run_checker 17-nested-fence 0
+
+# 29. prose option headings against the picker labels of the same reply (issue #123).
+# reply_opts <content> <tag> <option>...: a reply whose ask_question call carries these option labels.
+reply_opts() {
+  local content="$1" tag="$2"
+  shift 2
+  jq -nc --arg c "$content" --arg t "[$tag] Which shape?" '{type: "PLANNER_RESPONSE", content: $c, tool_calls: [{name: "ask_question", args: {questions: [{question: $t, options: $ARGS.positional}]}}]}' --args "$@"
+}
+# step <heading> <option heading>...: the prose of one question step.
+step() {
+  local out="$1" h
+  shift
+  for h in "$@"; do out+=$'\n\n'"### $h"$'\n\nPros and cons.'; done
+  printf '%s' "$out"
+}
+QL='## Question 3 (of 7) — Listener shape'
+PA='Option A. Shared core in a2a-lib.sh, plus a thin bin/a2a-agy-listen (Recommended)'
+PB='Option B. Standalone bin/a2a-agy-listen, forked from a2a-listen'
+PC='Option C. Reuse a2a-listen itself, behind an A2A_HARNESS=agy switch'
+LISTEN="$(step "$QL" "$PA" "$PB" "$PC")"
+# The recorded case: the recommendation flipped while drafting and only the picker was reordered,
+# so picker Option A is the prose Option B. The reworded Option B and C labels are warnings.
+{ user "/clarify listener"; reply_opts "$LISTEN" "Question 3 of 7" \
+    "(Recommended) Option A: Standalone bin/a2a-agy-listen forked from a2a-listen" \
+    "Option B: Shared loop in a2a-lib.sh plus thin per-harness wrappers" \
+    "Option C: Reuse a2a-listen behind an A2A_HARNESS=agy switch"; } \
+  | run_checker 29a-picker-reordered-prose-not 1 2
+# Positive control: the same prose with labels in the prose order passes without a warning.
+{ user "/clarify listener"; reply_opts "$LISTEN" "Question 3 of 7" \
+    "(Recommended) Option A: Shared core in a2a-lib.sh, plus a thin bin/a2a-agy-listen" \
+    "Option B: Standalone bin/a2a-agy-listen, forked from a2a-listen" \
+    "Option C: Reuse a2a-listen itself, behind an A2A_HARNESS=agy switch"; } \
+  | run_checker 29b-labels-match 0 0
+# The picker drops an option that the prose argued.
+{ user "/clarify listener"; reply_opts "$LISTEN" "Question 3 of 7" \
+    "(Recommended) Option A: Shared core in a2a-lib.sh, plus a thin bin/a2a-agy-listen" \
+    "Option B: Standalone bin/a2a-agy-listen, forked from a2a-listen"; } \
+  | run_checker 29c-picker-drops-an-option 1
+# A label reworded in place, with no other option's name on it, is a warning and not a failure.
+{ user "/clarify listener"; reply_opts "$LISTEN" "Question 3 of 7" \
+    "(Recommended) Option A: Shared core plus thin wrapper" \
+    "Option B: Standalone bin/a2a-agy-listen, forked from a2a-listen" \
+    "Option C: Reuse a2a-listen itself, behind an A2A_HARNESS=agy switch"; } \
+  | run_checker 29d-reworded-label-warns 0 1
+# Mode B: the picker adds the formal anchor after the prose name; that is the documented format.
+MODEB="$(step '## Question 1 (of 5) — Tags' 'Option A. The Digital Sticky Tag (Recommended)' 'Option B. The Direct Sharpie Label')"
+{ user "/cplain tags"; reply_opts "$MODEB" "Question 1 of 5" \
+    "(Recommended) Option A: The Digital Sticky Tag (M:N Join Table)" \
+    "Option B: The Direct Sharpie Label (Denormalized JSONB)"; } \
+  | run_checker 29e-mode-b-anchor-suffix 0 0
+# Mode B with the two picker labels swapped is the same failure.
+{ user "/cplain tags"; reply_opts "$MODEB" "Question 1 of 5" \
+    "(Recommended) Option A: The Direct Sharpie Label (Denormalized JSONB)" \
+    "Option B: The Digital Sticky Tag (M:N Join Table)"; } \
+  | run_checker 29f-mode-b-swapped 1
+# Option headings inside a fenced example are not the step's options.
+FENCEDOPTS="$(printf '%s\n\nThe format:\n\n%smd\n### Option A. zzz\n### Option B. yyy\n### Option C. xxx\n%s\n' "$QL" "$BT" "$BT")"
+{ user "/clarify listener"; reply_opts "$FENCEDOPTS" "Question 3 of 7" "(Recommended) Option A: sqlite" "Option B: postgres"; } \
+  | run_checker 29g-fenced-option-headings 0 0
+# Two steps in one reply: the skipped question is the one failure, and its options are not
+# compared with the picker of the next question.
+TWO="$(printf '%s\n\n%s' "$(step '## Question 2 (of 7) — Topology' 'Option A. Listener (Recommended)' 'Option B. Cron' 'Option C. Both' 'Option D. Neither')" "$LISTEN")"
+{ user "/clarify listener"; reply_opts "$TWO" "Question 3 of 7" \
+    "(Recommended) Option A: Shared core in a2a-lib.sh, plus a thin bin/a2a-agy-listen" \
+    "Option B: Standalone bin/a2a-agy-listen, forked from a2a-listen" \
+    "Option C: Reuse a2a-listen itself, behind an A2A_HARNESS=agy switch"; } \
+  | run_checker 29h-options-of-the-last-step-only 1 0
 
 pass="$(cat "$tmp/pass" 2>/dev/null | wc -l)"
 fail="$(cat "$tmp/fail" 2>/dev/null | wc -l)"

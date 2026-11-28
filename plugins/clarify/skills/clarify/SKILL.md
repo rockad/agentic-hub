@@ -101,6 +101,7 @@ Example: `> Target resolved: **[plans/auth-service.md]** (Mode: Standard Archite
 ````
 
 - **Context:** two to four sentences: what is decided, why it matters, what it constrains downstream.
+- **Recommendation first:** decide which option you recommend before writing any `### Option X.` heading, and make it Option A. If your view changes while drafting, rewrite the headings in place; never correct it in a later sentence or reorder only the picker.
 - **Options, argued** (two to four, mutually exclusive, genuinely different in consequence; merge cosmetic differences): for each, a technical block (ASCII diagram, snippet, DTO, schema or formula), **Pros** (two to four concrete points) and **Cons** (two to four). Four to eight lines of pros and cons per option is plenty.
 - **Your reading:** three to six sentences: why Option A is recommended, under what conditions it would flip to B or C, and which later forks this cascades into.
 - **Recommendation line:**

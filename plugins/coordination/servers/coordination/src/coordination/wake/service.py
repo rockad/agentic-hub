@@ -65,6 +65,15 @@ RECHECK_S = 20.0
 
 
 @dataclass(frozen=True)
+class Resolved:
+    """A session id looked up by `WakeService.resolve`. `linked` is true when the id was an agy
+    sub-invocation conversation recorded under its root, not the root's own session id."""
+
+    session: Session
+    linked: bool = False
+
+
+@dataclass(frozen=True)
 class PendingView:
     """What `/wake/pending` says about one handle."""
 
@@ -120,15 +129,18 @@ class WakeService:
 
     # -- sessions --------------------------------------------------------------------------
 
-    async def resolve(self, card_id: str, harness_session_id: str) -> Session | None:
+    async def resolve(self, card_id: str, harness_session_id: str) -> Resolved | None:
         """The session a hook's session id names, under the key's own card: a registered session,
-        else an agy sub-invocation recorded under its root. None if it is unknown."""
+        else an agy sub-invocation recorded under its root (`linked` is then true: Z23 decision 7,
+        a sub-invocation never arms a listener or a re-arm line). None if it is unknown."""
         session = await self._registry.by_harness_session(card_id, harness_session_id)
-        if session is None:
-            link = await self._registry.conversation(card_id, harness_session_id)
-            if link is not None:
-                session = await self._registry.by_handle(link.handle)
-        return session
+        if session is not None:
+            return Resolved(session)
+        link = await self._registry.conversation(card_id, harness_session_id)
+        if link is None:
+            return None
+        root = await self._registry.by_handle(link.handle)
+        return Resolved(root, linked=True) if root is not None else None
 
     # -- the notifier (service layer -> wake) ----------------------------------------------
 
@@ -263,9 +275,11 @@ class WakeService:
 
     # -- /wake/pending ---------------------------------------------------------------------
 
-    async def pending(self, session: Session, *, announce: bool) -> PendingView:
+    async def pending(self, session: Session, *, announce: bool, rearm: bool = False) -> PendingView:
         """The count for `session`, no bodies, no offers recorded (spec 7.5). Counts as showing
-        up: the session is touched and its in-flight wake is confirmed."""
+        up: the session is touched and its in-flight wake is confirmed. `rearm` asks for the AW1
+        re-arm answer (the agy `GET` with `announce=1` only, never for a sub-invocation id): it is
+        the only path that records a `<handle>|rearm` key in the announcer."""
         handle = session.handle
         await self._registry.touch(handle)
         await self.confirm(handle)
@@ -274,15 +288,15 @@ class WakeService:
         say = self._announcer.check(handle, count, self._clock.now(), record=announce) if announce else False
         listening = self.table.is_listening(handle)
         opted_in = session.wake_opted_in is not None
-        rearm = False
-        if announce:
+        told = False
+        if rearm:
             # AW1 (Z23): an opted-in session whose listener is gone is told to re-arm it, at most once per
             # announce window; a parked listener (or no opt-in) clears the memory so the next lapse is
             # announced afresh. The count is a constant 1: only the window matters.
             key = handle + "|rearm"
             now = self._clock.now()
-            rearm = self._announcer.check(key, 1 if opted_in and not listening else 0, now, record=True)
-        return PendingView(count, say, held, listening=listening, wake_opted_in=opted_in, rearm=rearm)
+            told = self._announcer.check(key, 1 if opted_in and not listening else 0, now, record=True)
+        return PendingView(count, say, held, listening=listening, wake_opted_in=opted_in, rearm=told)
 
     async def opt_in(self, session: Session) -> None:
         """AW1 (Z23): record the session's first successful park as its opt-in to idle wake. A no-op

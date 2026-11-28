@@ -5,7 +5,7 @@ closed set; there is no tool that proxies another server, reads a path, or runs 
 
 Checked on what the server actually serves:
 
-- the tool catalogue: names, descriptions and argument names (the nine names are in
+- the tool catalogue: names, descriptions and argument names (the ten names are in
   `test_never_approval_or_command.py` at the wire; here the words);
 - the routes of the real app and the cards;
 - the shape of every tool argument: no argument is a path, a URL to fetch, a command or a credential;

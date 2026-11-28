@@ -1,7 +1,7 @@
 """`/mcp`: the MCP facade over the service layer (S1-MCP).
 
 - `server`: the streamable-HTTP transport as one ASGI app (`McpEndpoint`).
-- `tools`: the nine-tool closed set and the code behind it.
+- `tools`: the ten-tool closed set and the code behind it.
 - `frame`: the untrusted-data result frame of spec 4.1.
 - `sanitize`: control and escape-sequence stripping, byte truncation.
 - `sessions`: the `Mcp-Session-Id` map (not agy) and the durable session registry (agy).

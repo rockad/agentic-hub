@@ -9,7 +9,7 @@ Four angles:
    words). Everything the server decided (final states, holds, routing, the audit rows by event, from and
    to state) is identical to the neutral run. Text that changed any decision would show as a difference.
    The held remote task stays held in every run and no `hold_released` row appears.
-2. THE TOOL SET IS CLOSED (nine names) at the wire: `tools/list` returns exactly them, and a call to a
+2. THE TOOL SET IS CLOSED (ten names) at the wire: `tools/list` returns exactly them, and a call to a
    name that would approve, release, sweep, run a command or change Jev configuration is refused and
    changes nothing.
 3. NO ENDPOINT: the routes of the real app, and the states and transitions of the state machine, contain
@@ -129,7 +129,7 @@ def test_the_baseline_is_a_real_scenario_with_a_held_task_that_stays_held(baseli
 
 # -- the tool set is closed ----------------------------------------------------------------------------
 
-NINE = ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off", "a2a_send", "a2a_respond", "a2a_cancel"]
+TEN = ["a2a_hello", "a2a_inbox", "a2a_get", "a2a_wait", "a2a_peers", "a2a_runs", "a2a_wake_off", "a2a_send", "a2a_respond", "a2a_cancel"]
 UNLISTED = [
     "a2a_approve", "a2a_release", "a2a_review", "a2a_release_hold", "a2a_sweep", "a2a_run", "a2a_exec", "a2a_shell",
     "jev_set_mode", "jev_get_mode", "run_command", "bash", "read_file", "fetch", "proxy", "tools/call", "a2a_hello ",
@@ -141,12 +141,12 @@ def env(pg_db):
     return make_env(pg_db)
 
 
-def test_tools_list_is_exactly_the_nine_names_for_every_local_key(env):
+def test_tools_list_is_exactly_the_ten_names_for_every_local_key(env):
     for token in (env.keys.claude, env.keys.agy, env.keys.mac):
         client = env.client()
         client.initialize(token)
-        assert [t["name"] for t in client.tools(token)] == NINE
-    names = " ".join(NINE)
+        assert [t["name"] for t in client.tools(token)] == TEN
+    names = " ".join(TEN)
     assert not re.search(r"approv|release|review|sweep|exec|shell|command|admin|jev|proxy|read_file|credential|token", names)
 
 

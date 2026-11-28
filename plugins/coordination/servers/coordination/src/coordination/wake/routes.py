@@ -6,7 +6,7 @@ runs). These handlers fail closed anyway: no principal is `401`, a principal tha
 `local-harness` key with a card is `403`.
 
 `/wake/listen` answers with a `Release` and nothing else: `200` with an integer body, `408`,
-`409` with `X-Coord-Reason: superseded`, `403`, `410` with `X-Coord-Reason: ended` or
+`409` with `X-Coord-Reason: superseded`, `403` (also for an agy sub-invocation conversation id, which never arms), `410` with `X-Coord-Reason: ended` or
 `unregistered`, `429` with `Retry-After`, `503` with `Retry-After`. The header spelling is
 `X-Coord-*` only (spec 7.1: the spike's short `X-Session`, `X-Wait` and `X-Again` are not accepted).
 Errors that the table of spec 7.1 does not list (a missing or malformed header) are `400`
@@ -34,7 +34,7 @@ from starlette.routing import BaseRoute, Route
 
 from coordination.auth.middleware import principal_from_scope
 from coordination.auth.records import LOCAL_HARNESS
-from coordination.identity.handles import valid_session_id
+from coordination.identity.handles import is_agy_card, valid_session_id
 from coordination.wake.outcomes import GONE, Release
 from coordination.wake.service import WakeService
 
@@ -123,9 +123,14 @@ class WakeEndpoint:
         wait = self._round(request)
         if isinstance(wait, Response):
             return wait
-        session = await self._wake.resolve(card_id, hsid)
-        if session is None:
+        resolved = await self._wake.resolve(card_id, hsid)
+        if resolved is None:
             return _bare(410, {"X-Coord-Reason": "unregistered"})
+        if resolved.linked:
+            # Z23 decision 7, enforced here and not only in the prompt text: a sub-invocation
+            # conversation is never armed, so it can neither park under nor supersede its root's listener.
+            return _problem(403, "A sub-invocation conversation cannot arm a listener.")
+        session = resolved.session
         if session.ended:
             return _bare(410, {"X-Coord-Reason": "ended"})
         claimed = request.headers.get("x-coord-handle")
@@ -136,9 +141,10 @@ class WakeEndpoint:
         if delay is not None:
             return _bare(429, {"Retry-After": str(max(1, int(delay + 0.999)))})
         entry = self._wake.table.park(session.handle, card_id, key_id)
-        # AW1 (Z23): a listener's first round is its opt-in. Later rounds (`X-Coord-Again` above 1)
-        # do not set it, so a listener that outlives `a2a_wake_off` does not undo it.
-        if again in ("", "1"):
+        # AW1 (Z23): an agy listener's first round is its opt-in. Later rounds (`X-Coord-Again` above 1)
+        # do not set it, so a listener that outlives `a2a_wake_off` does not undo it. A Claude Code
+        # listener (which also sends `X-Coord-Again: 1`) never opts in: the re-arm line is agy-only.
+        if again in ("", "1") and is_agy_card(card_id):
             await self._wake.opt_in(session)
         log.debug("listener parked", extra={"fields": {"again": again[:8] if again.isdigit() else None}})
         release = await self._wake.listen(entry, wait, request.receive)
@@ -159,12 +165,15 @@ class WakeEndpoint:
         flag = request.query_params.get("announce")
         if flag not in (None, "0", "1"):
             return _problem(400, "announce must be 0 or 1.")
-        session = await self._wake.resolve(card_id, hsid)
-        if session is None:
+        resolved = await self._wake.resolve(card_id, hsid)
+        if resolved is None:
             return _bare(410, {"X-Coord-Reason": "unregistered"})
+        session = resolved.session
         if session.ended:
             return _bare(410, {"X-Coord-Reason": "ended"})
-        view = await self._wake.pending(session, announce=flag == "1")
+        announce = flag == "1"
+        # `rearm` is for the root's own id only (Z23 decision 7): a sub-invocation id is never told to arm.
+        view = await self._wake.pending(session, announce=announce, rearm=announce and not resolved.linked)
         response = JSONResponse(
             {
                 "pending": view.pending,
@@ -190,10 +199,10 @@ class WakeEndpoint:
         hsid = valid_session_id(body.get("session_id"))  # the only field read: never the prompt
         if hsid is None:
             return _problem(400, "session_id is required.")
-        session = await self._wake.resolve(card_id, hsid)
-        if session is None or session.ended:
+        resolved = await self._wake.resolve(card_id, hsid)
+        if resolved is None or resolved.session.ended:
             return _hook_output(None)
-        view = await self._wake.pending(session, announce=True)
+        view = await self._wake.pending(resolved.session, announce=True)  # no `rearm`: the count only
         return _hook_output(self._wake.pending_stub(view.pending) if view.announce else None)
 
 

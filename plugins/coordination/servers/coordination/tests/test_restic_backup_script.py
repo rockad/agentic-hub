@@ -107,13 +107,42 @@ def test_restic_script_wide_permissions(restic_env):
     assert "permissions" in res.stderr and "too wide" in res.stderr
 
 
-def test_restic_script_empty_dump_dir(restic_env):
+def test_restic_script_empty_dump_dir_and_zero_byte_dump(restic_env):
     bin_dir, repo_dir, dump_dir, password_file = restic_env
 
     # dump_dir has no .dump files
     res = run_script(SCRIPT, str(repo_dir), password_file, dump_dir, bin_dir)
     assert res.returncode != 0
     assert "has no .dump files" in res.stderr
+
+    # 0-byte .dump file is also rejected
+    (dump_dir / "empty.dump").write_bytes(b"")
+    res_zero = run_script(SCRIPT, str(repo_dir), password_file, dump_dir, bin_dir)
+    assert res_zero.returncode != 0
+    assert "has no .dump files" in res_zero.stderr
+
+
+def test_restic_script_invalid_keep_last_and_missing_home(restic_env):
+    bin_dir, repo_dir, dump_dir, password_file = restic_env
+    (dump_dir / "a2a-20261127T020000Z.dump").write_text("fake dump content")
+
+    bad_keep_env = os.environ.copy()
+    bad_keep_env["PATH"] = f"{bin_dir}:{bad_keep_env['PATH']}"
+    bad_keep_env["A2A_RESTIC_REPO"] = str(repo_dir)
+    bad_keep_env["A2A_RESTIC_PASSWORD_FILE"] = str(password_file)
+    bad_keep_env["A2A_DUMP_DIR"] = str(dump_dir)
+    bad_keep_env["A2A_RESTIC_KEEP_LAST"] = "0"
+    res = subprocess.run(["sh", str(SCRIPT)], env=bad_keep_env, capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "A2A_RESTIC_KEEP_LAST must be a positive integer" in res.stderr
+
+    no_home_env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "A2A_RESTIC_REPO": str(repo_dir),
+    }
+    res_no_home = subprocess.run(["sh", str(SCRIPT)], env=no_home_env, capture_output=True, text=True)
+    assert res_no_home.returncode != 0
+    assert "ERROR: password file" in res_no_home.stderr
 
 
 def test_restic_script_happy_path(restic_env):
@@ -128,8 +157,8 @@ def test_restic_script_happy_path(restic_env):
     stub_log = bin_dir.parent / "restic.log"
     log_content = stub_log.read_text()
 
-    assert f"backup {dump_dir} --tag a2a-dumps" in log_content
-    assert f"forget --keep-last 3 --prune --tag a2a-dumps" in log_content
+    assert f"backup --tag a2a-dumps -- {dump_dir}" in log_content
+    assert "forget --keep-last 3 --prune --tag a2a-dumps" in log_content
 
     # Verify secret password is never echoed
     assert "secretpassword" not in log_content
